@@ -1,0 +1,164 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The C++/WinRT “capture” function helps you interoperate with the COM ABI world</h1>  <!-- .entry-meta -->
+
+<p>C++/WinRT is a freestanding library that is <a href="/code/what-does-the-alternatename-linker-switch-do" title="What does the /ALTERNATENAME linker switch do?"> not dependent upon any Windows operating system header files</a>. You are welcome to stay completely in the C++/WinRT world, but it’s not uncommon to have to interact with objects outside that world from time to time.</p>
+<p>It is a common pattern for COM methods to return objects through a pair of parameters <code>REFIID</code> and <code>void**</code>. The first parameter describes how you would like to receive the object, and the second parameter is where the object is returned. (Some functions which don’t follow this pattern <a href="https://devblogs.microsoft.com/oldnewthing/20181227-00/?p=100575" title="SHOpenRegStream does not mix with smart pointers"> have come to regret the decision</a>.)</p>
+<p>If you are calling a COM ABI method that follows this pattern, you can put the result into a C++/WinRT smart pointer object with the help of the <code>capture</code> function.</p>
+<p>There are actually four flavors of <code>capture</code>, and they fall neatly into a table.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th> </th>
+<th>Functor</th>
+<th>Method pointer</th>
+</tr>
+<tr>
+<th>Instance method</th>
+<td><code>winrt::com_ptr&lt;I&gt; p;<br/>
+p.capture(Functor, args...);</code></td>
+<td><code>winrt::com_ptr&lt;I&gt; p;<br/>
+p.capture(q, &amp;I2::Method, args...);</code></td>
+</tr>
+<tr>
+<th>Free function</th>
+<td><code>auto p =<br/>
+  winrt::capture&lt;I&gt;(Functor, args...);</code></td>
+<td><code>auto p =<br/>
+  winrt::capture&lt;I&gt;(q, &amp;I2::Method, args...);</code></td>
+</tr>
+</tbody>
+</table>
+<p>In all cases, <code>capture</code> throws a <code>winrt::hresult_error</code> exception if the call fails.</p>
+<p>Today, we’ll look at the first column: The functor.</p>
+<p><i>Functor</i> is C++-speak for “anything you can call as if it were a function.” The functor could be an actual function, like <code>CoGetObjectContext</code>, or it could be something that has an overloaded <code>operator()</code>, such as a lambda.</p>
+<p>After the functor comes an optional list of additional parameters.</p>
+<p>In the functor form, <code>capture</code> invokes the functor by passing the additional parameters, followed by a <code>REFIID</code> and <code>void**</code>.</p>
+<p>The functor is expected to return in the <code>void**</code> parameter a pointer to object whose type is specified by the <code>REFIID</code> parameter, and that pointer shall have it reference count incremented by one, indicating ownership. Fortunately, this convention is standard in COM, so you’re already in good shape on that front.</p>
+<p>Here’s an example of the most basic case:</p>
+<pre>// Capture into an existing variable.
+winrt::com_ptr&lt;IContextCallback&gt; context;
+context.capture(CoGetObjectContext);
+
+// Create a variable and capture in one step.
+auto p = winrt::capture&lt;IContextCallback&gt;(CoGetObjectContext);
+</pre>
+<p>This calls the <code>CoGetObjectContext</code> function and puts the result into an existing variable <code>p</code> or returns the result directly, which we place into a new variable <code>p</code>.</p>
+<p>If you pass additional parameters, those are passed to the functor as well, and the <code>REFIID</code> and <code>void**</code> parameters go at the end.</p>
+<pre>// Capture into existing object.
+winrt::com_ptr&lt;IWidget&gt; widget;
+widget.capture(CoUnmarshalInterface, stream.get());
+
+// Capture into new object.
+auto widget = winrt::capture&lt;IWidget&gt;(CoUnmarshalInterface, stream.get());
+</pre>
+<p>This will perform a</p>
+<pre>CoUnmarshalInterface(stream.get(), riid, ppv)
+</pre>
+<p>where the <code>riid</code> and <code>ppv</code> receive the object.</p>
+<p>If you use <code>capture</code> as a free function, you aren’t required to store the result into a variable. You could just use the result right away:</p>
+<pre>HRESULT hr = winrt::capture&lt;IWidget&gt;(CoUnmarshalInterface, stream.get())-&gt;Toggle();
+if (FAILED(hr)) throw_hresult(hr);
+
+// Or equivalently
+winrt::check_hresult(winrt::capture&lt;IWidget&gt;(CoUnmarshalInterface, stream.get())-&gt;Toggle());
+</pre>
+<p>You can pass a lambda or other callable object if you want to do something that isn’t expressible as a simple function. For example, the <code>OleCreate</code> function does not place both the <code>riid</code> and <code>void**</code> parameters at the end of the parameter list. It doesn’t fit the pattern required by <code>capture</code>, but you can fix that with a lambda that rearranges the parameters.²</p>
+<pre>o.capture(
+    [](auto&amp;&amp; a, auto&amp;&amp; b, auto&amp;&amp; c, auto&amp;&amp; d, auto&amp;&amp; e, REFIID riid, void** ppv)
+    { return OleCreate(a, riid, b, c, d, e, ppv); },
+    rclsid, renderopt, pFormatEtc, pClientSite, pStg);
+</pre>
+<p>If you’re going to be doing this a lot, you may want to factor the lambda into a helper function.</p>
+<pre>inline HRESULT CapturableOleCreate(
+  IN REFCLSID        rclsid,
+  IN DWORD           renderopt,
+  IN LPFORMATETC     pFormatEtc,
+  IN LPOLECLIENTSITE pClientSite,
+  IN LPSTORAGE       pStg,
+  IN REFIID          riid,
+  OUT LPVOID         *ppvObj)
+{
+    return OleCreate(rclsid, riid, renderopt, pFormatEtc, pClientSite, pStg, riid, ppv);
+}
+
+o.capture(CapturableOleCreate, rclsid, renderopt, pFormatEtc, pClientSite, pStg);
+</pre>
+<p>After all this discussion, the second column is going to sound anticlimactic.</p>
+<p>If you want to obtain the object from a method call on an existing object, you can use the method pointer version of the <code>capture</code> function. For example, suppose you have a <code>IGlobalInterfaceTable</code> and you want to call <code>GetInterfaceFromGlobal</code> to obtain an object from the global interface table.</p>
+<pre>auto git = winrt::create_instance&lt;
+    IGlobalInterfaceTable&gt;(CLSID_StdGlobalInterfaceTable);
+
+// Capture into existing object.
+winrt::com_ptr&lt;IWidget&gt; widget;
+widget.capture(git, &amp;IGlobalInterfaceTable::GetInterfaceFromGlobal, dwCookie);
+
+// Capture into new object.
+auto widget = winrt::capture&lt;IWidget&gt;(
+    git, &amp;IGlobalInterfaceTable::GetInterfaceFromGlobal, dwCookie);
+</pre>
+<p><b>Bonus chatter</b>: C++/WinRT comes with a premade capture wrapper for <code>CoCreateInstance</code>:</p>
+<pre>template &lt;typename Interface&gt;
+auto create_instance(guid const&amp; clsid, uint32_t context = 0x1 /*CLSCTX_INPROC_SERVER*/, void* outer = nullptr);
+{
+    return capture(WINRT_IMPL_CoCreateInstance¹, clsid, outer, context);
+}
+</pre>
+<p>The default context is “in-process server”, and there is no aggregation by default. You can use it like this:</p>
+<pre>auto shellWindows = winrt::create_instance&lt;IShellWindows&gt;(CLSID_ShellWindows, CLSCTX_ALL);
+</pre>
+<p><b>Bonus bonus chatter</b>: The definition of <code>capture</code> is quite simple:</p>
+<pre>template &lt;typename T&gt;
+struct com_ptr
+{
+    ...
+
+    template &lt;typename F, typename...Args&gt;
+    void capture(F function, Args&amp;&amp;...args)
+    {
+        check_hresult(function(args..., guid_of&lt;T&gt;(), put_void()));        
+    }
+
+    template &lt;typename O, typename M, typename...Args&gt;
+    void capture(com_ptr&lt;O&gt; const&amp; object, M method, Args&amp;&amp;...args)
+    {
+        check_hresult((object.get()-&gt;*(method))(args..., guid_of&lt;T&gt;(), put_void()));
+    }
+}
+
+template &lt;typename T, typename F, typename...Args&gt;
+auto capture(F function, Args&amp;&amp;...args)
+{
+    impl::com_ref&lt;T&gt; result{ nullptr };
+    check_hresult(function(args..., guid_of&lt;T&gt;(), reinterpret_cast&lt;void**&gt;(put_abi(result))));
+    return result;
+}
+
+template &lt;typename T, typename O, typename M, typename...Args&gt;
+auto capture(com_ptr&lt;O&gt; const&amp; object, M method, Args&amp;&amp;...args)
+{
+    impl::com_ref&lt;T&gt; result{ nullptr };
+    check_hresult((object.get()-&gt;*(method))(args..., guid_of&lt;T&gt;(), reinterpret_cast&lt;void**&gt;(put_abi(result))));
+    return result;
+}
+</pre>
+<p>This entire series is based on me reverse-engineering these four functions.</p>
+<p>¹ The C++/WinRT library is freestanding, so it contains its own private redeclaration of the <code>CoCreateInstance</code> function. This redeclared version is for internal use only. Don’t use it from your own code. Basically, anything named <code>WINRT_IMPL</code> or in the <code>winrt::impl</code> namespace is reserved for internal use.</p>
+<p>² I guess you could also have captured the parameters into the lambda:</p>
+<pre>o.capture(
+    [&amp;](REFIID riid, void** ppv)
+    { return OleCreate(rclsid, riid, renderopt, pFormatEtc, pClientSite, pStg, ppv); });
+</pre>
+<p>This could be handy if you are creating the same object many times with the same parameters. For example, if you were creating five objects from the stream, you could do this:</p>
+<pre>auto create = [&amp;](REFIID riid, void** ppv)
+    { return OleCreate(rclsid, riid, renderopt, pFormatEtc, pClientSite, pStg, ppv); });
+
+o1.capture(create);
+o2.capture(create);
+o3.capture(create);
+o4.capture(create);
+o5.capture(create);
+</pre>
+<p>Note that the lambda is passed <i>by value</i> to <code>capture</code>, so a copy is made each time you use it. This means that your lambda probably shouldn’t have any mutable state, because the mutations are made to a copy of the original. It also means that your lambda probably shouldn’t capture objects with nontrivial copy constructors or destructors, because they will be invoked each time you use it.</p>
+
+
+</body>

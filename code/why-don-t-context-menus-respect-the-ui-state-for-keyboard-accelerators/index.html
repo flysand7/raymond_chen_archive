@@ -1,0 +1,46 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why don’t context menus respect the UI state for keyboard accelerators?</h1>  <!-- .entry-meta -->
+
+<p>The <code>WM_</code><code>CHANGE­UI­STATE</code> message lets you manipulate the UI state of a window, which controls whether keyboard accelerators and other UI affordances are shown. Let’s use it to try to control the mnemonics of a window. Start with <a href="https://blogs.msdn.microsoft.com/oldnewthing/20030723-00/?p=43073">the scratch program</a> and make these changes: </p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  <font color="blue">CreateWindow(TEXT("button"), TEXT("&amp;Button!"),
+    WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+    0, 0, 200, 50, hwnd, (HMENU)100, g_hinst, 0);</font>
+  return TRUE;
+}
+
+<font color="blue">void OnContextMenu(HWND hwnd, HWND hwndFrom, int x, int y)
+{
+  auto hmenu = GetSystemMenu(hwnd, false);
+  TrackPopupMenu(hmenu, TPM_RIGHTBUTTON, x, y, 0, hwnd, nullptr);
+}
+
+void OnCommand(HWND hwnd, int id, HWND hwndCtl, UINT codeNotify)
+{
+  if (id == 100 &amp;&amp; codeNotify == BN_CLICKED) {
+    if (SendMessage(hwndCtl, BM_GETCHECK, 0, 0)) {
+      SendMessage(hwnd, WM_CHANGEUISTATE,
+                  MAKELONG(UIS_CLEAR, UISF_HIDEACCEL), 0);
+    } else {
+      SendMessage(hwnd, WM_CHANGEUISTATE,
+                  MAKELONG(UIS_SET, UISF_HIDEACCEL), 0);
+    }
+  }
+}</font>
+
+// Add to WndProc
+    <font color="blue">HANDLE_MSG(hwnd, WM_COMMAND, OnCommand);
+    <a href="https://devblogs.microsoft.com/oldnewthing/">HANDLE_MSG(hwnd, WM_CONTEXTMENU</a>, OnContextMenu);</font>
+</pre>
+<p>This program lets you toggle the checkbox to turn keyboard cues on and off. The checkbox itself has an accelerator so you can verify the state. if you right-click anywhere or hit <kbd>Shift</kbd>+<kbd>F10</kbd>, the system menu appears as a context menu. (Note that this program doesn’t try to <a href="https://devblogs.microsoft.com/oldnewthing/">position the context menu anywhere interesting when invoked from the keyboard</a>.) </p>
+<p>Enable keyboard cues with the checkbox, and then right-click. Or disable keyboard cues and hit <kbd>Shift</kbd>+<kbd>F10</kbd>, The menu shows up and ignores your keyboard cues settings, instead taking its keyboard cue state based on whether you used the mouse or keyboard to display the menu. Same thing happens if you open the system menu by right-clicking the title bar or hitting <kbd>Alt</kbd>+<kbd>Space</kbd>. </p>
+<p>What’s going on? Why isn’t the menu picking up the UI cue state? </p>
+<p>Because the menu is in a separate top-level window tree, and keyboard cues apply to a top-level window tree. </p>
+<p>Menus, like dialog boxes, initialize their UI state based on the last input event.¹ So they will show keyboard cues if you invoked the menu from the keyboard, and won’t show them if you invoked the menu from the mouse. </p>
+<p>¹ The user’s keyboard cues preferences override this logic. If the preferences indicate that keyboard cues should always be shown, then they are always shown. </p>
+
+
+</body>

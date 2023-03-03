@@ -1,0 +1,110 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Simulating a drop, part two</h1>  <!-- .entry-meta -->
+
+<p><p>
+Last time, we wrote a tiny program to simulate dropping a file
+on another file,
+but we discovered that it didn’t work for dropping a file
+onto
+<code>Mail Recipient.MAPIMail</code>.
+The reason, as you no doubt instantly recognized,
+is that the <code>MAPIMail</code> handler creates a worker thread,
+and we’re exiting the process before the worker thread has finished
+its work.
+</p>
+<p>
+And as you no doubt know by now, the solution is to use the
+<code>SHSetInstanceExplorer</code> function.
+Let’s bring back
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/05/28/8555658.aspx">
+the <code>ProcessReference</code> class</a>
+and use it to solve our process lifetime problem.
+</p>
+<pre>
+int __cdecl wmain(int argc, WCHAR **argv)
+{
+ <i><font color="blue">ProcessReference ref;</font></i>
+ …
+</pre>
+<p>
+Compile this program and run it with the command line
+</p>
+<pre>
+fakedrop c:\autoexec.bat “%USERPROFILE%\SendTo\Mail Recipient.MAPIMail”
+</pre>
+<p>
+to watch our process reference save the day.
+</p>
+<p>
+Oh wait, it didn’t help. What’s going on?
+</p>
+<p>
+Run this under the debugger and you’ll see an interesting exception:
+</p>
+<pre>
+(918.110): Unknown exception – code 80010012 (first chance)
+</pre>
+<p>
+A little hunting through <code>winerror.h</code> reveals what
+this exception means:
+</p>
+<pre>
+//
+// MessageId: RPC_E_SERVER_DIED_DNE
+//
+// MessageText:
+//
+//  The callee (server [not server application]) is not available and
+//  disappeared; all connections are invalid. The call did not execute.
+//
+#define RPC_E_SERVER_DIED_DNE            _HRESULT_TYPEDEF_(0x80010012L)
+</pre>
+<p>
+Huh? What’s this RPC stuff?
+Oh wait, COM uses RPC.
+That should be a clue.
+</p>
+<p>
+Notice that our <code>ProcessReference</code>‘s destructor
+runs after we have already uninitialized COM.
+When we invoked the <code>IDropTarget::Drop</code> method on the
+<code>MAPIMail</code> drop target,
+it kicked off a background thread to do the work,
+and in order to access the parameters from the background thread,
+it had to do a bit of marshalling,
+with the help of the functions with ridiculously long names
+<code>CoMarshalInterThreadInterfaceInStream</code>
+and the only slightly less ridiculous
+<code>CoGetInterfaceAndReleaseStream</code>.
+But since we tear down COM immediately,
+when the background thread gets around to asking,
+“Okay, and what was that file name?”
+the thread that has the answer (the main thread) has already
+shut down COM.
+Hence the “server died” error.
+</p>
+<p>
+To fix this, we need to fix the scope of the process reference
+object:
+</p>
+<pre>
+ if (argc == 3 &amp;&amp; SUCCEEDED(CoInitialize(NULL))) {
+  <i><font color="blue">ProcessReference ref;</font></i>
+  …
+</pre>
+<p>
+Compile this program and run it with the same command line and…
+it still doesn’t work!
+But this time you definitely know why:
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/05/20/135841.aspx">
+The destructor is running at the wrong time</a>.
+</p>
+<p>
+I leave it as an exercise to fix the destructor timing problem.
+To see whether you got it right, run the <code>fakedrop</code>
+command line again.
+When you successfully get an email message, then you know you’ve got it.
+</p></p>
+
+
+</body>

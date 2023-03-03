@@ -1,0 +1,74 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Behind C++/WinRT: How does C++/WinRT decide which interfaces are implemented?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/why-does-c-winrt-say-that-first-interface-is-not-a-member-of-winrt-impl-interface-list" title="Why does C++/WinRT say that first_interface is not a member of winrt::impl::interface_list&lt;&gt;?"> diagnosed a problem</a> by realizing that the <code>unkwn.h</code> header had not been included <i>prior</i> to including any C++/WinRT headers, and that means that C++/WinRT did not activate its code that supports classic COM interfaces.</p>
+<p>This is going to be the first in what will probably be a very sporadic series of looking into the C++/WinRT implementation, as reverse-engineered by me.¹ I’m writing it in part so that I’ll be able to refer back to this write-up the next time I have to debug this code. And in part so that there are more people who understand the insides of C++/WinRT and can help support it. (This is the selfish reason for many of the articles I write: I’m writing them in order to reduce my own workload.)</p>
+<p>It all hangs on <a href="https://github.com/microsoft/cppwinrt/blob/a903a2c107be5a1c80467110aee48d5db074b633/strings/base_implements.h#L47"> this definition of <code>is_<wbr/>interface</code></a>:</p>
+<pre>#ifdef WINRT_IMPL_IUNKNOWN_DEFINED
+
+template &lt;typename T&gt;
+struct is_interface : std::disjunction&lt;
+    std::is_base_of&lt;Windows::Foundation::IInspectable, T&gt;,
+    std::conjunction&lt;
+        std::is_base_of&lt;::IUnknown, T&gt;,
+        std::negation&lt;is_implements&lt;T&gt;&gt;&gt;&gt; {};
+
+#else
+
+template &lt;typename T&gt;
+struct is_interface :
+    std::is_base_of&lt;Windows::Foundation::IInspectable, T&gt; {};
+
+#endif
+</pre>
+<p>The <code>WINRT_<wbr/>IMPL_<wbr/>IUNKNOWN_<wbr/>DEFINED</code> macro is an internal C++/WinRT macro that remembers whether <code>unknwn.h</code> has been included. If so, then <code>::IUnknown</code> is defined, and C++/WinRT can activate classic COM support. Let’s translate the C++ type traits template meta-programming into something we’re more familiar with.</p>
+<p>One of the main tools of the C++ type traits system is the <code>std::integral_constant&lt;T, v&gt;</code>. This is a type that wraps a constant value <code>v</code> of type <code>T</code>.</p>
+<pre>template&lt;typename T, T v&gt;
+struct integral_constant
+{
+    static constexpr T value = v;
+    ... other stuff not relevant here ...
+};
+</pre>
+<p>For example, <code>std::integral_constant&lt;int, 42&gt;::value</code> is an integer constant whose value is 42.</p>
+<p>This seems pointless, but it’s not. Template meta-programming doesn’t have variables; it operates on types. The <code>std::integral_constant</code> lets you treat a type as if it were a variable whose value is the <code>integral_constant::value</code>.</p>
+<p>C++ comes with a number of pre-made integral constants. Relevant today are <code>std::true_type</code> and <code>std::false_type</code>, which wrap a Boolean <code>true</code> or <code>false</code>, respectively. And it also comes with some pre-made template types that manipulate them:</p>
+<ul>
+<li><code>std::conjunction</code> performs a logical <code>and</code> on its arguments.²</li>
+<li><code>std::disjunction</code> performs a logical <code>or</code> on its arguments.</li>
+<li><code>std::negation</code> performs a logical <code>not</code> on its argument.</li>
+</ul>
+<p>Okay, now we can start taking apart the first expression.</p>
+<pre>template &lt;typename T&gt;
+struct is_interface : std::disjunction&lt;
+    std::is_base_of&lt;Windows::Foundation::IInspectable, T&gt;,
+    std::conjunction&lt;
+        std::is_base_of&lt;::IUnknown, T&gt;,
+        std::negation&lt;is_implements&lt;T&gt;&gt;&gt;&gt; {};
+</pre>
+<p>We mentally convert the <code>std::disjunction</code> to <code>||</code>, the <code>std::conjunction</code> to <code>&amp;&amp;</code>, and the <code>std::negation</code> to <code>!</code>.</p>
+<pre>template &lt;typename T&gt;
+struct is_interface is true if
+    std::is_base_of&lt;Windows::Foundation::IInspectable, T&gt; ||
+    (
+        std::is_base_of&lt;::IUnknown, T&gt; &amp;&amp;
+        !is_implements&lt;T&gt;);
+</pre>
+<p>Now we can read out the logic. Something is considered an interface if either</p>
+<ul>
+<li>It derives from <code>winrt::<wbr/>Windows::Foundation::<wbr/>IInspectable</code>, or</li>
+<li>It derives from <code>::IUnknown</code> and is not an <code>implements</code>.</li>
+</ul>
+<p>The rejection of <code>implements</code> prevents <code>is_interface</code> from misdetecting <code>implements</code> as a itself being COM interface.</p>
+<p>Onward to the <code>#else</code>: If <code>unknwn.h</code> was not included, then we use a simpler definition of <code>is_<wbr/>interface</code> that merely detects derivation from <code>winrt::<wbr/>Windows::Foundation::<wbr/>IInspectable</code>.</p>
+<p>In order to detect classic COM interfaces, C++/WinRT needs <code>::IUnknown</code> to have been defined. Otherwise, it has nothing to test as a base class.</p>
+<p>So that’s the quick diagnosis of yesterday’s problem wherein C++/WinRT failed to recognize classic COM interfaces.</p>
+<p>Next time, we’ll dig in deeper to how the <code>is_<wbr/>interface</code> definition is used to pick out the interfaces.</p>
+<p><b>Bonus chatter</b>: As I noted last time, the requirement that you include <code>unknwn.h</code> before including C++/WinRT is no longer present as of C++/WinRT version 2.0.210922.5. The trick is to forward-declare the <code>::IUnknown</code> type so that you can talk about it without knowing what it is. The <code>std::is_base_class</code> template type requires only that the proposed derived class be complete. The base class (<code>::IUnknown</code>) doesn’t have to be complete.</p>
+<p><b>Exercise</b>: Why is it okay for <code>std::is_base_class</code> to accept an incomplete base class? How can it possibly detect whether something derives from a class which has no definition?</p>
+<p>¹ A lot of learning comes from reverse-engineering. When doing debugging, you are pretty much forced into it.</p>
+<p>² Actually, <code>std::conjunction</code> and <code>std::disjunction</code> behave more like their JavaScript equivalent operators <code>&amp;&amp;</code> and <code>||</code> because they short-circuit and support “truthiness”.</p>
+<p><b>Answer to exercise</b>: If the base class is incomplete, then nothing can derive from it. You can’t derive from an incomplete type.</p>
+
+
+</body>

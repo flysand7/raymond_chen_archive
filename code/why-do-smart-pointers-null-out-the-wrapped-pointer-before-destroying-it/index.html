@@ -1,0 +1,121 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why do smart pointers null out the wrapped pointer before destroying it?</h1>  <!-- .entry-meta -->
+
+<p>When you null out a smart pointer type, the smart pointer type nulls out the old pointer before releasing it, rather than releasing the member and then setting it to null. (All source code samples has been simplified for expository purposes.)</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td> </td>
+<th>Actual</th>
+<th>Instead of</th>
+</tr>
+<tr>
+<th>std::unique_ptr</th>
+<td>
+<pre>void reset(pointer p = nullptr) noexcept
+{
+  pointer old = std::exchange(m_p, p);
+  if (old) m_deleter(old);
+}
+</pre>
+</td>
+<td>
+<pre>void reset(pointer p = nullptr) noexcept
+{
+  if (m_p) m_deleter(m_p);
+  m_p = p;
+}
+</pre>
+</td>
+</tr>
+<tr>
+<th>ATL::CComPtr</th>
+<td>
+<pre>void Release() throw()
+{
+  T* pTemp = p;
+  if (pTemp) {
+    p = NULL;
+    pTemp-&gt;Release();
+  }
+}
+</pre>
+</td>
+<td>
+<pre>void Release() throw()
+{
+
+  if (p) {
+    p-&gt;Release();
+    p = NULL;
+  }
+}
+</pre>
+</td>
+</tr>
+<tr>
+<th>WRL::ComPtr</th>
+<td>
+<pre>unsigned long InternalRelease() throw()
+{
+  unsigned long ref = 0;
+  T* temp = ptr_;
+  if (temp != nullptr) {
+    p = nullptr;
+    ref = temp-&gt;Release();
+  }
+  return ref;
+}
+</pre>
+</td>
+<td>
+<pre>unsigned long InternalRelease() throw()
+{
+  unsigned long ref = 0;
+
+  if (p) {
+    ref = p-&gt;Release();
+    p = nullptr;
+  }
+  return ref;
+}
+</pre>
+</td>
+</tr>
+<tr>
+<th>winrt::com_ptr</th>
+<td>
+<pre>void release_ref() noexcept
+{
+  if (m_ptr) {
+    std::exchange(m_ptr, {})-&gt;Release();
+
+  }
+}
+</pre>
+</td>
+<td>
+<pre>void release_ref() noexcept
+{
+  if (m_ptr) {
+    m_ptr-&gt;Release();
+    m_ptr = nullptr;
+  }
+}
+</pre>
+</td>
+</tr>
+</tbody>
+</table>
+<p>Why does the old value get detached from the smart pointer before releasing it? Why not release it, and then set it to null?</p>
+<p>One theory is that it’s for exception safety, in case an exception occurs in the deleter or <code>Release</code> method. But that theory doesn’t hold up because the method is marked <code>noexcept</code> (or its <a href="/code/the-sad-history-of-the-c-throw-exception-specifier" title="The sad history of the C++ throw(…) exception specifier"> old-school sort-of equivalent <code>throw()</code></a>).</p>
+<p>Another theory is that it enables tail call optimization. While that’s true, it’s not the primary reason for the order of operations being the way it is.</p>
+<p>The reason why the member variable is nulled out before releasing its former value is to avoid reentrancy issues.</p>
+<p>If the deleter or the <code>Release</code> method leads (through some chain of intermediate operations) to a call on the original smart pointer, we don’t want that call to use a pointer that is in mid-destruction.</p>
+<p>For example, the smart pointer might be part of a cache. During a pruning pass, the cache entry is determined to be stale and is released. The <code>Release</code> method might call back into the cache to unregister itself, and the unregister method will look in its cache to find the matching entry and release it. Congratulations, you just created a double-free bug.</p>
+<p>Detaching the wrapped pointer before destructing it avoids this re-entrancy problem.</p>
+<p><b>Bonus chatter</b>: Another way of looking at this is that it is an inlined version of the copy-and-swap idiom. The empty object is swapped in, and then the old object is destructed.</p>
+<p><b>Bonus reading</b>: <a href="https://devblogs.microsoft.com/oldnewthing/20040406-00/?p=39903"> The proper order of managing reference counts when changing the target of a smart pointer</a>.</p>
+
+
+</body>

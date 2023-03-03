@@ -1,0 +1,113 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a co_await awaitable signal that can be awaited multiple times, part 4</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/creating-a-co-await-awaitable-signal-that-can-be-awaited-multiple-times-part-3" title="Creating a co_await awaitable signal that can be awaited multiple times, part 3"> created an awaitable signal that can be awaited multiple times</a>, operating entirely in user mode. However, it did perform memory allocations, and that could result in low-memory exceptions. Furthermore, it used a <code>std::<wbr/>vector</code>, and pushing a value onto the vector could take a long time if the vector needs to be reallocated.</p>
+<p>We can avoid the variable cost of adding a single element to the collection by using a linked list. And we can avoid the memory allocation cost by having the awaiter provide the memory!</p>
+<pre>struct awaitable_event
+{
+  void set() const
+  { shared-&gt;set(); }
+
+  auto operator co_await() const noexcept
+  { return awaiter{ *shared }; }
+
+private:
+  struct node
+  {
+    node* next;
+    std::experimental::coroutine_handle&lt;&gt; handle;
+  };
+
+  struct state
+  {
+    /* to be filled in */
+  };
+
+  struct awaiter
+  {
+    state&amp; s;
+    node n;
+
+    /* to be filled in */
+  };
+
+  std::shared_ptr&lt;state&gt; shared = std::make_shared&lt;state&gt;();
+};
+</pre>
+<p>An <code>awaitable_<wbr/>event</code> is a wrapper around a <code>shared_<wbr/>ptr</code> to a <code>state</code> structure, which is where all the real work happens.</p>
+<p>The idea is that we keep a linked list of the coroutine handles that are waiting for the event to become signaled. The trick is that the nodes for the linked list come from the <code>awaiter</code>!</p>
+<p>Recall that <code>co_await</code> begins by obtaining an awaiter, and then it calls methods on the awaiter to wait for the result, and then when the coroutine resumes, the awaiter is destructed. This means that we can have the awaiter itself provide the memory for the linked list nodes, since it exists for the entire time the coroutine is suspended. The awaiter is a local variable in the coroutine, so the compiler will allocate it in the coroutine frame. The memory for it is therefore effectively preallocated, so we don’t have to worry about running out of memory when it comes time to queue the node on to the list. Furthermore, adding an item to a list is an <var>O</var>(1) operation, ensuring that our mutex is never held for very long.</p>
+<p>Now that we have a sketch for the design, we dig into the implementation.</p>
+<pre>  struct state
+  {
+    std::atomic&lt;bool&gt; signaled = false;
+    winrt::slim_mutex mutex;
+    node* head = nullptr;
+</pre>
+<p>As before, the <code>state</code> remembers whether the event is signaled (its primary purpose for existence). The mutex ensures that the signaling of the event and capturing the list of waiting coroutine handles is performed atomically.</p>
+<pre>    void set()
+    {
+      node* lifo = nullptr;
+      {
+        auto guard = winrt::slim_lock_guard(mutex);
+        signaled.store(true, std::memory_order_relaxed);
+        lifo = std::exchange(head, nullptr);
+      }
+      node* fifo = nullptr;
+      while (lifo) {
+          auto n = lifo;
+          lifo = std::exchange(n-&gt;next, fifo);
+          fifo = n;
+      }
+      while (fifo) {
+        auto handle = fifo-&gt;handle;
+        fifo = reverse-&gt;next;
+        handle();
+      }
+    }
+</pre>
+<p>To set the event, we mark the event as signaled and detach the list. To ensure safe behavior if the event is set more than once, we reset the <code>last</code> and <code>head</code> members. (Alternatively, we could early-out if the event is already signaled, but I feel better removing the dangling pointers.)</p>
+<p>Once we’ve detached the head, we reverse the list so that the nodes are in FIFO order rather than LIFO (to approximate fairness), and then we resume each of the coroutine handles. It’s important to capture the contents of the node before invoking the handle because resuming the coroutine will destroy the node.</p>
+<pre>    bool await_ready() const noexcept
+    {
+      return signaled.load(std::memory_order_relaxed);
+    }
+</pre>
+<p>We can short-circuit suspension if the event is already signaled.</p>
+<pre>    bool await_suspend(node&amp; n) noexcept
+    {
+      auto guard = winrt::slim_lock_guard(mutex);
+      if (signaled.load(std::memory_order_relaxed)) return false;
+      n.next = head;
+      head = &amp;n;
+      return true;
+    }
+</pre>
+<p>To wait on the <code>awaitable_<wbr/>event</code>, we take the lock and recheck the event state. If it has been signaled while we were waiting for the lock, then we report that there is no need to suspend. Otherwise, we queue the provided node onto the linked list and request to be suspended.</p>
+<p>Observe that <code>await_<wbr/>suspend</code> is now noexcept since there is no memory allocation. Furthermore, the operation runs in <var>O</var>(1) since it’s just manipulating some pointers.</p>
+<pre>    void await_resume() const noexcept { }
+  };
+</pre>
+<p>There is nothing to report on resume, <code>await_<wbr/>resume</code> returns nothing.</p>
+<p>The last missing piece is the awaiter. The awaiter’s job is to provide the <code>node</code> to the <code>state</code>.</p>
+<pre>  struct awaiter
+  {
+    state&amp; s;
+    node n;
+
+    bool await_ready() const noexcept { return s.await_ready(); }
+    bool await_suspend(
+      std::experimental::coroutine_handle&lt;&gt; handle) noexcept
+    {
+      n.handle = handle;
+      return s.await_suspend(n);
+    }
+
+    void await_resume() const noexcept { return s.await_resume(); }
+  };
+</pre>
+<p>The methods just forward to the <code>state</code>. The only wrinkle is that <code>await_suspend</code> hands over a node preinitialized to hold the coroutine handle, so it is ready to be added to the linked list.</p>
+<p>One observation is that we walk the linked list twice at resumption. We walk it one time to reverse the list, and another time to resume the coroutines. We’ll try to fix that next time.</p>
+
+
+</body>

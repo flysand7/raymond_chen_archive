@@ -1,0 +1,104 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">After I encrypt memory with CryptProtectMemory, can I move it around?</h1>  <!-- .entry-meta -->
+
+<p>A customer had a question about the the <code>Crypt­Protect­Memory</code> function. After using it to encrypt a memory block, can the memory block be moved to another location and decrypted there? Or does the memory block have to be decrypted at the same location it was encrypted? </p>
+<p>The answer is that the memory does not need to be decrypted at the same memory address at which it was encrypted. The address of the memory block is not used  as part of the encryption key. You can copy or move the memory around, and as long as you don’t tamper with the bytes, and you perform the decryption within the scope you specified, then it will decrypt. </p>
+<p>That the buffer can be moved around in memory is obvious if the scope was specified as <code>CRYPT­PROTECT­MEMORY_CROSS_PROCESS</code> or <code>CRYPT­PROTECT­MEMORY_SAME_LOGON</code>, because those scopes encompass more than one process, so the memory will naturally have a different address in each process. The non-obvious part is that it also holds true for <code>CRYPT­PROTECT­MEMORY_SAME_PROCESS</code>. </p>
+<p>You can also decrypt the buffer multiple times. This is handy if you need to use the decrypted contents more than once, or if you want to hand out the encrypted contents to multiple clients, and leave each client to delay decrypting the data until immediately before they need it. (And then either re-encrypting or simply destroying the data after it is no longer needed in plaintext form.) </p>
+<p>Today’s Little Program demonstrates the ability to move encrypted data and to decrypt it more than once. </p>
+<pre>
+<p>
+#include &lt;windows.h&gt;
+#include &lt;wincrypt.h&gt;
+#include &lt;stdio.h&gt; // horrors! mixing C and C++!
+
+union MessageBuffer
+{
+  DWORD secret;
+  char  buffer[CRYPTPROTECTMEMORY_BLOCK_SIZE];
+};
+static_assert(sizeof(DWORD) &lt;= CRYPTPROTECTMEMORY_BLOCK_SIZE,
+             "Need a bigger buffer");
+
+int __cdecl main(int, char **)
+{
+  MessageBuffer message;
+
+  // Generate a secret message into the buffer.
+  message.secret = GetTickCount();
+
+  printf("Shhh... the secret message is %u\n", message.secret);
+
+  // Now encrypt the buffer.
+  CryptProtectMemory(message.buffer, sizeof(message.buffer),
+                     CRYPTPROTECTMEMORY_SAME_PROCESS);
+
+  printf("You can't see it now: %u\n", message.secret);
+
+  // Copy the buffer to a new location in memory.
+  MessageBuffer copiedMessage;
+  CopyMemory(copiedMessage.buffer, message.buffer,
+             sizeof(copiedMessage.buffer));
+
+  // Decrypt the copy (at a different address).
+  CryptUnprotectMemory(copiedMessage.buffer,
+                       sizeof(copiedMessage.buffer),
+                       CRYPTPROTECTMEMORY_SAME_PROCESS);
+
+  printf("Was the secret message %u?\n", copiedMessage.secret);
+
+  SecureZeroMemory(copiedMessage.buffer, sizeof(copiedMessage.buffer));
+
+  // Do it again!
+  CopyMemory(copiedMessage.buffer, message.buffer,
+             sizeof(copiedMessage.buffer));
+
+  // Just to show that the original buffer is not needed,
+  // let's destroy it.
+  SecureZeroMemory(message.buffer, sizeof(message.buffer));
+
+  // Decrypt the copy a second time.
+  CryptUnprotectMemory(copiedMessage.buffer,
+                       sizeof(copiedMessage.buffer),
+                       CRYPTPROTECTMEMORY_SAME_PROCESS);
+
+  printf("Was the secret message %u?\n", copiedMessage.secret);
+
+  SecureZeroMemory(copiedMessage.buffer, sizeof(copiedMessage.buffer));
+
+  return 0;
+}
+</p></pre>
+<p><b>Bonus chatter</b>: The enumeration values for the encryption scope are rather confusingly named and numbered. I would have called them </p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tr>
+<th>Old name</th>
+<th>Old value</th>
+<th>New name</th>
+<th>New value</th>
+</tr>
+<tr>
+<td><code>CRYPT­PROTECT­MEMORY_SAME_PROCESS</code></td>
+<td align="center">0</td>
+<td><code>CRYPT­PROTECT­MEMORY_SAME_PROCESS</code></td>
+<td align="center">0</td>
+</tr>
+<tr>
+<td><code>CRYPT­PROTECT­MEMORY_SAME_LOGON</code></td>
+<td align="center">2</td>
+<td><code>CRYPT­PROTECT­MEMORY_SAME_LOGON</code></td>
+<td align="center">1</td>
+</tr>
+<tr>
+<td><code>CRYPT­PROTECT­MEMORY_CROSS_PROCESS</code></td>
+<td align="center">1</td>
+<td><code>CRYPT­PROTECT­MEMORY_SAME_MACHINE</code></td>
+<td align="center">2</td>
+</tr>
+</table>
+<p>I would have changed the name of the last flag to <code>CRYPT­PROTECT­MEMORY_SAME_MACHINE</code> for two reasons. First, the old name <code>CRYPT­PROTECT­MEMORY_CROSS_PROCESS</code> implies that the memory <i>must</i> travel to another process; <i>i.e.</i>, that if you encrypt with cross-process, then it must be decrypted by another process. Second, the flag name creates confusion when placed next to <code>CRYPT­PROTECT­MEMORY_SAME_LOGON</code>, because <code>CRYPT­PROTECT­MEMORY_SAME_LOGON</code> is also a cross-process scenario. </p>
+<p>And I would have renumbered the values so that the entries are in a logical order: Higher numbers have larger scope than lower values. </p>
+<p><b>Exercise</b>: Propose a theory as to why the old names and values are the way they are. </p>
+
+
+</body>

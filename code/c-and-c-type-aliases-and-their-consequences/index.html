@@ -1,0 +1,97 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C# and C++ type aliases and their consequences</h1>  <!-- .entry-meta -->
+
+<p>The C# and C++ language provide ways to introduce shorter names for things. These shortcuts do not have their own identities; they merely let one name be used as a shorthand for the other thing.</p>
+<pre>// C#
+using Console = System.Console;
+
+// C++
+using Project = Contoso::Project;
+</pre>
+<p>The C# and C++ programming languages call these <i>aliases</i>. You are allowing an existing type to go by a different name. It does not create a new type, and the new name is interchangeable with the old one.</p>
+<pre>// C++
+extern void UpdateProject(Contoso::Project&amp; project);
+
+void example()
+{
+    Project project;
+    UpdateProject(project); // this works
+}
+</pre>
+<p>Similarly, when you import a namespace with a <code>using</code> directive, the names from the other namespace are visible in your namespace, but they still belong to that other namespace.¹</p>
+<pre>// C++
+namespace Other
+{
+    struct OtherStruct;
+}
+
+namespace Mine
+{
+    using namespace Other;
+}
+
+void Welcome(Mine::OtherStruct s);
+</pre>
+<p>The signature of the <code>Welcome</code> function is <code>void Welcome(Other::OtherStruct)</code>, not <code>void Welcome(Mine::OtherStruct)</code>.</p>
+<p>This trick also gives you a way to switch easily between two options:</p>
+<pre>#ifdef USE_CONTOSO_WIDGET
+using Widget = Contoso::Widget;
+#else
+using Widget = LitWare::Widget;
+#endif
+
+// code that uses Widget without caring whose widget it is
+</pre>
+<p>The fact that these aliases do not introduce new types means that when you go looking in the debugger, you will see the symbols decorated with their <i>original</i> names. Which can be both a good thing and a bad thing.</p>
+<p>It’s a good thing if you want the original name to be the one seen by the outside world. For example, you might create aliases for commonly-used types in your component, but you want people outside your component to use the original names.</p>
+<pre>// component.h
+
+namespace Component
+{
+    struct ReversibleWidget;
+
+    void CheckPolarity(ReversibleWidget const&amp;);
+}
+
+// component.cpp (implementation)
+#include&lt;component.h&gt;
+
+using FlipWidget = Component::ReversibleWidget;
+
+void Component::CheckPolarity(FlipWidget const&amp; widget)
+{
+    ... do stuff ...
+}
+</pre>
+<p>Inside your component, you’d rather just call it a <code>FlipWidget</code>, because that was the internal code name when the product was being developed, and then later, management decided that its public name should be <code>ReversibleWidget</code>. You can create an alias that lets you continue using your internal code name, so you don’t have to perform a massive search-and-replace across the entire code base (and deal with all the merge conflicts that will inevitably arise).</p>
+<p>That the symbols are decorated with the original names can be a bad thing if the original name is an unwieldy mess, which is unfortunately the case with many classes in the C++ standard library.</p>
+<p>In the C++ standard library, <code>string</code> is an alias for <code>basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;</code>,² so a function like</p>
+<pre>void FillLookupTable(std::map&lt;std::string, std::string&gt;&amp; table);
+</pre>
+<p>formally has the signature (deep breath)</p>
+<pre style="white-space: pre-wrap;">FillLookupTable(std::map&lt;std::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;, std::less&lt;std::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt;, std::allocator&lt;std::pair&lt;std::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; const, std::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; &gt; &gt; &gt;&amp;):
+</pre>
+<p>Good luck typing that into a debugger.</p>
+<p>¹ The fact that they remain in the original namespace has consequences for <a href="https://en.cppreference.com/w/cpp/language/adl"> argument-dependent lookup</a>:</p>
+<pre>namespace X
+{
+    struct S {};
+    void fiddle(S const&amp;);
+}
+
+namespace Y
+{
+    using namespace X;
+    void fiddle(S const&amp;);
+}
+
+void test()
+{
+    Y::S s;
+    fiddle(s); // X::fiddle, not Y::fiddle
+}
+</pre>
+<p>² What you’re seeing is a combination of the type alias <i>and</i> the template default parameters.</p>
+
+
+</body>

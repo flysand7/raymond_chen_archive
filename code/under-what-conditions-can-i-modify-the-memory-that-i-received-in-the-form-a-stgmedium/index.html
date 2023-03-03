@@ -1,0 +1,68 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Under what conditions can I modify the memory that I received in the form a <code>STGMEDIUM</code>?</h1>  <!-- .entry-meta -->
+
+<p>A customer was looking to optimize their use of data that they received from a data object in the form of a <code>STGMEDIUM</code>. Right now, they are making a copy of the <code>hGlobal</code> in the <code>STGMEDIUM</code> and modifying the copy. But that memory block could be quite large. Is it possible for them to just modify the original <code>hGlobal</code>? What are the ownership rules for the contents of a <code>STGMEDIUM</code>?</p>
+<p>The rule is that you call <code>ReleaseStgMedium</code> when you are finished with a <code>STGMEDIUM</code>. If you look at the details of the <code>ReleaseStgMedium</code> function, it behaves in one of two modes, depending on whether the <code>punkForRelease</code> member is null.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th rowspan="2">Medium</th>
+<th colspan="3"><code>punkForRelease</code></th>
+</tr>
+<tr>
+<th><code>nullptr</code></th>
+<th colspan="2">Not <code>nullptr</code> (perform both columns)</th>
+</tr>
+<tr>
+<td><code>TYMED_HGLOBAL</code></td>
+<td><code>GlobalFree</code></td>
+<td>Nothing</td>
+<td style="font-size: 80%;"><code>punkForRelease-&gt;Release()</code></td>
+</tr>
+<tr>
+<td><code>TYMED_GDI</code></td>
+<td><code>DeleteObject</code></td>
+<td>Nothing</td>
+<td style="font-size: 80%;"><code>punkForRelease-&gt;Release()</code></td>
+</tr>
+<tr>
+<td><code>TYMED_ENHMF</code></td>
+<td><code>DeleteEnhMetaFile</code></td>
+<td>Nothing</td>
+<td style="font-size: 80%;"><code>punkForRelease-&gt;Release()</code></td>
+</tr>
+<tr>
+<td><code>TYMED_MFPICT</code></td>
+<td valign="bottom"><code>DeleteMetaFile</code> +<br/>
+<code>GlobalFree</code></td>
+<td valign="bottom">Nothing</td>
+<td style="font-size: 80%;" valign="bottom"><code>punkForRelease-&gt;Release()</code></td>
+</tr>
+<tr>
+<td><code>TYMED_FILE</code></td>
+<td valign="bottom"><code>DeleteFile</code> +<br/>
+<code>CoTaskMemFree</code></td>
+<td valign="bottom"><code>CoTaskMemFree</code></td>
+<td style="font-size: 80%;" valign="bottom"><code>punkForRelease-&gt;Release()</code></td>
+</tr>
+<tr>
+<td><code>TYMED_ISTREAM</code></td>
+<td><code>IStream::Release</code></td>
+<td><code>IStream::Release</code></td>
+<td style="font-size: 80%;"><code>punkForRelease-&gt;Release()</code></td>
+</tr>
+<tr>
+<td><code>TYMED_ISTORAGE</code></td>
+<td><code>IStorage::Release</code></td>
+<td><code>IStorage::Release</code></td>
+<td style="font-size: 80%;"><code>punkForRelease-&gt;Release()</code></td>
+</tr>
+</tbody>
+</table>
+<p>You can see that the model is that a null <code>punkForRelease</code> means that the medium is owned by the code that possesses the <code>STGMEDIUM</code>, whereas a non-null <code>punkForRelease</code> means that the medium is controlled by the <code>punkForRelease</code>. (In the <code>TYMED_FILE</code> case, the logical medium is the file on disk; the file name is always freed. And the distinction is irrelevant for <code>IStream</code> and <code>IStorage</code> cases, since the interface pointer is being released either way.)</p>
+<p>This means that if the <code>punkForRelease</code> is null, you can just treat the medium as if you owned it. In the null <code>punkForRelease</code> case, all <code>ReleaseStgMedium</code> is going to do is free the <code>hGlobal</code>. You can rescue that memory just before it reaches the incinerator and use it for whatever purpose you like. It was going to be destroyed anyway.</p>
+<p>On the other hand, if the <code>punkForRelease</code> is non-null, then you need to copy the memory and modify your copy, because the <code>hGlobal</code> is owned by the <code>punkForRelease</code>.¹</p>
+<p>¹ The non-null <code>punkForRelease</code> case typically occurs when the data object that provided the <code>STGMEDIUM</code> wants to cache the data across multiple calls to <code>GetData</code>. It creates the data once and returns the handle to each caller, but setting the cache as the <code>punkForRelease</code>. (In most cases, the data object acts as its own cache, so it passes itself as the <code>punkForRelease</code>.)</p>
+
+
+</body>

@@ -1,0 +1,27 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What can or should I do with the cursor handle returned by <code>SetCursor</code>?</h1>  <!-- .entry-meta -->
+
+<p>A customer was a bit confused by the return value of the <code>Set­Cursor</code> function. Why does it return the previous cursor? Does the caller own it now? Is the caller responsible for destroying it?</p>
+<p>First we’ll answer the questions: Ownership of the cursor does not change. Whoever was responsible for the cursor before you called <code>Set­Cursor</code> is still responsible for it.</p>
+<p>Okay, with the answers out of the way, let’s take a step back.</p>
+<p>There are two general use cases for <code>Set­Cursor</code>.</p>
+<p>One of them is for setting the cursor in response to a <code>WM_<wbr/>SET­CURSOR</code> message. The system is telling you, “Okay, you’re in charge of the cursor. Pick something.” In this case, you set the cursor, and you don’t care what the previous cursor was, because you’re choosing the cursor now. Any old cursors are losers.</p>
+<p>The other pattern is where you are temporarily changing the cursor (typically to an hourglass), and you want to change it back when you’re done.</p>
+<pre>void DoLongRunningThingOnTheUIThread()
+{
+    HCURSOR oldCursor = SetCursor(hourglass);
+    /* Do stuff that DOES NOT PUMP MESSAGES */
+    SetCursor(oldCursor);
+}
+</pre>
+<p>It is essential that you not pump messages because</p>
+<ol>
+<li>If you pump messages and the user moves the mouse, then the <code>WM_<wbr/>SET­CURSOR</code> message will change the cursor, and your hourglass will be lost. Even worse, you will restore the wrong cursor.</li>
+<li>If you pump messages, then that creates the opportunity for the cursor owner to destroy the old cursor while you still have a handle to it.</li>
+</ol>
+<p>The point is that the code that had set the cursor (the cursor you are temporarily replacing) has to keep the cursor handle valid until it gets a chance to change the cursor to something else. And as long as you don’t pump messages, that code is not going to get another <code>WM_<wbr/>SET­CURSOR</code> message, and therefore won’t get a chance to change the cursor.</p>
+<p>Mind you, locking up the UI thread for a long period of time is not a great idea, so even though it is a common pattern, it’s a sign that your program should probably be moving the expensive work to a background thread.</p>
+<p><b>Bonus reading</b>: <a href="/code/the-effect-of-setcursor-lasts-only-until-the-next-setcursor"> The effect of SetCursor lasts only until the next SetCursor</a>.</p>
+
+
+</body>

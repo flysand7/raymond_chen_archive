@@ -1,0 +1,159 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why doesn't RealGetWindowClass return the real window class for my superclass?</h1>  <!-- .entry-meta -->
+
+<p>
+A customer was reporting that the
+<code>Real­Get­Window­Class</code> function
+was not reporting the base window class of their superclass.
+(Error checking has been elided for expository purposes.)
+</p>
+<pre>
+// Get the static window class window procedure
+WNDCLASS wc;
+GetClassInfo(NULL, TEXT("static"), &amp;wc);
+WNDPROC StaticWndProc = wc.lpfnWndProc;
+// Build our derived class
+wc.lpfnWndProc = AwesomeWndProc;
+wc.hInstance = g_hinst;
+wc.lpszClassName = TEXT("AwesomeWindow");
+RegisterClass(&amp;wc);
+LRESULT CALLBACK AwesomeWndProc(HWND hwnd, UINT uMsg,
+                                WPARAM wParam, LPARAM lParam)
+{
+    TCHAR szClass[128];
+    RealGetWindowClass(hwnd, szClass, 128);
+    ASSERT(strcmp(szClass, TEXT("static")) == 0);
+    switch (uMsg) { ... }
+    return CallWindowProc(StaticWndProc, hwnd, uMsg, wParam, lParam);
+}
+</pre>
+<p>
+The customer found that the assertion fails,
+returning a window class name of “AwesomeWindow”
+instead of “static”.
+“I thought the point of RealGetWindowClass was to dig
+through the superclassing to find the base class.
+But it’s not returning the base class.”
+</p>
+<p>
+That’s right, because you haven’t told it what the base class is yet!
+</p>
+<p>
+“What do you mean I haven’t told it?
+It’s right there at the end of my function:
+<code>CallWindowProc(StaticWndProc)</code>.”
+</p>
+<p>
+Yeah, but that line of code hasn’t executed yet.
+The external behavior of your program is like this:
+</p>
+<pre>
+WNDCLASS wc;
+wc.style = (something);
+wc.lpfnWndProc = AwesomeWndProc;
+wc.cbClsExtra = (something);
+wc.cbWndExtra = (something);
+wc.hInstance = g_hinst;
+wc.hIcon = (something);
+wc.hCursor = (something);
+wc.hbrBackground = (something);
+wc.lpszMenuName = (something);
+wc.lpszClassName = TEXT("AwesomeWindow");
+RegisterClass(&amp;wc);
+LRESULT CALLBACK AwesomeWndProc(HWND hwnd, UINT uMsg,
+                                WPARAM wParam, LPARAM lParam)
+{
+    TCHAR szClass[128];
+    RealGetWindowClass(hwnd, szClass, 128);
+    ASSERT(strcmp(szClass, TEXT("static")) == 0);
+    // ... it doesn't matter what goes here
+    // because it hasn't executed yet ...
+</pre>
+<p>
+The window manager isn’t clairvoyant.
+It doesn’t know that <code>AwesomeWndProc</code> is
+going to do a
+<code>CallWindowProc(StaticWndProc)</code>
+in the future.
+All it knows is that somebody registered a class,
+and then in response to its very first message,
+that class asked, “Hey, you’re so smart, tell me what my base class is.”
+</p>
+<p>
+The window manager says, “Dude, you haven’t shown me any base class yet.
+So I’m just going to say that you are your own base class.”
+</p>
+<p>
+Since anything can go into the “… it doesn’t matter what goes here …”,
+we can demonstrate that the window manager cannot possibly know what
+you’re going to pass to <code>CallWindowProc</code> by rewriting it
+like this:</p>
+<pre>
+// Get the static window class window procedure
+WNDCLASS wc;
+GetClassInfo(NULL, TEXT("static"), &amp;wc);
+WNDPROC StaticWndProc = wc.lpfnWndProc;
+// Build our class
+wc.lpfnWndProc = AwesomeWndProc;
+wc.hInstance = g_hinst;
+wc.lpszClassName = TEXT("AwesomeWindow");
+RegisterClass(&amp;wc);
+LRESULT CALLBACK AwesomeWndProc(HWND hwnd, UINT uMsg,
+                                WPARAM wParam, LPARAM lParam)
+{
+    TCHAR szClass[128];
+    RealGetWindowClass(hwnd, szClass, 128);
+    ASSERT(strcmp(szClass, TEXT("static")) == 0);
+    switch (uMsg) { ... }
+    <font color="blue">// Psych! You thought that when I asked for StaticWndProc
+    // I was going to be a superclass of "static", but in fact
+    // I'm just a regular boring window class.
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);</font>
+}
+</pre>
+<p>
+If you felt really crazy, you could do this:
+</p>
+<pre>
+// Get the button window class procedure
+WNDCLASS wcButton;
+GetClassInfo(NULL, TEXT("button"), &amp;wcButton);
+WNDPROC ButtonWndProc = wcButton.lpfnWndProc;
+// Get the static window class window procedure
+WNDCLASS wc;
+GetClassInfo(NULL, TEXT("static"), &amp;wc);
+WNDPROC StaticWndProc = wc.lpfnWndProc;
+// Build our class
+wc.lpfnWndProc = AwesomeWndProc;
+wc.hInstance = g_hinst;
+wc.lpszClassName = TEXT("AwesomeWindow");
+wc.cbWndExtra = max(wc.cbWndExtra, wcButton.cbWndExtra);
+wc.cbClsExtra = max(wc.cbClsExtra, wcButton.cbClsExtra);
+RegisterClass(&amp;wc);
+LRESULT CALLBACK AwesomeWndProc(HWND hwnd, UINT uMsg,
+                                WPARAM wParam, LPARAM lParam)
+{
+    TCHAR szClass[128];
+    RealGetWindowClass(hwnd, szClass, 128);
+    ASSERT(strcmp(szClass, TEXT("static")) == 0);
+    switch (uMsg) { ... }
+    <font color="blue">// Decide at the last moment what we are.
+    static WNDPROC BaseClass = nullptr;
+    if (BaseClass == nullptr)
+    {
+        BaseClass = rand() % 2 ? StaticWndProc : ButtonWndProc;
+        // Or if you are particularly perverse,
+        // BaseClass = <a href="http://en.wikipedia.org/wiki/Schr%C3%B6dinger's_cat">radioactive_decay_has_occurred</a>() ?
+        //                StaticWndProc : ButtonWndProc;
+    }
+    return CallWindowProc(BaseClass, hwnd, uMsg, wParam, lParam);</font>
+}
+</pre>
+<p>
+Since the code to decide the base class hasn’t run yet,
+the window manager will have to use
+<a href="https://blogs.msdn.com/b/oldnewthing/archive/2011/01/31/10122197.aspx">
+that time machine that the research division has been working on</a>.</p>
+
+
+</body>

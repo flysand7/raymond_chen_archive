@@ -1,0 +1,204 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Git commit-tree parlor tricks, Part 8: I just rebased my branch, but now I realize that I should have merged</h1>  <!-- .entry-meta -->
+
+<p>Suppose you created a feature branch in git and made some changes. Meanwhile, the main branch has also made some changes:</p>
+
+
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20200928_nwarr">↖︎</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td> </td>
+<td>feature</td>
+</tr>
+</tbody>
+</table>
+<p>From a common ancestor commit A, we create a feature branch and make two commits, F1 and F2. Meanwhile, the master branch has received two commits M1 and M2.</p>
+<p>You decide to rebase your topic branch onto the main branch. Many merge conflicts later, you finish with this:</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20200928_nwarr">↖︎</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1′</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2′</td>
+<td> </td>
+<td>feature</td>
+</tr>
+</tbody>
+</table>
+<p>The resulting graph is now linear, with the original commits A1, M1 and M2, followed by new commits F1′ and F2′.</p>
+<p>And then you realize that what you really meant to do was merge, not rebase. Is there a way to convert the rebase into a merge without having to go back and deal with all those merge conflicts again?</p>
+<p>Indeed there is.</p>
+<p>We’ve seen something very similar before, when we <a href="/other/mundane-git-commit-tree-tricks-part-4-changing-a-squash-to-a-merge"> retroactively converted a squash to a merge</a>. This is pretty much the same thing: We have a final result, and we want to manufacture a merge that has the same final result.</p>
+<pre>git commit-tree HEAD^{tree} -p M2 -p F2 -m comment
+</pre>
+<p><b>Note</b>: If using the Windows <code>cmd</code> command prompt, you need to type</p>
+<pre>git commit-tree HEAD^^{tree} -p M2 -p F2 -m comment
+</pre>
+<p>for reasons <a href="https://devblogs.microsoft.com/oldnewthing/20060517-00/?p=31173"> discussed earlier</a>.</p>
+<p>What we did was manufacture a new commit that contains the same results as F2′, but assigned it the parents M2 and F2. The first parent is the branch you want to pretend that you are merging <i>to</i>, and the second parent is the branch you want to pretend that you are merging <i>from</i>.</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2′</td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20200928_nwarr">↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20200928_swarr">↙︎</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>feature</td>
+</tr>
+</tbody>
+</table>
+<p>The output of the <code>git commit-tree</code> command is a commit hash. You can now reset to that commit, and all will be forgiven.</p>
+<pre>git reset --soft 〈hash〉
+</pre>
+<p>Resetting in soft mode preserves all the changes you may have staged. Those staged changes are still valid because the starting point hasn’t changed: The commit you are resetting to has the same tree as the commit you are moving from.</p>
+<p><b>Bonus chatter</b>: If we had swapped the two parent commits, like this:</p>
+<pre>git commit-tree HEAD^{tree} -p F2 -p M2 -m comment
+</pre>
+<p>then the result would have been</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20200928_nwarr">↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20200928_nwarr">↙︎</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td id="p20200928_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2′</td>
+<td> </td>
+<td>feature</td>
+</tr>
+</tbody>
+</table>
+<p><script>
+window.addEventListener("load", function() {
+  var fullFF = getComputedStyle(document.querySelector("body")).fontFamily;
+  var simpleFF = fullFF.replace(/ Emoji/g, "");
+  // break up "style" to prevent wordpress from injecting random junk
+  document.getElementById("p20200928_head").innerHTML =
+`<s` + `tyle>
+body { font-family: ${simpleFF}; }
+.emoji { font-family: ${fullFF}; }
+</s` + `tyle>`;
+}); // wacky comment to prevent wordpress from injecting random junk
+(function() {
+  var svg = {
+    defs: `<svg width="0" height="0">
+ <defs>
+  <marker id="arrowhead" markerWidth="5" markerHeight="5" refX="-2" refY="0"
+    viewBox="-6 -6 12 12" orient="auto">
+    <polygon points="-2,0 -5,5 5,0 -5,-5" fill="black" stroke="black"
+      stroke-dasharray="1 0" />
+  </marker>
+  <path id="larr" d="M20,10 L3,10" stroke="black"
+   marker-end="url(#arrowhead)" />
+  <path id="nwarr" d="M20,20 L3,3" stroke="black"
+   marker-end="url(#arrowhead)" />
+  <path id="swarr" d="M20,2 L3,17" stroke="black"
+   marker-end="url(#arrowhead)" />
+  <path id="swarrd" d="M20,0 L3,17" stroke="black" stroke-dasharray="4 2"
+   marker-end="url(#arrowhead)" />
+ </defs>
+</svg>`,
+    larr: `<svg width="20" height="20"><use href="#larr"/></svg>`,
+    nwarr: `<svg width="20" height="20"><use href="#nwarr"/></svg>`,
+    swarr: `<svg width="20" height="20"><use href="#swarr"/></svg>`
+  };
+  Object.keys(svg).forEach(function (key) {
+    Array.prototype.forEach.call(document.querySelectorAll("#p20200928_" + key),
+      function (e) {
+        e.innerHTML = svg[key];
+      });
+  });
+})();
+</script></p>
+
+
+</body>

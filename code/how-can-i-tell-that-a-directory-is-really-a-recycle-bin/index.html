@@ -1,0 +1,100 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I tell that a directory is really a recycle bin?</h1>  <!-- .entry-meta -->
+
+<p><p>
+Here’s a question inspired by an actual customer question:
+</p>
+<blockquote class="q">
+I need a function that, given a path, tells me whether it is
+a Recycle Bin folder.
+I tried using functions like <code>SHGetSpecialFolderPath</code>
+with <code>CSIDL_BITBUCKET</code>, but that doesn’t work because
+the Recycle Bin is a virtual folder that is the union of the
+Recycle Bins of all drives.
+</blockquote>
+<p>
+The customer noted that they don’t want to hard-code the words
+<code>RECYCLED</code> and <code>RECYCLER</code>,
+which is a good decision because
+the name of the directory
+depends on many things.
+I mentioned earlier that
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/01/31/520225.aspx">
+it depends on the file system</a>.
+It also depends on whether the drive is accessed locally or remotely;
+network-based Recycle Bin folders follow yet another naming scheme.
+It may even depend on what operating system the user is running.
+No, hard-coding the name of the Recycle Bin folders is not a good idea.
+</p>
+<p>
+The <code>SHDESCRIPTIONID</code> structure tells you a little more
+about a shell folder.
+In addition to the “description ID”, it also gives you a <code>CLSID</code>,
+and it is the <code>CLSID</code> that is relevant here.
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;tchar.h&gt;
+#include &lt;stdio.h&gt;</pre></p>
+<p>HRESULT
+GetFolderDescriptionId(LPCWSTR pszPath, SHDESCRIPTIONID *pdid)
+{
+  HRESULT hr;
+  LPITEMIDLIST pidl;
+  if (SUCCEEDED(hr = SHParseDisplayName(pszPath, NULL,
+                                        &amp;pidl, 0, NULL))) {
+    IShellFolder *psf;
+    LPCITEMIDLIST pidlChild;
+    if (SUCCEEDED(hr = SHBindToParent(pidl, IID_IShellFolder,
+                                    (void**)&amp;psf, &amp;pidlChild))) {
+      hr = SHGetDataFromIDList(psf, pidlChild,
+                     SHGDFIL_DESCRIPTIONID, pdid, sizeof(*pdid));
+      psf-&gt;Release();
+    }
+    CoTaskMemFree(pidl);
+  }
+  return hr;
+}</p>
+<p>int __cdecl wmain(int argc, WCHAR **argv)
+{
+  SHDESCRIPTIONID did;
+  if (SUCCEEDED(GetFolderDescriptionId(argv[1], &amp;did)) &amp;&amp;
+      did.clsid == CLSID_RecycleBin) {
+    printf(“is a recycle bin\n”);
+  } else {
+    printf(“is not a recycle bin\n”);
+  }
+  return 0;
+}
+
+<p>
+The <code>GetFolderDescriptionId</code> function
+takes the path to a folder
+and converts it to an <code>ITEMIDLIST</code>
+just so it can call <code>SHGetDataFromIDList</code>
+to obtain the <code>SHDESCRIPTIONID</code>.
+All we care about in this case
+is whether the <code>CLSID</code>
+is the Recycle Bin or not.
+</p>
+<pre>
+C:\&gt; checkrecycle C:\Windows
+is not a recycle bin
+C:\&gt; checkrecycle C:\RECYCLER\S-1-5-21-2127521184-1604012920-1887927527-72713
+is a recycle bin
+</pre>
+<p>
+Of course, now that I told you how to do it, I have to tell
+you that this is not how to do it.
+This is another example of a customer having a problem,
+solving half of it, and
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/03/23/558887.aspx">
+asking for help with the other half</a>,
+unaware that they are approaching the problem from the wrong
+direction.
+Next time, we’ll look at the customer’s <i>real</i> problem.
+</p></p>
+
+
+</body>

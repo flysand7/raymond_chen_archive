@@ -1,0 +1,57 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Does the thread pool have different handle access privileges? Why am I getting ERROR_INVALID_HANDLE?</h1>  <!-- .entry-meta -->
+
+<p>A customer was observing strange behavior in their application with handles and the thread pool. </p>
+<blockquote class="q">
+<p>We have a service that spawns a child process, and under certain conditions, we need to terminate that child process. If I try to terminate the process immediately upon the condition being met, then everything works. But now we want to wait a little while before terminating the child process. To do that, we create a thread pool timer and terminate the process from the thread pool. </p>
+<p>Here’s the code that runs when we detect that the condition is met. No errors are detected except where noted.</p>
+<pre>
+PTP_TIMER timerTask = CreateThreadpoolTimer(
+                            DelayTerminate, 
+                            static_cast&lt;PVOID&gt;(ProcHandle),
+                            &amp;m_CallBackEnviron);
+
+if (NULL == timerTask) { ... }
+
+// Set the timer to fire after a little while.
+
+ulDueTime.QuadPart = (ULONGLONG)(-TimeOutIn100Nanoseconds);
+FileDueTime.dwHighDateTime = ulDueTime.HighPart;
+FileDueTime.dwLowDateTime = ulDueTime.LowPart;
+
+SetThreadpoolTimer(timerTask, &amp;FileDueTime, 0, 0);
+
+// if we set the debugging flag, then the TerminateProcess call succeeds.
+if (DebuggingFlag) {
+  if (!TerminateProcess(ProcHandle, 1)) { ... }
+}
+</pre>
+<p>Here is our callback function: </p>
+<pre>
+VOID
+CALLBACK
+DelayTerminate(
+    PTP_CALLBACK_INSTANCE Instance,
+    PVOID                 Parameter,
+    PTP_TIMER             Timer
+    )
+{
+  // This call to TerminateProcess fails
+  if (!TerminateProcess((HANDLE)Parameter, 1)) {
+    Log(GetLastError()); // ERROR_INVALID_HANDLE
+  }
+  CloseThreadpoolTimer(Timer);
+}
+</pre>
+<p>Does the thread pool thread run with different access privileges from the main thread? </p>
+<p>We verified that the handle is the same in the main thread and in the callback. It is our understanding that <code>Duplicate­Handle</code> is not needed to share handles between threads of a single process. Is there some other special thing that has to be done in order to share the handle between threads? </p>
+</blockquote>
+<p>I asked, “Is it possible that somebody closed the handle in the meantime?” After all, if the problem were due to access, then you would expect the error to be <code>ERROR_ACCESS_DENIED</code>. Since the error is <code>ERROR_INVALID_HANDLE</code>, the most likely reason is, um, an invalid handle. </p>
+<p>A clue that something strange is going on is the <code>static_cast&lt;PVOID&gt;(ProcHandle)</code>. This suggests that <code>ProcHandle</code> is not itself a <code>HANDLE</code>, but is rather some sort of RAII class that manages a process handle and which has an implicit conversion to <code>HANDLE</code>. (Because if <code>ProcHandle</code> were a <code>HANDLE</code>, then you wouldn’t need to cast it to <code>PVOID</code>.) </p>
+<p>The customer eventually wrote back, </p>
+<blockquote class="q">
+<p>Yes, that was it. We found that the handle was being closed before the thread pool tried to use it. Thanks. </p>
+</blockquote>
+
+
+</body>

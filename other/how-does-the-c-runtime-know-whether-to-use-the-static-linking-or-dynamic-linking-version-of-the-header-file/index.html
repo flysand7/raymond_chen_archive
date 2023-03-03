@@ -1,0 +1,131 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How does the C runtime know whether to use the static-linking or dynamic-linking version of the header file?</h1>  <!-- .entry-meta -->
+
+<p>
+In response to a description of what happens when you get
+<code>dll­import</code> wrong,
+nksingh asks,
+“This seems like a problem for the CRT.
+As far as I know,
+VC gives you the option of statically or dynamically linking the CRT.
+But it seems like the headers will have to make a choice to support
+one thing better than the other.
+Conditional compilation would work,
+but then people would have to remember to include a #define somewhere.
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/07/26/679044.aspx#679103">
+Is this dllimport vs. static linking thing something the compiler could figure out on its own if you’re doing Link-time codegen</a>?”
+</p>
+<p>
+Let’s start from the beginning.
+</p>
+<p>
+Yes, this would be a problem for the CRT since it wouldn’t know whether
+to declare the functions as normal static functions or as
+<code>dllimport</code>-style functions,
+and the headers have to make a choice which way to go.
+</p>
+<p>
+And if you look at the headers, you can see that it is indeed done
+via conditional compilation.
+</p>
+<pre>
+...
+_CRTIMP int __cdecl fflush(FILE * _File);
+...
+</pre>
+<p>
+This magic <code>_CRTIMP</code> symbol is defined in
+<code>crtdefs.h</code> like so:
+</p>
+<pre>
+/* Define _CRTIMP */
+#ifndef _CRTIMP
+#ifdef _DLL
+#define _CRTIMP __declspec(dllimport)
+#else  /* _DLL */
+#define _CRTIMP
+#endif  /* _DLL */
+#endif  /* _CRTIMP */
+</pre>
+<p>
+Conditional compilation decides whether <code>_CRTIMP</code>
+expands to <code>__declspec(dllimport)</code> or to nothing at all,
+depending on whether the <code>_DLL</code> symbol is defined.
+</p>
+<p>
+And yet nobody bothers writing <code>#define _DLL</code> before
+they <code>#include &lt;stdio.h&gt;</code>.
+There must be something else going on.
+</p>
+<p>
+In fact, we can run some experiments to see what’s going on.
+</p>
+<pre>
+#ifdef _DLL
+#error "_DLL is defined"
+#else
+#error "_DLL is not defined"
+#endif
+</pre>
+<p>
+Save this as <code>dummy.c</code> and run a few tests.
+</p>
+<pre>
+C:\tests&gt; cl /MT dummy.c
+dummy.c
+dummy.c(4) : fatal error C1189: #error :  "_DLL is not defined"
+C:\tests&gt; cl /MD dummy.c
+dummy.c
+dummy.c(2) : fatal error C1189: #error :  "_DLL is defined"
+</pre>
+<p>
+Well how’s about that.
+The compiler uses the <code>/MT</code> and <code>/MD</code>
+flag to decide whether or not to define the preprocessor symbol
+<code>_DLL</code>, which is the secret signal it passes to the
+<code>crtdef.h</code> header file to control the conditional
+compilation.
+</p>
+<p>
+The compiler has to use this technique
+instead of deferring the decision to link-time code generation
+because it cannot assume that everybody has enabled link-time
+code generation.
+(Indeed, we explicitly did not in our sample command lines.)
+</p>
+<p>
+If link-time code generation were enabled, then is this something
+that could be deferred until that point?
+</p>
+<p>
+In principle yes,
+because link-time code generation in theory could just make the .obj
+file a copy of the source file (and all the header files) and do
+all the actual compiling at link time.
+This is a sort of extreme way of doing it,
+but I guess it could’ve been done that way.
+</p>
+<p>
+On the other hand, it also means that the compiler folks would have
+to come up with a new nonstandard extension that means “This function
+might be a normal static function or it might be a
+<code>dll­import</code>
+function. I haven’t decided yet; I’ll tell you later.”
+</p>
+<p>
+Seeing as how the CRT already has to solve the problem in the case
+where there is no link-time code generation, it doesn’t seem worth
+the effort to add a feature to link-time-code generation
+that you don’t actually need.
+It would be a feature for which the only client is the C runtime
+library itself, for which the C runtime library already requires
+a separate solution when link-time code generation is disabled,
+and for which that separate solution <i>still works when link-time
+code generation is enabled</i>.
+</p>
+<p>
+No engineering purpose is served by
+writing code just for the sake of writing code.</p>
+
+
+</body>

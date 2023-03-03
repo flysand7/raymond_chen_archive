@@ -1,0 +1,37 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What should the state of a moved-from object be?</h1>  <!-- .entry-meta -->
+
+<p>In the C++ language, there is the concept of <i>moving</i>, which is a way of transferring resources from one object to another. The language specifies that a moved-from object is in a legal but indeterminate state. Basically, the object is in a state that can be safely destructed, or operated upon in a way that is not dependent on the previous state (say, assigning a new value).</p>
+<p>From a language-lawyer point of view, any legal state is a valid state for a moved-from object. In fact, it’s even legal for “moving” an object to consist of simply copying it, with no resources being transferred at all.</p>
+<p>What’s left is then a philosophical question of what should, in an ideal world, be the state of a moved-from object.</p>
+<p>There are two leading schools of thought on this subject.</p>
+<p>One is that the implementation should take full advantage of the rules and use the source object as a garbage can into which it can throw anything it doesn’t want. In practice, this philosophy means that move assignments are largely swap operations, where the resources of the source object are assumed by the destination, and the previous resources of the destination are given to the source. Now, if there are simple scalar values, then there are no real “resources” to transfer out, so it’s not really a full swap. But anything that requires destruction has been given to the source object.</p>
+<p>Another school of thought is that the source object should be left in a state where it controls no resources, rather than being left controlling displaced resources from the destination. In the specific case of an object whose entire purpose is to control a single resource (such as a vector or smart pointer), the object is left in an empty state.</p>
+<p>I personally belong to the first camp, where the source object is just a vessel into which the destination object can empty its detritus. An advantage of this is that the resource destruction occurs only once, namely when the source object destructs. (Leaving the object empty would require the destination’s former resources to be destructed explicitly as part of the move operation, and then the empty source object will be destructed when the source object is destructed.)</p>
+<p>The problem is that people tend to expect the source object to be empty, especially when the object manages a single resource.</p>
+<p>For example, if you are making sure to <a href="/code/destructing-outside-the-lock-when-removing-items-from-c-standard-containers" title="Destructing"> destruct objects outside an internal lock</a>, you are counting on the move-assignment leaving the source empty so that you can erase it from the collection without triggering a call to external code.</p>
+<p>As consolation, you should provide a <code>swap</code> method and a free <code>swap</code> method that is discoverable via argument-dependent lookup. That way, people who really want a swap have a way to do it.</p>
+<p><b>Bonus chatter</b>: Regardless of which school of thought you subscribe to, you need to be careful to leave the source object in an internally-consistent state. For example, consider the class</p>
+<pre>struct totaled_ints
+{
+  std::vector&lt;int&gt; ints;
+  int total = 0;
+
+  void append(int value) {
+    ints.push_back(value);
+    total += value;
+  }
+};
+
+totaled_ints v;
+v.append(1);
+v.append(2);
+totaled_ints v2 = std::move(v); // oops
+</pre>
+<p>In this class, the <code>total</code> is a running total of the integers in the <code>ints</code> vector. When we use it as the source of a move-constructor, the default move constructor will move the <code>ints</code> vector and copy the <code>total</code>. That’s fine for the newly-constructed <code>t2</code> object: Its integers are <code>1, 2</code> and its total is 3.</p>
+<p>But that’s bad news for the source object.</p>
+<p>The source object <code>v</code> will almost certainly be left with an empty <code>ints</code>, but the <code>total</code> will remain 3.</p>
+<p>The source object was not left in a valid state. This can cause problems if the object is destructed or reused, because the destructor or <code>reset()</code> method will try to clean up an object that is in an inconsistent state, which could result in strange bugs. For example, if our <code>totaled_ints</code> sends a warning when the total gets too large and recalls the warning when the total drops below the danger level, then this inconsistent state can lead to warnings that are never recalled, or failure to raise warnings when we should.</p>
+
+
+</body>

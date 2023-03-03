@@ -1,0 +1,201 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On the perils of holding a lock across a coroutine suspension point, part 1: The set-up</h1>  <!-- .entry-meta -->
+
+<p>Say you want to perform a bunch of asynchronous operations involving some object state, but also want to make sure that no other tasks access that object state at the same time. For synchronous code, you would use a traditional synchronization object like a mutex or critical section:</p>
+<pre>void MyObject::RunOne()
+{
+  std::lock_guard guard(m_mutex);
+
+  if (!m_list.empty()) {
+    auto&amp; item = m_list.front();
+    item.Run();
+    item.Cleanup();
+    m_list.pop_front();
+  }
+}
+</pre>
+<p>The mutex ensures that only one attempt to process an item from the list is active at a time, and also to prevent any other code from mutating the <code>m_list</code> while we are using it.</p>
+<p>But say that some of these operations are asynchronous. For simplicity, I’m eliding the traditional <code>auto lifetime = get_strong();</code> that is used to prevent the object from being destructed while awaiting. (Let’s say that the rule is that you cannot release your reference to <code>MyObject</code> until <code>Run­One­Async</code> completes.)</p>
+<pre>IAsyncAction MyObject::RunOneAsync()
+{
+  std::lock_guard guard(m_mutex);
+
+  if (!m_list.empty()) {
+    auto&amp; item = m_list.front();
+    <span style="color: blue;">co_await item.RunAsync();</span>
+    item.Cleanup();
+    m_list.pop_front();
+  }
+}
+</pre>
+<p>Is this okay?</p>
+<p>One argument I’ve heard is that this is not okay because the <code>co_await</code> causes the original <code>Run­One­Async</code> call to to return an <code>IAsync­Action</code> to its caller, and as part of the act of returning the <code>IAsync­Action</code>, the lock is released.</p>
+<p>This argument is incorrect. The lock remains held while the coroutine is suspended. After all, if objects were destructed at suspension, then you wouldn’t be able to carry anything across a suspension point!</p>
+<pre>IAsyncAction WidgetManager::WhateverAsync()
+{
+  auto lifetime = get_strong();
+  std::string name = m_widget.GetName();
+  m_widget.SetName("temporary");
+  co_await m_widget.SomethingAsync();
+  m_widget.SetName(name); // certainly "name" is still valid, right?
+  // certainly "lifetime" is still holding our object alive, right?
+}
+</pre>
+<p>Don’t worry. <code>name</code> and <code>lifetime</code> are still valid across the suspension because the formal parameters and local variables are kept in the coroutine frame, which remains alive while the coroutine is suspended. Indeed, the <code>lifetime</code> relies upon it!</p>
+<p>However, it’s the liveness of the lock guard that is the issue here.</p>
+<p>Since the lock guard hasn’t been destructed, the mutex remains locked while the coroutine is suspended.</p>
+<p>Now things get exciting.</p>
+<p>Suppose we have another coroutine that wants the lock. Heck, it could very well be another call to <code>Run­One­Async</code>!</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: left;">
+<tbody>
+<tr>
+<td colspan="2" style="border: solid 1px black; background-color: white; color: black; text-align: center;"><code>RunOneAsync</code> #1</td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: white; color: black; width: 18em;">construct lock_guard</td>
+<td> </td>
+<td><code>m_mutex.lock()</code></td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: 1px black; border-style: none solid; background-color: white; color: black;"><code>auto&amp; item = m_list.front();</code></td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; background-color: white; color: black;"><code>co_await item.RunAsync();</code></td>
+<td>→</td>
+<td>Suspended</td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; background-color: white; color: black; text-align: center;"><code>RunOneAsync</code> #1 returns <code>IAsyncAction</code></td>
+</tr>
+<tr>
+<td colspan="2" style="text-align: center;">↓</td>
+</tr>
+<tr>
+<td colspan="2" style="text-align: center;">Thread available to do other work</td>
+</tr>
+<tr>
+<td colspan="2" style="text-align: center;">↓</td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; background-color: white; color: black; text-align: center;"><code>RunOneAsync</code> #2</td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; background-color: white; color: black;">construct lock_guard</td>
+<td> </td>
+<td><code>m_mutex.lock()</code></td>
+</tr>
+</tbody>
+</table>
+<p>Now we’re in trouble.</p>
+<p>If the <code>m_mutex</code> supports recursive acquisition, then what happens is that the second call to <code>Run­One­Async</code> successfully acquires the mutex (recursive acquisition), and execution continues:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="width: 2em;"> </td>
+<td><code>RunOneAsync</code> #2 continues</td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: white; color: black; width: 18em;"><code>auto&amp; item = m_list.front();</code></td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; background-color: white; color: black;"><code>co_await item.RunAsync();</code></td>
+<td>→</td>
+<td align="left">Suspended</td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; background-color: white; color: black; text-align: center;"><code>RunOneAsync</code> #2 returns <code>IAsyncAction</code></td>
+</tr>
+<tr>
+<td colspan="2" style="text-align: center;">↓</td>
+</tr>
+<tr>
+<td colspan="2" style="text-align: center;">Thread available to do other work</td>
+</tr>
+</tbody>
+</table>
+<p>We are running the front element twice! I bet it’s not expecting that.</p>
+<p>The mutex failed at its intended purpose of serializing calls to <code>Run­One­Async</code>.</p>
+<p>Okay, but wait, the disaster is still unfolding.</p>
+<p>Eventually, the two calls will complete, in some order. Let’s say that #1 finishes first. Execution continues:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: left;">
+<tbody>
+<tr>
+<td colspan="2" style="border: solid 1px black; background-color: white; color: black; text-align: center;"><code>RunOneAsync</code> #1 resumes</td>
+<td>←</td>
+<td style="text-align: left;"><code>RunAsync</code> #1 completes</td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: white; color: black; width: 18em;"><code>item.Cleanup();</code></td>
+<td> </td>
+<td>Cleaning up while <code>RunAsync</code> #2 still outstanding</td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: 1px black; border-style: none solid; background-color: white; color: black;"><code>m_list.pop_front();</code></td>
+<td> </td>
+<td>Destructing head item while #2 is still using it</td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; background-color: white; color: black;">destruct lock_guard</td>
+<td> </td>
+<td><code>m_mutex.unlock()</code></td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; background-color: white; color: black; text-align: center;"><code>RunOneAsync</code> #1 completes</td>
+</tr>
+<tr>
+<td colspan="2" style="text-align: center;">↓</td>
+</tr>
+<tr>
+<td colspan="2" style="text-align: center;">Thread available to do other work</td>
+</tr>
+<tr>
+<td colspan="2" style="text-align: center;">↓</td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; background-color: white; color: black; text-align: center;"><code>RunOneAsync</code> #2 resumes</td>
+<td>←</td>
+<td><code>RunAsync</code> #2 completes</td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: white; color: black; width: 18em;"><code>item.Cleanup();</code></td>
+<td> </td>
+<td>Cleaning up already-destructed object</td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: 1px black; border-style: none solid; background-color: white; color: black;"><code>m_list.pop_front();</code></td>
+<td> </td>
+<td>Popping an item that was never run</td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; background-color: white; color: black;">destruct lock_guard</td>
+<td> </td>
+<td><code>m_mutex.unlock()</code></td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; background-color: white; color: black; text-align: center;"><code>RunOneAsync</code> #2 completes</td>
+</tr>
+</tbody>
+</table>
+<p>When the first <code>RunAsync</code> completes, the first <code>Run­One­Async</code> resumes, and it proceeds to clean up the item that finished running, and then remove the head item from the list, thereby destructing it. All this happens even though the second <code>Run­One­Async</code> is still using it.</p>
+<p>The first <code>Run­One­Async</code> completes, having created a right mess of things but escaping unharmed.</p>
+<p>When the second <code>Run­Async</code> completes, the second <code>Run­One­Async</code> resumes, and it tries to clean up the item that has already been destructed. You get sent this crash dump and you scratch your head because you’re looking at the code and you see that mutex right there, and you’re thinking, “How can this thing get prematurely destructed? It’s protected by a mutex!”</p>
+<p>Now, maybe the <code>Cleanup</code> method happens by sheer luck not to crash. It “only” corrupts some memory. That just makes the debugging even harder.</p>
+<p>The second <code>Run­One­Async</code> then pops the front item from the list, thinking it’s popping the item that it just finished running, when in fact it’s popping an item on the list <i>that was never run at all</i>.</p>
+<p>Now the bug is that the program keeps running, but sometimes, items put onto the work list are thrown away without ever being run or cleaned up. Meanwhile, some items are run twice. This bug doesn’t come with crash dumps. It’s just end-user reports from the field that your program isn’t doing its job.</p>
+<p>Basically, what’s going on is that thanks to coroutines sharing a thread, your recursive mutex is not doing its job of ensuring mutual exclusion. Since everything is happening on a single thread, the recursive mutex always says, “Oh, I remember you. Come on in!”</p>
+<p>Next time, we’ll look at what happens if the mutex does not support recursive acquisition.</p>
+
+
+</body>

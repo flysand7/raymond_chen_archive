@@ -1,0 +1,224 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Sometimes perfect forwarding can be too perfect: Lazy conversion is lazy</h1>  <!-- .entry-meta -->
+
+<p>C++11 introduced the concept of <i>perfect forwarding</i>, which uses <span style="text-decoration: line-through;"><i>universal references</i></span> <i>forwarding references</i> to capture the value category of a passed-in parameter, so that it can be passed to another function as the same kind of reference.</p>
+<p>Forwarding references are used in many places, but the trap I’m looking at today is when the forwarding reference causes a conversion to be delayed to a point where it is no longer possible.</p>
+<pre>class Base
+{
+    /* ... */
+};
+
+class BaseAcceptor
+{
+public:
+    BaseAcceptor(Base* base);
+    /* ... */
+};
+
+class Derived : Base
+{
+    void DoSomething()
+    {
+        auto p1 = std::unique_ptr&lt;BaseAcceptor&gt;(new BaseAcceptor(this));
+        auto p2 = std::shared_ptr&lt;BaseAcceptor&gt;(new BaseAcceptor(this));
+
+        std::vector&lt;BaseAcceptor&gt; v;
+        v.push_back(BaseAcceptor(this));
+    }
+
+    /* ... */
+};
+</pre>
+<p>But then you realize that you should be using the <code>make_</code> functions, so that you can <a href="https://isocpp.org/blog/2019/06/quick-q-differences-between-stdmake-unique-and-stdunique-ptr-with-new"> avoid having to write the <code>new</code> keyword</a>, and you can use the <code>emplace</code> alternative to construct the vector element in place.</p>
+<pre>class Derived : Base
+{
+    void DoSomething()
+    {
+        auto p1 = std::make_unique&lt;BaseAcceptor&gt;(this);
+        auto p2 = std::make_shared&lt;BaseAcceptor&gt;(this);
+
+        std::vector&lt;BaseAcceptor&gt; v;
+        v.emplace_back(this);
+    }
+};
+</pre>
+<p>And then everything explodes into tiny little pieces.</p>
+<pre style="white-space: pre-wrap;">// clang
+
+In file included from memory:76:
+unique_ptr.h:1072:38: error: cannot cast 'Derived' to its private base class 'Base'
+    { return unique_ptr&lt;_Tp&gt;(new _Tp(std::forward&lt;_Args&gt;(__args)...)); }
+                                     ^
+test.cpp:19:24: note: in instantiation of function template specialization 'std::make_unique&lt;BaseAcceptor, Derived *&gt;' requested here
+        auto p1 = std::make_unique&lt;BaseAcceptor&gt;(this);
+                       ^
+test.cpp:14:17: note: implicitly declared private here
+class Derived : Base
+                ^~~~
+
+In file included from vector:62:
+stl_construct.h:119:29: error: cannot cast 'Derived' to its private base class 'Base'
+      ::new((void*)__p) _Tp(std::forward&lt;_Args&gt;(__args)...);
+                            ^
+alloc_traits.h:635:9: note: in instantiation of function template specialization 'std::_Construct&lt;BaseAcceptor, Derived *&gt;' requested here
+        { std::_Construct(__p, std::forward&lt;_Args&gt;(__args)...); }
+               ^
+shared_ptr_base.h:604:30: note: in instantiation of function template specialization 'std::allocator_traits&lt;std::allocator&lt;void&gt;&gt;::construct&lt;BaseAcceptor, Derived *&gt;' requested here
+          allocator_traits&lt;_Alloc&gt;::construct(__a, _M_ptr(),
+                                    ^
+shared_ptr_base.h:972:6: note: in instantiation of function template specialization 'std::_Sp_counted_ptr_inplace&lt;BaseAcceptor, std::allocator&lt;void&gt;, __gnu_cxx::_S_atomic&gt;::_Sp_counted_ptr_inplace&lt;Derived *&gt;' requested here
+            _Sp_cp_type(__a._M_a, std::forward&lt;_Args&gt;(__args)...);
+            ^
+shared_ptr_base.h:1712:14: note: in instantiation of function template specialization 'std::__shared_count&lt;__gnu_cxx::_S_atomic&gt;::__shared_count&lt;BaseAcceptor, std::allocator&lt;void&gt;, Derived *&gt;' requested here
+        : _M_ptr(), _M_refcount(_M_ptr, __tag, std::forward&lt;_Args&gt;(__args)...)
+                    ^
+shared_ptr.h:464:4: note: in instantiation of function template specialization 'std::__shared_ptr&lt;BaseAcceptor, __gnu_cxx::_S_atomic&gt;::__shared_ptr&lt;std::allocator&lt;void&gt;, Derived *&gt;' requested here
+        : __shared_ptr&lt;_Tp&gt;(__tag, std::forward&lt;_Args&gt;(__args)...)
+          ^
+shared_ptr.h:1009:14: note: in instantiation of function template specialization 'std::shared_ptr&lt;BaseAcceptor&gt;::shared_ptr&lt;std::allocator&lt;void&gt;, Derived *&gt;' requested here
+      return shared_ptr&lt;_Tp&gt;(_Sp_alloc_shared_tag&lt;_Alloc&gt;{__a},
+             ^
+test.cpp:20:24: note: in instantiation of function template specialization 'std::make_shared&lt;BaseAcceptor, Derived *&gt;' requested here
+        auto p2 = std::make_shared&lt;BaseAcceptor&gt;(this);
+                       ^
+test.cpp:14:17: note: implicitly declared private here
+class Derived : Base
+                ^~~~
+
+In file included from vector:61:
+In file included from allocator.h:46:
+In file included from c++allocator.h:33:
+new_allocator.h:182:27: error: cannot cast 'Derived' to its private base class 'Base'
+        { ::new((void *)__p) _Up(std::forward&lt;_Args&gt;(__args)...); }
+                                 ^
+alloc_traits.h:516:8: note: in instantiation of function template specialization 'std::__new_allocator&lt;BaseAcceptor&gt;::construct&lt;BaseAcceptor, Derived *&gt;' requested here
+          __a.construct(__p, std::forward&lt;_Args&gt;(__args)...);
+              ^
+vector.tcc:117:21: note: in instantiation of function template specialization 'std::allocator_traits&lt;std::allocator&lt;BaseAcceptor&gt;&gt;::construct&lt;BaseAcceptor, Derived *&gt;' requested here
+            _Alloc_traits::construct(this-&gt;_M_impl, this-&gt;_M_impl._M_finish,
+                           ^
+test.cpp:23:11: note: in instantiation of function template specialization 'std::vector&lt;BaseAcceptor&gt;::emplace_back&lt;Derived *&gt;' requested here
+        v.emplace_back(this);
+          ^
+test.cpp:14:17: note: implicitly declared private here
+class Derived : Base
+                ^~~~
+
+// gcc
+In file included from memory:76,
+                 from test.cpp:2:
+test.cpp std::make_unique(_Args&amp;&amp; ...) [with _Tp = BaseAcceptor; _Args = {Derived*}; __detail::__unique_ptr_t&lt;_Tp&gt; = __detail::__unique_ptr_t&lt;BaseAcceptor&gt;]':
+test.cpp:19:49:   required from here
+unique_ptr.h:1072:30: error: 'Base' is an inaccessible base of 'Derived'
+ 1072 |     { return unique_ptr&lt;_Tp&gt;(new _Tp(std::forward&lt;_Args&gt;(__args)...)); }
+      |                              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from c++allocator.h:33,
+                 from allocator.h:46,
+                 from vector:61,
+                 from test.cpp:1:
+new_allocator.h: In instantiation of 'void std::__new_allocator&lt;_Tp&gt;::construct(_Up*, _Args&amp;&amp; ...) [with _Up = BaseAcceptor; _Args = {Derived*}; _Tp = BaseAcceptor]':
+alloc_traits.h:516:17:   required from 'static void std::allocator_traits&lt;std::allocator&lt;_Tp1&gt; &gt;::construct(allocator_type&amp;, _Up*, _Args&amp;&amp; ...) [with _Up = BaseAcceptor; _Args = {Derived*}; _Tp = BaseAcceptor; allocator_type = std::allocator&lt;BaseAcceptor&gt;]'
+vector.tcc:117:30:   required from 'std::vector&lt;_Tp, _Alloc&gt;::reference std::vector&lt;_Tp, _Alloc&gt;::emplace_back(_Args&amp;&amp; ...) [with _Args = {Derived*}; _Tp = BaseAcceptor; _Alloc = std::allocator&lt;BaseAcceptor&gt;; reference = BaseAcceptor&amp;]'
+required from here
+new_allocator.h:182:11: error: 'Base' is an inaccessible base of 'Derived'
+  182 |         { ::new((void *)__p) _Up(std::forward&lt;_Args&gt;(__args)...); }
+      |           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from vector:62:
+stl_construct.h: In instantiation of 'void std::_Construct(_Tp*, _Args&amp;&amp; ...) [with _Tp = BaseAcceptor; _Args = {Derived*}]':
+alloc_traits.h:635:19:   required from 'static void std::allocator_traits&lt;std::allocator&lt;void&gt; &gt;::construct(allocator_type&amp;, _Up*, _Args&amp;&amp; ...) [with _Up = BaseAcceptor; _Args = {Derived*}; allocator_type = std::allocator&lt;void&gt;]'
+shared_ptr_base.h:604:39:   required from 'std::_Sp_counted_ptr_inplace&lt;_Tp, _Alloc, _Lp&gt;::_Sp_counted_ptr_inplace(_Alloc, _Args&amp;&amp; ...) [with _Args = {Derived*}; _Tp = BaseAcceptor; _Alloc = std::allocator&lt;void&gt;; __gnu_cxx::_Lock_policy _Lp = __gnu_cxx::_S_atomic]'
+shared_ptr_base.h:971:16:   required from 'std::__shared_count&lt;_Lp&gt;::__shared_count(_Tp*&amp;, std::_Sp_alloc_shared_tag&lt;_Alloc&gt;, _Args&amp;&amp; ...) [with _Tp = BaseAcceptor; _Alloc = std::allocator&lt;void&gt;; _Args = {Derived*}; __gnu_cxx::_Lock_policy _Lp = __gnu_cxx::_S_atomic]'
+shared_ptr_base.h:1712:14:   required from 'std::__shared_ptr&lt;_Tp, _Lp&gt;::__shared_ptr(std::_Sp_alloc_shared_tag&lt;_Tp&gt;, _Args&amp;&amp; ...) [with _Alloc = std::allocator&lt;void&gt;; _Args = {Derived*}; _Tp = BaseAcceptor; __gnu_cxx::_Lock_policy _Lp = __gnu_cxx::_S_atomic]'
+shared_ptr.h:464:59:   required from 'std::shared_ptr&lt;_Tp&gt;::shared_ptr(std::_Sp_alloc_shared_tag&lt;_Tp&gt;, _Args&amp;&amp; ...) [with _Alloc = std::allocator&lt;void&gt;; _Args = {Derived*}; _Tp = BaseAcceptor]'
+shared_ptr.h:1009:14:   required from 'std::shared_ptr&lt;typename std::enable_if&lt;(! std::is_array&lt; &lt;template-parameter-1-1&gt; &gt;::value), _Tp&gt;::type&gt; std::make_shared(_Args&amp;&amp; ...) [with _Tp = BaseAcceptor; _Args = {Derived*}; typename enable_if&lt;(! is_array&lt; &lt;template-parameter-1-1&gt; &gt;::value), _Tp&gt;::type = BaseAcceptor]'
+test.cpp:20:49:   required from here
+stl_construct.h:119:7: error: 'Base' is an inaccessible base of 'Derived'
+  119 |       ::new((void*)__p) _Tp(std::forward&lt;_Args&gt;(__args)...);
+      |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// msvc
+memory(1630): error C2243: 'type cast': conversion from 'Derived *const ' to 'Base *' exists, but is inaccessible
+test.cpp(19): note: see reference to function template instantiation 'std::unique_ptr&lt;BaseAcceptor,std::default_delete&lt;_Ty&gt;&gt; std::make_unique&lt;BaseAcceptor,Derived*const &gt;(Derived *const &amp;&amp;)' being compiled
+        with
+        [
+            _Ty=BaseAcceptor
+        ]
+
+vector(1604): warning C4530: C++ exception handler used, but unwind semantics are not enabled. Specify /EHsc
+vector(1601): note: while compiling class template member function 'void std::vector&lt;BaseAcceptor,std::allocator&lt;_Ty&gt;&gt;::_Reallocate(unsigned __int64)'
+        with
+        [
+            _Ty=BaseAcceptor
+        ]
+vector(1631): note: see reference to function template instantiation 'void std::vector&lt;BaseAcceptor,std::allocator&lt;_Ty&gt;&gt;::_Reallocate(unsigned __int64)' being compiled
+        with
+        [
+            _Ty=BaseAcceptor
+        ]
+test.cpp(22): note: see reference to class template instantiation 'std::vector&lt;BaseAcceptor,std::allocator&lt;_Ty&gt;&gt;' being compiled
+        with
+        [
+            _Ty=BaseAcceptor
+        ]
+
+memory(901): error C2243: 'type cast': conversion from 'Derived *const ' to 'Base *' exists, but is inaccessible
+memory(971): note: see reference to function template instantiation 'std::_Ref_count_obj&lt;_Ty&gt;::_Ref_count_obj&lt;Derived*const &gt;(Derived *const &amp;&amp;)' being compiled
+        with
+        [
+            _Ty=BaseAcceptor
+        ]
+memory(971): note: see reference to function template instantiation 'std::_Ref_count_obj&lt;_Ty&gt;::_Ref_count_obj&lt;Derived*const &gt;(Derived *const &amp;&amp;)' being compiled
+        with
+        [
+            _Ty=BaseAcceptor
+        ]
+test.cpp(20): note: see reference to function template instantiation 'std::shared_ptr&lt;BaseAcceptor&gt; std::make_shared&lt;BaseAcceptor,Derived*const &gt;(Derived *const &amp;&amp;)' being compiled
+</pre>
+<p>What does all this mean?</p>
+<p>The error boils down to this:</p>
+<pre style="white-space: pre-wrap;">// clang
+error: cannot cast 'Derived' to its private base class 'Base'
+
+// gcc
+error: 'Base' is an inaccessible base of 'Derived'
+
+// msvc
+error C2243: 'type cast': conversion from 'Derived *const ' to 'Base *' exists, but is inaccessible
+</pre>
+<p>When <code>Derived::<wbr/>DoSomething</code> constructs the <code>BaseAcceptor</code> class, it passes its own <code>this</code> as the constructor parameter. Inside that class’s own method, <code>this</code> gives you a <code>Derived*</code>.¹ However, the constructor of <code>BaseAcceptor</code> takes a <code>Base*</code>. Fortunately, there is a conversion from <code>Derived*</code> to <code>Base*</code> available to <code>Derived</code>, and the compiler performs that conversion in order to construct the <code>BaseAcceptor</code>.</p>
+<p>On the other hand, if you use <code>make_<wbr/>unique</code>, <code>make_<wbr/>shared</code>, <code>emplace_*</code>, or other functions that perfect-forward their parameters, the parameter is passed as a <code>Derived*</code>. That <code>Derived*</code> is then forwarded perfectly to the <code>BaseAcceptor</code> constructor, and the compiler realizes, “Oh, wait, <code>BaseAcceptor</code>‘s constructor doesn’t accept a <code>Derived*</code>. Let me see if I can convert it.” And it can’t because the <code>Derived*</code>-to-Base* conversion is not available to <code>make_<wbr/>unique</code>.</p>
+<p>The conversion is not available because <code>Base</code> is a private base class of <code>Derived</code>. Only <code>Derived</code> itself is allowed to access the <code>Base</code> portion of <code>Derived</code>, and that includes producing a pointer to it.</p>
+<p>The goal of perfect forwarding is to keep all the parameters in their original form, so that they reach their destination in their original form, without triggering a decay or copy or conversion or any other nonsense along the way.</p>
+<p>That’s great, but it also means that the conversion is deferred. What leaves the friendly confines of the <code>Derived</code> class is a <code>Derived*</code>, and when it is finally used to construct a <code>BaseAcceptor</code>, the desired conversion is no longer available.</p>
+<p>Okay, now that we understand the problem, how do we fix it?</p>
+<p>One way is to force the conversion while still inside the <code>Derived</code> class. That way, the conversion happens while it is still accessible.</p>
+<pre>class Derived : Base
+{
+    void DoSomething()
+    {
+        auto p1 = std::make_unique&lt;BaseAcceptor&gt;(<span style="color: #08f;">static_cast&lt;Base*&gt;</span>(this));
+        auto p2 = std::make_shared&lt;BaseAcceptor&gt;(<span style="color: #08f;">static_cast&lt;Base*&gt;</span>(this));
+
+        std::vector&lt;BaseAcceptor&gt; v;
+        v.emplace_back(<span style="color: #08f;">static_cast&lt;Base*&gt;</span>(this));
+    }
+};
+</pre>
+<p>Another way is to make the conversion public.</p>
+<pre>class Derived : <span style="color: #08f;">public</span> Base
+{
+    void DoSomething()
+    {
+        auto p1 = std::make_unique&lt;BaseAcceptor&gt;(this);
+        auto p2 = std::make_shared&lt;BaseAcceptor&gt;(this);
+
+        std::vector&lt;BaseAcceptor&gt; v;
+        v.emplace_back(this);
+    }
+};
+</pre>
+<p>In this specific case, the private-ness of the <code>Base</code> class was an accident, and it was intended to be public all along. Adding the <code>public</code> keyword was the correct solution.</p>
+<p>¹ I’m ignoring cv qualifiers here. You can put down your pitchforks.</p>
+
+
+</body>

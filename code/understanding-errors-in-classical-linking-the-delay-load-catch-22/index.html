@@ -1,0 +1,102 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Understanding errors in classical linking: The delay-load catch-22</h1>  <!-- .entry-meta -->
+
+<p><p>
+Wrapping up our week of
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/07/10382714.aspx">
+understanding the classical model for linking</a>,
+we’ll put together all the little pieces we’ve learned this week
+to puzzle out a linker problem:
+The delay-load catch-22.
+</p>
+<p>
+You do some code cleanup,
+then rebuild your project, and you get
+</p>
+<pre>
+<a href="http://msdn.microsoft.com/en-us/library/a5x38f99.aspx">LNK4199</a>: /DELAYLOAD:SHLWAPI ignored; no imports found from SHLWAPI
+</pre>
+<p>
+What does this error mean?
+</p>
+<p>
+It means that you passed a DLL via the
+<a href="http://msdn.microsoft.com/en-us/library/yx9zd12s.aspx">
+<code>/DELAYLOAD</code> command line switch</a>
+which your program doesn’t actually use,
+so the linker is saying,
+“Um, you said to treat this DLL special, but I don’t see that DLL.”
+</p>
+<p>
+“Oh, right,” you say to yourself.
+“I got rid of a call to
+<code>Hash­String</code>,
+and that was probably the last remaining function
+with a dependency on
+<code>SHLWAPI.DLL</code>.
+The linker is complaining that I asked to delay-load a DLL
+that I wasn’t even loading!”
+</p>
+<p>
+You fix the problem by deleting
+<code>SHLWAPI.DLL</code> from the <code>/DELAYLOAD</code>
+list,
+and removing
+<code>SHLWAPI.LIB</code> from the list of import libararies.
+And then you rebuild, and now you get
+</p>
+<pre>
+<a href="http://msdn.microsoft.com/en-us/library/799kze2z.aspx">LNK2019</a>: unresolved external ‘__imp__HashData’ referenced in function ‘HashString’
+</pre>
+<p>
+“Wait a second, I stopped calling that function.
+What’s going on!”
+</p>
+<p>
+What’s going on is that the
+<code>Hash­String</code> function got
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/08/10383017.aspx">
+taken along for the ride</a>
+by another function.
+The order of operations in the linker is
+</p>
+<ul>
+<li>Perform classical linking
+<li>Perform nonclassical post-processing
+    <ul>
+<li>Remove unused functions (if requested)
+    <li>Apply <code>DELAYLOAD</code> (if requested)
+    </li></li></ul>
+</li></li></ul>
+<p>
+The linker doesn’t have a crystal ball and say,
+“I see that in the future, the ‘remove unused functions’ step
+is going to delete this function, so I can throw it away right now
+during the classical linking phase.”
+</p>
+<p>
+You have a few solutions available to you.
+</p>
+<p>
+If you can modify the library, you can
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/10/10383642.aspx">
+split the <code>Hash­String</code>
+function out</a>
+so that it doesn’t come along for the ride.
+</p>
+<p>
+If you cannot modify the library,
+then you’ll have to
+use the <code>/IGNORE</code> flag to explicitly ignore the warning.
+</p>
+<p>
+<b>Exercise</b>:
+Another option is to leave <code>SHLWAPI.LIB</code>
+in the list of import libraries,
+but remove it from the <code>DELAYLOAD</code> list.
+Why is this a dangerous option?
+What can you do to make it less dangerous?
+</p></p>
+
+
+</body>

@@ -1,0 +1,99 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the recursively-acquired non-recursive lock, and how to avoid the unintentional reentrancy</h1>  <!-- .entry-meta -->
+
+<p>A customer encountered a deadlock due to unexpected reentrancy, and they were looking for guidance in fixing it.</p>
+<p>Here’s the code in question:</p>
+<pre>struct WidgetTracker : IWidgetChangeNotificationSink
+{
+    /* other stuff not relevant here */
+
+    /// IWidgetChangeNotificationSink
+    STDMETHODIMP OnCurrentWidgetChanged();
+
+private:
+    WRL::ComPtr&lt;IWidget&gt; m_currentWidget;
+    std::mutex m_mutex;
+};
+
+HRESULT WidgetTracker::OnCurrentWidgetChanged()
+{
+    auto guard = std::lock_guard(m_mutex);
+    RETURN_IF_FAILED(GetCurrentWidget(&amp;m_currentWidget));
+    return S_OK;
+}
+</pre>
+<p>The idea here is that the <code>WidgetTracker</code> listens for notifications that the current widget has changed, and when it receives that notification, it updates its local cache to hold the new current widget.</p>
+<p>The hang occurred with this stack:</p>
+<pre>ntdll!ZwWaitForAlertByThreadId
+ntdll!RtlAcquireSRWLockExclusive
+contoso!WidgetTracker::OnCurrentWidgetChanged
+rpcrt4!Invoke
+rpcrt4!Ndr64StubWorker
+rpcrt4!NdrStubCall3
+combase!CStdStubBuffer_Invoke
+combase!InvokeStubWithExceptionPolicyAndTracing::__l6::&lt;lambda_...&gt;::operator()
+combase!ObjectMethodExceptionHandlingAction&lt;&lt;lambda_...&gt; &gt;
+combase!InvokeStubWithExceptionPolicyAndTracing
+combase!DefaultStubInvoke
+combase!SyncServerCall::StubInvoke
+combase!StubInvoke
+combase!ServerCall::ContextInvoke
+combase!DefaultInvokeInApartment
+combase!ReentrantSTAInvokeInApartment
+combase!ComInvokeWithLockAndIPID
+combase!ThreadDispatch
+combase!ThreadWndProc
+user32!UserCallWinProcCheckWow
+user32!DispatchMessageWorker
+combase!CCliModalLoop::MyDispatchMessage
+combase!CCliModalLoop::PeekRPCAndDDEMessage
+combase!CCliModalLoop::BlockFn
+combase!ModalLoop
+combase!ThreadSendReceive
+combase!CSyncClientCall::SwitchAptAndDispatchCall
+combase!CSyncClientCall::SendReceive2
+combase!SyncClientCallRetryContext::SendReceiveWithRetry
+combase!CSyncClientCall::SendReceiveInRetryContext
+combase!ClassicSTAThreadSendReceive
+combase!CSyncClientCall::SendReceive
+combase!CClientChannel::SendReceive
+combase!NdrExtpProxySendReceive
+rpcrt4!Ndr64pSendReceive
+rpcrt4!NdrpClientCall3
+combase!ObjectStublessClient
+combase!ObjectStubless
+litware!Widget::~Widget
+litware!Widget::`scalar deleting destructor'
+litware!Widget::Release
+contoso!Microsoft::WRL::ComPtr&lt;IWidget&gt;::InternalRelease
+contoso!Microsoft::WRL::ComPtr&lt;IWidget&gt;::ReleaseAndGetAddressOf
+contoso!Microsoft::WRL::Details::ComPtrRef&lt;...&gt;::operator struct IWidget **
+contoso!WidgetTracker::OnCurrentWidgetChanged
+rpcrt4!Invoke
+rpcrt4!Ndr64StubWorker
+rpcrt4!NdrStubCall3
+combase!CStdStubBuffer_Invoke
+combase!InvokeStubWithExceptionPolicyAndTracing::__l6::&lt;lambda_...&gt;::operator()
+combase!ObjectMethodExceptionHandlingAction&lt;&lt;lambda_...&gt; &gt;
+combase!InvokeStubWithExceptionPolicyAndTracing
+...
+</pre>
+<p>Reading from the bottom up, what happened is that the current widget changed, and the <code>Widget­Tracker</code> received the change notification. The <code>Widget­Tracker</code> locks the mutex, and then wants to get the new current <code>Widget</code>, but first it releases the old <code>Widget</code>.</p>
+<p>It is that release of the old widget that causes trouble, because it makes a cross-process call, and while waiting for the cross-process call to complete, the current widget changes again, and the <code>On­Current­Widget­Changed</code> method gets called again. (It is evident that this code is running on a single-threaded apartment. If it were running in a multi-threaded apartment, the second call would have arrived on a different thread.)</p>
+<p>The problem is that we are releasing our reference to the old widget while holding a lock, and that creates the opportunity for mayhem, since we don’t control what the widget will do when it is released. And if this is the final release of the widget, it will probably do a lot of work.</p>
+<p>This is another case of <a href="/code/the-hidden-callout-the-destructor"> the hidden callout: The destructor</a>.</p>
+<p>And the solution is the same: Destruct the reference to the old widget outside the lock.</p>
+<pre>HRESULT WidgetTracker::OnCurrentWidgetChanged()
+{
+    WRL::ComPtr&lt;IWidget&gt; widget;
+    auto guard = std::lock_guard(m_mutex);
+    RETURN_IF_FAILED(GetCurrentWidget(&amp;widget));
+    m_currentWidget.Swap(widget);
+    return S_OK;
+}
+</pre>
+<p>We declare a <code>ComPtr&lt;IWidget&gt;</code> before taking the lock, so that it destructs after the lock is released. (Remember that in C++, local variables are destructed in reverse order of construction.) After we get the current widget into the local <code>widget</code>, we swap it with the old one, and then return.</p>
+<p>The lock guard destructs first, which exits the lock. and then the <code>ComPtr&lt;IWidget&gt;</code> destructs, which releases the old widget. This release occurs outside the lock, so any re-entrancy is not going to create a deadlock.</p>
+
+
+</body>

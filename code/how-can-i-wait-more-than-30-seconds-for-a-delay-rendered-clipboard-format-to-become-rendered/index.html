@@ -1,0 +1,35 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I wait more than 30 seconds for a delay-rendered clipboard format to become rendered?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we saw that <a href="/code/is-there-a-maximum-size-for-windows-clipboard-data-because-i-m-getting-null-for-something-i-know-should-be-there" title="Is there a maximum size for Windows clipboard data? Because I'm getting null for something I know should be there"> the system will wait up to 30 seconds for a clipboard owner to produce delay-rendered data</a>. But what if you want to extend this timeout?</p>
+<p>The timeout itself is embedded in the clipboard manager and is not configurable. Thirty seconds is the longest the clipboard manager will wait for the clipboard data to be rendered.</p>
+<p>But that doesn’t mean that’s the longest <i>you</i> will wait.</p>
+<p>Recall that <a href="/code/what-is-the-proper-handling-of-wm-renderformat-and-wm-renderallformats" title="What is the proper handling of WM_RENDERFORMAT and WM_RENDERALLFORMATS?"> the <code>WM_<wbr/>RENDER­FORMAT</code> message handler will call <code>Set­Clipboard­Data</code> when it’s done</a>, hoping that the clipboard is still open by the original code that requested the data.</p>
+<p>So you just need to keep the clipboard open long enough for the clipboard owner to finish rendering the data format and calling <code>Set­Clipboard­Data</code>.</p>
+<p>But how do you know that the clipboard owner has finished rendering the data format?</p>
+<p>One idea is to poll by calling <code>Get­Clipboard­Sequence­Number</code> until the sequence number changes, indicating that somebody (presumably the clipboard owner) called <code>Set­Clipboard­Data</code>. This is unsatisfying because (1) it’s polling, and (2) if an error occurs which prevents the clipboard owner from producing the data, you’re just going to be polling forever, unless you create your own timeout.</p>
+<p>I have another idea: Call <code>Get­Clipboard­Owner</code> to obtain the handle of the clipboard owner. This is the window that is busy trying to generate the clipboard data. Send this window a harmless message like <code>WM_<wbr/>NULL</code>. The purpose is not to get a meaningful reply to the message; the purpose is to know “Hey, this window is responding to messages again!”</p>
+<p>The theory here is that if the window is not responding to messages, then that means that it is still busy producing the data to be put onto the clipboard. Once it starts responding, then the delay-rendering has completed.</p>
+<p>This theory holds up if the work is being done by the thread that owns the clipboard owner window. However, if the clipboard owner window is delegating the work to another thread, then this mechanism will report that the clipboard owner processed the <code>WM_NULL</code> message, because threads can process inbound sent messages while waiting for an outbound sent message to return.</p>
+<p>But hey, it’s better than nothing.</p>
+<pre>if (OpenClipboard(hwnd)) {
+    if (IsClipboardFormatAvailable(format)) {
+        auto data = GetClipboardData(format);
+        if (!data) {
+            auto owner = GetClipboardOwner();
+            SendMessage(owner, WM_NULL, 0, 0);
+            data = GetClipboardData(format);
+        }
+        if (data) {
+            // yay, we have clipboard data
+        }
+    }
+    CloseClipboard();
+}
+</pre>
+<p>After opening the clipboard, we check whether our desired format is available. If so, we ask for it. If that request failed, then we send the clipboard owner a <code>WM_NULL</code> message to wait for it to finish generating the format, and then try a second time. If that second try also fails, then we just give up.</p>
+<p>Of course, instead of sending the <code>WM_<wbr/>NULL</code> message with <code>Send­Message</code>, you can use <code>Send­Message­Timeout</code> to apply your own custom timeout. If the <code>Send­Message­Timeout</code> of <code>WM_<wbr/>NULL</code> fails, then you can probably skip calling <code>Get­Clipboard­Data</code> a second time. The thread is probably still busy processing the original request. There’s an off chance that the thread completed the original request but became hung on something else in the meantime. I don’t consider this off chance worth the effort to work around. The whole thing is just a workaround anyway.</p>
+<p>It turns out that if you go back to the customer’s original problem, none of these workarounds are needed anyway. We’ll look at a better solution next time. &lt;/P.</p>
+
+
+</body>

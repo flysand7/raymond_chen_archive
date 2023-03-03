@@ -1,0 +1,149 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Resolving confusion over how to return from a C++ coroutine</h1>  <!-- .entry-meta -->
+
+<p>A customer was having trouble writing a coroutine using C++/WinRT. This function compiled successfully:</p>
+<pre>winrt::IAsyncOperation&lt;bool&gt; HelperFunction()
+{
+    /* no other co_return statements */
+
+    co_return true;
+}
+</pre>
+<p>But once they added a condition, it stopped compiling successfully:</p>
+<pre>winrt::IAsyncOperation&lt;bool&gt; MainFunction()
+{
+    ...
+    if (condition) {
+        ...
+        co_return HelperFunction(); // Fails to compile
+    }
+
+    co_return false;
+}
+</pre>
+<p>The error message is</p>
+<pre style="white-space: pre-wrap;">error C2664: 'void std::<wbr/>experimental::<wbr/>coroutine_traits&lt;<wbr/>winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IAsyncOperation&lt;<wbr/>bool&gt;&gt;::<wbr/>promise_type::<wbr/>return_value(<wbr/>TResult &amp;&amp;) noexcept': cannot convert argument 1 from 'winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IAsyncOperation&lt;<wbr/>bool&gt;' to 'TResult &amp;&amp;'
+with
+[
+    TResult=bool
+]
+message : Reason: cannot convert from 'winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IAsyncOperation&lt;<wbr/>bool&gt;' to 'TResult'
+with
+[
+    TResult=bool
+]
+message : No user-defined-conversion operator available that can perform this conversion, or the operator cannot be called
+</pre>
+<p>What’s going on here?</p>
+<p>The <code>co_return</code> statement takes the thing being co-returned and passes it to the promise’s <code>return_<wbr/>value</code> method (or if you <code>co_return</code> nothing, calls the promise’s <code>return_<wbr/>void</code> method with no parameters). Although the language imposes no semantics upon this action, the intent is that this is how you produce the asynchronous result of the coroutine: The asynchronous result of the coroutine is the thing that the caller gets when they <code>co_await</code> the coroutine.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Declaration</th>
+<td><code>IAsyncAction f()</code></td>
+<td><code>IAsyncOperation&lt;T&gt; f()</code></td>
+<td><code>fire_and_forget f()</code></td>
+</tr>
+<tr>
+<th>Return type</th>
+<td><code>IAsyncAction</code></td>
+<td><code>IAsyncOperation&lt;T&gt;</code></td>
+<td><code>fire_and_forget</code></td>
+</tr>
+<tr>
+<th>Using <code>return T</code></th>
+<td><code>return IAsyncAction(...);</code></td>
+<td><code>return IAsyncOperation&lt;T&gt;(...);</code></td>
+<td><code>return {};</code></td>
+</tr>
+<tr>
+<th>Result type</th>
+<td><code>void</code></td>
+<td><code>T</code></td>
+<td><code>void</code></td>
+</tr>
+<tr>
+<th>Using <code>co_return T</code></th>
+<td><code>co_return;</code></td>
+<td><code>co_return T(...);</code></td>
+<td><code>co_return;</code></td>
+</tr>
+</tbody>
+</table>
+<p>If you use the <code>return</code> keyword, then you must return the coroutine type. This follows the rules of the C++ language that you’re familiar with: If your function says that it returns something, then the thing you <code>return</code> needs to be that something (or something convertible to it).</p>
+<p>What’s new for coroutines is the <code>co_return</code> keyword. If you use the <code>co_return</code> keyword, then the thing you <code>co_return</code> needs to be the coroutine <i>result</i> (or something convertible to it).</p>
+<p>You have to pick a side: Either <code>return</code> everywhere in your function or <code>co_return</code> everywhere in your function. You can’t mix-and-match. That would result in <code>Main­Function()</code> being part-coroutine and part not-coroutine, which the language doesn’t support. You’re either a coroutine or you’re not.</p>
+<p>Writing <code>co_return HelperFunction();</code> is trying to return an <code>IAsyncOperation&lt;<wbr/>bool&gt;</code> as the result of the coroutine. But the coroutine result isn’t a <code>IAsyncOperation&lt;<wbr/>bool&gt;</code>. It’s just a <code>bool</code>.</p>
+<p>And that’s what the compiler error message is trying to say, with compiler-colored glasses: “Cannot convert <code>IAsyncOperation&lt;bool&gt;</code> to <code>bool</code>.” You <code>co_return</code>ed an <code>IAsyncOperation&lt;bool&gt;</code>, but the only thing that the <code>IAsyncOperation&lt;bool&gt;</code> knows how to <code>co_return</code> is a <code>bool</code>, and the compiler is unable to perform the conversion.</p>
+<p>What you need to do is <code>co_return</code> a <code>bool</code> somehow.</p>
+<p>The customer discovered on their own that adding a <code>co_await</code> fixed the problem:</p>
+<pre>winrt::IAsyncOperation&lt;bool&gt; MainFunction()
+{
+    ...
+    if (condition) {
+        co_return <span style="color: blue;">co_await</span> HelperFunction(); // added co_await
+    }
+
+    co_return false;
+}
+</pre>
+<p>But the customer was unsure of themselves. “Why is <code>co_await</code> needed? Are there any unintended consequences?”</p>
+<p>The <code>co_await</code> keyword instructs the compiler to generate code to suspend the current coroutine <code>Main­Function()</code> and resume execution when <code>Helper­Function()</code> produces a result. Since <code>Helper­Function()</code> is itself a <code>IAsyncOperation&lt;bool&gt;</code>, that result will also be a <code>bool</code>. You can then <code>co_return</code> that <code>bool</code>, which makes it the result of the <code>Main­Function()</code> coroutine.</p>
+<p><b>Bonus chatter</b>: The customer also found, in their experimentation, that this version also compiled successfully:</p>
+<pre>winrt::IAsyncOperation&lt;bool&gt; MainFunction()
+{
+    if (condition) co_return true;
+    return false;
+}
+</pre>
+<p>How does this work? It seems to be breaking the rules above, because we are using <code>return</code> with the result type, and we’re mixing <code>return</code> and <code>co_return</code> within the same function body.</p>
+<p>Yes, this code should not compile.</p>
+<p>What you’re seeing is a backward compatibility behavior of the Visual C++ compiler: When coroutines were being developed, the original idea was to overload the <code>return</code>. If you <code>return</code>ed something that matched the declared return type, then it was treated as producing the return value of the function. But if you <code>return</code>ed something that matched the result type, then the function transformed into a coroutine, and you were producing the <i>result</i> of the coroutine.</p>
+<p>My guess is that this syntax was chosen to align with the C# and JavaScript languages, both of which overload the <code>return</code> statement in this way.</p>
+<p>Ultimately, however, the ambiguity was too much,¹ and the coroutine specification that was ratified created new keywords to make explicit whether the function body was a classic function or a coroutine. The Visual C++ compiler retains the old syntax for backward compatibility with existing code that was written to the pre-ratified standard.</p>
+<p>It appears that an artifact of this backward compatibility is that the compiler accepts the reverse error:</p>
+<pre>winrt::IAsyncOperation&lt;bool&gt; MainFunction()
+{
+    co_return HelperFunction();
+}
+</pre>
+<p>This uses <code>co_return</code> with the return type instead of the result type. Somehow, the compiler accepts it even though it’s not required by backward compatibility. (My guess is that there’s some compatibility code that merges <code>return</code> and <code>co_return</code>, and while that takes care of the compatibility issue, it also makes the compiler accept other things inadvertently.</p>
+<p>It also seems that the <code>/permissive-</code> flag doesn’t turn off this compatibility behavior.</p>
+<p>¹ Consider a class that is designed to be the return type of a coroutine.</p>
+<pre>template&lt;typename T&gt;
+class task
+{
+    /* stuff required to be a coroutine return type */
+};
+
+task&lt;int&gt; calculate()
+{
+    /* do some calculations */
+    co_return value;
+}
+</pre>
+<p>This hypothetical <code>task</code> type supports being used as the return type of a coroutine, and our sketch of a <code>calculate()</code> function calculates a value and <code>co_return</code>s it.</p>
+<p>But suppose we added a new constructor:</p>
+<pre>template&lt;typename T&gt;
+class task
+{
+public:
+    /* create a task that has already completed with a value */
+    task(T const&amp; resolved);
+
+    /* existing stuff required to be a coroutine return type */
+};
+</pre>
+<p>This new constructor provides a way to create an already-completed task by passing the result directly to the constructor.</p>
+<p>Given this new constructor, the following code would become ambiguous under the pre-standardized version that used <code>return</code> for both normal return and coroutine return:</p>
+<pre>task&lt;int&gt; calculate()
+{
+    /* do some calculations */
+    return value;
+}
+</pre>
+<p>Is this a plain non-coroutine function that returns a task with the <code>resolved</code> constructor? Or is this a coroutine function that produces a task from the coroutine promise via <code>return_value()</code>? Both interpretations would be valid here.</p>
+<p>Changing the keyword to <code>co_return</code> for coroutines removes this ambiguity.</p>
+
+
+</body>

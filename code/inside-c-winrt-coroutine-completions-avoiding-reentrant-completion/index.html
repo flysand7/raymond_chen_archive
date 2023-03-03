@@ -1,0 +1,94 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Inside C++/WinRT: Coroutine completions: Avoiding reentrant completion</h1>  <!-- .entry-meta -->
+
+<p>If a Windows Runtime asynchronous operation has already completed at the point the <code>Completed</code> delegate is assigned, the implementation is permitted to invoke the delegate before returning from the assignment.</p>
+<p>The way we have set things up so far, it means that the awaiting an already-completed Windows Runtime asynchronous operation results in a chain of calls:</p>
+<pre>MyAwesomeCoroutine::DoSomethingAsync$Resu
+coroutine_handle&lt;&gt;::resume
+resume_apartment
+disconnect_aware_handler::Complete
+Provider::FireCompletion
+Provider::put_Completed
+IAsyncOperation::put_Completed
+await_adapter::await_suspend
+MyAwesomeCoroutine::DoSomethingAsync$Resu
+</pre>
+<p>All those stack frames between the two <code>My­Awesome­Coroutine::<wbr/>Do­Something­Async<wbr/>$Resu</code> frames are unnecessary, and if you are <code>co_await</code>‘ing in a loop, the stack usage accumulates and can result in unexpected stack exhaustion.</p>
+<p>What we can do is detect that the completion handler is running before <code>put_Completed</code> has returned, and in that case, we merely remember that the coroutine needs to resume, but without actually resuming it immediately. We allow execution to unwind back to <code>await_<wbr/>suspend</code> and then return <code>false</code> to tell the coroutine infrastructure to resume the coroutine when it unwinds.</p>
+<pre>template&lt;typename Awaiter&gt;
+struct disconnect_aware_handler
+{
+    〚 ... 〛
+
+    void Complete()
+    {
+        <span style="color: #08f;">if (m_awaiter-&gt;suspending
+            .exchange(false, std::memory_order_release))
+        {
+            // resumption has been deferred to await_suspend
+            m_handle = nullptr;
+        }
+        else
+        {</span>
+            resume_apartment(m_context.context,
+                std::exchange(m_handle, {}),
+                &amp;m_awaiter-&gt;failure);
+        <span style="color: #08f;">}</span>
+    }
+};
+</pre>
+<p>If the awaiter says that it’s still suspending, then don’t resume immediately. Instead, reset the <code>suspending</code> to <code>false</code> to tell <code>await_suspend</code> to cancel the suspension.</p>
+<pre>template&lt;typename Async&gt;
+struct await_adapter
+{
+    await_adapter(Async const&amp; async) : async(async) { }
+
+    Async const&amp; async;
+    int32_t failure = 0;
+    <span style="color: #08f;">std::atomic&lt;bool&gt; suspending = true;</span>
+
+    〚 ... 〛
+
+    <span style="color: #08f;">auto</span> await_suspend(coroutine_handle&lt;&gt; handle) const
+    {
+        <span style="color: #c65353;"> // <span style="text-decoration: line-through;">auto extend_lifetime = async;</span></span>
+        async.Completed(
+            disconnect_aware_handler(this, handle));
+        <span style="color: #08f;">return suspending.exchange(false, std::memory_order_acquire);</span>
+    }
+
+    〚 ... 〛
+};
+</pre>
+<p>The other half of the communication is in the <code>await_<wbr/>adapter</code>‘s <code>await_<wbr/>suspend</code> method. After setting the <code>Completed</code> handler, we reset <code>suspending</code> to <code>false</code>, and return the previous value. The previous value is <code>true</code> if the completion handler hasn’t run yet, and returning <code>true</code> from <code>await_<wbr/>suspend</code> allows the suspension to proceed. But if the completion handler has already run, then the previous value is <code>false</code>, and returning handler hasn’t run yet, and returning <code>false</code> from <code>await_<wbr/>suspend</code> tells the coroutine infrastructure to abandon the suspension and resume the coroutine.</p>
+<p>Note that we use atomic operations on both sides, because the completion handler might run on another thread and race against <code>await_<wbr/>suspend</code>. In particular, we need to watch out for the case where the completion handler is called immediately after <code>await_<wbr/>suspend</code> sets the <code>Completed</code> property and checks the <code>suspending</code> variable, but before it returns. In that case, we need to resume the coroutine immediately from the completion handler, because the decision to allow the coroutine to suspend has already been made.</p>
+<p>The atomic operations use release semantics on the publishing side and acquire semantics on the consumption side so that any changes to objects immediately before completion are visible when the coroutine resumes.</p>
+<p>Now that we defer the resumption of the coroutine until after <code>async.<wbr/>Completed()</code> returns, we don’t need to extend its lifetime to protect against premature resumption: We never resume the coroutine while <code>async.<wbr/>Completed()</code> is still running.</p>
+<p>As of this writing, C++/WinRT still supports Visual C++’s experimental coroutine support. Older versions of that coroutine support have a code generation bug (which <a href="/code/debugging-coroutine-handles-looking-for-the-source-of-a-one-byte-memory-corruption" title="Debugging coroutine handles: Looking for the source of a one-byte memory corruption"> I noted some time ago</a> is <a href="https://devblogs.microsoft.com/cppblog/cpp20-coroutine-improvements-in-visual-studio-2019-version-16-11/"> fixed in versions 16.11 and 17.0</a>), so we need to work around that. The way to detect the experimental coroutine support is to check for the preprocessor symbol <code>_RESUMABLE_<wbr/>FUNCTIONS_<wbr/>SUPPORTED</code>:</p>
+<pre>template&lt;typename Async&gt;
+struct await_adapter
+{
+    〚 ... 〛
+
+    auto await_suspend(coroutine_handle&lt;&gt; handle) const
+    {
+        async.Completed(
+            disconnect_aware_handler(this, handle));
+<span style="color: #08f;">#ifdef _RESUMABLE_FUNCTIONS_SUPPORTED
+        if (!suspending.exchange(false, std::memory_order_acquire))
+        {
+            handle.resume();
+        }
+#else</span>
+        return suspending.exchange(false, std::memory_order_acquire);
+<span style="color: #08f;">#endif</span>
+    }
+
+    〚 ... 〛
+};
+</pre>
+<p>If we are being compiled with experimental coroutine support, then we avoid the code generation bug by resuming the handle explicitly rather than returning a <code>bool</code>. This does consume a little bit or stack, but not as much as before.</p>
+<p><b>Bonus chatter</b>: The workaround is used if experimental coroutine support is detected, regardless of the Visual C++ compiler version. That’s because the experimental coroutines are all ABI compatible, and I don’t want to take the risk of an ODR violation if people link together object files compiled with different versions of experimental coroutine support. <a href="/code/debugging-coroutine-handles-the-microsoft-visual-c-compiler-clang-and-gcc" title="Debugging coroutine handles: The Microsoft Visual C++ compiler, clang, and gcc"> Visual C++ took an ABI breaking change for standard coroutines</a>, so C++/WinRT uses that as its own signal to switch to the <code>bool</code> version of <code>await_<wbr/>suspend</code>. That way, there won’t be any ODR violation in C++/WinRT caused by linking together object files with experimental and standard coroutines: If you try, you get <!-- backref: What does it mean when I get a mismatch from MSVC for <CODE>_COROUTINE_ABI</CODE>? --> a mismatch from MSVC for <code>_COROUTINE_ABI</code>. Combining experimental and standard coroutines never worked anyway, and we rely on the compiler to check for us.</p>
+
+
+</body>

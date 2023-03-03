@@ -1,0 +1,34 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Diagnosing a hang: Everybody stuck in <code>Win­Http­Get­Proxy­For­Url</code></h1>  <!-- .entry-meta -->
+
+<p>A customer reported that their program eventually ground to a halt with over 750 threads stuck in <code>Win­Http­Get­Proxy­For­Url</code>:</p>
+<pre>ntdll!ZwWaitForSingleObject+0x14
+KERNELBASE!WaitForSingleObjectEx+0x8f
+winhttp!OutProcGetProxyForUrl+0x160
+winhttp!WinHttpGetProxyForUrl+0x349
+contoso!submit_web_request+0x232
+ntdll!TppWorkpExecuteCallback+0x35e
+ntdll!TppWorkerThread+0x474
+kernel32!BaseThreadInitThunk+0x14
+ntdll!RtlUserThreadStart+0x21
+</pre>
+<p>(I’ve simplified the stack trace for expository purposes.)</p>
+<p>What’s happening here is that you put some work on the thread pool, and that work called <code>Win­Http­Get­Proxy­For­Url</code>. This function is synchronous, but it makes HTTP network requests which are asynchronous. To bridge the gap, the <code>Win­Http­Get­Proxy­For­Url</code> function performs a synchronous wait for the asynchronous work to complete.</p>
+<p>And my guess is that <code>Win­Http­Get­Proxy­For­Url</code> itself uses the thread pool to complete its asynchronous work.</p>
+<p>What’s happening is that the program flooded the thread pool with <code>submit_</code><code>web_</code><code>request</code> work items. Those work items called <code>Win­Http­Get­Proxy­For­Url</code>, which queues its own work item and waits for it to complete. But those work items can’t run because the thread pool’s threads are all busy handling <code>submit_</code><code>web_</code><code>request</code> work items.</p>
+<p>Eventually, the thread pool may realize that it’s not making progress and spin up a new thread to deal with the work that has been piling up. Maybe that thread will finish the work begun by <code>Win­Http­Get­Proxy­For­Url</code>, and that will allow one of the <code>submit_</code><code>web_</code><code>request</code> threads to continue. Once that thread is finished with the <code>Win­Http­Get­Proxy­For­Url</code> work item, it will go pull another work item from the queue, and odds are that it’s going to get another <code>submit_</code><code>web_</code><code>request</code> work item, so now we’re back where we started, except with one more stuck thread in the thread pool.</p>
+<p>If the <code>submit_</code><code>web_</code><code>request</code> work items come in faster than <code>Win­Http­Get­Proxy­For­Url</code> can retire its own work items, the thread pool will fill up with threads blocked inside <code>submit_</code><code>web_</code><code>request</code>, and eventually the thread pool will reach its thread limit, and everything stops.</p>
+<p>You’re basically starving the thread pool by hijacking it with requests that themselves require the thread pool. All of the thread pool threads are stuck handling your requests, and none are left to do the work that your requests generated.</p>
+<p>It’s like you have a lot of heavy equipment that you want to move, so you hire every moving company in the city to move them. Company A shows up, and they say, “Hm, this is too big for us to move by ourselves. Let me call Company B, maybe they can help us.” Company B says, “Sorry, I can’t help you now. I just got an order to move a heavy piece of equipment.” By starving out all of the available moving companies, you manage to prevent any of them from completing the job.</p>
+<p>I suspect that this system is running in a network environment where <a href="http://en.wikipedia.org/wiki/Web_Proxy_Autodiscovery_Protocol"> WPAD</a> is slow, which makes <code>Win­Http­Get­Proxy­For­Url</code>‘s work item take longer to finish its job, and that makes it more likely that <code>submit_</code><code>web_</code><code>request</code> work items will arrive faster than <code>Win­Http­Get­Proxy­For­Url</code> work items can be retired.</p>
+<p>Now that we’ve diagnosed the problem, what can we do to fix it?</p>
+<p>One idea is to hire just one moving company and let them decide how many more moving companies they need. Put all your calls to <code>submit_</code><code>web_</code><code>request</code> on a single thread and retire them one at a time. This clogs up just one thread, leaving the others available to assist. On the other hand, this means that the requests cannot be handled in parallel.</p>
+<p>A better fix is to change the way you use the thread pool so you don’t keep a thread hostage for a long time.</p>
+<p>I’m not an expert on Win­Http, but other people had some ideas on how to do this.</p>
+<p>You can switch to <code>Win­Http­Get­Proxy­For­Url­Ex</code>, which returns immediately and calls you back when it has an answer. The <code>submit_</code><code>web_</code><code>request</code> function could call <code>Win­Http­Get­Proxy­For­Url­Ex</code> and return immediately. This releases the thread pool thread to do other work—possibly even the work that <code>Win­Http­Get­Proxy­For­Url­Ex</code> needs to do in order to complete. When <code>Win­Http­Get­Proxy­For­Url­Ex</code> finishes its asynchronous work, it calls the callback, and the callback and do whatever work <code>submit_</code><code>web_</code><code>request</code> was planning on doing after getting the proxy information.</p>
+<p>Basically, go asynchronous all the way. It’s not an unreasonable approach for this program, since the <code>submit_</code><code>web_</code><code>request</code> itself models an asynchronous request: It initiates the request and will call some caller-provided callback with the response from the servber. Since it’s already behaving asynchronously, you may as well make it even <i>more</i> asynchronous.</p>
+<p>Another suggestion was to skip <code>Win­Http­Get­Proxy­For­Url</code> entirely and just pass the <code>WIN­HTTP_</code><code>ACCESS_</code><code>TYPE_</code><code>AUTOMATIC_</code><code>PROXY</code> flag to <code>Win­Http­Open</code>. This defers the proxy work to the <code>Win­Http­Open</code> function, and it can do that as part of its other asynchronous activities. This seems like a good idea because it gets you out of the proxy business entirely, and you still get the asynchronous behavior. It also gives you the satisfaction of fixing a bug by deleting code.</p>
+<p>The customer confirmed that switching to the <code>WIN­HTTP_</code><code>ACCESS_</code><code>TYPE_</code><code>AUTOMATIC_</code><code>PROXY</code> flag fixed the problem.</p>
+
+
+</body>

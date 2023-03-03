@@ -1,0 +1,52 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: The problem of the DispatcherQueue task that runs too soon, part 3</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/c-coroutines-the-problem-of-the-dispatcherqueue-task-that-runs-too-soon-part-2"> Last time</a>, we fixed a race condition in C++/WinRT’s <code>resume_<code></code>foreground(<code></code>Dispatcher­Queue)</code> function when it tries to resume execution on a dispatcher queue. We did this by having the queued task wait until <code>await_</code><code>suspend</code> was finished before allowing the coroutine to resume. The hard part was finding a place to put the synchronization object, and we ended up putting it in the queued task’s lambda.</p>
+<p>But it turns out there’s another place we can put it, and it was in front of us the whole time.</p>
+<p>We can put it in the awaiter.</p>
+<pre>auto resume_foreground(DispatcherQueue const&amp; dispatcher)
+{
+  struct awaitable
+  {
+    DispatcherQueue m_dispatcher;
+    bool m_queued = false;
+    <span style="color: blue;">slim_event ready;</span>
+
+    bool await_ready()
+    {
+      return false;
+    }
+
+    bool await_suspend(coroutine_handle&lt;&gt; handle)
+    {
+      bool result = m_dispatcher.TryEnqueue([<span style="color: blue;">this,</span> handle]
+        {
+          <span style="color: blue;">ready.wait();</span>
+          handle();
+        });
+      m_queued = result;
+      <span style="color: blue;">ready.signal();</span>
+      return result;
+    }
+
+    bool await_resume()
+    {
+      return m_queued;
+    }
+  };
+  return awaitable{ dispatcher };
+}
+</pre>
+<p>The awaiter is destructed when the coroutine resumes, and the coroutine resumes either when the coroutine handle is invoked (which we do in the lambda), or when the <code>await_</code><code>ready</code> or <code>await_</code><code>suspend</code> methods indicate that the resumption should proceed immediately.</p>
+<p>Therefore, members of the awaiter are good as long as we haven’t done any of those things.</p>
+<p>In the case of a successful <code>Try­Enqueue</code>, the <code>await_</code><code>suspend</code> is not going to ask for immediate resumption. The resumption will occur when the lambda invokes the handler. But our lambda waits for <code>async_</code><code>suspend</code> to signal the event before invoking the handler, so the awaiter is still valid at that point.</p>
+<p>In the case of a failed <code>Try­Enqueue</code>, the lambda will never run. Instead, the coroutine resumes after <code>await_</code><code>suspend</code> returns with a value of <code>false</code>. Prior to the return, the awaiter is still valid, so we can signal the event. (Mind you, there’s nobody listening for the signal.)</p>
+<p>This is a lot simpler than trying to dig the event out of the lambda.</p>
+<p>However, there is still quite a bit of overhead to this plan: While it’s true that the <code>slim_</code><code>event</code> runs entirely in user mode in the non-blocking case, it still generates a good number of memory barriers. The <code>slim_</code><code>event::</code><code>signal</code> method uses a memory barrier in order to ensure that <code>m_queued</code> is made visible to all threads before setting <code>signaled</code> to true. If it didn’t do this, then the <code>wait</code> function could see that <code>signaled</code> is true and run ahead with the wrong value of <code>m_queued</code>.</p>
+<p>Furthermore, after the <code>signal</code> method updates the <code>signaled</code> member, it calls <code>Wake­By­Address­All</code>, which will itself erect another memory barrier to make sure it found all the waiters (even if there are none).</p>
+<p>The memory barriers are necessary to ensure that the updated value of <code>m_queued</code> that was written by the <code>await_</code><code>suspend</code> can be ready by <code>await_</code><code>ready</code> in the case that the coroutine continues on the dispatcher thread.</p>
+<p>Next time, we’ll get rid of the memory barriers.</p>
+<p> </p>
+
+
+</body>

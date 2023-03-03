@@ -1,0 +1,98 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to split out pieces of a file while preserving git line history: The hard way with commit-tree</h1>  <!-- .entry-meta -->
+
+<p><a href="/other/how-do-i-split-a-file-into-two-while-preserving-git-line-history"> Last time</a>, we looked at how to split a single file into multiple files while preserving line history. A related scenario is where you want to extract some pieces of a file into separate files, but leave some pieces behind.</p>
+<p>Let’s use the same scratch repo we had last time. You can follow the same copy/paste script, or you can take your existing scratch repo and <code>git reset --hard ready</code> to get it back into its “ready to start experimenting” state.</p>
+<p>First, we’re going to do things the hard (but more information-theoretically correct) way, and then we’ll develop a simpler alternative that gets the same result, though through some potentially-confusing intermediate steps.</p>
+<p>Okay, to do things the hard way, we split out each file in its own branch.</p>
+<pre style="white-space: pre-wrap;">git checkout -b f2f
+
+git mv foods fruits
+git commit --author="Greg &lt;greg&gt;" -m "create fruits from foods"
+</pre>
+<p>We start by renaming <code>foods</code> to <code>fruits</code>. This ensures that when git traces the history of the <code>fruits</code> file, it will follow the history back into the <code>foods</code> file.</p>
+<p>Next, we split the <code>fruits</code> file back into two files: The fruits stay in the <code>fruits</code> file, and the rest go back into the <code>foods</code> file.</p>
+<pre style="white-space: pre-wrap;">&gt;foods echo celery
+&gt;&gt;foods echo cheese
+&gt;&gt;foods echo eggs
+&gt;&gt;foods echo lettuce
+&gt;&gt;foods echo milk
+&gt;&gt;foods echo peas
+git add foods
+
+&gt;fruits echo apple
+&gt;&gt;fruits echo grape
+&gt;&gt;fruits echo orange
+
+git commit --author="Greg &lt;greg&gt;" -am "split fruits from foods"
+
+git checkout -
+</pre>
+<p>Repeat for the other files you want to split out. Let’s say we also want to split out the veggies.</p>
+<pre style="white-space: pre-wrap;">git checkout -b f2v
+
+git mv foods veggies
+git commit --author="Greg &lt;greg&gt;" -m "create veggies from foods"
+
+&gt;foods echo apple
+&gt;&gt;foods echo cheese
+&gt;&gt;foods echo eggs
+&gt;&gt;foods echo grape
+&gt;&gt;foods echo milk
+&gt;&gt;foods echo orange
+git add foods
+
+&gt;veggies echo celery
+&gt;&gt;veggies echo lettuce
+&gt;&gt;veggies echo peas
+
+git commit --author="Greg &lt;greg&gt;" -am "split veggies from foods"
+
+git checkout -
+</pre>
+<p>Then we octopus the branches together. However, the octopus will fail because the changes don’t merge cleanly, so we’ll have to do a manual octopus, <a href="https://devblogs.microsoft.com/oldnewthing/20190515-00/?p=102495"> like we did before</a>.</p>
+<pre style="white-space: pre-wrap;">&gt;foods echo cheese
+&gt;&gt;foods echo eggs
+&gt;&gt;foods echo milk
+
+&gt;fruits echo apple
+&gt;&gt;fruits echo grape
+&gt;&gt;fruits echo orange
+
+&gt;veggies echo celery
+&gt;&gt;veggies echo lettuce
+&gt;&gt;veggies echo peas
+
+git add foods fruits veggies
+git write-tree
+</pre>
+<p>The <code>git write-tree</code> will emit a tree that represents the state of the index. We set up the index so that it contains the desired final state: The fruits have been put into <code>fruits</code>, the veggies into <code>veggies</code>, and the leftovers stay in <code>foods</code>.</p>
+<p>Now to do the manual octopus merge.</p>
+<pre style="white-space: pre-wrap;">git commit-tree 〈tree-hash〉 -p HEAD -p f2f -p f2v -m "split out fruits and veggies from foods"
+</pre>
+<p>The <code>git commit-tree</code> will print a hash. This is the commit that is the result of the octopus merge. We can fast-forward to it.</p>
+<pre style="white-space: pre-wrap;">git merge --ff-only 〈commit-hash〉
+</pre>
+<p>Okay, let’s see what we ended up with.</p>
+<pre style="white-space: pre-wrap;">git blame fruits
+
+^e7a114d foods (Alice 2019-09-16 07:00:00 -0700 1) apple
+86348be4 foods (Bob   2019-09-16 07:00:01 -0700 2) grape
+34eb5bd1 foods (Carol 2019-09-16 07:00:02 -0700 3) orange
+
+git blame veggies
+
+^e7a114d foods (Alice 2019-09-16 07:00:00 -0700 1) celery
+86348be4 foods (Bob   2019-09-16 07:00:01 -0700 2) lettuce
+34eb5bd1 foods (Carol 2019-09-16 07:00:02 -0700 3) peas
+
+git blame foods
+
+^e7a114d (Alice 2019-09-16 07:00:00 -0700 1) cheese
+86348be4 (Bob   2019-09-16 07:00:01 -0700 2) eggs
+34eb5bd1 (Carol 2019-09-16 07:00:02 -0700 3) milk
+</pre>
+<p>Next time, we’ll look at how to do this the easy way.</p>
+
+
+</body>

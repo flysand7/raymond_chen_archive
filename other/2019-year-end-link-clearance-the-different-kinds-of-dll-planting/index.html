@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">2019 year-end link clearance: The different kinds of DLL planting</h1>  <!-- .entry-meta -->
+
+<p>This time, the link clearance is just one link:</p>
+<ul>
+<li><a href="https://msrc-blog.microsoft.com/2018/04/04/triaging-a-dll-planting-vulnerability/"> Triaging a DLL planting vulnerability</a>.</li>
+</ul>
+<p>That link summarizes various causes of alleged DLL planting vulnerabilities and how the <a href="https://msrc-blog.microsoft.com/"> Microsoft Security Response Center</a> assesses them.</p>
+<p>I’ve discussed many of these scenarios in the past.</p>
+<ul>
+<li><a href="https://devblogs.microsoft.com/oldnewthing/20130802-00/?p=3633"> Application directory planting</a>.</li>
+<li><a href="https://devblogs.microsoft.com/oldnewthing/20101110-00/?p=12313"> Current directory planting</a>.</li>
+<li><a href="https://devblogs.microsoft.com/oldnewthing/20131023-00/?p=2853"> Path planting</a>.</li>
+</ul>
+<p>In my experience, people tend to mistake application directory planting for current directory planting because they run the proof-of-concept in a scenario where the current directory is the same as the application directory. They plant a file in the current directory, and it gets loaded: Aha, a current directory vulnerabilily!</p>
+<p>Nope. The DLL is being loaded from the directory because it is the application directory, not because it is the current directory. To be sure that it’s a current directory attack, you need to make the current directory different from the application directory.</p>
+<p>Consider this scenario:</p>
+<pre>C:\appdir&gt; copy \\badplace\files\attack.dll
+        1 file(s) copied.
+
+C:\appdir&gt; C:\appdir\app.exe
+</pre>
+<p>In this case, the application directory is <code>C:\appdir</code>. Copying a file into the application directory means that you have already crossed the airtight hatchway and entered the app’s “safe zone”. If you weren’t supposed to be able to get into the app’s safe zone, then whoever set up the application directory messed up.</p>
+<p>To make this a current directory attack, you need to do this:</p>
+<pre>C:\appdir&gt; mkdir C:\attack
+
+C:\attack&gt; copy \\badplace\files\attack.dll
+        1 file(s) copied.
+
+C:\attack&gt; C:\appdir\app.exe
+</pre>
+<p>If this loads the <code>attack.dll</code>, then you’ve found something.</p>
+<p>As for path planting, there tend to be three categories of false reports.</p>
+<p>The first is the blatant “other side of the airtight hatchway”, where the proof of concept requires planting a DLL into administrator-only directories.</p>
+<p>The second is a case where an application running with full user permissions alters the path for the current user, and then uses it to attack that same user. Note that no elevation occurred: The user is attacking himself. It is not a security vulnerability that <a href="https://devblogs.microsoft.com/oldnewthing/20190109-00/?p=100665"> users can make their own lives miserable</a>.</p>
+<p>Besides, if you have a bad actor running with full user permissions, there’s no point going through all this path attack nonsense. The bad actor already has full user permissions, so it can just do the bad thing directly. Doesn’t need to be sneaky about it.</p>
+<p>The third case is where some application’s installer put an insecure directory onto the global system path. This is a security vulnerability in the application’s installer, where they <a href="https://devblogs.microsoft.com/oldnewthing/20100114-00/?p=15273"> create an insecure system and then are shocked that the resulting system is insecure</a>.¹</p>
+<p>This third case is frustrating to diagnose because the finder typically doesn’t realize that they have installed some program that made changes to the system that introduced the vulnerability. The bug goes through a few rounds of “Not repro”, “Is too”, “Is not” until we realize that the finder is probably testing on their own machine rather than in a freshly-installed system with all settings at their factory defaults.</p>
+<p><b>Bonus planting</b>: <a href="https://blogs.msdn.microsoft.com/aaron_margosis/2014/11/14/it-rather-involved-being-on-the-other-side-of-this-airtight-hatchway-unquoted-service-paths/"> Exploits that require planting <code>C:\Program.exe</code> are also invalid</a>, because the default permissions for <code>C:\</code> require administrator privileges to create a file. (You do not need administrator privileges to create a new directory in the root, but you do need administrator privileges to create a new file in the root.)</p>
+<p>¹ Occasionally, somebody will just come right out and create the insecure system directly in their proof of concept.</p>
+<ol>
+<li>Create the <code>C:\Sucker</code> directory and put a bad thing in it.</li>
+<li>Add <code>C:\Sucker</code> to the <code>PATH</code> for the user (or for the system).</li>
+<li>User (or system) component does bad thing.</li>
+</ol>
+<p>Yup, that’s a problem. A problem that you created right there in step 2.</p>
+<p>Sometimes the finder doesn’t quite understand that the problem was of their own doing, and it takes a few more rounds of back-and-forth to get it through to them that all they did was show that users have permission to make their own lives miserable, and that administrators have permission to make everybody’s lives miserable.</p>
+
+
+</body>

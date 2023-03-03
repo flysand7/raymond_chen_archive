@@ -1,0 +1,95 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why is GetWindowLongPtr returning a garbage value on 64-bit Windows?</h1>  <!-- .entry-meta -->
+
+<p>
+A customer was running into problems with their application
+on 64-bit Windows 8.
+They claimed that on Windows 8, the
+<code>Get­Window­Long­Ptr</code>
+is returning a garbage pointer,
+which causes their program to crash.
+The same program works fine on 64-bit Windows 7.
+They asked the Windows team why they broke
+<code>Get­Window­Long­Ptr</code>.
+</p>
+<p>
+An investigation of the customer’s code quickly turned up the issue:
+</p>
+<pre>
+INT_PTR CALLBACK AwesomeDialogProc(
+    HWND hdlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+  Awesome *pThis = (Awesome*)GetWindowLongPtr(hdlg, DWLP_USER);
+  switch (uMsg) {
+  case WM_INITDIALOG:
+    pThis = (Awesome*)lParam;
+    SetWindowLongPtr(hdlg, DWLP_USER, (LONG)pThis);
+    ...
+    return TRUE;
+   case WM_COMMAND:
+     if (pThis != nullptr) {
+       // This line crashes with pThis = garbage nonzero value
+       return pThis-&gt;OnCommand(wParam, lParam);
+     }
+     return FALSE;
+   ...
+  }
+  return FALSE;
+}
+</pre>
+<p>
+See if you can spot the problem.
+</p>
+<p>
+The error is in the line that calls
+<code>Set­Window­Long­Ptr</code>.
+It takes the 64-bit pointer value <code>pThis</code>
+and casts it to a <code>LONG</code>,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/01/31/363790.aspx">
+which is a 32-bit integer type</a>.
+This truncates the pointer and throws away the upper 32 bits of data.
+Therefore, when read back, the pointer looks like garbage
+because the top 32 bits were set to zero (or to <code>0xFFFFFFFF</code>,
+depending on the value of bit 31).
+</p>
+<p>
+Windows 8 made some improvements to the memory manager,
+and a side effect was a seemingly harmless change
+to the way memory is allocated in 64-bit processes.
+As a result of the change, pointer values greater than
+4<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/06/11/9725386.aspx">GB</a>
+are much more common, which means that the pointer truncation
+will actually destroy data.
+(In Windows 7, the default heap tended to hang out below the 2GB
+boundary, so the code merely truncated zeros, which is
+<a href="http://www.amazon.com/dp/0345418778?tag=tholneth=20">
+mostly harmless</a>.)
+</p>
+<p>
+What I found particularly interesting about this error is that
+the <code>DWL_USER</code> window long was specifically
+renamed to <code>DWLP_USER</code> in 64-bit Windows in order to force
+a build break.
+Therefore, developers had to go in and convert each separate use of
+<code>[GS]et­Window­Long</code> with
+<code>DWL_USER</code>
+to a version that used
+<code>[GS]et­Window­Long­Ptr</code> with
+<code>DWLP_USER</code>,
+being careful not to truncate the pointer.
+</p>
+<p>
+This customer missed that last little bit about not truncating the pointer,
+and all they did was a global search/replace:
+</p>
+<pre>
+s/\bGetWindowLong\b/GetWindowLongPtr/g;
+s/\bSetWindowLong\b/SetWindowLongPtr/g;
+s/\bDWL_USER\b/DWLP_USER/g;
+</pre>
+<p>
+“<a href="http://failblog.cheezburger.com/thereifixedit">There,
+I fixed it</a>.”</p>
+
+
+</body>

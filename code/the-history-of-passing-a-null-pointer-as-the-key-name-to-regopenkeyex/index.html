@@ -1,0 +1,79 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The history of passing a null pointer as the key name to <code>Reg­Open­Key­Ex</code></h1>  <!-- .entry-meta -->
+
+<p>For decades, the documentation for the <code>Reg­Open­Key­Ex</code> function said</p>
+<blockquote class="q"><p>The <i>lpSubKey</i> parameter can be <b>NULL</b> only if <i>hKey</i> is one of the predefined keys.</p></blockquote>
+<p>This statement was true when it was written.</p>
+<p>In 1992.</p>
+<p>For Windows NT 3.5, the behavior of the <code>Reg­Open­Key­Ex</code> function was revised so that passing <b>NULL</b> as the <i>lpSubKey</i> is equivalent to passing an empty string.</p>
+<p>Nobody updated the documentation to reflect this.</p>
+<p>As a result, from 1994 to 2021, the documentation for <code>Reg­Open­Key­Ex</code> called out a special case that was no longer a special case.</p>
+<p>Here’s what changed:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th colspan="4" style="text-align: center;">RegOpenKeyEx(key, subkey, …)</th>
+</tr>
+<tr>
+<th>key</th>
+<th>subkey</th>
+<th>Windows NT 3.1</th>
+<th>Windows NT 3.5 and later</th>
+</tr>
+<tr>
+<td>Predefined key</td>
+<td><code>NULL</code></td>
+<td colspan="2" style="text-align: center;">Refreshes hive, returns same key</td>
+</tr>
+<tr>
+<td>Other key</td>
+<td><code>NULL</code></td>
+<td><code>ERROR_BADKEY</code></td>
+<td>Returns unique handle to same key</td>
+</tr>
+<tr>
+<td>Any key</td>
+<td>non-<code>NULL</code></td>
+<td colspan="2" style="text-align: center;">Returns unique handle to subkey</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>ERROR_<wbr/>BADKEY</code> case was removed. Instead, what you get is a unique handle to the same underlying key.</p>
+<p>Note that the <code>Reg­Open­Key</code> function behaves differently when you pass <code>NULL</code> or an empty string as the subkey name:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th colspan="3" style="text-align: center;">RegOpenKey(key, subkey, …)</th>
+</tr>
+<tr>
+<th>key</th>
+<th>subkey</th>
+<th>Result</th>
+</tr>
+<tr>
+<td>Predefined key</td>
+<td><code>NULL</code> or empty string</td>
+<td style="text-align: center;">Refreshes hive, returns same key</td>
+</tr>
+<tr>
+<td>Other key</td>
+<td><code>NULL</code> or empty string</td>
+<td>Returns same key</td>
+</tr>
+<tr>
+<td>Any key</td>
+<td>non-empty string</td>
+<td style="text-align: center;">Returns unique handle to subkey</td>
+</tr>
+</tbody>
+</table>
+<p>The fact that it returns the same key back when the subkey is <code>NULL</code> or empty makes the function difficult to use because the handle might need to be closed, or might not, depending on whether the subkey is a non-empty string.</p>
+<p>Some of the outcomes are labeled <i>Refreshes hive</i>. What does that mean?</p>
+<p>If you pass a predefined key to <code>Reg­Close­Key</code> or trigger one of the outcomes marked <i>Refreshes hive</i>, then the registry key associated with the root of the predefined key is closed, and when all of the outstanding subkeys from that hive are closed, the hive is unloaded. Meanwhile, any future references to the predefined key will go back and reload the hive.</p>
+<p>Ironically, one of the things that counts as a reference to a predefined key is closing it! This means that if you call <code>Reg­Close­Key</code> twice on a predefined key, the first time will close the hive reference from the root key, and then the second time will reload the hive, only to close it imediately.</p>
+<p>Basically, you shouldn’t try to close a predefined key. It just creates a lot of work for no net effect.</p>
+<p>One rare case where there is a net effect is where you are closing <code>HKEY_<wbr/>CURRENT_<wbr/>USER</code> or <code>HKEY_<wbr/>CLASSES_<wbr/>ROOT</code> from a service that impersonates. Recall that <a href="/code/does-this-operation-work-when-impersonating-the-default-answer-is-no" title="Does this operation work when impersonating? The default answer is NO"> these keys are problematic when impersonating</a> because they load the registry hive associated with the user being impersonated, making the hive available to all threads (not just the one doing the impersonation), and it remains available even after the impersonation reverts.</p>
+<p>A totally hacky way to clear out the hive left over from impersonation is to close it explicitly, but now you’re using <a href="https://devblogs.microsoft.com/oldnewthing/20081211-00/?p=19873"> a global solution for a local problem</a>. The predefined keys are applicable to the entire process, but you are trying to clean up your thread. If two threads are impersonating, they will step all over each other. You really should be <a href="http://msdn.microsoft.com/library/ms724836.aspx"> using <code>Reg­Open­Current­User</code> or using <code>Reg­Open­User­Classes­Root</code> to access the registry hive that corresponds to the user being impersonated</a>.</p>
+
+
+</body>

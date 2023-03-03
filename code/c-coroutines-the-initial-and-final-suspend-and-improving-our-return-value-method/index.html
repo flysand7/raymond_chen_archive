@@ -1,0 +1,134 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: The initial and final suspend, and improving our return_value method</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/c-coroutines-basic-implementation-of-a-promise-type" title="C++ coroutines: Basic implementation of a promise type"> had a basic implementation of a promise type</a> but left with the question of what the <code>initial_<wbr/>suspend</code> and <code>final_<wbr/>suspend</code> are for.</p>
+<p>When the compiler encounters a coroutine function, it performs multiple rewrite passes. One of the early passes produces the following:</p>
+<pre>return_type MyCoroutine(args...)
+{
+    <i>create coroutine state</i>
+    <i>copy parameters to coroutine frame</i>
+    promise_type p;
+    auto return_object = p.get_return_object();
+
+    try {
+        co_await p.initial_suspend(); // ¹
+        <i>coroutine function body²</i>
+    } catch (...) {
+        p.unhandled_exception();
+    }
+    co_await p.final_suspend();
+    <i>destruct promise p</i>
+    <i>destruct parameters in coroutine frame</i>
+    <i>destroy coroutine state</i>
+}
+</pre>
+<p>This rewrite is where the <code>initial_<wbr/>suspend</code> and <code>final_<wbr/>suspend</code> enter the picture.</p>
+<p>After constructing the promise <code>p</code>, it calls <code>p.get_<wbr/>return_<wbr/>object()</code> to obtain the object that is passed back to the caller. Next, the coroutine awaits whatever <code>initial_<wbr/>suspend()</code> returns.</p>
+<p>There are two common choices for <code>initial_<wbr/>suspend()</code>: If you return a <code>suspend_<wbr/>never</code> or some other awaiter that doesn’t suspend the coroutine, then the coroutine keeps running until the first suspending <code>co_await</code>. This is the model for “hot-start” coroutines which execute synchronously during their construction and don’t return an object until the first suspension inside the function body.</p>
+<p>On the other hand, if you return an awaiter which results in the coroutine suspending, then the caller gets its return object right away. Nothing in the coroutine function body has executed yet. When the caller eventually performs a <code>co_await</code> on the return object, the return object resumes the coroutine.³ This is the model for “cold-start” coroutines which don’t begin executing until they are awaited.</p>
+<p>Conversely, there is a <code>final_suspend</code> at the end of the coroutine after the coroutine function body has finished. This gives you a chance to do any extra cleanup, as well as perform some other magic we’ll look at in a future installment.</p>
+<p>One way to improve in our implementation of the <code>coroutine_<wbr/>traits&lt;<wbr/>result_holder&gt;</code> promise type is our handling of <code>return_value</code>. First, there’s a simple improvement of accepting the value by reference rather than value, so we can forward it into the <code>result_<wbr/>holder</code>, thereby avoiding some extra move operations.</p>
+<pre>            <span style="color: blue;">void return_value(T&amp;&amp; v) const
+            {
+                holder.set_result(std::move(v));
+            }</span>
+
+            void return_value(T const&amp; v) const
+            {
+                holder.set_result(v);
+            }
+</pre>
+<p>But there’s a bigger problem to fix: We release the waiting coroutines too soon.⁴</p>
+<p>Consider a coroutine function that goes like this:</p>
+<pre>result_holder&lt;int&gt; SomethingAsync()
+{
+    auto guard = std::lock_guard{ mutex };
+    co_return 42;
+}
+</pre>
+<p>When this function reaches the <code>co_return</code>, the compiler generates a call to <code>return_<wbr/>value</code>, and our implementation of <code>return_<wbr/>value</code> sets the result into the holder, which immediately releases any waiting coroutines.</p>
+<p>But those waiting coroutines might want to acquire the same mutex that the <code>Something­Async</code> function still owns. You end up in a hurry-up-and-wait situation, where we wake up a coroutine, only to have it block immediately.</p>
+<p>The scenario is even more dire if we resume the waiting coroutines synchronously, because the waiting coroutine may want to acquire the mutex, but it can’t because <code>Something­Async</code> still owns the mutex, and <code>Something­Async</code> won’t resume execution until after <code>return_<wbr/>value</code> returns, which can’t happen because it’s waiting for the resumed coroutine to reach its next suspension point.</p>
+<p>More generally, local variables are still alive at the point of the <code>co_return</code>, so any resources held by those local variables are still active at the point of the <code>return_<wbr/>value</code>.</p>
+<p>The solution is to break the <code>return_<wbr/>value</code> into two steps. The first step executes immediately: Saving the value or exception into the <code>holder</code>. But we don’t wake up the waiting coroutines yet. Leave them suspended for a little while longer.</p>
+<p>After the return value or exception is captured, the local variables in the coroutine function body are destructed when we leave the scope of the <code>try</code> block that wraps the coroutine function body. Outside the <code>try</code> block, we perform a <code>final_<wbr/>suspend</code>, and that’s where we can take the second step of waking the waiting coroutines.</p>
+<p>To implement this, we need to add a few new methods to our <code>result_<wbr/>holder</code>:</p>
+<pre>struct result_holder_state
+{
+    ...
+
+    void stage_result(T v)
+    {
+        if (kind.load(std::memory_order_relaxed)
+            == result_kind::unset) {
+            new (std::addressof(result.wrap))
+                wrapper{ std::forward&lt;T&gt;(v) };
+            kind.store(result_kind::value,
+                std::memory_order_release);
+        }
+    }
+
+    void stage_exception(std::exception_ptr ex) noexcept
+    {
+        if (kind.load(std::memory_order_relaxed)
+            == result_kind::unset) {
+            new (std::addressof(result.ex))
+                std::exception_ptr{ std::move(ex) };
+            kind.store(result_kind::exception,
+                std::memory_order_release);
+        }
+    }
+
+    void complete(node_list&amp; list) noexcept
+    {
+        this-&gt;resume_all(list);
+    }
+};
+</pre>
+<p>We break the <code>set_<wbr/>result</code> into two parts: <code>stage_<wbr/>result</code> puts the result in the state, but doesn’t resume anybody yet. The resumption of waiting coroutines happens when we call <code>complete</code>.</p>
+<p>We hook up these methods to the main <code>result_<wbr/>holder</code> class:</p>
+<pre>struct result_holder
+{
+    ...
+
+    void stage_result(T result) const
+    {
+        this-&gt;get_state().stage_result(std::move(result));
+    }
+
+    void stage_exception(std::exception_ptr ex) const noexcept
+    {
+        this-&gt;get_state().stage_exception(std::move(ex));
+    }
+
+    void complete() const noexcept
+    {
+        this-&gt;action_impl(&amp;state::complete);
+    }
+};
+</pre>
+<p>And we revise our promise to use these new methods:</p>
+<pre>            void return_value(T&amp;&amp; v) const
+            {
+                holder.stage_result(std::move(v));
+            }
+
+            void return_value(T const&amp; v) const
+            {
+                holder.stage_result(v);
+            }
+
+            suspend_never final_suspend() const noexcept
+            {
+                holder.complete();
+                return{};
+            }
+</pre>
+<p>Okay, so we’ve fixed the problem of resuming the waiting coroutines too soon. There’s another improvement we can make, but there’s another topic I want to cover first, which I’ll do next time.</p>
+<p>¹ The actual transformation is more complicated than described here, but the simplified version will suffice for now. One discrepancy that is worth noting here is that an exception that occurs when creating the initial suspend object is <i>not</i> caught by the <code>try</code> statement; instead, it propagates synchronously out of the coroutine. However, an exception that occurs <i>during</i> the <code>co_await</code> is indeed caught by the <code>try</code> statement and ends up captured into the promise.</p>
+<p>² If there is a function try around the entire function, the <code>try</code> is considered to be part of the function body. See <b>[dcl.fct.def.general]</b> for the formal definition of “function body”. This transformation of function try is performed even before the transformation described above.</p>
+<p>³ I’m assuming of course that you provided the return object a way to resume the coroutine when it is awaited. We’ll explore possible ways of doing this in future installments.</p>
+<p>⁴ My thanks to Gor Nishanov for pointing out this issue to me.</p>
+
+
+</body>

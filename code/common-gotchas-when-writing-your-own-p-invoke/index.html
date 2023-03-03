@@ -1,0 +1,153 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Common gotchas when writing your own p/invoke</h1>  <!-- .entry-meta -->
+
+<p>
+If you’re looking to get into some p/invoke action,
+you’d be well-served to check out the
+<a href="http://pinvoke.net/">pinvoke wiki</a>
+to see if somebody else has done it too.
+If what you need isn’t there, you may end up forced to write your own,
+and here are some gotchas I’ve seen people run into:
+</p>
+<ul>
+<li>
+    C++ <code>bool</code> and Win32 <code>BOOLEAN</code>
+    are not the same as C# <code>bool</code>
+    (aka <code>System.Boolean</code>).
+    In Win32, <code>BOOL</code> is a 4-byte type,
+    and <code>BOOLEAN</code> is a 1-byte type.
+    [<i>See also
+    <a href="http://blogs.msdn.com/oldnewthing/archive/2009/08/13/9867383.aspx#9870333">
+    MadQ’s remarks about <code>VARIANT_BOOL</code></a></i>.]
+    Meanwhile, C++ <code>bool</code> is not standardized by Win32,
+    so the size will vary based on your compiler, but most compilers
+    use a 1-byte value.
+    And then C# is even weirder:
+    The <code>bool</code> is a 1-byte type,
+    <a href="http://blogs.msdn.com/jaredpar/archive/2008/10/14/pinvoke-and-bool-or-should-i-say-bool.aspx">
+    but it marshals as a 4-byte type by default</a>.
+<li>Win32 <code>char</code> is not the same as C# <code>char</code>
+    (aka <code>System.Char</code>).
+    In C#, <code>char</code> is a Unicode character (two bytes), whereas in
+    C/C++ under Win32 it is an ANSI character (one byte).
+<li>Win32 <code>long</code> is not the same as C# <code>long</code>
+    (aka <code>System.Int64</code>).
+    In C#, <code>long</code> is 64-bit value, whereas in
+    C/C++ under Win32 it is a 32-bit value.
+<li>If memory is allocated and freed across the interop boundary,
+    make sure both sides are using the same allocator.
+    It is my understanding that
+    <a href="http://msdn.microsoft.com/en-us/library/f1cf4kkz.aspx">
+    the CLR uses <code>CoTaskMemAlloc</code>/<code>CoTaskMemFree</code>
+    by default</a>.
+    If your Win32 function doesn’t use <code>CoTaskMemAlloc</code>,
+    you’ll have to teach the CLR which allocator you really want.
+<li>When laying out structures, you have to watch out for alignment.
+</li></li></li></li></li></ul>
+<p>
+That last one is particularly gnarly on 64-bit systems,
+where alignment requirements are less forgiving than on x86.
+The structure declarations on pinvoke.net tend to ignore 64-bit
+issues.
+For example, the declaration of the <code>INPUT</code> structure
+(<a href="http://pinvoke.net/default.aspx/user32/SendInput(2008-01-24-03-56-33.4726--69.14.194.68).html">as of this writing</a>—it’s a wiki so it’s probably changed
+by the time you read this) reads as follows:
+</p>
+<blockquote class="q">
+<pre>
+[StructLayout(LayoutKind.Explicit)]struct INPUT {
+  [FieldOffset(0)] int type;
+  [FieldOffset(4)] MOUSEINPUT mi;
+  [FieldOffset(4)] KEYBDINPUT ki;
+  [FieldOffset(4)] HARDWAREINPUT hi;
+}
+</pre>
+</blockquote>
+<p>
+This structure layout is correct for 32-bit Windows,
+but it’s incorrect for 64-bit Windows.
+</p>
+<p>
+Let’s take a look at that <code>MOUSEINPUT</code> structure,
+for starters.
+</p>
+<pre>
+typedef struct tagMOUSEINPUT {
+    LONG    dx;
+    LONG    dy;
+    DWORD   mouseData;
+    DWORD   dwFlags;
+    DWORD   time;
+    ULONG_PTR dwExtraInfo;
+} MOUSEINPUT, *PMOUSEINPUT, FAR* LPMOUSEINPUT;
+</pre>
+<p>
+In 64-bit Windows, the <code>LONG</code> and <code>DWORD</code>
+members are four bytes, but the <code>dwExtraInfo</code> is
+a <code>ULONG_PTR</code>, which is eight bytes on a 64-bit machine.
+Since
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/04/22/9560726.aspx">
+Windows assumes /Zp8 packing</a>,
+the <code>dwExtraInfo</code> must be aligned on an 8-byte boundary,
+which forces four bytes of padding to be inserted after the
+<code>time</code> to get the <code>dwExtraInfo</code> to align
+properly.
+And in order for all this to work, the <code>MOUSEINPUT</code>
+structure itself must be 8-byte aligned.
+</p>
+<p>
+Now let’s look at that <code>INPUT</code> structure again.
+Since the <code>MOUSEINPUT</code> comes after the <code>type</code>,
+there also needs to be padding between the <code>type</code>
+and the <code>MOUSEINPUT</code> to get the <code>MOUSEINPUT</code>
+back to an 8-byte boundary.
+In other words, the offset of <code>mi</code> in the <code>INPUT</code>
+structure is <u>8</u> on 64-bit Windows, not 4.
+</p>
+<p>
+Here’s how I would’ve written it:
+</p>
+<pre>
+// This generates the anonymous union
+[StructLayout(LayoutKind.Explicit)] struct INPUT_UNION {
+  [FieldOffset(0)] MOUSEINPUT mi;
+  [FieldOffset(0)] KEYBDINPUT ki;
+  [FieldOffset(0)] HARDWAREINPUT hi;
+};
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/08/13/9867383.aspx#9869008">[StructLayout(LayoutKind.Sequential)]</a> struct INPUT {
+  int type;
+  INPUT_UNION u;
+}
+</pre>
+<p>
+I introduce a helper structure to represent the anonymous union
+that is the second half of the Win32 <code>INPUT</code> structure.
+By doing it this way, I let somebody else worry about the
+alignment,
+and it’ll be correct for both 32-bit and 64-bit Windows.
+</p>
+<pre>
+static public void Main()
+{
+  Console.WriteLine(Marshal.OffsetOf(typeof(INPUT), "u"));
+}
+</pre>
+<p>
+On a 32-bit system, this prints 4,
+and on a 64-bit system, it prints 8.
+The downside is that you have to type an extra <code>u.</code>
+when you access the <code>mi</code>, <code>ki</code> or <code>hi</code>
+members.
+</p>
+<pre>
+input i;
+i.<font color="blue">u.</font>mi.dx = 0;
+</pre>
+<p>
+(I haven’t checked what the
+<a href="http://www.codeplex.com/Release/ProjectReleases.aspx?ProjectName=clrinterop&amp;ReleaseId=14120">
+PInvoke Interop Assistant</a>
+comes up with for the <code>INPUT</code> structure.)</p>
+
+
+</body>

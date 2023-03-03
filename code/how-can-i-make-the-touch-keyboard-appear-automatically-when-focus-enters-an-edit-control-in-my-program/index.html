@@ -1,0 +1,84 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I make the touch keyboard appear automatically when focus enters an edit control in my program?</h1>  <!-- .entry-meta -->
+
+<p>By default, the Windows 8 touch keyboard does not appear automatically when focus is placed on an edit control in a desktop program. To change the behavior for your program, just use this one weird trick: </p>
+<pre>
+HRESULT EnableTouchKeyboardFocusTracking()
+{
+  ComPtr&lt;IInputPanelConfiguration&gt; configuration;
+  HRESULT hr =
+    CoCreateInstance(__uuidof(InputPanelConfiguration), nullptr,
+      CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&amp;configuration));
+  if (SUCCEEDED(hr)) {
+    hr = configuration-&gt;<a href="https://msdn.microsoft.com/en-us/library/windows/desktop/jj126268(v=vs.85).aspx">EnableFocusTracking</a>();
+  }
+  return hr;
+}
+</pre>
+<p>You create an instance of the <code>Input­Panel­Configuration</code> object and ask it to enable focus tracking. This is a per-process setting, and once set, it cannot be unset. </p>
+<p>Let’s use this function in a Little Program so you can play with it. Most of the work in setting up the program is creating two controls: an edit control and a button. If I had just one control, then you wouldn’t be able to see how the keyboard automatically appears and disappears when focus moves between an edit control and some other type of control. </p>
+<p>Remember that Little Programs do little to no error checking. Start with <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/23/54576.aspx">the scratch</a> program and make these changes: </p>
+<pre>
+#define STRICT
+#include ...
+<font color="blue">#include &lt;shobjidl.h&gt;
+#include &lt;inputpanelconfiguration.h&gt;
+#include &lt;wrl\client.h&gt;
+#include &lt;wrl\event.h&gt;
+
+using namespace Microsoft::WRL;</font>
+
+HINSTANCE g_hinst;                          /* This application's HINSTANCE */
+HWND g_hwndChild;                           /* Optional child window */
+<font color="blue">HWND g_hwndButton;
+HWND g_hwndLastFocus;
+
+void
+DoLayout(HWND hwnd, int cx, int cy)
+{
+  if (g_hwndChild) {
+    MoveWindow(g_hwndChild, 0, 0, cx - 100, cy, TRUE);
+  }
+  if (g_hwndButton) {
+    MoveWindow(g_hwndButton, cx - 100, 0, 100, 50, TRUE);
+  }
+}</font>
+
+void
+OnSize(HWND hwnd, UINT state, int cx, int cy)
+{
+  <font color="blue">DoLayout(hwnd, cx, cy);</font>
+}
+
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  <font color="blue">g_hwndChild = CreateWindow(TEXT("edit"), nullptr,
+    WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE,
+    0, 0, 100, 100, hwnd, nullptr, g_hinst, 0);
+  g_hwndButton = CreateWindow(TEXT("button"), TEXT("Send"),
+    WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+    0, 0, 100, 100, hwnd, nullptr, g_hinst, 0);
+
+  EnableTouchKeyboardFocusTracking();</font>
+  return TRUE;
+}
+
+<font color="blue">// <a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/05/21/10527168.aspx">OnActivate</a> incorporated by reference.
+
+ HANDLE_MSG(hwnd, WM_ACTIVATE, OnActivate);</font>
+
+BOOL
+InitApp(void)
+{
+  ...
+  wc.hbrBackground = (HBRUSH)(<font color="blue">COLOR_APPWORKSPACE</font> + 1);
+  ...
+}
+</pre>
+<p>We position the edit control on the left hand side of the window and put the button in the upper right corner. We enable focus tracking on the touch keyboard, and just to make it easier to see where the edit control is, we give the frame with the app-workspace color. </p>
+<p>Although we summon the touch keyboard when focus enters the edit control, we do nothing to prevent the keyboard from covering what the user is typing. This is one of the reasons that the touch keyboard does not appear automatically when focus is placed in an edit control of a desktop program. It would end up covering the edit control the user is trying to type into! </p>
+<p>We’ll work on fixing this problem next week. </p>
+
+
+</body>

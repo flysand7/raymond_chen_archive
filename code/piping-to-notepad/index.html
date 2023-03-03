@@ -1,0 +1,76 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Piping to notepad</h1>  <!-- .entry-meta -->
+
+<p>
+In honor of
+<a href="http://notepadconf.com/">NotepadConf</a>‘s
+new
+<a href="https://www.kickstarter.com/projects/1203633826/notepad-conf">
+KickStarter video</a>,
+today’s Little Program
+takes its stdin and puts it in a Notepad window.
+</p>
+<pre>
+using System;
+using System.Diagnostics;
+using System.Windows.Automation;
+using System.Runtime.InteropServices;
+class Program
+{
+  static void Main(string[] args)
+  {
+    // Slurp stdin into a string.
+    var everything = Console.In.ReadToEnd();
+    // Fire up a brand new Notepad.
+    var process = new Process();
+    process.StartInfo.UseShellExecute = false;
+    process.StartInfo.FileName = @"C:\Windows\System32\notepad.exe";
+    process.Start();
+    process.WaitForInputIdle();
+    // Find the Notepad edit control.
+    var edit = AutomationElement.FromHandle(process.MainWindowHandle)
+        .FindFirst(TreeScope.Subtree,
+                   new PropertyCondition(
+                       AutomationElement.ControlTypeProperty,
+                       ControlType.Document));
+    // Shove the text into that window.
+    var nativeHandle = new IntPtr((int)edit.GetCurrentPropertyValue(
+                      AutomationElement.NativeWindowHandleProperty));
+    SendMessage(nativeHandle, WM_SETTEXT, IntPtr.Zero, everything);
+  }
+  [DllImport("user32.dll", EntryPoint="SendMessage", <a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/08/12/10549258.aspx">CharSet=CharSet.Unicode</a>)]
+  static extern IntPtr SendMessage(
+    IntPtr windowHandle, int message, IntPtr wParam, string text);
+  const int WM_SETTEXT = 0x000C;
+}
+</pre>
+<p>
+The comments pretty much lay out the steps.
+The part that may not be obvious is the part that
+deals with UI Automation:
+We take the main Notepad window,
+then ask UI Automation to find Document element inside it.
+</p>
+<p>
+From that element, we extract the window handle,
+then drop to Win32 and
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/08/21/54675.aspx">
+send a <code>WM_SET­TEXT</code> message</a>
+to jam the text into the Notepad window.
+</p>
+<p>
+If you save this program under the name <code>2np</code>,
+then you can do
+</p>
+<pre>
+dir | 2np
+</pre>
+<p>
+and it will open a Notepad window with a directory listing inside it.
+</p>
+<p>
+Change one line of code, and this program will launch Wordpad
+instead.</p>
+
+
+</body>

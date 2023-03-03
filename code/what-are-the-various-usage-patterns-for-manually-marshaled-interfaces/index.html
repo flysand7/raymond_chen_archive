@@ -1,0 +1,95 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What are the various usage patterns for manually-marshaled interfaces?</h1>  <!-- .entry-meta -->
+
+<p>COM organizes threads into <i>apartments</i>. All the thread in an apartment have access to the same objects, and if you want to grant access to another apartment, you have to do it by a mechanism known as <i>marshaling</i>.</p>
+<p>The easiest way to marshal an object’s interface is to ask somebody else to manage it for you: The <code>Ro­Get­Agile­Reference</code> function creates a new object that represents an <i>agile reference</i> to the original object. In COM, the term <i>agile</i> means that it can be used in any apartment. You can then ask that agile reference to <i>resolve</i> a reference to the original interface, and it will give you an object which you can use from the apartment doing the resolving.</p>
+<p><b>Bonus reading</b>: <a href="/code/when-should-i-use-delayed-marshaling-when-creating-an-agile-reference"> When should I use delayed-marshaling when creating an agile reference</a>?</p>
+<p>A lower-level method is to use <code>Co­Marshal­Inter­Thread­Interface­In­Stream</code> to take an object interface and save it into a byte stream. That stream is a magic cookie that can be used to recover the original interface from any apartment. And since it’s a stream of bytes, you have any number of ways of sharing those bytes with another thread: You could save them in a global variable, you could write them to a named pipe, or you could print them on a piece of paper, bury it in the ground, then come back and dig up the paper and OCR the digits. Whatever the mechanism, you can pass the bytes to <code>Co­Unmarshal­Interface</code> (or its own helper function <code>Co­Get­Interface­And­Release­Stream</code>) and it will produce an object that you can use.</p>
+<p>But we’re going to look at what happens at an even lower level: The <code>Co­Marshal­Interface</code> function is the one that generates the stream. In addition to the obvious parameters (the stream to which to write the bytes, the interface being marshaled, and an interface pointer), there are two somewhat more mysterious parameters: The destination context and the marshal flags.</p>
+<p>The destination context describes <i>where</i> you intend to unmarshal the object. Here are the destination contexts in order of distance from the source:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Flag</th>
+<th>Meaning</th>
+<th>Group</th>
+</tr>
+<tr>
+<td><code>MSHCTX_<wbr/>CROSSCTX</code></td>
+<td>Another context in the same apartment.</td>
+<td rowspan="2">Same-process</td>
+</tr>
+<tr>
+<td><code>MSHCTX_<wbr/>INPROC</code></td>
+<td>Another apartment in the same process.</td>
+</tr>
+<tr>
+<td><code>MSHCTX_<wbr/>LOCAL</code></td>
+<td>Another process on the same computer<br/>
+which can share memory with the source.</td>
+<td rowspan="2">Same-machine</td>
+</tr>
+<tr>
+<td><code>MSHCTX_<wbr/>NOSHAREDMEM</code></td>
+<td>Another process on the same computer<br/>
+which cannot share memory with the source.</td>
+</tr>
+<tr>
+<td><code>MSHCTX_<wbr/>DIFFERENT­MACHINE</code></td>
+<td>Another computer.</td>
+<td rowspan="2">Cross-machine</td>
+</tr>
+</tbody>
+</table>
+<p>Marshaling across integrity levels would be a case where the source and destination processes cannot share memory.</p>
+<p>Although there are five different marshaling contexts, most marshaling code cares only about which group they belong to: The same-process group (<code>CROSSCTX</code> and <code>INPROC</code>) the same-machine group (<code>LOCAL</code> and <code>NOSHAREDMEM</code>) and the cross-machine group (<code>DIFFERENT­MACHINE</code>).</p>
+<p>Meanwhile, the marshal flags describe <i>how</i> you intend to unmarshal the object.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Flag</th>
+<th>Number of times to unmarshal</th>
+<th>Strong or weak reference</th>
+</tr>
+<tr>
+<td><code>MSHLFLAGS_<wbr/>NORMAL</code></td>
+<td>Exactly once.</td>
+<td>Strong</td>
+</tr>
+<tr>
+<td><code>MSHLFLAGS_<wbr/>TABLESTRONG</code></td>
+<td>Any number of times (possibly zero).</td>
+<td>Strong</td>
+</tr>
+<tr>
+<td><code>MSHLFLAGS_<wbr/>TABLEWEAK</code></td>
+<td>Any number of times (possibly zero).</td>
+<td>Weak</td>
+</tr>
+</tbody>
+</table>
+<p>The first case is called “normal” because it is the most common case of marshaling: You have a single reference that you want to transfer to another apartment. We’ll see that knowing in advance that this is how you intend to marshal the object interface allows for some optimizations.</p>
+<p>The last two cases are for where the object can be unmarshaled any number of times (possibly zero). They differ in whether the stream itself keeps the object alive.</p>
+<p>The marshal flags control the usage pattern for managing the stream.</p>
+<p>If you choose either of the “table” (reusable) marshaling flags, the sequence is</p>
+<ul>
+<li>Call <code>Co­Marshal­Interface</code> to write the bytes to the stream.</li>
+<li>Call <code>Co­Unmarshal­Interface</code> to produce an object from the stream. Repeat this as many times as you like, or skip it entirely.</li>
+<li>Call <code>Co­Release­Marshal­Data</code> to signal that you are not going to be unmarshaling from the stream any more.</li>
+</ul>
+<p>The difference between the two “table” versions is whether the stream itself keeps the object alive. If you choose a weak reference, then it is your responsibility not to call <code>Co­Unmarshal­Interface</code> once the object has been destroyed. (Typically, you accomplish this by ensuring that the stream’s lifetime is encompassed by the object’s lifetime.)</p>
+<p>If you choose “normal” (one-time) marshaling, the sequence is</p>
+<ul>
+<li>Call <code>Co­Marshal­Interface</code> to write the bytes to the stream.</li>
+<li>Either
+<ul>
+<li>Call <code>Co­Unmarshal­Interface</code> to produce an object from the stream, or</li>
+<li>Call <code>Co­Release­Marshal­Data</code> to abandon the operation.</li>
+</ul>
+</li>
+</ul>
+<p>In the case of “normal” marshaling, once you call <code>Co­Unmarshal­Interface</code> or <code>Co­Release­Marshal­Data</code>, the stream can no longer be used further. Conceptually, you can imagine that calling <code>Co­Unmarshal­Interface</code> “normal” marshaling is like “table strong” marshaling, with the added feature that the <code>Co­Unmarshal­Interface</code> implicitly performs a <code>Co­Release­Marshal­Data</code> when it’s done.</p>
+<p>Next time, we’ll start looking at the mechanics of how COM marshaling is performed.</p>
+
+
+</body>

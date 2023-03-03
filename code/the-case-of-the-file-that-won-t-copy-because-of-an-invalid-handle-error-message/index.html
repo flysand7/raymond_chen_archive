@@ -1,0 +1,277 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the file that won't copy because of an Invalid Handle error message</h1>  <!-- .entry-meta -->
+
+<p>
+A customer reported that they had a file that was “haunted”
+on their machine:
+Explorer was unable to copy the file.
+If you did a copy/paste, the copy dialog displayed an error.
+</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border: solid 3px #ebebeb;font-family: Segoe UI, sans-serif;color: black;background-color: white">
+<tr>
+<td align="center" style="background-color: #ebebeb;padding: 5px">1 Interrupted Action</td>
+</tr>
+<tr>
+<td style="border: solid 1px #dadada;padding: 10px">
+<p>Invalid file handle</p>
+<table border="0" cellpadding="0" cellspacing="0">
+<tr>
+<td style="font-size: 40px" valign="middle">⚿ </td>
+<td>Contract Proposal<br/>
+    Size: 110 KB<br/>
+    Date modified: 10/31/2013 7:00 AM</td>
+</tr>
+</table>
+</td>
+</tr>
+</table>
+<p>
+Okay, time to roll up your sleeves and get to work.
+This investigation took several hours, but you’ll be able to read
+it in ten minutes
+because I’m deleting all the dead ends and red herrings,
+and because I’m skipping over a lot of horrible grunt work,
+like tracing a variable in memory backward in time to see where
+it came from.¹
+</p>
+<p>
+The <i>Invalid file handle</i> error was most likely coming from
+the error code
+<code>ERROR_INVALID_HANDLE</code>.
+Some tracing of handle operations
+showed that a call to
+<code>Get­File­Information­By­Handle</code>
+was being passed <code>INVALID_FILE_HANDLE</code>
+as the file handle,
+and as you might expect,
+that results in the invalid handle error code.
+</p>
+<p>
+Okay, but why was Explorer’s file copying code getting confused
+and trying to get information from an invalid handle?
+</p>
+<p>
+Code inspection showed that the handle in question is normally
+set to a valid handle during the file copying operation.
+So the new question is,
+“Why <i>wasn’t</i> this variable set to a valid handle?”
+</p>
+<p>
+Debugging why something didn’t happen is harder than debugging
+why it <i>did</i> happen,
+because you can’t set a breakpoint of the form
+“Break when X doesn’t happen.”
+Instead
+you have to set a breakpoint in the code that you’re
+pretty sure is being executed,
+then trace forward to see where execution strays from the intended path.
+</p>
+<p>
+The heavy lifting of the file copy is done by the
+<code>Copy­File2</code> function.
+Explorer uses the
+<code>Copy­File2­Progress­Routine</code> callback
+to get information about the copy operation.
+In particular, it gets a handle to the destination file by
+making a duplicate of the
+<code>hDestination­File</code> in the
+<code>COPY­FILE2_MESSAGE</code> structure.
+The question is now,
+“Why wasn’t Explorer told about the destination file that
+was the destination of the file copy?”
+</p>
+<p>
+Tracing through the file copy operation showed that the file
+copy operation actually <i>failed</i>
+because the destination file already exists.
+The failure would normally be reported as
+<code>ERROR_FILE_EXISTS</code>,
+and the offending
+<code>Get­File­Information­By­Handle</code>
+would never have taken place.
+Somehow the file copy was being treated as having succeeded
+even though it failed.
+That’s why we’re using an invalid handle.
+</p>
+<p>
+The <code>Copy­File2</code> function goes roughly like this:
+</p>
+<pre>
+HRESULT CopyFile2()
+{
+ BOOL fSuccess = FALSE;
+ HANDLE hSource = OpenTheSourceFile(); // calls SetLastError() on failure
+ if (hSource != INVALID_HANDLE_VALUE)
+ {
+  HANDLE hDest = CreateTheDestinationFile(); // calls SetLastError() on failure
+  if (m_hDest != INVALID_HANDLE_VALUE)
+  {
+   if (CopyTheStuff(hSource, hDest)) // calls SetLastError() on failure
+   {
+    fSuccess = TRUE;
+   }
+   CloseHandle(hDest);
+  }
+  CloseHandle(hSource);
+ }
+ return fSuccess ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+}
+</pre>
+<p>
+<b>Note</b>: This is not the actual code,
+so don’t go whining about the coding style or the inefficiencies.
+But it gets the point across for the purpose of this story.
+</p>
+<p>
+The <code>Create­The­Destination­File</code> function
+failed because the file already existed,
+and it called <code>Set­Last­Error</code> to set the
+error code to
+<code>ERROR_FILE_EXISTS</code>,
+expecting the error code to be picked up when it returned to the
+<code>Copy­File2</code> function.
+</p>
+<p>
+On the way out,
+the <code>Copy­File2</code> function
+makes two calls to <code>Close­Handle</code>.
+<code>Close­Handle</code> on a valid handle is not supposed
+to modify the thread error state,
+but somehow stepping over the <code>Close­Handle</code>
+call showed that the error code set by
+<code>Create­The­Destination­File</code> was
+being reset back to <code>ERROR_SUCCESS</code>.
+(Mind you, this was a poor design on the part of the
+<code>Copy­File2</code> function to leave the error code
+lying around for an extended period,
+since the error code is highly volatile, and you would be best
+served to get it while it’s still there.)
+</p>
+<p>
+Closer inspection showed that the
+<code>Close­Handle</code> function
+<i>had been hooked by some random DLL that had been
+injected into Explorer</i>.
+</p>
+<p>
+The hook function was somewhat complicated
+(more time spent trying to reverse-engineer the hook function),
+but in simplified form, it went something like this:
+</p>
+<pre>
+BOOL Hook_CloseHandle(HANDLE h)
+{
+ HookState *state = (HookState*)TlsGetValue(g_tlsHookState);
+ if (!state || !state-&gt;someCrazyFlag) {
+  return Original_CloseHandle(h);
+ }
+ ... crazy code that runs if the flag is set ...
+}
+</pre>
+<p>
+Whatever that crazy flag was for,
+it wasn’t set on the current thread,
+so the intent of the hook was to have no effect in that case.
+</p>
+<p>
+But it <i>did</i> have an effect.
+</p>
+<p>
+The
+<a href="http://msdn.microsoft.com/library/ms686812">
+<code>Tls­Get­Value</code> function</a>
+modifies the thread error state,
+even on success.
+Specifically, if it successfully retrieves the thread local storage,
+it sets the thread error state to
+<code>ERROR_SUCCESS</code>.
+</p>
+<p>
+Okay, now you can put the pieces together.
+</p>
+<ul>
+<li>The file copy failed because the destination already exists.
+<li>The <code>Create­The­Destination­File</code>
+    function called
+    <code>Set­Last­Error(ERROR_FILE_EXISTS)</code>.
+<li>The file copy function did some cleaning up before retrieving
+    the error code.
+<li>The cleanup functions are not expected to alter the thread error state.
+<li>But the cleanup function had been patched by a rogue DLL,
+    and the hook function <i>did</i> alter the thread error state.
+<li>This alteration caused the file copy function to think that the
+    file was successfully copied even though it wasn't.
+<li>In particular, the caller of the file copy function expects
+    to have received a handle to the copy during one of the copy callbacks,
+    but the callback never occurred because the file was never copied.
+<li>The variable that holds the handle therefore remains uninitialized.
+<li>This generates an invalid handle error when the code tries to use
+    that handle.
+<li>This error is shown to the user.
+</li></li></li></li></li></li></li></li></li></li></ul>
+<p>
+An injected DLL that patched a system call
+resulted in Explorer looking like an idiot.
+(As Alex and Gaurav well know,
+Explorer is perfectly capable of looking like an idiot without any help.)
+</p>
+<p>
+We were quite fortunate that the error
+manifested itself as a failure to copy the file.
+Imagine if Explorer didn't use
+<code>Get­File­Information­By­Handle</code>
+to get information about the file that was copied.
+The <code>Copy­File2</code> function returns <code>S_OK</code>
+<i>even though it actually failed and no file was copied</i>.
+Explorer would have happily reported,
+"Congratulations, your file was copied successfully!"
+</p>
+<p>
+Stop and think about that for a second.
+</p>
+<p>
+A rogue DLL injected into Explorer patches a system call incorrectly
+and ends up causing all calls to
+<code>Copy­File2</code> to report success even if they failed.
+The user then deletes the original, thinking that the file was safely
+at the destination,
+then later discovers that, oops, looks like the file was not copied
+after all.
+Sorry, it looks like that rogue DLL (which I'm sure had the best
+of intentions) had a subtle bug that caused you to <i>lose all your data</i>.
+</p>
+<p>
+This is why, as a general rule,
+Windows considers DLL injection and API hooking to be unsupported.
+If you hook an API, you not only have to emulate all the documented
+behavior, you also have to emulate all the <i>undocumented</i> behavior
+that applications unwittingly rely on.
+</p>
+<p>
+(Yes, we contacted the vendor of the rogue DLL.
+Ideally, they would get rid of their crazy DLL injection and API hooking
+because, y'know, <i>unsupported</i>.
+But my guess is that they are going to stick with it.
+At least we can try to get them to fix their bug.)
+</p>
+<p>
+¹
+To do this, you identify the variable
+and set a breakpoint when that variable is allocated.
+(This can be tricky if the variable belongs to a class with
+hundreds of instances;
+you have to set the breakpoint on the correct instance!)
+When that breakpoint is hit,
+you set a write breakpoint on the variable,
+then resume execution.
+Then you hope that the breakpoint gets hit.
+When it does,
+you can see who set the value.
+"Oh, the value was copied from that other variable."
+Now you repeat the exercise with that other variable,
+and so on.
+This is very time-consuming but largely uninteresting
+so I've skipped over it.</p>
+
+
+</body>

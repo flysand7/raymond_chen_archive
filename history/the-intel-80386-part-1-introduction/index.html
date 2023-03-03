@@ -1,0 +1,242 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Intel 80386, part 1: Introduction</h1>  <!-- .entry-meta -->
+
+<p>Windows NT stopped supporting the Intel 80386 processor with Windows 4.0, which raised the minimum requirements to an Intel 80486. Therefore, the Intel 80386 technically falls into the category of “processor that Windows once supported but no longer does.” This series focuses on the portion of the x86 instruction set available on an 80386, although I will make notes about future extensions in a special chapter. </p>
+<p>The Intel 80386 is the next step in the evolution of the processor series that started with the Intel 8086 (which was itself inspired by the Intel 8080, which was in turn inspired by the Intel 8008). Even at this early stage, it had a long history, which helps to explain many of its strange corners. </p>
+<p>As with all the processor retrospective series, I’m going to focus on how Windows NT used the Intel 80386 in user mode because the original audience for all of these discussions was user-mode developers trying to get up to speed debugging their programs. Normally, this means that I omit instructions that you are unlikely to see in compiler-generated code. However, I’ll set aside a day to cover some of the legacy instructions that are functional but not used in practice. </p>
+<p>The Intel 80386 has eight integer registers, each 32 bits wide. </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Meaning</th>
+<th>Preserved?</th>
+</tr>
+<tr>
+<td><var>eax</var></td>
+<td>accumulator</td>
+<td>No</td>
+</tr>
+<tr>
+<td><var>ebx</var></td>
+<td>base register</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>ecx</var></td>
+<td>count register</td>
+<td>No</td>
+</tr>
+<tr>
+<td><var>edx</var></td>
+<td>data register</td>
+<td>No</td>
+</tr>
+<tr>
+<td><var>esi</var></td>
+<td>source index</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>edi</var></td>
+<td>destination index</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>ebp</var></td>
+<td>base pointer</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>esp</var></td>
+<td>stack pointer</td>
+<td>Sort of</td>
+</tr>
+</table>
+<p>The register names are rather unusual due to <a href="https://devblogs.microsoft.com/oldnewthing/">the history of the processor line</a>. That history also explains why the instruction encoding uses the non-alphabetical-order <var>eax</var>, <var>ecx</var>, <var>edx</var>, <var>ebx</var>. </p>
+<p>Also for historical reasons, there are also names for selected partial registers. </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td><var>ax</var></td>
+<td>Lower 16 bits of <var>eax</var></td>
+</tr>
+<tr>
+<td><var>bx</var></td>
+<td>Lower 16 bits of <var>ebx</var></td>
+</tr>
+<tr>
+<td><var>cx</var></td>
+<td>Lower 16 bits of <var>ecx</var></td>
+</tr>
+<tr>
+<td><var>dx</var></td>
+<td>Lower 16 bits of <var>edx</var></td>
+</tr>
+<tr>
+<td><var>si</var></td>
+<td>Lower 16 bits of <var>esi</var></td>
+</tr>
+<tr>
+<td><var>di</var></td>
+<td>Lower 16 bits of <var>edi</var></td>
+</tr>
+<tr>
+<td><var>bp</var></td>
+<td>Lower 16 bits of <var>ebp</var></td>
+</tr>
+<tr>
+<td><var>sp</var></td>
+<td>Lower 16 bits of <var>esp</var></td>
+</tr>
+<tr>
+<td><var>ah</var></td>
+<td>Upper 8 bits of <var>ax</var></td>
+</tr>
+<tr>
+<td><var>al</var></td>
+<td>Lower 8 bits of <var>ax</var></td>
+</tr>
+<tr>
+<td><var>bh</var></td>
+<td>Upper 8 bits of <var>bx</var></td>
+</tr>
+<tr>
+<td><var>bl</var></td>
+<td>Lower 8 bits of <var>bx</var></td>
+</tr>
+<tr>
+<td><var>ch</var></td>
+<td>Upper 8 bits of <var>cx</var></td>
+</tr>
+<tr>
+<td><var>cl</var></td>
+<td>Lower 8 bits of <var>cx</var></td>
+</tr>
+<tr>
+<td><var>dh</var></td>
+<td>Upper 8 bits of <var>dx</var></td>
+</tr>
+<tr>
+<td><var>dl</var></td>
+<td>Lower 8 bits of <var>dx</var></td>
+</tr>
+</table>
+<p>Operations on these register fragments affect only the indicated bits; the other bits of the 32-bit register remain unaffected. For example, storing a value into the <var>ax</var> register leaves the most-significant 16 bits of the <var>eax</var> register unchanged.¹ </p>
+<p>Windows NT requires that the stack be kept on an 4-byte boundary. There is no red zone. </p>
+<p>The 80386 also has eight 80-bit extended precision floating point registers named <var>st0</var> through <var>st7</var>. The floating point system is rather unusual: In addition to the fact that the registers are extended precision, the programming model for the floating point registers is as a stack. Values are pushed onto the floating point stack, operations are performed on the stack, and results are popped off. </p>
+<p>Floating point support is optional and is provided by the 80387 coprocessor chip, which runs concurrently with the main CPU. If a floating point instruction is executed on a system that lacks a floating point coprocessor, the floating point instruction traps, and the kernel emulates the instruction. </p>
+<p>There are also some non-integer registers which are difficult/impossible to get to, but which still participate in user-mode instructions. </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Meaning</th>
+<th>Notes</th>
+</tr>
+<tr>
+<td><var>eip</var></td>
+<td>instruction pointer</td>
+<td>program counter</td>
+</tr>
+<tr>
+<td><var>eflags</var></td>
+<td>flags</td>
+<td></td>
+</tr>
+<tr>
+<td><var>cs</var></td>
+<td>code segment</td>
+<td>Don’t worry about it</td>
+</tr>
+<tr>
+<td><var>ds</var></td>
+<td>data segment</td>
+<td>Don’t worry about it</td>
+</tr>
+<tr>
+<td><var>es</var></td>
+<td>extra segment</td>
+<td>Don’t worry about it</td>
+</tr>
+<tr>
+<td><var>fs</var></td>
+<td>F segment</td>
+<td>For TEB access</td>
+</tr>
+<tr>
+<td><var>gs</var></td>
+<td>G segment</td>
+<td>Not used</td>
+</tr>
+</table>
+<p>Windows NT uses the 80386 in flat mode, which means that applications see a contiguous 32-bit address space. The segment registers largely don’t come into play when in flat mode, with the exception of the <var>fs</var> register, which we’ll learn about more when we get to the TEB. </p>
+<p>The flags register is updated by many instructions. We’ll learn more about flags when we study conditionals. </p>
+<p>The 80386 is unusual in that it supports multiple calling conventions. Common to all the calling conventions are the register preservation rules and the return value rules: The function return value is placed in <var>eax</var>. If the return value is a 64-bit value, then the most significant 32 bits are returned in <var>edx</var>. If the return value is a floating point value, it is returned in <var>st0</var>, and possibly <var>st1</var> (for complex numbers). </p>
+<p>Furthermore, link-time code generation is permitted to manufacture ad hoc calling conventions which may not even follow the register preservation rules. <i>It’s crazy free-for-all time</i>. </p>
+<p>The architectural names for data sizes are as follows: </p>
+<ul>
+<li><b>byte</b>: 8-bit value</li>
+<li><b>word</b>: 16-bit value</li>
+<li><b>dword</b> (doubleword): 32-bit value</li>
+<li><b>qword</b> (quadword): 64-bit value</li>
+<li><b>tword</b> (ten-byte word): 80-bit value</li>
+</ul>
+<p>Instruction encoding is highly irregular. Instructions are variable-length, and instructions can begin at any byte boundary. </p>
+<p>The general pattern for multi-operand opcodes is </p>
+<pre>
+    opcode  destination, source
+</pre>
+<p>Note that the destination is on the left. Note also that three-operand instructions are rare. This will become interesting when we get to arithmetic. </p>
+<p>Here’s the notation I will use when introducing instructions: </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Notation</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td>r<var>n</var></td>
+<td><var>n</var>-bit register</td>
+</tr>
+<tr>
+<td>m<var>n</var></td>
+<td><var>n</var>-bit memory</td>
+</tr>
+<tr>
+<td>i<var>n</var></td>
+<td><var>n</var>-bit immediate</td>
+</tr>
+<tr>
+<td>r/m<var>n</var></td>
+<td><var>n</var>-bit register or <var>n</var>-bit memory</td>
+</tr>
+<tr>
+<td>r/m/i<var>n</var></td>
+<td><var>n</var>-bit register, <var>n</var>-bit memory, <var>n</var>-bit immediate,<br/>or 8-bit immediate sign-extended to <var>n</var> bits</td>
+</tr>
+</table>
+<ul>
+<li>If <var>n</var> is omitted, then 8, 16, and 32 are permitted.     For example, “r/m” means “r/m8, r/m16, or r/m32”.</li>
+<li>Immediates are sign-extended as necessary.</li>
+<li>The first operand is called “d” (destination).</li>
+<li>The second operand (if any) is called “s” (source).</li>
+<li>The third operand (if any) is called “t” (second source).</li>
+<li>At most one of the operands can be a memory operand.</li>
+<li>All operands must have the same size.</li>
+</ul>
+<p>Exceptions to the above rules will be called out as necessary. </p>
+<p>For example: </p>
+<pre>
+    ADD     r/m, r/m/i          ; d += s,      set flags
+</pre>
+<p>The <code>ADD</code> instruction takes two operands. The first is a register or memory, and the second is a register or memory or immediate or single-byte immediate. They cannot both be memory operands. They must be the same size. </p>
+<p>Many instructions have a more compact encoding if the destination register is <var>al</var>, <var>ax</var>, or <var>eax</var>. </p>
+<p>The assembly language overloads multiple variations of instructions into a single opcode. This is different from most other processors, where each opcode maps to an instruction template, where all that’s left to fill in are the registers and immediates. For example, the MIPS R4000 <a href="https://devblogs.microsoft.com/oldnewthing/">has two different shift opcodes</a> depending on whether the shift amount is specified by an immediate or a register. But the 80386 assembly language uses the same opcode for both, and it’s the assembler’s job to figure out which variant you intended. </p>
+<p>The 80386 does not not perform speculation, does not have an on-chip cache, does not have a branch predictor, and does not reorder memory accesses. Life was simpler then. </p>
+<p>Okay, that’s enough background. We’ll dig in <a href="http://devblogs.microsoft.com/oldnewthing/20190122-00/?p=100755">next time</a> by looking at memory addressing modes. </p>
+<p> ¹ This partial register behavior wasn’t a big deal at the time, but it ended up creating register dependencies that made it much harder to add out-of-order execution to later versions of the processor. It even created a register version of the <a href="https://devblogs.microsoft.com/oldnewthing/20170428-00/?p=96065">store-to-load forwarding</a> problem. </p>
+<p>The x86-64 architecture took a different approach when it extended the 32-bit registers to 64-bit registers: If the destination register is encoded as a 32-bit subset of a 64-bit register, the upper 32 bits of the destination register are zeroed. </p>
+
+
+</body>

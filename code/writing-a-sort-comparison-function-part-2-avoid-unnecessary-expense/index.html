@@ -1,0 +1,111 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Writing a sort comparison function, part 2: avoid unnecessary expense</h1>  <!-- .entry-meta -->
+
+<p>Last time, we wrote <a href="/code/writing-a-sort-comparison-function-part-1-basics" title="Writing a sort comparison function, part 1: basics"> a basic multi-level sort</a>. I reiterate that the best way to do this is not to write your own multi-level comparison function but rather to rely on <code>std::pair</code> or <code>std::tuple</code> to do the work for you.</p>
+<p>It may be that calculating one of the secondary keys is expensive, and you don’t want to do it unless it turns out to be necessary. In that case, you’ll have to break down the comparison manually into components. But don’t try to be clever about it. Just write the most obvious version:</p>
+<pre>// three-way comparison
+int compare_3way_for_sorting(T const&amp; a, T const&amp; b)
+{
+    // First compare by name
+    if (a.name &lt; b.name) return -1;
+    if (a.name &gt; b.name) return +1;
+
+    // Names are equal, check connector names
+    auto&amp;&amp; a_connector = a.GetConnector();
+    auto&amp;&amp; b_connector = b.GetConnector();
+
+    if (a_connector.name &lt; b_connector.name) return -1;
+    if (a_connector.name &gt; b_connector.name) return +1;
+
+    // Names and connector names are equal,
+    // check manufacturing date
+    auto&amp;&amp; a_date = LookupManufacturingDate(a.part_number);
+    auto&amp;&amp; b_date = LookupManufacturingDate(b.part_number);
+
+    if (a_date &lt; b_date) return -1;
+    if (a_date &gt; b_date) return +1;
+
+    // All keys match
+    return 0;
+}
+
+// less-than comparison
+bool compare_less_for_sorting(T const&amp; a, T const&amp; b)
+{
+    // First compare by name
+    if (a.name &lt; b.name) return true;
+    if (a.name &gt; b.name) return false;
+
+    // Names are equal, check connector names
+    auto&amp;&amp; a_connector = a.GetConnector();
+    auto&amp;&amp; b_connector = b.GetConnector();
+
+    if (a_connector.name &lt; b_connector.name) return true;
+    if (a_connector.name &gt; b_connector.name) return false;
+
+    // Names and connector names are equal,
+    // check manufacturing date
+    auto&amp;&amp; a_date = LookupManufacturingDate(a.part_number);
+    auto&amp;&amp; b_date = LookupManufacturingDate(b.part_number);
+
+    if (a_date &lt; b_date) return true;
+    if (a_date &gt; b_date) return false;
+
+    // All keys match
+    return false;
+}
+</pre>
+<p>I’ve seen code that tried to do the multi-level comparison manually, but they were too clever and tried to cram it all into one line for style points, but messed it up. Resist the temptation to earn style points. Write the simplest, most straightforward code. Not only is it easier for humans to understand, it’s also <a href="/code/the-wrong-way-of-benchmarking-the-most-efficient-integer-comparison-function" title="The wrong way of benchmarking the most efficient integer comparison function"> easier for the compiler to understand</a>.</p>
+<p>Next time, we’ll look at how to do this with spaceships.</p>
+<p><b>Bonus chatter</b>: I considered embracing the “Don’t do this, just use tuples” principle by creating a delayed-comparison wrapper:</p>
+<pre>template&lt;typename Lambda&gt;
+struct defer_comparison
+{    
+    defer_comparison(Lambda lambda) : key(std::move(lambda)){}
+    Lambda key;
+
+    auto operator&lt;=&gt;(defer_comparison const&amp; other) const
+        { return compare_3way(key(), other.key() ); }
+};
+ 
+auto key(T const&amp; t)
+{
+    return std::make_tuple(std::ref(t.name),
+                          defer_comparison([&amp;] { return t.GetConnector(); }),
+                          defer_comparison([&amp;] { return LookupManufacturingDate(t.part_number); }));
+}
+
+std::weak_ordering
+compare_3way_for_sorting(T const&amp; a, T const&amp; b)
+{
+    return key(a) &lt;=&gt; key(b);
+}
+
+bool compare_less_for_sorting(T const&amp; a, T const&amp; b)
+{
+    return key(a) &lt; key(b);
+}
+</pre>
+<p>However, this generates unnecessary calls to <code>Get­Connector()</code> and <code>Lookup­ManufacturingsDate()</code> because it breaks down as</p>
+<pre>bool compare_less_for_sorting(T const&amp; a, T const&amp; b)
+{
+    auto a_tuple = key(a);
+    auto b_tuple = key(b);
+
+    if (std::get&lt;0&gt;(a) &lt; std::get&lt;0&gt;(b)) return true;
+    if (std::get&lt;0&gt;(a) &gt; std::get&lt;0&gt;(b)) return false;
+
+    if (std::get&lt;1&gt;(a) &lt; std::get&lt;1&gt;(b)) return true;
+    if (std::get&lt;1&gt;(a) &gt; std::get&lt;1&gt;(b)) return false;
+
+    if (std::get&lt;2&gt;(a) &lt; std::get&lt;2&gt;(b)) return true;
+    if (std::get&lt;2&gt;(a) &gt; std::get&lt;2&gt;(b)) return false;
+
+    return false;
+}
+</pre>
+<p>In our case, <code>std::get&lt;1&gt;()</code> returns a <code>defer_<wbr/>comparison</code>, so we end up comparing the same two <code>defer_<wbr/>comparison</code> objects twice.</p>
+<p>We could try to solve this by using a <code>std::async</code> with deferred execution to memoize the result of the lambda, but this introduces extra memory allocations and virtual function tables and memory barriers, so it feels like we’d be heading in the wrong direction.</p>
+
+
+</body>

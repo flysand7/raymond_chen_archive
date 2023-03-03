@@ -1,0 +1,48 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Lock free many-producer/single-consumer patterns: A work queue of distinct events, order not important</h1>  <!-- .entry-meta -->
+
+<p>Almost done with our miniseries on lock-free many-producer/single-consumer patterns. Today, we’ll look at the case of multiple producers generating distinct work items which cannot be coalesced, but for which the order of processing is not important. </p>
+<p>As I noted last time, you can view this as a scenario built on top of the previous one. In the previous scenario, there was a counter of the number of work items to be done, but the work itself was fixed. You can pair this with another data structure that contains a collection of things to do. In that case, the  <code>Do­Some­Work()</code> function pulls a work item out of the collection. </p>
+<p>We’re going to go one step further: We’re going to let the work item be its own counter. </p>
+<pre>
+SLIST_HEADER WorkQueue;
+
+struct alignas(MEMORY_ALLOCATION_ALIGNMENT)
+WorkItem : SLIST_ENTRY
+{
+    ... other stuff ...
+};
+
+void Initialize()
+{
+ InitializeSListHeader(&amp;WorkQueue);
+}
+
+void RequestWork(WorkItem* work)
+{
+ if (InterlockedPushEntrySList(&amp;WorkQueue, work)
+                                               == nullptr) {
+  // You provide the WakeConsumer() function.
+  WakeConsumer();
+ }
+}
+
+// You call this function when the consumer receives the
+// signal raised by WakeConsumer().
+void ConsumeWork()
+{
+ PSLIST_ENTRY entry;
+ while ((entry = InterlockedPopEntrySList(&amp;WorkQueue))
+                                               != nullptr) {
+  ProcessWorkItem(static_cast&lt;WorkItem*&gt;(entry));
+  delete entry;
+ }
+}
+</pre>
+<p>We use the lock-free linked list data structure <code>LIST_HEADER</code> to manage our work queue. To request some work, we push an item onto the front of the list. The <code>Interlocked­Push­Entry­SList</code> function returns the previous list head. If that returns <code>nullptr</code>, then it means that the list was empty, so we wake up the consumer. If the list was not empty, then it means that somebody else woke the consumer, so we won’t do it (to avoid a spurious wake). </p>
+<p>On the consumer side, we atomically pop work off the list and process them, and we stop when there is no more work. Since the order in which work items are processed is presumed to be unimportant, we can process them LIFO. </p>
+<p>Remember, there is only one consumer, so if <code>Wake­Consumer</code> is called while <code>Consume­Work</code> is still running, the wake will not start a new consumer immediately. It will wait for the existing <code>Consume­Work</code> to complete before starting a new <code>Consume­Work</code>. </p>
+<p>Next time, we’ll wrap up by looking at the case where work items must be processed FIFO. </p>
+
+
+</body>

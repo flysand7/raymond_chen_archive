@@ -1,0 +1,105 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On the perils of holding a lock across a coroutine suspension point, part 2: Nonrecursive mutexes</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/on-the-perils-of-holding-a-lock-across-a-coroutine-suspension-point-part-1-the-set-up" title="On the perils of holding a lock across a coroutine suspension point, part 1: The set-up"> what can go wrong if you hold a recursive mutex across a coroutine suspension point</a>. Do things get any better if you switch to a nonrecursive mutex?</p>
+<p>Recall that we are looking at this function:</p>
+<pre>IAsyncAction MyObject::RunOneAsync()
+{
+  std::lock_guard guard(m_mutex);
+
+  if (!m_list.empty()) {
+    auto&amp; item = m_list.front();
+    <span style="color: blue;">co_await item.RunAsync();</span>
+    item.Cleanup();
+    m_list.pop_front();
+  }
+}
+</pre>
+<p>Let’s walk through what happens if the mutex is nonrecursive and a call to <code>Run­One­Async</code> is made from the same thread that mad a previous not-yet-complete call to <code>Run­One­Async</code>.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: left;">
+<tbody>
+<tr>
+<td colspan="2" style="border: solid 1px black; background-color: white; color: black; text-align: center;"><code>RunOneAsync</code> #1</td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: white; color: black; width: 18em;">construct lock_guard</td>
+<td> </td>
+<td><code>m_mutex.lock()</code></td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: 1px black; border-style: none solid; background-color: white; color: black;"><code>auto&amp; item = m_list.front();</code></td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; background-color: white; color: black;"><code>co_await item.RunAsync();</code></td>
+<td>→</td>
+<td>Suspended</td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; background-color: white; color: black; text-align: center;"><code>RunOneAsync</code> #1 returns <code>IAsyncAction</code></td>
+</tr>
+<tr>
+<td colspan="2" style="text-align: center;">↓</td>
+</tr>
+<tr>
+<td colspan="2" style="text-align: center;">Thread available to do other work</td>
+</tr>
+<tr>
+<td colspan="2" style="text-align: center;">↓</td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; background-color: white; color: black; text-align: center;"><code>RunOneAsync</code> #2</td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; background-color: white; color: black;">construct lock_guard</td>
+<td> </td>
+<td><code>m_mutex.lock()</code> — blocks</td>
+</tr>
+</tbody>
+</table>
+<p>During the period of suspension, anybody who wants to acquire the lock will block, since that’s how nonrecursive mutexes work.</p>
+<p>Formally speaking, attempting to acquire a nonrecursive mutex recursively triggers <i>undefined behavior</i>, so from a compiler-theoretic point of view, the game is over and anything can happen, <a href="https://devblogs.microsoft.com/oldnewthing/20140627-00/?p=633"> including time travel</a>. In practice, what happens is that the attempted recursive acquisition blocks.</p>
+<p>And that’s a real hard block, not a coroutine suspend. The thread that tries to acquire the lock cannot do anything while waiting for the lock to become available. In particular, it <i>cannot run coroutine continuations</i>.</p>
+<p>Now, we don’t know much about <code>Run­Async</code>. Maybe it needs access to the originating thread in order to complete its work. Or maybe it uses another coroutine, and that <i>other</i> coroutine needs access to the originating thread. If that’s the case, then the <code>Run­Async</code> will never complete, because the originating thread is hung.</p>
+<p>Maybe you’re lucky, and <code>Run­Async</code> can do all of its work without needing to access the originating thread. You’re still in trouble, because the <code>Run­One­Async</code> might need access to the originating thread. For example, C++/WinRT has a policy that <code>co_await</code> of an <code>IAsyncAction</code> always resumes in the same apartment context. If the original apartment is a single-threaded apartment (standard for UI threads), then it’s going to need to get back to that originating thread, but it can’t because the originating thread is hung waiting for the mutex.</p>
+<p>Now, suppose you’re super-lucky, and the <code>co_await</code> of <code>Run­Async</code> doesn’t need to resume on the originating thread. Maybe you started in the multi-threaded apartment, so it can resume on any other thread in that apartment. Great, your code is running again, just on a different thread.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: left;">
+<tbody>
+<tr>
+<td colspan="2" style="text-align: center;">Some other thread</td>
+</tr>
+<tr>
+<td colspan="2" style="text-align: center;">↓</td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; background-color: white; color: black; text-align: center;"><code>RunOneAsync</code> #1 resumes</td>
+<td>←</td>
+<td style="text-align: left;"><code>RunAsync</code> #1 completes</td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: white; color: black; width: 18em;"><code>item.Cleanup();</code></td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: 1px black; border-style: none solid; background-color: white; color: black;"><code>m_list.pop_front();</code></td>
+</tr>
+<tr>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; background-color: white; color: black;">destruct lock_guard</td>
+<td> </td>
+<td><code>m_mutex.unlock()</code> — from the wrong thread</td>
+</tr>
+</tbody>
+</table>
+<p>We are unlocking a mutex from a thread that didn’t lock it. This is not a legal operation and the behavior is undefined.</p>
+<p>So yeah, double undefined behavior.</p>
+<p>In practice, what usually happens is that your main thread hangs unrecoverably. You dump all the stacks to try to find the owner, and you don’t see any stacks that are in code that’s holding the lock. That’s because the code that’s responsible for the lock isn’t active on any thread, so you won’t see it in any stack. The code is waiting to resume execution when its associated coroutine is resumed, and that coroutine is somewhere on the heap.</p>
+<p>Basically, any <code>co_await</code> is a point of potential re-entrancy.</p>
+<p>Next time, we’ll look at ways of addressing the problem.</p>
+
+
+</body>

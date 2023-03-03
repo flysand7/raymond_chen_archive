@@ -1,0 +1,76 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I detect from the preprocessor what a macro’s definition is?</h1>  <!-- .entry-meta -->
+
+<p>It is common that a preprocessor macro chooses between multiple behaviors based on various other controlling macros. </p>
+<pre>
+#ifdef BUILD_DLL
+#define CONTOSOAPI __declspec(dllexport)
+#else
+#define CONTOSOAPI __declspec(dllimport)
+#endif
+
+#ifdef USE_STDCALL
+#define CONTOSOAPICALL __stdcall
+#else
+#define CONTOSOAPICALL __cdecl
+#endif
+</pre>
+<p>Suppose you want to check at compile time how these macros are defined. Is there a way to do string comparisons in the preprocessor, something like this? </p>
+<pre>
+#if somethingsomething CONTOSOAPI == __declspec(dllexport)
+</pre>
+<p>I’ll get it out of the way up front: Instead of trying to parse the value of a macro, you can just replicate the conditionals that led to the macro’s definition. In other words, you can do this: </p>
+<pre>
+#ifdef BUILD_DLL
+... stuff to do when CONTOSOAPI is __declspec(dllexport)
+#else
+... stuff to do when CONTOSOAPI is __declspec(dllimport)
+#endif
+
+#ifdef USE_STDCALL
+... stuff to do when CONTOSOAPICALL is __stdcall
+#else
+... stuff to do when CONTOSOAPICALL is __cdecl
+#endif
+</pre>
+<p>But let’s say that this option isn’t available. For example, maybe the logic that eventually leads to the definition of <code>CONTOSOAPI</code> is super-complicated and difficult to replicate. Or the header file is not under your control and you want your code to adapt to newer versions of the header file that may use different logic to decide what definition to use. </p>
+<p>The C and C++ preprocessors do not do string comparisons. All they can do is evaluate constant integral expressions. So things don’t sound good. </p>
+<p>But wait, maybe we can trick them into evaluating constant integral expressions! </p>
+<pre>
+#define __declspec
+#define dllexport 1
+#define dllimport 2
+
+#if CONTOSOAPI == __declspec(dllexport)
+... stuff to do when CONTOSOAPI is __declspec(dllexport)
+#elif CONTOSOAPI == __declspec(dllimport)
+... stuff to do when CONTOSOAPI is __declspec(dllimport)
+#else
+#error I don't know what CONTOSOAPI is defined as
+#endif
+
+#undef dllimport
+#undef dllexport
+#undef __declspec
+
+#define __stdcall 1
+#define __cdecl 2
+
+#if CONTOSOAPICALL == __stdcall
+... stuff to do when CONTOSOAPICALL is __stdcall
+#elif CONTOSOAPICALL == __cdecl
+... stuff to do when CONTOSOAPICALL is __cdecl
+#else
+#error I don't know what CONTOSOAPICALL is defined as
+#endif
+
+#undef __cdecl
+#undef __stdcall
+</pre>
+<p>By redefining the words that appear in the <code>CONTOSOAPI</code> and <code>CONTOSOAPICALL</code> macros, you can turn the text into integer constant expression. After macro expansion, <code>__declspec(dllexport)</code> becomes <code>(1)</code>, and <code>__declspec(dllimport)</code> becomes <code>(2)</code>. These are integer constant expressions that can be evaluated by the preprocessor! </p>
+<p>Why did I choose <code>1</code> and <code>2</code> as the integer constants rather than <code>0</code> and <code>1</code>? One of the rules of the C and C++ preprocessors is that after macro substitution, if there are any identifiers remaining whose values are not known, then they are treated as zero. This means that <code>__declspec(magicbeans)</code> expands to <code>(magicbeans)</code>, and since there is no definition for <code>magicbeans</code>, the preprocessor treats it as zero. If I had defined <code>dllexport</code> as <code>0</code>, then I would misdetect <code>__declspec(magicbeans)</code> as <code>dllexport</code>. </p>
+<p>This is extreme abuse of the C and C++ preprocessor. But desperate times may call for desperate measures. </p>
+<p><b>Bonus chatter</b>: Note that this trick requires that you find some way of defining symbols so that what remains is a valid integer constant expression. </p>
+
+
+</body>

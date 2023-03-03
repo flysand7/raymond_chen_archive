@@ -1,0 +1,16 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why do BackupRead and BackupWrite require synchronous file handles?</h1>  <!-- .entry-meta -->
+
+<p>The <code>Backup­Read</code> and <code>Backup­Write</code> functions require that the handle you provide by synchronous. (In other words, that they <i>not</i> be opened with <code>FILE_FLAG_OVERLAPPED</code>.)
+ A customer submitted the following question:</p>
+<blockquote class="q"><p>  We have been using asynchronous file handles with the <code>Backup­Read</code>. Every so often, the call to <code>Backup­Read</code> will fail, but we discovered that as a workaround, we can just retry the operation, and it will succeed the second time. This solution has been working for years. </p>
+<p> Lately, we’ve been seeing crash when trying to back up files, and the stack traces in the crash dumps appear to be corrupted. The issue appears to happen only on certain networks, and the problem goes away if we switch to a synchronous handle. </p>
+<p> Do you have any insight into this issue? Why were the <code>Backup­Read</code> and <code>Backup­Write</code> functions designed to require synchronous handles? </p>
+</blockquote>
+<p> The <code>Backup­Read</code> and <code>Backup­Write</code> functions have historically issued I/O against the handles provided on the assumption that they are synchronous. <a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/04/11/10292442.aspx"> As we saw a while ago</a>, doing so against an asynchronous handle means that you’re playing a risky game: If the I/O completes synchronously, then nobody gets hurt, but if the I/O goes asynchronous, then the temporary <code>OVERLAPPED</code> structure on the stack will be updated by the kernel when the I/O completes, which could very well be after the function that created it has already returned. The result: A stack smash. (Related: <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/05/12/10163578.aspx"> Looking at the world through kernel-colored glasses</a>.)
+ This oversight in the code (blindly assuming that the handle is a synchronous handle) was not detected until 10 years after the API was originally designed and implemented. During that time, backup applications managed to develop very tight dependencies on the undocumented behavior of the backup functions. The backup folks tried fixing the bug but found that it ended up introducing massive compatibility issues. On top of that, there was no real business case for extending the <code>Backup­Read</code> and <code>Backup­Write</code> functions to accept asynchronous handles.
+ As a result, there was no practical reason for changing the function’s behavior. Instead, the requirement that the handle be synchronous was added to the documentation, along with additional text explaining that if you pass an asynchronous handle, you will get “subtle errors that are very difficult to debug.”</p>
+<p> In other words, the requirement that the handles be synchronous exists for backward compatibility. </p>
+
+
+</body>

@@ -1,0 +1,206 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Programmatically editing the metadata of an audio file</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s Little Program edits the metadata of an audio file,
+ostensibly to correct a spelling error,
+but really just to show how it’s done.
+</p>
+<p>
+Today’s smart pointer class library is… (rolls dice)… CComPtr!
+</p>
+<p>
+We open with two helper functions which encapsulate the patterns
+</p>
+<ul>
+<li>Get property from property store
+<ol>
+<li>Call <code>IProperty­Store::Get­Value</code>
+<li>Convert <code>PROPVARIANT</code> into desired final type
+<li>Destroy the <code>PROPVARIANT</code>
+</li></li></li></ol>
+<li>Set property in property store
+<ol>
+<li>Create a <code>PROPVARIANT</code>
+<li>Call <code>IProperty­Store::Set­Value</code>
+<li>Destroy the <code>PROPVARIANT</code>
+</li></li></li></ol>
+</li></li></ul>
+<pre>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;propkey.h&gt;
+#include &lt;propvarutil.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;atlalloc.h&gt;
+template&lt;typename TLambda&gt;
+HRESULT GetPropertyAsLambda(IPropertyStore *pps, REFPROPERTYKEY key,
+                             TLambda lambda)
+{
+  PROPVARIANT pvar;
+  HRESULT hr = pps-&gt;GetValue(key, &amp;pvar);
+  if (SUCCEEDED(hr)) {
+    hr = lambda(pvar);
+    PropVariantClear(&amp;pvar);
+  }
+  return hr;
+}
+template&lt;typename TLambda&gt;
+HRESULT SetPropertyAsLambda(IPropertyStore *pps, REFPROPERTYKEY key,
+                            TLambda lambda)
+{
+  PROPVARIANT pvar;
+  HRESULT hr = lambda(&amp;pvar);
+  if (SUCCEEDED(hr)) {
+    hr = pps-&gt;SetValue(key, pvar);
+    PropVariantClear(&amp;pvar);
+  }
+  return hr;
+}
+</pre>
+<p>
+Both functions use a lambda to do the type-specific work.
+</p>
+<p>
+Here are some functions that will use the helpers:
+</p>
+<pre>
+HRESULT GetPropertyAsString(
+    IPropertyStore *pps, REFPROPERTYKEY key, PWSTR *ppszValue)
+{
+  *ppszValue = nullptr;
+  return GetPropertyAsLambda(pps, key, [=](REFPROPVARIANT pvar) {
+    return PropVariantToStringAlloc(pvar, ppszValue);
+  });
+}
+HRESULT SetPropertyAsString(
+    IPropertyStore *pps, REFPROPERTYKEY key, PCWSTR pszValue)
+{
+  return SetPropertyAsLambda(pps, key, [=](PROPVARIANT *ppvar) {
+    return InitPropVariantFromString(pszValue, ppvar);
+  });
+}
+HRESULT GetPropertyAsStringVector(
+    IPropertyStore *pps, REFPROPERTYKEY key,
+    PWSTR **pprgsz, ULONG *pcElem)
+{
+  *pprgsz = nullptr;
+  *pcElem = 0;
+  return GetPropertyAsLambda(pps, key, [=](REFPROPVARIANT pvar) {
+    return PropVariantToStringVectorAlloc(pvar, pprgsz, pcElem);
+  });
+}
+HRESULT SetPropertyAsStringVector(
+    IPropertyStore *pps, REFPROPERTYKEY key,
+    PCWSTR *prgsz, ULONG cElems)
+{
+  return SetPropertyAsLambda(pps, key, [=](PROPVARIANT *ppvar) {
+    return InitPropVariantFromStringVector(prgsz, cElems, ppvar);
+  });
+}
+</pre>
+<p>
+The <code>Prop­Variant­To­String­Vector­Alloc</code>
+function returns an array of pointers to memory allocated via
+<code>Co­Task­Mem­Alloc</code>,
+and the array itself was also allocated by the same function.
+Here’s a helper function to free the memory and the array:
+</p>
+<pre>
+template&lt;typename T&gt;
+void CoTaskMemFreeArray(T **prgElem, ULONG cElem)
+{
+    for (ULONG i = 0; i &lt; cElem; i++) {
+        CoTaskMemFree(prgElem[i]);
+    }
+    CoTaskMemFree(prgElem);
+}
+</pre>
+<p>
+Okay, we’re ready to write our main program.
+Remember, Little Programs do little to no error checking.
+In a real program, you would check that your function calls succeeded.
+</p>
+<pre>
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+  <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+  CComPtr&lt;IPropertyStore&gt; spps;
+  SHGetPropertyStoreFromParsingName(argv[1], nullptr,
+    GPS_READWRITE, IID_PPV_ARGS(&amp;spps));
+  // Get the existing composers
+  PWSTR *rgpszComposers;
+  ULONG cComposers;
+  GetPropertyAsStringVector(spps, <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/bb787298(v=vs.85).aspx">PKEY_Music_Composer</a>,
+    &amp;rgpszComposers, &amp;cComposers);
+  // Look for "Dvorak, Antonin" and add diacritics
+  for (ULONG ulPos = 0; ulPos &lt; cComposers; ulPos++) {
+    if (wcscmp(rgpszComposers[ulPos], L"Dvorak, Antonin") == 0) {
+      // Swap in the new name
+      PWSTR pszOld = rgpszComposers[ulPos];
+      rgpszComposers[ulPos] = L"Dvo\x0159\x00E1k, Anton\x00EDn";
+      // Write out the new list of composers
+      SetPropertyAsStringVector(spps, PKEY_Music_Composer, (PCWSTR *)rgpszComposers, cComposers);
+      // Swap it back so we can free it
+      rgpszComposers[ulPos] = pszOld;
+      // Add a little graffiti just because
+      SetPropertyAsString(spps, PKEY_Comment, L"Kilroy was here");
+      spps-&gt;Commit();
+      break;
+    }
+  }
+  CoTaskMemFreeArray(rgpszComposers, cComposers);
+  return 0;
+}
+</pre>
+<p>
+Okay, what just happened here?
+</p>
+<p>
+First, we took the file whose name was passed on the command
+line (fully-qualified path, please)
+and obtained its property store.
+</p>
+<p>
+Next, we queried the property store for the
+<code>System.­Music.­Composer</code> property.
+This property is typed as a multiple-valued string,
+so we read and write the value in the form of a string vector.
+You could also read and write it as a single string:
+The
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/bb776560(v=vs.85).aspx">
+<code>Prop­Variant­To­String­Alloc</code></a>
+function represents string arrays by joining the strings together,
+separating them with <code>"; "</code> (semicolon and space).
+However, we access it as an array because that makes it easier
+to insert and remove individual entries.
+</p>
+<p>
+Once we get the list of composers, we look for one that says
+<code>"Dvorak, Antonin"</code>.
+If we find it, then we change that entry to
+<code>"Dvořák, Antonín"</code>
+and write out the new vector.
+</p>
+<p>
+And then just to show that I know how to write out a string
+property too,
+I’ll put some graffiti in the Comment field.
+</p>
+<p>
+Commit the changes and break the loop now that we found what
+we’re looking for.
+(This assumes that the song was not a collaboration between
+Antonín Dvořák and himself!)
+</p>
+<p>
+So there you have it,
+a little program that modifies metadata.
+Obviously, this program is not particularly useful by itself,
+but it illustrates what you need to do to do something more
+useful in general.</p>
+
+
+</body>

@@ -1,0 +1,78 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Alpha AXP, part 2: Integer calculations</h1>  <!-- .entry-meta -->
+
+<p>Here are some of the integer computational operations available on the Alpha AXP. I’m going to cover only the instructions used in general-purpose programming, since that’s the sort of thing you’re most likely to encounter when debugging everyday application code. In particular, I’m not going to cover the various multimedia instructions. </p>
+<p>Integer arithmetic operations come in two flavors, one that operates on the full 64-bit register, and another that operates on the least significant 32 bits of the value. As I noted earlier, the general rule in the Alpha AXP is that if the result of an operation is a 32-bit value and the destination is a register, then the value is sign-extended to a 64-bit value. This means that if you use the 32-bit versions of these instructions, the results will be sign-extended to 64-bit values. </p>
+<p>The general notation for calculations is to provide the source operands first, and the destination operand last. </p>
+<pre>
+    ADDQ    Ra, Rb, Rc  ; Rc = Ra + Rb
+    ADDQ    Ra, #b, Rc  ; Rc = Ra + b
+
+    ADDL    Ra, Rb, Rc  ; Rc = (int64_t)((int32_t)Ra + (int32_t)Rb)
+    ADDL    Ra, #b, Rc  ; Rc = (int64_t)((int32_t)Ra +           b)
+</pre>
+<p>The <code>ADD</code> instruction has four variants. The 64-bit versions add the two source values and puts the result in the destination <var>Rc</var> register. The 32-bit versions add the least significant 32-bit values in the source registers, calculates a 32-bit result, and then sign extends that result to a 64-bit value, putting the final result in the <var>Rc</var> register. You can add two registers, or you can add a register and a small constant in the range 0 to 255. </p>
+<p>In the future, I’m going to write <code><u>x</u></code> to mean “<code>L</code> or <code>Q</code>“, and <code>Rb/#b</code> to mean “a register (<var>Rb</var>) or a small constant in the range 0 to 255.” </p>
+<pre>
+    SUB<u>x</u>    Ra, Rb/#b, Rc  ; Rc = Ra - Rb
+    MUL<u>x</u>    Ra, Rb/#b, Rc  ; Rc = Ra * Rb
+    UMULH   Ra, Rb/#b, Rc  ; Rc = (Ra *U Rb) &gt;&gt; 64
+</pre>
+<p>The <code>SUB</code> instructions perform subtraction, and the <code>MUL</code> instructions perform multiplication. The <code>UMULH</code> instruction performs a 64×64 unsigned multiplication, and stores the high 64 bits of the 128-bit intermediate result. (If you want the low 64 bits, then use the regular <code>MULQ</code> instruction.) </p>
+<p>Note that there is no integer division operation. There are three common workarounds: </p>
+<ul>
+<li>Use a helper function.</li>
+<li>If dividing by a constant <var>n</var>,     you may be able to use the <code>UMULH</code> instruction     to multiply by (2⁶⁴÷<var>n</var>)     and then extract the high 64 bits (which means to divide by     2⁶⁴). </li>
+<li>Convert both values to floating point,     perform a floating point division,     and then convert the result back to an integer. </li>
+</ul>
+<p>So hopefully you don’t do a lot of integer division. </p>
+<pre>
+    S4ADD<u>x</u>  Ra, Rb/#b, Rc  ; Rc = Ra * 4 + Rb/#b
+    S8ADD<u>x</u>  Ra, Rb/#b, Rc  ; Rc = Ra * 8 + Rb/#b
+
+    S4SUB<u>x</u>  Ra, Rb/#b, Rc  ; Rc = Ra * 4 - Rb/#b
+    S8SUB<u>x</u>  Ra, Rb/#b, Rc  ; Rc = Ra * 8 - Rb/#b
+</pre>
+<p>The scaled addition and subtraction instructions multiply <var>Ra</var> by 4 or 8 before adding or subtracting <var>Rb</var>/#b. These are commonly used to calculate effective addresses as part of an array indexing operation. </p>
+<p>Next come the bit-twiddling instructions. Note that these instructions always operate on full 64-bit registers. (But if both inputs are in canonical form, then so too will the result.) </p>
+<pre>
+    AND     Ra, Rb/#b, Rc  ; Rc = Ra &amp;  Rb/#b
+    BIS     Ra, Rb/#b, Rc  ; Rc = Ra |  Rb/#b "bit set"
+    XOR     Ra, Rb/#b, Rc  ; Rc = Ra ^  Rb/#b
+    BIC     Ra, Rb/#b, Rc  ; Rc = Ra &amp; ~Rb/#b "bit clear"
+    ORNOT   Ra, Rb/#b, Rc  ; Rc = Ra | ~Rb/#b
+    EQV     Ra, Rb/#b, Rc  ; Rc = Ra ^ ~Rb/#b "bit equivalence"
+</pre>
+<p>Officially, the <code>C</code> in <code>BIC</code> stands for “complement”, but I find it easier to remember if I pretend that it stands for “clear”, because it clears the bits in <code>Ra</code> as selected by <code>Rb/#b</code>. For example,</p>
+<pre>
+    BIC     t0, #3, t2     ; clear bottom two bits of t0
+</pre>
+<p>This takes the value in <var>t0</var>, clears the bottom two bits (#3), and puts the result into <var>t2</var>. </p>
+<p>The <code>EQV</code> and <code>ORNOT</code> instructions are not widely used, but I included them for completeness. </p>
+<p>There are three bit-shifting instructions. </p>
+<pre>
+    SLL     Ra, Rb/#b, Rc  ; Rc =           Ra &lt;&lt; (Rb/#b % 64)
+    SRL     Ra, Rb/#b, Rc  ; Rc = (uint64_t)Ra &gt;&gt; (Rb/#b % 64)
+    SRA     Ra, Rb/#b, Rc  ; Rc = ( int64_t)Ra &gt;&gt; (Rb/#b % 64)
+</pre>
+<p>The right-shift has two variants, depending on whether you want the shifted value to be zero-filled (unsigned, or logical shift) or sign-filled (signed, or arithmetic shift). Note that there are no 32-bit versions of the bit shifting instructions. They always operate on the full 64-bit register. </p>
+<p>There are some rarely-used computation instructions that I’m not going to go into, like “count number of leading zero bits” and all the multimedia instructions. There are also some other computation instructions that are closely related to other functions of the processor, so I’ll defer those to the appropriate section. Next time, we’ll look at memory access, including the computation instructions tailored to support memory operations. </p>
+<p><b>Bonus chatter</b>: There are a number of idioms that let you express other concepts in terms of the instructions above. </p>
+<pre>
+    BIS     zero, zero, zero    ; NOP (writes to zero are ignored)
+    BIS     zero, zero, Rc      ; Set Rc to zero
+    ADDL    zero, #b, Rc        ; Set Rc to a small constant
+    SUBL    zero, #b, Rc        ; Set Rc to a small negative constant
+    BIS     Ra, Ra, Rc          ; Copy Ra to Rc
+    BIS     zero, Ra, Rc        ; Copy Ra to Rc
+    BIS     Ra, zero, Rc        ; Copy Ra to Rc
+    SUB<u>x</u>    zero, Ra, Rc        ; Rc = -Ra
+    ORNOT<u>x</u>  zero, Ra, Rc        ; Rc = ~Ra
+    ADDL    zero, Rb, Rc        ; Rc = (int64_t)(int32_t)Rb
+</pre>
+<p>Note that I gave three ways to copy one register to another. The first is the one recommended by DEC. The second is the one the Microsoft compiler generates. Windows NT requires that copying registers in function prologues and epilogues must be performed with one of the three given formats in order for the instruction to be unwindable. </p>
+<p>I showed idioms for loading small positive and negative constants, but we’ll see next time that there’s something that works for medium-sized constants. </p>
+<p>The last idiom is an important one because it forces a 32-bit value into canonical form. This is useful when there isn’t a 32-bit version of the instruction you want, such as a shift instruction. </p>
+
+
+</body>

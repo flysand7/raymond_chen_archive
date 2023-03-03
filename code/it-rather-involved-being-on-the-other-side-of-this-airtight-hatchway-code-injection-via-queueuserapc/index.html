@@ -1,0 +1,28 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">It rather involved being on the other side of this airtight hatchway: Code injection via QueueUserAPC</h1>  <!-- .entry-meta -->
+
+<p>A security vulnerability report arrived that took the following form: </p>
+<blockquote class="q">
+<p>The <code>Queue­User­APC</code> function can be used to effect an elevation of privilege, as follows: </p>
+<ol>
+<li>Identify a process you wish to attack. 
+<li>Obtain access to a thread with     <code>THREAD_SET_­CONTEXT</code> access. 
+<li>Make some educated guesses as to what DLLs are loaded in that     process.     Start with     <code>kernel32.dll</code>,     since you’re going to need it in step 5. 
+<li>From the attacking process, scan the memory of those DLLs     looking for a backslash, followed by something that can pass     for a path and file name.     Such strings are relatively abundant because there are a lot     of registry paths hard-coded into those binaries.     Suppose you found the string     <code>\Windows NT\Current­Version\App­Compat­Flags</code>.     Even though ASLR randomizes DLL placement, the placement     is consistent among all processes,     so an address calculated in one process is highliy likely to be valid     in all processes. 
+<li>Create a DLL called     <code>C:\Windows NT\Current­Version\App­Compat­Flags.dll</code>.     Put your payload in this DLL. 
+<li>From the attacking thread,     call     <code>Queue­User­APC</code>     with the address of <code>Load­LibraryW</code> as the function     pointer, the victim thread as the thread handle,     and a pointer to the fixed string identified in part 4     as the last parameter. 
+<li>The next time the victim thread processes APCs,     it will pass     <code>\Windows NT\Current­Version\App­Compat­Flags</code>     to the <code>Load­LibraryW</code> function,     which will load the payload DLL, thereby effecting code injection     and consequent elevation of privilege. </li></li></li></li></li></li></li></ol>
+</blockquote>
+<p>Note that this attack fails if the victim thread never waits alertably, which is true of most threads. </p>
+<p>If you have been paying attention, the alarm bells probably went off at step 2. If you have <code>THREAD_SET_­CONTEXT</code> access to a thread, then you pwn that thread. There’s no need to use <code>Queue­User­APC</code> to make the thread do your bidding. You already have enough to make the thread dance to your music. In other words, you are already on the other side of the airtight hatchway. </p>
+<p>Here’s how: Look for a code sequence that goes </p>
+<pre>
+    push someregister
+    call LoadLibraryW
+</pre>
+<p>Use the <code>­Set­Thread­Context</code> function to set the pushed register equal to the address of the string you found in step 4, and set the instruction pointer to the code fragment. The thread will then resume execution at the specified instruction pointer: It pushes the address of the string, and then it calls <code>Load­LibraryW</code>. Bingo, your DLL loads, and you didn’t even have to wait for the thread to wait alertably. </p>
+<p>On non-x86 platforms, this is even easier: Since all other platforms use register-based calling conventions, you merely have to load the address of the string into the “first parameter” register (<code>rcx</code> for x64) and set the instruction pointer to the beginning of <code>Load­LibaryW</code>. </p>
+<p>By default, <code>THREAD_SET_­CONTEXT</code> access is granted only to the user, and never to lower integrity levels. In other words, a low IL process cannot get <code>THREAD_SET_­CONTEXT</code> access to a medium or high integrity thread, and a medium IL process cannot get access to a high integrity thread. This means that, by default, you can only get <code>THREAD_SET_­CONTEXT</code> access to threads that have equivalent permissions to what you already have, so there is no elevation. </p>
+
+
+</body>

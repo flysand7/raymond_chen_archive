@@ -1,0 +1,482 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to host an IContextMenu, part 10 – Composite extensions – groundwork</h1>  <!-- .entry-meta -->
+
+<p><p>
+You might wonder why
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/icontextmenu/icontextmenu.asp">
+the <code>IContextMenu</code> interface</a>
+operates on menu identifier offsets so much
+rather than with the menu identifiers themselves.
+</p>
+<p>
+The reason is to support something which I will call “compositing”.
+</p>
+<p>
+You may have multiple context menu extensions that you want to
+combine into one giant context menu extension.  The shell does this
+all over the place.  For example, the context menu we have been
+playing with all this time is really a composite of several
+individual context menu extensions: the static registry verbs
+plus all the COM-based extensions like “Send To”, “Open With”,
+and anything else that may have been added by a program you installed
+(like a virus checker).
+</p>
+<p>
+So before we can write a compositor, we need to 
+have a second context menu to composite.  Here’s a quickie that
+implements two commands, let’s call them “Top” and “Next” for lack
+of anything interesting to do.
+</p>
+<pre>
+class CTopContextMenu : public IContextMenu
+{
+public:
+  // *** IUnknown ***
+  STDMETHODIMP QueryInterface(REFIID riid, void **ppv);
+  STDMETHODIMP_(ULONG) AddRef();
+  STDMETHODIMP_(ULONG) Release();</pre></p>
+<p>  // *** IContextMenu ***
+  STDMETHODIMP QueryContextMenu(HMENU hmenu,
+                          UINT indexMenu, UINT idCmdFirst,
+                          UINT idCmdLast, UINT uFlags);
+  STDMETHODIMP InvokeCommand(
+                          LPCMINVOKECOMMANDINFO lpici);
+  STDMETHODIMP GetCommandString(
+                          UINT_PTR    idCmd,
+                          UINT        uType,
+                          UINT      * pwReserved,
+                          LPSTR       pszName,
+                          UINT        cchMax);</p>
+<p>  static HRESULT Create(REFIID riid, void **ppv);</p>
+<p>private:
+  CTopContextMenu() : m_cRef(1), m_cids(0) { }</p>
+<p>private:
+  HRESULT ValidateCommand(UINT_PTR idCmd, BOOL fUnicode,
+                          UINT *puOffset);
+  HRESULT Top(LPCMINVOKECOMMANDINFO lpici);
+  HRESULT Next(LPCMINVOKECOMMANDINFO lpici);</p>
+<p>private:
+  ULONG m_cRef;
+  UINT  m_cids;
+};
+
+<p>
+The class declaration isn’t particularly interesting.  We
+are not owner-draw so we don’t bother implementing
+<code><a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/icontextmenu2/icontextmenu2.asp">IContextMenu2</a></code> or
+<code><a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/icontextmenu3/icontextmenu3.asp">IContextMenu3</a></code>.
+</p>
+<p>
+First, some basic paperwork for getting off the ground.
+<pre>
+HRESULT CTopContextMenu::Create(REFIID riid, void **ppv)
+{
+  *ppv = NULL;
+  HRESULT hr;
+  CTopContextMenu *self = new CTopContextMenu();
+  if (self) {
+    hr = self-&gt;QueryInterface(riid, ppv);
+    self-&gt;Release();
+  } else {
+    hr = E_OUTOFMEMORY;
+  }
+  return hr;
+}
+</pre>
+<p>
+We have two commands. Instead of hard-coding the numbers
+<code>0</code> and <code>1</code>,
+let’s give them nice names.
+</p>
+<pre>
+#define TOPCMD_TOP      0
+#define TOPCMD_NEXT     1
+#define TOPCMD_MAX      2
+</pre>
+<p>
+And here’s a table that we’re going to use to help us manage
+these two commands.
+</p>
+<pre>
+const struct COMMANDINFO {
+  LPCSTR  pszNameA;
+  LPCWSTR pszNameW;
+  LPCSTR  pszHelpA;
+  LPCWSTR pszHelpW;
+} c_rgciTop[] = {
+  { “top”,  L”top”,
+    “The top command”,  L”The top command”, }, // TOPCMD_TOP
+  { “next”, L”next”,
+    “The next command”, L”The next command”, },// TOPCMD_NEXT
+};
+</pre>
+<p>
+Our <code>TOPCMD_*</code>
+values conveniently double as indices into the
+<code>c_rgciTop</code> array.
+</p>
+<p>
+Next come the boring parts of a COM object:
+</p>
+<pre>
+HRESULT CTopContextMenu::QueryInterface(REFIID riid, void **ppv)
+{
+  IUnknown *punk = NULL;
+  if (riid == IID_IUnknown) {
+    punk = static_cast&lt;IUnknown*&gt;(this);
+  } else if (riid == IID_IContextMenu) {
+    punk = static_cast&lt;IContextMenu*&gt;(this);
+  }</pre></p>
+<p>  *ppv = punk;
+  if (punk) {
+    punk-&gt;AddRef();
+    return S_OK;
+  } else {
+    return E_NOINTERFACE;
+  }
+}</p>
+<p>ULONG CTopContextMenu::AddRef()
+{
+  return ++m_cRef;
+}</p>
+<p>ULONG CTopContextMenu::Release()
+{
+  ULONG cRef = –m_cRef;
+  if (cRef == 0) delete this;
+  return cRef;
+}
+
+<p>
+Finally, we get to something interesting:
+<code><a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/icontextmenu/querycontextmenu.asp">IContextMenu::QueryContextMenu</a></code>.
+Things to watch out for in the code below:
+</p>
+<ul>
+<li>Checking whether there is room between
+    <code>idCmdFirst</code> and
+    <code>idCmdLast</code> is complicated by the fact that
+    <code>idCmdLast</code> is
+    endpoint-<strong>inclusive</strong>, which forces a strange <code>+1</code>.
+    Another reason to
+    <a href="/oldnewthing/archive/2004/02/18/75652.aspx">
+    prefer endpoint-exclusive ranges</a>.
+<li>If the <code>CMF_DEFAULTONLY</code> flag is set, then we don’t bother
+    adding our menu items since none of our options is the default
+    menu item.
+</li></li></ul>
+<pre>
+HRESULT CTopContextMenu::QueryContextMenu(
+    HMENU hmenu, UINT indexMenu, UINT idCmdFirst,
+    UINT idCmdLast, UINT uFlags)
+{
+  m_cids = 0;</pre></p>
+<p>  if ((int)(idCmdLast – idCmdFirst + 1) &gt;= TOPCMD_MAX &amp;&amp;
+    !(uFlags &amp; CMF_DEFAULTONLY)) {
+    InsertMenu(hmenu, indexMenu + TOPCMD_TOP, MF_BYPOSITION,
+               idCmdFirst + TOPCMD_TOP, TEXT(“Top”));
+    InsertMenu(hmenu, indexMenu + TOPCMD_NEXT, MF_BYPOSITION,
+               idCmdFirst + TOPCMD_NEXT, TEXT(“Next”));
+    m_cids = TOPCMD_MAX;
+  }</p>
+<p>  return MAKE_HRESULT(SEVERITY_SUCCESS, 0, m_cids);
+}
+
+<p>
+In order to implement the next few methods, we need to have
+some culture-invariant comparison functions.
+</p>
+<pre>
+int strcmpiA_invariant(LPCSTR psz1, LPCSTR psz2)
+{
+  return CompareStringA(LOCALE_INVARIANT, NORM_IGNORECASE,
+                        psz1, -1, psz2, -1) – CSTR_EQUAL;
+}</pre></p>
+<p>int strcmpiW_invariant(LPCWSTR psz1, LPCWSTR psz2)
+{
+  return CompareStringW(LOCALE_INVARIANT, NORM_IGNORECASE,
+                        psz1, -1, psz2, -1) – CSTR_EQUAL;
+}
+
+<p>
+These are like the strcmpi functions except that they
+use the invariant locale since they will be used to compare
+canonical strings rather than strings that are meaningful to
+an end user.
+(<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/resources/strings/stringreference/stringfunctions/comparestring.asp">More discussion here in MSDN</a>.)
+</p>
+<p>
+Now we have enough to write a helper function which is
+central to the context menu: Figuring out which command
+somebody is talking about.
+</p>
+<p>
+Commands can be passed to the <code>IContextMenu</code> interface either
+(a) by ordinal or by name, and either (b) as ANSI or
+as Unicode.  This counts as either three ways or four ways,
+depending on whether you treat “ANSI as ordinal” and “Unicode
+as ordinal” as the same thing or not.
+</p>
+<pre>
+HRESULT CTopContextMenu::ValidateCommand(UINT_PTR idCmd,
+                        BOOL fUnicode, UINT *puOffset)
+{
+  if (!IS_INTRESOURCE(idCmd)) {
+    if (fUnicode) {
+      LPCWSTR pszMatch = (LPCWSTR)idCmd;
+      for (idCmd = 0; idCmd &lt; TOPCMD_MAX; idCmd++) {
+        if (strcmpiW_invariant(pszMatch,
+                               c_rgciTop[idCmd].pszNameW) == 0) {
+          break;
+        }
+      }
+    } else {
+      LPCSTR pszMatch = (LPCSTR)idCmd;
+      for (idCmd = 0; idCmd &lt; TOPCMD_MAX; idCmd++) {
+        if (strcmpiA_invariant(pszMatch,
+                               c_rgciTop[idCmd].pszNameA) == 0) {
+          break;
+        }
+      }
+    }
+  }</pre></p>
+<p>  if (idCmd &lt; m_cids) {
+    *puOffset = (UINT)idCmd;
+    return S_OK;
+  }</p>
+<p>  return E_INVALIDARG;
+}
+
+<p>
+This helper function takes a “something” parameter in the
+form of a <code>UINT_PTR</code> and a flag that indicates whether that
+“something” is ANSI or Unicode.  The function itself checks
+whether the “something” is a string or an ordinal.  If a string,
+then it converts that string into an ordinal by looking for
+it in the table of commands in the appropriate character set
+and using a locale-insensitive comparison.
+Notice that if the string is not found, then
+<code>idCmd</code> is left equal to <code>TOPCMD_MAX</code>,
+which is an invalid value (and therefore is neatly handled
+by the fall-through).
+</p>
+<p>
+After the (possibly failed) conversion to an ordinal, the
+ordinal is checked for validity; if valid, then the ordinal
+is returned back for further processing.
+</p>
+<p>
+With this helper function the implementation of the other methods
+of the <code>IContextMenu</code> interface are a lot easier.
+</p>
+<p>
+We continue with the <code>IContextMenu::InvokeCommand</code> method:
+<pre>
+HRESULT CTopContextMenu::InvokeCommand(
+                            LPCMINVOKECOMMANDINFO lpici) {</pre></p>
+<p>  CMINVOKECOMMANDINFOEX* lpicix = (CMINVOKECOMMANDINFOEX*)lpici;
+  BOOL fUnicode = lpici-&gt;cbSize &gt;= sizeof(CMINVOKECOMMANDINFOEX) &amp;&amp;
+                  (lpici-&gt;fMask &amp; CMIC_MASK_UNICODE);
+  UINT idCmd;
+  HRESULT hr = ValidateCommand(fUnicode ? (UINT_PTR)lpicix-&gt;lpVerbW
+                                        : (UINT_PTR)lpici-&gt;lpVerb,
+                               fUnicode, &amp;idCmd);
+  if (SUCCEEDED(hr)) {
+    switch (idCmd) {
+    case TOPCMD_TOP: hr = Top(lpici); break;
+    case TOPCMD_NEXT: hr = Next(lpici); break;
+    default: hr = E_INVALIDARG; break;
+    }
+  }
+  return hr;
+}
+
+<p>
+Here is a case where the “Are there three cases or four?” question
+lands squarely on the side of “four”.  There are two forms of the
+<code>CMINVOKECOMMANDINFO</code> structure, the base structure (which is
+ANSI-only) and the extended structure
+<code>CMINVOKECOMMANDINFOEX</code> which adds Unicode support.
+</p>
+<p>
+If the structure is <code>CMINVOKECOMMANDINFOEX</code> and the
+<code>CMIC_MASK_UNICODE</code> flag is set, then the Unicode fields
+of the <code>CMINVOKECOMMANDINFOEX</code> structure should be used
+in preference to the ANSI ones.
+</p>
+<p>
+This means that there are indeed four scenarios:
+</p>
+<ol>
+<li>ANSI string in <code>lpVerb</code> member.
+<li>Ordinal in <code>lpVerb</code> member.
+<li>Unicode string in <code>lpVerbW</code> member.
+<li>Ordinal in <code>lpVerbW</code> member.
+</li></li></li></li></ol>
+<p>
+After figuring out whether the parameter is ANSI or Unicode,
+we ask <code>ValidateCommand</code> to do the work of validating
+the verb and converting it to an ordinal, at which point we use
+the ordinal in a <code>switch</code> statement to dispatch the
+actual operation.
+</p>
+<p>
+Failing to implement string-based command invocation is an
+extremely common oversight in context menu implementations.
+Doing so prevents people from invoking
+your verbs programmatically.
+</p>
+<p>
+“Why should I bother to let
+people invoke my verbs programmatically?”
+</p>
+<p>
+Because if you don’t,
+then people won’t be able to write programs like the one we are
+developing in this series of articles!  For example, suppose
+your context menu extension lets people “Frob” a file.  If you
+don’t expose this verb programmability, then it is impossible to write
+a program that, say, takes all the files modified in the last
+twenty-four hours and Frobs them.
+</p>
+<p>
+(I’m always amused by the people who complain
+that Explorer doesn’t expose enough customizability
+programmatically,
+while simultaneously not providing the same degree of
+programmatic customizability
+in their own programs.)
+</p>
+<p>
+Oh wait, I guess I should implement those two operations.
+They don’t do anything particularly interesting.
+</p>
+<pre>
+HRESULT CTopContextMenu::Top(LPCMINVOKECOMMANDINFO lpici)
+{
+  MessageBox(lpici-&gt;hwnd, TEXT(“Top”), TEXT(“Title”), MB_OK);
+  return S_OK;
+}</pre></p>
+<p>HRESULT CTopContextMenu::Next(LPCMINVOKECOMMANDINFO lpici)
+{
+  MessageBox(lpici-&gt;hwnd, TEXT(“Next”), TEXT(“Title”), MB_OK);
+  return S_OK;
+}
+
+<p>
+The remaining method is
+<code>IContextMenu::GetCommandString</code>, which is probably
+the one people most frequently get wrong since the consequences of
+getting it wrong are not immediately visible to the implementor.
+It is the people who are trying to access the context menu
+programmatically who most likely to notice that the method isn’t
+working properly.
+</p>
+<pre>
+HRESULT CTopContextMenu::GetCommandString(
+                            UINT_PTR    idCmd,
+                            UINT        uType,
+                            UINT      * pwReserved,
+                            LPSTR       pszName,
+                            UINT        cchMax)
+{
+  UINT id;
+  HRESULT hr = ValidateCommand(idCmd, uType &amp; GCS_UNICODE, &amp;id);
+  if (FAILED(hr)) {
+    if (uType == GCS_VALIDATEA || uType == GCS_VALIDATEW) {
+      hr = S_FALSE;
+    }
+    return hr;
+  }</pre></p>
+<p>  switch (uType) {
+  case GCS_VERBA:
+    lstrcpynA(pszName, c_rgciTop[id].pszNameA, cchMax);
+    return S_OK;</p>
+<p>  case GCS_VERBW:
+    lstrcpynW((LPWSTR)pszName, c_rgciTop[id].pszNameW, cchMax);
+    return S_OK;</p>
+<p>  case GCS_HELPTEXTA:
+    lstrcpynA(pszName, c_rgciTop[id].pszHelpA, cchMax);
+    return S_OK;</p>
+<p>  case GCS_HELPTEXTW:
+    lstrcpynW((LPWSTR)pszName, c_rgciTop[id].pszHelpW, cchMax);
+    return S_OK;</p>
+<p>  case GCS_VALIDATEA:
+  case GCS_VALIDATEW:
+    return S_OK;    // all they wanted was validation
+  }</p>
+<p>  return E_NOTIMPL;
+}
+
+<p>
+Here again we use the
+<code>ValidateCommand</code> method to do the hard work
+of validating the command, which is passed in the
+<code>idCmd</code> parameter, with interpretive assistance
+in the <code>GCS_UNICODE</code> flag of the <code>uType</code>
+parameter.
+</p>
+<p>
+If the command is not valid, then we propagate the error code,
+except in the <code>GCS_VALIDATE</code> cases, where the documentation
+says that we should return <code>S_FALSE</code> to indicate that
+the command is not valid.
+</p>
+<p>
+If the command is valid, we return the requested
+information, which is handled by a simple <code>switch</code>
+statement.
+</p>
+<p>
+Okay, now that we have this context menu, we can even test it
+out a little bit.  Throw out the changes from
+<a href="/oldnewthing/archive/2004/10/04/237507.aspx">
+part 9</a>
+and return to the program as it was in
+<a href="/oldnewthing/archive/2004/09/28/235242.aspx">
+part 6</a>, making the following change to the
+<code>OnContextMenu</code> function:
+</p>
+<pre>
+void OnContextMenu(HWND hwnd, HWND hwndContext, int xPos, int yPos)
+{
+  POINT pt = { xPos, yPos };
+  if (pt.x == -1 &amp;&amp; pt.y == -1) {
+    pt.x = pt.y = 0;
+    ClientToScreen(hwnd, &amp;pt);
+  }</pre></p>
+<p>  IContextMenu *pcm;
+  if (SUCCEEDED(<font color="blue">CTopContextMenu::Create(</font>
+                    IID_IContextMenu, (void**)&amp;pcm))) {
+    …
+
+<p>
+We now obtain our context menu not by calling
+the <code>GetUIObjectOfFile</code> function but rather
+by constructing a <code>CTopContextMenu</code> object.
+Since our <code>CTopContextMenu</code> implements
+<code>IContextMenu</code>, all the remaining code can be
+left unchanged.
+</p>
+<p>
+When you run this program, observe that even the help text works.
+</p>
+<p>
+Ah, one of the powers of operating with interfaces rather than
+objects:  You can swap out the object and the rest of the code
+doesn’t even realize what happened, so long as the interface stays
+the same.
+</p>
+<p>
+Okay, today was a long day spent just laying groundwork,
+just writing what has to be written.  No breakthroughs,
+no “aha” moments, just typing.  Read the method, understand
+what you have to do, and do it.
+</p>
+<p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/10/07/239197.aspx">
+Next time</a>, we’re going to see context menu composition,
+using this context menu as one of the components.
+</p></p>
+
+
+</p></p></body>

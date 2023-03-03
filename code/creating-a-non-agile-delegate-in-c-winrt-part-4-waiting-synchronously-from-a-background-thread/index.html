@@ -1,0 +1,82 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a non-agile delegate in C++/WinRT, part 4: Waiting synchronously from a background thread</h1>  <!-- .entry-meta -->
+
+<p><b>Warning to those who stumbled onto this page</b>: Don’t use the code on this page without reading all the way to the end.</p>
+<p>This week, we assembled a function <code>resume_synchronous</code> that synchronously resumes execution in another apartment. The use case for this is a a delegate running on a background thread that needs to run code synchronously on a UI thread.</p>
+<p>You can get the same effect using things that come built into C++/WinRT: You can call the <code>get()</code> method on a Windows Runtime asynchronous operation, and C++/WinRT will block the calling apartment until the asynchronous operation is complete.</p>
+<pre>winrt::IAsyncAction DoActualWorkAsync(
+    CoreDispatcher dispatcher, DeviceInformation info)
+{
+  co_await winrt::resume_foreground(dispatcher);
+  viewModel.Append(winrt::make&lt;DeviceItem&gt;(info));
+}
+
+deviceWatcher.Added(
+    [=](auto&amp;&amp; sender, auto&amp;&amp; info)
+    {
+        DoActualWorkAsync(Dispatcher(), info).get();
+    });
+</pre>
+<p>The idea here is that we start by calling <code>Do­Actual­Work­Async</code>, which does its work asynchronously. But instead of <code>co_await</code>ing the result, we <code>get()</code> it: The <code>get()</code> method waits synchronously for the operation to complete.</p>
+<p>Waiting synchronously for the asynchronous operation to complete is advisable only from background threads. Performing a synchronous wait from a UI thread will naturally make your program unresponsive for the duration of the wait. But it’s worse than that: The asynchronous operation may itself want to use the UI thread, but it won’t able to since you blocked it. The result is a deadlock on your UI thread, and that makes everybody sad.</p>
+<p>Now, splitting out the asynchronous part into a separate function is a bit of an annoyance, since everything you want to use on the UI thread needs to be passed in as a parameter. Maybe we can do better.</p>
+<pre>template&lt;typename TLambda&gt;
+winrt::IAsyncAction DispatchAsync(
+    CoreDispatcher dispatcher, TLambda&amp;&amp; lambda)
+{
+  co_await winrt::resume_foreground(dispatcher);
+  lambda();
+}
+
+deviceWatcher.Added(
+    [=](auto&amp;&amp; sender, auto&amp;&amp; info)
+    {
+        DispatchAsync(Dispatcher(), [&amp;]
+        {
+            viewModel.Append(winrt::make&lt;DeviceItem&gt;(info));
+        }).get();
+    });
+</pre>
+<p>This version accepts a lambda and runs it after switching to the dispatcher’s UI thread.</p>
+<p>But this code looks all wrong. We’re taking objects captured by reference and using them across a suspending <code>co_await</code> boundary! Isn’t this a recipe for disaster, using a reference after the referent may have been destroyed?</p>
+<p>Yes, this is dangerous in general, but it works in this specific case because the outer <code>IAsync­Action</code> is not <code>co_await</code>ed; it is passed to <code>get()</code>, which performs a synchronous wait. Therefore, all the parameters will remain valid for the lifetime of the coroutine, because the destruction of the parameters doesn’t happen until the end of the “full expression” that ends in <code>get()</code>.</p>
+<p>Once we realize that, we can take things a step further:</p>
+<pre>deviceWatcher.Added(
+    [=](auto&amp;&amp; sender, auto&amp;&amp; info)
+    {
+        [&amp;]() -&gt; winrt::IAsyncAction
+        {
+            co_await winrt::resume_foreground(Dispatcher());
+            viewModel.Append(winrt::make&lt;DeviceItem&gt;(info));
+        }().get();
+    });
+</pre>
+<p>The lambda won’t be destructed until the end of the full expression, which happens after <code>get()</code> returns, which means that all the reference captures will remain valid for the lifetime of the lambda.</p>
+<p>I guess you could factor this:</p>
+<pre>template&lt;typename TLambda&gt;
+void RunSyncOnDispatcher(
+    CoreDispatcher const&amp; dispatcher,
+    TLambda&amp;&amp; lambda)
+{
+  [&amp;]() -&gt; winrt::IAsyncAction
+  {
+    co_await winrt::resume_foreground(dispatcher);
+    lambda();
+  }().get();
+}
+
+deviceWatcher.Added(
+    [=](auto&amp;&amp; sender, auto&amp;&amp; info)
+    {
+        RunSyncOnDispatcher(Dispatcher(), [&amp;]()
+        {
+            viewModel.Append(winrt::make&lt;DeviceItem&gt;(info));
+        });
+    });
+</pre>
+<p>It does create the risk that somebody will pass a lambda that is itself a coroutine. Since <code>Run­Sync­On­Dispatcher</code> does not <code>co_await</code> the result of the lambda, the synchronous execution lasts only up until the lambda reaches its first suspending <code>co_await</code>, which makes the rest of the lambda coroutine execute without the protection of the <code>get()</code>.</p>
+<p>There’s a sneaky bug in this code, however. We’ll look at it next time.</p>
+<p> </p>
+
+
+</body>

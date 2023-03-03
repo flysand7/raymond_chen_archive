@@ -1,0 +1,200 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I monitor, or even control, the lifetime of an Explorer window?</h1>  <!-- .entry-meta -->
+
+<p>
+A customer wanted help with monitoring the lifetime of an
+Explorer window.
+</p>
+<blockquote class="q"><p>
+We want to launch a copy of Explorer to open a specific folder,
+then wait until the user closes the folder before continuing.
+We tried launching a copy of Explorer with the folder on the
+command line, then doing a <code>Wait­For­Single­Object</code>
+on the process handle, but the wait sometimes completes immediately
+without waiting.
+How do we wait until the user closes the Explorer window?
+</p></blockquote>
+<p>
+This is another case of solving a problem halfway and then
+having trouble with the other half.
+</p>
+<p>
+The reason that <code>Wait­For­Single­Object</code>
+returns immediately
+is that Explorer is a single-instance program (well, limited-instance).
+When you open an Explorer window, the request is handed off to
+a running copy of Explorer, and the copy of Explorer you launched
+exits.
+That’s why your <code>Wait­For­Single­Object</code>
+returns immediately.
+</p>
+<p>
+Fortunately, the customer was willing to explain their underlying
+problem.
+</p>
+<blockquote class="q"><p>
+We have a wizard that creates some files in a directory
+based on information provided by the user,
+and we want to launch Explorer to view that directory
+so users can verify that things
+are set up the way they want them.
+When users close the Explorer window, we ask them if everything
+was good; if not, then we back up and let the user try again.
+</p></blockquote>
+<p>
+Aha, the program is using Explorer as a “view this folder for
+a little while” subroutine.
+Unfortunately, Explorer doesn’t work that way.
+For example, the user might decide to use the Address Bar
+and go visit some other folders completely unrelated to your
+program, and your program would just be sitting there waiting
+for the user to close that window;
+meanwhile, the user doesn’t realize that your program is waiting
+for it.
+</p>
+<p>
+What you can do is host the Explorer Browser control inside
+a page of your wizard
+and control it with interfaces like
+<a href="http://msdn.microsoft.com/en-us/library/ms645992.aspx">
+<code>IExplorer­Browser</code></a>.
+You can disable navigation in the Explorer Browser
+(so the user can look only at the folder
+you want to preview),
+and the user can click <i>Back</i> if they want to try again
+or <i>Next</i> if they are happy and want to continue.
+This has the additional advantage of keeping all the parts of
+your wizard inside the wizard framework itself,
+allowing users to continue using the wizard navigation model
+that they are already familiar with.
+</p>
+<p>
+A
+<a href="http://msdn.microsoft.com/en-us/library/dd940357.aspx">
+sample program which uses the Explorer Browser control</a>
+can be found in the Platform SDK.
+</p>
+<p>
+For the impatient, here’s the
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a> version.
+Note that this is the minimal version;
+in real life, you would probably want to set some options and stuff like that.
+</p>
+<pre>
+<font color="blue">#include &lt;shlobj.h&gt;
+IExplorerBrowser *g_peb;</font>
+void
+OnSize(HWND hwnd, UINT state, int cx, int cy)
+{
+<font color="blue">    if (g_peb) {
+        RECT rc = { 0, 0, cx, cy };
+        g_peb-&gt;SetRect(NULL, rc);
+    }</font>
+}
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+<font color="blue">    BOOL fSuccess = FALSE;
+    RECT rc;
+    PIDLIST_ABSOLUTE pidl = NULL;
+    if (SUCCEEDED(CoCreateInstance(CLSID_ExplorerBrowser, NULL,
+                         CLSCTX_INPROC, IID_PPV_ARGS(&amp;g_peb))) &amp;&amp;
+        GetClientRect(hwnd, &amp;rc) &amp;&amp;
+        SUCCEEDED(g_peb-&gt;Initialize(hwnd, &amp;rc, NULL)) &amp;&amp;
+        SUCCEEDED(SHParseDisplayName(
+                         L"C:\\Program Files\\Internet Explorer",
+                                        NULL, &amp;pidl, 0, NULL)) &amp;&amp;
+        SUCCEEDED(g_peb-&gt;SetOptions(EBO_NAVIGATEONCE)) &amp;&amp;
+        SUCCEEDED(g_peb-&gt;BrowseToIDList(pidl, SBSP_ABSOLUTE))) {
+        fSuccess = TRUE;
+    }
+    ILFree(pidl);
+    return fSuccess;</font>
+}
+void
+OnDestroy(HWND hwnd)
+{
+    <font color="blue">if (g_peb) {
+        g_peb-&gt;Destroy();
+        g_peb-&gt;Release();
+    }</font>
+    PostQuitMessage(0);
+}
+</pre>
+<p>
+This same technique of hosting the Explorer Browser control
+can be used for other types of “build your own burrito” scenarios:
+For example, you might
+host the Explorer Browser control in a window and tell users
+to copy files into that window.
+When they click OK or Next or whatever, you can enumerate
+the contents of the folder and do your business.
+</p>
+<p>
+Armed with this knowledge, you can answer these customers’ questions:
+</p>
+<blockquote class="q">
+<p>
+We have found that the process state of Explorer.exe changes to signaled
+<i>before</i> the process terminates.
+Here’s a sample program:
+</p>
+<pre>
+int _tmain(int argc, TCHAR **argv)
+{
+ STARTUPINFO si = { sizeof(si) };
+ PROCESS_INFORMATION pi;
+ if (CreateProcess(TEXT("C:\\Windows\\Explorer.exe"), TEXT(" /e,C:\\usr"),
+                   NULL, NULL, FALSE, 0, NULL, NULL, &amp;si, &amp;pi)) {
+  WaitForSingleObject(pi.hProcess);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+ }
+ return 0;
+}
+</pre>
+<p>
+If we change “Explorer.exe” to “Notepad.exe” then the process handle
+is signaled after Notepad terminates, as expected.
+</p>
+</blockquote>
+<blockquote class="q"><p>
+We have a 32-bit shell extension for which a 64-bit version is not
+available.
+Since our clients are running 64-bit Windows,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/09/29/10069021.aspx">
+the 32-bit shell extension is not available in Explorer</a>.
+How can we obtain access to this context menu?
+</p></blockquote>
+<blockquote class="q"><p>
+We have a shell extension that is not UAC-compliant.
+It requires that the user have administrative privileges in order
+to function properly.
+We would rather not disable UAC across the board just for this
+one shell extension.
+Is there a workaround that lets us run Explorer elevated temporarily?
+</p></blockquote>
+<p>
+<b>Bonus sample program</b>:
+The
+<a href="http://msdn.microsoft.com/en-us/library/dd940358.aspx">
+Explorer Browser Search Sample</a>
+shows how to filter the view.
+</p>
+<p>
+<b>Bonus alternative</b>:
+If you really just want to watch Explorer windows rather than
+host one,
+you can use
+<a href="http://msdn.microsoft.com/en-us/library/bb757028.aspx">
+the ShellWindows object</a>,
+something I covered
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/07/20/188696.aspx">
+many years ago</a>
+(and followed up with a much shorter
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/07/05/435657.aspx">
+scripting version</a>).</p>
+
+
+</body>

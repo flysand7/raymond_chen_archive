@@ -1,0 +1,94 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What’s up with <code>compare_</code><code>exchange_</code><code>weak</code> anyway?</h1>  <!-- .entry-meta -->
+
+<p><a href="https://blogs.msdn.microsoft.com/oldnewthing/20180328-00/?p=98365">Last time</a>, I left you with a homework assignment: <a href="https://www.youtube.com/watch?v=ZQFzMfHIxng">Watch this video on <code>std::atomic</code></a>.</p>
+<p><a href="https://www.youtube.com/watch?v=ZQFzMfHIxng&amp;t=33m03s">At time code 33:03</a>, the presenter notes the weak version of compare-exchange (which is permitted to fail even if the value matches the expected value) and <a href="https://www.youtube.com/watch?v=ZQFzMfHIxng&amp;t=36m26s">tries to reverse-engineer</a> what kind of hardware would require this operation, eventually settling on a NUMA architecture where cross-node memory accesses can time out.</p>
+<p>But there’s no need to speculate about something that exotic, because the answer is all around us. In fact, it’s probably happening right now on a computer in the presenter’s pocket.</p>
+<p>Most RISC processors do not have a compare-exchange instruction. Instead, they use a <i>load locked/store conditional</i> pattern. This pattern is employed by the ARM architecture, and we also saw it for <a href="https://blogs.msdn.microsoft.com/oldnewthing/20170817-00/?p=96835">Alpha AXP</a>, and we’ll see it later for MIPS and PowerPC.</p>
+<p>The <i>load locked/store conditional</i> pattern goes like this:</p>
+<ul>
+<li>Issue a <i>load locked</i> instruction which reads a value from memory and instructs the processor to monitor that location for writes from other processors.</li>
+<li>Perform some computations.</li>
+<li>Issue a <i>store conditional</i> instruction which writes a value to the same memory location that was locked, provided the processor can prove that the memory has not been written to in the interim.</li>
+</ul>
+<p>The conditional store can fail if another processor has written to the memory, or memory on the same cache line or other unit of monitoring granularity, or if the processor took an interrupt.</p>
+<p>On an ARM, a strong compare-exchange contains a loop because the only way that <code>compare_</code><code>exchange_</code><code>strong</code> is permitted to fail is when the current value of the atomic variable does not match the expected value. If the failure reason was because of contention, then the strong version must perform an internal retry loop until the operation succeeds, or until the failure condition is met.</p>
+<pre>    ; r0 is the proposed new value
+    ; r1 is the expected old value
+    ; r2 is the address of the atomic variable
+
+retry:
+    DMB                     ; data memory barrier
+    LDREX   r3, [r2]        ; load current value and lock it
+    CMP     r3, r1          ; is it what we expected?
+    BNE     fail            ; N: operation failed
+                            ; actual current value is in r3
+
+    STREX   r4, r0, [r2]    ; try to store new value
+    CBNZ    r4, retry       ; lost the lock, try again
+    DMB                     ; data memory barrier
+</pre>
+<p>Consider the compare-exchange loop in the code sample in the presentation:</p>
+<pre>    do { new_n-&gt;next = old_h; }
+    while (!head.compare_exchange_strong(old_h, new_n));
+</pre>
+<p>The <code>compare_</code><code>exchange_</code><code>strong</code> has an embedded loop, and it’s part of another loop. So we have to generate two loops:</p>
+<pre>    ; r0 is new_n
+    ; r1 is old_h
+    ; r2 is the address of the atomic variable "head"
+
+outer_loop:
+    STR     r1, [r0]        ; new_n-&gt;next = old_h
+
+retry:
+    DMB                     ; data memory barrier
+    LDREX   r3, [r2]        ; locked load of head
+    CMP     r3, r1          ; is it what we expected?
+    BNE     fail            ; N: operation failed
+
+    STREX   r4, r0, [r2]    ; try to store new value
+    CBNZ    r4, retry       ; lost the lock, try again
+
+    DMB                     ; data memory barrier
+
+    ; succeeded - continue with code that comes after
+
+    ...
+
+    ; This code goes at the end of the function because ARM
+    ; statically predicts forward-jumps as not-taken.
+fail:
+    DMB                     ; data memory barrier
+    MOV     r1, r3          ; old_h = current value of head
+    B       outer_loop      ; restart the outer loop
+</pre>
+<p>The outer loop drives the loop written by the C++ programmer. The inner loop is the one required by <code>compare_</code><code>exchange_</code><code>strong</code>.</p>
+<p>The weak version avoids this nested loop:</p>
+<pre>    do { new_n-&gt;next = old_h; }
+    while (!head.compare_exchange_<span style="color: blue;">weak</span>(old_h, new_n));
+</pre>
+<p>With this version, the compiler can simply bail out at the first sign of trouble. It avoids having to create a separate <code>fail</code> label and reduces register pressure because it doesn’t need to carry the expected and actual values through the (no-longer present) inner loop.</p>
+<pre>    ; r0 is new_n
+    ; r1 is old_h
+    ; r2 is the address of the atomic variable "head"
+
+outer_loop:
+    STR     r1, [r0]        ; new_n-&gt;next = old_h
+
+    MOV     r3, r1          ; save old_h before we overwrite it
+    DMB                     ; data memory barrier
+    LDREX   r1, [r2]        ; locked load of head into old_h
+    CMP     r3, r1          ; is it what we expected?
+    BNE     outer_loop      ; N: retry with revised old_h
+
+    STREX   r3, r0, [r2]    ; try to store new value
+    CBNZ    r3, outer_loop  ; lost the lock, try again
+
+    DMB                     ; data memory barrier
+
+    ; succeeded - continue with code that comes after
+</pre>
+<p>When should you prefer the strong version of compare-exchange as opposed to the weak version? We’ll take up that question next time.</p>
+
+
+</body>

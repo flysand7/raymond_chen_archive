@@ -1,0 +1,149 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Killing a window timer prevents the WM_TIMER message from being generated for that timer, but it doesn't retroactively remove ones that were already generated</h1>  <!-- .entry-meta -->
+
+<p>
+Calling
+<code>Kill­Timer</code>
+to cancel a window timer
+prevents <code>WM_TIMER</code> messages from being
+generated for that timer,
+even if one is overdue.
+In other words,
+give this sequence of operations:
+</p>
+<pre>
+SetTimer(hwnd, IDT_MYTIMER, 1000, NULL);
+Sleep(2000);
+KillTimer(hwnd, IDT_MYTIMER);
+</pre>
+<p>
+no <code>WM_TIMER</code> message is ever generated.
+Even though a timer became due during the <code>Sleep</code>,
+no timer message was generated during the sleep
+because timer messages are generated on demand,
+and nobody demanded one.
+Killing the timer then removes the ability to demand a timer
+message,
+and the result is that no message ever appears.
+</p>
+<p>
+In general, this means that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/12/04/10577881.aspx">
+once you kill a timer,
+you will not receive any <code>WM_TIMER</code> messages
+for that timer</a>.
+</p>
+<p>
+Unless you
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/05/23/10420741.aspx">
+demanded one while the timer was active and didn’t process it</a>.
+</p>
+<p>
+Let’s try a variation:
+</p>
+<pre>
+SetTimer(hwnd, IDT_MYTIMER, 1000, NULL);
+Sleep(2000);
+if (PeekMessage(&amp;msg, NULL, WM_TIMER, WM_TIMER, 0)) {
+ DispatchMessage(&amp;msg);
+}
+KillTimer(hwnd, IDT_MYTIMER);
+</pre>
+<p>
+In this case, the <code>Peek­Message</code> function
+looks for a <code>WM_TIMER</code> message in the queue,
+and if none is found, it asks for one to be generated on the fly
+if a timer is due.
+It so happens that one is due (<code>IDT_MY­TIMER</code>),
+so the <code>Peek­Message</code> causes a
+<code>WM_TIMER</code> to be generated and placed in the queue.
+But it doesn’t remain in this state for long, because
+the message is removed from the queue by the
+<code>Peek­Message</code> function.
+</p>
+<p>
+Okay, now let’s make things weird:
+</p>
+<pre>
+SetTimer(hwnd, IDT_MYTIMER, 1000, NULL);
+Sleep(2000);
+if (PeekMessage(&amp;msg, NULL, WM_TIMER, WM_TIMER, <font color="blue">PM_NOREMOVE</font>)) {
+ // oh hey there is an overdue timer, how about that
+}
+KillTimer(hwnd, IDT_MYTIMER);
+</pre>
+<p>
+This time, we passed the
+<code>PM_NO­REMOVE</code> flag.
+The window manager goes through the same process as before,
+first looking for a <code>WM_TIMER</code> message in the queue,
+and then failing to find one,
+generates one on the fly since the <code>IDT_MY­TIMER</code>
+timer is overdue.
+But the
+<code>PM_NO­REMOVE</code> flag makes things weird
+because it says,
+“Thanks for generating that message for me.
+But don’t remove it from the queue.
+Leave it there.
+I’ll deal with it later.”
+</p>
+<p>
+You might do this if you want to stop processing
+if a timer elapses,
+but you don’t want to handle the timer immediately because you are in
+some sensitive state at the point you realize that you need to stop processing.
+Instead, you want to return back out to the main message loop and let it
+deal with the timer.
+</p>
+<pre>
+BOOL DoWorkUntilTheNextTimer()
+{
+ BOOL fFinished = FALSE;
+ MSG msg;
+ PrepareToDoWork();
+ while (!PeekMessage(&amp;msg, NULL, WM_TIMER, WM_TIMER, PM_NOREMOVE)) {
+  if (AnyWorkLeft()) DoSomeWork();
+  else { fFinished = TRUE; break; }
+ }
+ CleanUpAfterDoingWork();
+ return fFinished;
+}
+</pre>
+<p>
+And then you might call it like this:
+</p>
+<pre>
+void DoWorkForUpToOneSecond()
+{
+ SetTimer(hwnd, IDT_MYTIMER, 1000, NULL);
+ DoWorkUntilTheNextTimer();
+ KillTimer(hwnd, IDT_MYTIMER);
+}
+</pre>
+<p>
+The
+<code>Kill­Timer</code> will prevent any new
+timer messages from being generated for
+<code>IDT_MY­TIMER</code>,
+but it does not go back in time and retroactively
+un-generate the timer message that was generated
+when
+<code>Do­Work­Until­The­Next­Timer</code>
+asked to see if there were any timer messages.
+</p>
+<p>
+You are now in the strange situation where
+a subsequent
+call to <code>Peek­Message</code> or
+<code>Get­Message</code>
+will retrieve a timer message for a timer that is no longer active!
+</p>
+<p>
+This is captured in the MSDN documentation with the simple
+sentence,
+“The <b>Kill­Timer</b> function does not remove
+<code>WM_TIMER</code> messages already posted to the message queue.”</p>
+
+
+</body>

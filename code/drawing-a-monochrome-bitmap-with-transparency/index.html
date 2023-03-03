@@ -1,0 +1,170 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Drawing a monochrome bitmap with transparency</h1>  <!-- .entry-meta -->
+
+<p><a href="http://blogs.msdn.com/oldnewthing/archive/2005/08/02/446605.aspx">
+Last time, I left you with a brief puzzle</a>.
+Here are two approaches.
+I am not a GDI expert, so there may be even better solutions
+out there.
+To emphasize the transparency, I’ll change the window background
+color to the application workspace color.
+</p>
+<pre>
+ BOOL WinRegisterClass(WNDCLASS *pwc)
+ {
+  pwc-&gt;hbrBackground = (HBRUSH)(COLOR_<font color="blue">APPWORKSPACE</font> + 1);
+  return __super::WinRegisterClass(pwc);
+ }
+</pre>
+<p>
+<strong>Method 1</strong>:
+A big
+<a href="http://msdn.microsoft.com/library/en-us/gdi/bitmaps_229g.asp">
+<code>MaskBlt</code></a>.
+</p>
+<pre>
+void RootWindow::PaintContent(PAINTSTRUCT *pps)
+{
+ HDC hdcMem = CreateCompatibleDC(pps-&gt;hdc);
+ if (hdcMem) {
+  int cxCheck = GetSystemMetrics(SM_CXMENUCHECK);
+  int cyCheck = GetSystemMetrics(SM_CYMENUCHECK);
+  HBITMAP hbmMono = CreateBitmap(cxCheck, cyCheck, 1, 1, NULL);
+  if (hbmMono) {
+   HBITMAP hbmPrev = SelectBitmap(hdcMem, hbmMono);
+   if (hbmPrev) {
+    RECT rc = { 0, 0, cxCheck, cyCheck };
+    DrawFrameControl(hdcMem, &amp;rc, DFC_MENU, DFCS_MENUCHECK);
+    COLORREF clrTextPrev = SetTextColor(pps-&gt;hdc,
+                                     GetSysColor(COLOR_MENUTEXT));
+    <font color="blue"><strike>// COLORREF clrBkPrev = SetBkColor(pps-&gt;hdc,</strike>
+    <strike>//                                  GetSysColor(COLOR_MENU));</strike>
+    MaskBlt(pps-&gt;hdc, 0, 0, cxCheck, cyCheck,
+           hdcMem, 0, 0, hbmMono, 0, 0
+           MAKEROP4(0x00AA0029, SRCCOPY));
+    <strike>// SetBkColor(pps-&gt;hdc, clrBkPrev);</strike></font>
+    SetTextColor(pps-&gt;hdc, clrTextPrev);
+    SelectBitmap(hdcMem, hbmPrev);
+   }
+   DeleteObject(hbmMono);
+  }
+  DeleteDC(hdcMem);
+ }
+}
+</pre>
+<p>
+This has the least amount of typing but feels like
+overkill to me, using a quaternary raster operation
+as if were a ternary, just because I didn’t want to create a
+pattern brush.
+(The raster operation 0x00AA0029 is the NOP operator; it leaves
+the destination alone.  I didn’t have this memorized;
+I looked it up
+<a href="http://msdn.microsoft.com/library/en-us/gdi/pantdraw_6n77.asp">
+in the documentation</a>.)
+The <code>MAKEROP4</code> says that for each white pixel in the mask,
+do nothing (NOP), and for each black pixel, do a <code>SRCCOPY</code>.
+</p>
+<p>
+Notice that the background color is never used
+(since it’s supposed to be transparent); consequently, we can delete
+the code that sets and restores the DC’s background color.
+</p>
+<p>
+<strong>Method 2</strong>:
+The traditional two-step.
+</p>
+<pre>
+void RootWindow::PaintContent(PAINTSTRUCT *pps)
+{
+ HDC hdcMem = CreateCompatibleDC(pps-&gt;hdc);
+ if (hdcMem) {
+  int cxCheck = GetSystemMetrics(SM_CXMENUCHECK);
+  int cyCheck = GetSystemMetrics(SM_CYMENUCHECK);
+  HBITMAP hbmMono = CreateBitmap(cxCheck, cyCheck, 1, 1, NULL);
+  if (hbmMono) {
+   HBITMAP hbmPrev = SelectBitmap(hdcMem, hbmMono);
+   if (hbmPrev) {
+    RECT rc = { 0, 0, cxCheck, cyCheck };
+    DrawFrameControl(hdcMem, &amp;rc, DFC_MENU, DFCS_MENUCHECK);
+    COLORREF clrTextPrev = SetTextColor(pps-&gt;hdc, <font color="blue">RGB(0,0,0)</font>);
+    COLORREF clrBkPrev = SetBkColor(pps-&gt;hdc, <font color="blue">RGB(255,255,255)</font>);
+    <font color="blue">BitBlt(pps-&gt;hdc, cxCheck, 0, cxCheck, cyCheck,
+           hdcMem, 0, 0, SRCAND);
+    SetTextColor(pps-&gt;hdc, GetSysColor(COLOR_MENUTEXT));
+    SetBkColor(pps-&gt;hdc, RGB(0,0,0));
+    BitBlt(pps-&gt;hdc, cxCheck, 0, cxCheck, cyCheck,
+           hdcMem, 0, 0, SRCPAINT);</font>
+    SetBkColor(pps-&gt;hdc, clrBkPrev);
+    SetTextColor(pps-&gt;hdc, clrTextPrev);
+    SelectBitmap(hdcMem, hbmPrev);
+   }
+   DeleteObject(hbmMono);
+  }
+  DeleteDC(hdcMem);
+ }
+}
+</pre>
+<p>
+This is the traditional two-step blit.
+The first erases the pixels that are about to be overwritten
+by setting the foreground to black and background to white,
+then using <code>SRCAND</code>.
+This has the effect of erasing all the foreground pixels to zero
+while leaving the background intact.
+The second blit does the same, but with <code>SRCPAINT</code>.
+This means that the background pixels need to be treated as black,
+so that when they are “or”d with the destination, the destination
+pixels are unchanged.
+The foreground pixels get the desired foreground color.
+</p>
+<p>
+This method can be shortened by negating the first blit,
+reversing the sense of foreground and background, so that the
+color black doesn’t have to move between the background color
+and the text color.
+</p>
+<pre>
+void RootWindow::PaintContent(PAINTSTRUCT *pps)
+{
+ HDC hdcMem = CreateCompatibleDC(pps-&gt;hdc);
+ if (hdcMem) {
+  int cxCheck = GetSystemMetrics(SM_CXMENUCHECK);
+  int cyCheck = GetSystemMetrics(SM_CYMENUCHECK);
+  HBITMAP hbmMono = CreateBitmap(cxCheck, cyCheck, 1, 1, NULL);
+  if (hbmMono) {
+   HBITMAP hbmPrev = SelectBitmap(hdcMem, hbmMono);
+   if (hbmPrev) {
+    RECT rc = { 0, 0, cxCheck, cyCheck };
+    DrawFrameControl(hdcMem, &amp;rc, DFC_MENU, DFCS_MENUCHECK);
+    COLORREF clrTextPrev = SetTextColor(pps-&gt;hdc, <font color="blue">RGB(255,255,255)</font>);
+    COLORREF clrBkPrev = SetBkColor(pps-&gt;hdc, <font color="blue">RGB(0,0,0)</font>);
+    <font color="blue">BitBlt(pps-&gt;hdc, cxCheck, 0, cxCheck, cyCheck,
+           hdcMem, 0, 0, 0x00220326); // DSna
+    SetTextColor(pps-&gt;hdc, GetSysColor(COLOR_MENUTEXT));
+    BitBlt(pps-&gt;hdc, cxCheck, 0, cxCheck, cyCheck,
+           hdcMem, 0, 0, SRCPAINT);</font>
+    SetBkColor(pps-&gt;hdc, clrBkPrev);
+    SetTextColor(pps-&gt;hdc, clrTextPrev);
+    SelectBitmap(hdcMem, hbmPrev);
+   }
+   DeleteObject(hbmMono);
+  }
+  DeleteDC(hdcMem);
+ }
+}
+</pre>
+<p>
+Whether this shortening is actually an overall
+improvement is difficult to tell.
+It’s possible that some display drivers have a highly optimized
+<code>SRCAND</code> handler whereas they are less likely to have
+an optimized <code>0x00220326</code> handler.
+</p>
+<p>
+(Exercise: Why can’t you instead reverse the second blit,
+converting it to a <code>MERGEPAINT</code>?)
+</p>
+
+
+</body>

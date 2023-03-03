@@ -1,0 +1,112 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Serializing asynchronous operations in C++/WinRT, gotchas and final assembly</h1>  <!-- .entry-meta -->
+
+<p>Last time, <a href="/code/serializing-asynchronous-operations-in-c-winrt" title="Serializing asynchronous operations in C++/WinRT"> we came up with a way of making asynchronous operations run in sequence</a>, but I noted that there were some gotchas we need to work through.</p>
+<p>One gotcha is cancellation.</p>
+<p>In the C++/WinRT implementation of Windows Runtime asynchronous operations, cancellation of an asynchronous operation <a href="/code/c-winrt-doesn-t-let-your-coroutine-cheat-death-but-it-does-get-to-say-good-bye"> trigger the completion callback immediately</a>, without waiting for the coroutine to acknowledge the cancellation. If we had used the <code>Completed</code> callback to detect the completion of the coroutine, we would have started running the next coroutine before the previous one cleaned up from its cancellation.</p>
+<p>Good thing we aren’t doing that. We trigger the next coroutine at the destruction of the <code>chained_<wbr/>task_<wbr/>completer</code>, which we arranged to destruct last, so everything else in the coroutine has already destructed. (Well, the parameters haven’t been destructed yet, but they were all references, so there was nothing to destruct.)</p>
+<p>The other thing to worry about is coroutine destruction. That’s where you take a suspended coroutine and call <code>destroy</code> on it. This basically rips the rug out of the coroutine and destructs everything in it without letting any of the coroutine body run anything. If that happens to our coroutine while suspended at the <code>co_await lazy_start</code>, then the <code>chained_<wbr/>task_<wbr/>completer</code> will destruct and start running the next coroutine prematurely.</p>
+<p>Fortunately, C++/WinRT coroutines are never abandoned. They always run to completion (possibly by throwing an exception). So at least for C++/WinRT coroutines, we don’t have to worry about this.¹</p>
+<p>What if the <code>task_<wbr/>sequencer</code> is destructed while there are still pending coroutines?</p>
+<p>When the <code>task_<wbr/>sequencer</code> destructs, the <code>m_latest</code> shared pointer destructs, which means that the last node in the chain now has only one strong reference, namely the strong reference from the last coroutine in the chain:</p>
+<p>
+<code>coroutine</code><br/>
+<code>chained_task</code></p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="The linked list from last time, where the linked list of alternating coroutines and chained_task nodes ends with a 'chained_task', but this time the 'm_latest' is crossed out, so the only inbound arrow is from the preceding coroutine.">
+<tbody>
+<tr>
+<td>→</td>
+<td style="border: solid 1px gray;"><code>current</code></td>
+<td>→</td>
+<td style="border: solid 1px gray;"><code>next</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>↙︎</td>
+</tr>
+<tr>
+<td> </td>
+<td><code>coroutine</code></td>
+<td> </td>
+<td><code>chained_task</code></td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px gray;"><code>current</code></td>
+<td>→</td>
+<td style="border: solid 1px gray;"><code>next</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>↙︎</td>
+</tr>
+<tr>
+<td> </td>
+<td><code>coroutine</code></td>
+<td> </td>
+<td><code>chained_task</code></td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px gray;"><code>current</code></td>
+<td>→</td>
+<td style="border: solid 1px gray;"><code>next</code></td>
+<td>→</td>
+<td><code>nullptr</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>×<br/>
+↑<br/>
+<code>m_latest
+    </code></td>
+</tr>
+</tbody>
+</table>
+<p>As the coroutines complete, the nodes come off the head of the linked list, and when the last one completes, the last <code>chained_<wbr/>task</code> destructs. Everything is cleaned up.</p>
+<p>Now we can take our <code>task_<wbr/>sequencer</code> for a spin.</p>
+<pre>task_sequencer sequence;
+
+winrt::Windows::Foundation::IAsyncOperation&lt;winrt::hstring&gt;
+MessageAfterDelayAsync(
+    winrt::hstring message,
+    winrt::Windows::Foundation::TimeSpan delay)
+{
+    co_await winrt::resume_after(delay);
+    std::wcout &lt;&lt; message.c_str() &lt;&lt; std::endl;
+    co_return message + L" done";
+}
+
+auto AddMessageAfterDelayAsync(
+    winrt::hstring message,
+    winrt::Windows::Foundation::TimeSpan delay)
+{
+    return sequence.QueueTaskAsync(
+        [=] { return MessageAfterDelayAsync(message, delay); });
+}
+
+void do_in_sequence()
+{
+    auto first = AddMessageAfterDelayAsync(L"first", 1s);
+    auto second = AddMessageAfterDelayAsync(L"second", 1s);
+    auto third = AddMessageAfterDelayAsync(L"third", 1s);
+
+    // Cancel the second one, just for fun.
+    second.Cancel();
+
+    // wait for the third one.
+    auto third_message = third.get();
+
+    // print the results
+    std::wcout &lt;&lt; first.get().c_str() &lt;&lt; std::endl;
+    std::wcout &lt;&lt; third_message.c_str() &lt;&lt; std::endl;
+}
+</pre>
+<p>¹ In general, abandonment of a coroutine via premature <code>destroy()</code> is not something most coroutine libraries deal with, so at least we’re in good company.</p>
+
+
+</body>

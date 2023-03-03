@@ -1,0 +1,120 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The PowerPC 600 series, part 14: Code walkthrough</h1>  <!-- .entry-meta -->
+
+<p>Today we’re going to take a relatively small function and watch what the compiler did with it. The function is this guy from the C runtime library, although I’ve simplified it a bit to avoid some distractions. </p>
+<pre>
+extern FILE _iob[];
+
+int fclose(FILE *stream)
+{
+    int result = EOF;
+
+    if (stream-&gt;_flag &amp; _IOSTRG) {
+        stream-&gt;_flag = 0;
+    } else {
+        int index = stream - _iob;
+        _lock_str(index);
+        result = _fclose_lk(stream);
+        _unlock_str(index);
+    }
+
+    return result;
+}
+</pre>
+<p>Here’s the corresponding disassembly: </p>
+<pre>
+; int fclose(FILE *stream)
+; {
+    mflr    r0              ; move return address to r0
+    stw     r29,-0xC(r1)    ; save non-volatile register
+    stw     r30,-8(r1)      ; save non-volatile register
+    stw     r31,-4(r1)      ; save non-volatile register
+    stw     r0,-0x10(r1)    ; save return address
+    stwu    r1,-0x50(r1)    ; create stack frame and link
+</pre>
+<p>On entry, the parameters to a function are passed in <var>r3</var> through <var>r10</var>. This function has only one parameter, so it goes in <var>r3</var>. </p>
+<p>The return address is passed in <var>lr</var>, but the <var>lr</var> register cannot be stored directly into memory. We need to transfer it through a general-purpose register. The Microsoft compiler uses <var>r0</var> for this purpose (and doesn’t use <var>r0</var> for any other purpose as far as I can tell.) </p>
+<p>The next step is to save the non-volatile registers that the function uses, so that they can be restored at function exit. Then we save the return address on the stack, and finally create the stack frame and link it to the previous stack frame. </p>
+<p>We created an 80-byte stack frame. The 24 bytes closest to the top of the stack form the system-reserved area; the next 32 bytes are the home spaces for the eight register parameters. We don’t call any functions with more than eight parameters, so we don’t need any space for the outbound parameters beyond eight. Our usable local variables therefore start at offset 56. On the other hand, we stored the return address at offset 80 − 16 = 64, and the nonvolatile registers at offsets 68 thorough 76, which means that our local variables live at offsets 56 through 64. (It turns out that we won’t use any of them! But we had to allocate them anyway, in order to keep the stack aligned on a 16-byte boundary.) </p>
+<p>Okay, with the prologue out of the way, we can start doing real work. </p>
+<pre>
+;   if (stream-&gt;_flag ...
+    mr      r31,r3          ; r31 = stream
+    lwz     r3,0xC(r31)     ; r3 = stream-&gt;_flag
+</pre>
+<p>We are going to test a bit in the <code>stream-&gt;_flag</code> member, so we need to load that up. Meanwhile, we save the stream parameter in the <var>r31</var> register. </p>
+<pre>
+;   int result = EOF;
+    li      r30,-1          ; r30 = -1
+    li      r4,0            ; r4 = 0 (handy zero value)
+</pre>
+<p>Interleaved with the evaluation of the condition we insert the initialization of the <code>result</code> local variable, and we set <var>r4</var> to zero because zero is a handy value to have. </p>
+<pre>
+;   if (stream-&gt;_flag &amp; _IOSTRG) {
+    rlwinm. r3,r3,0,25,25   ; r3 = r3 &amp; 0x40 (_IOSTRG)
+    beq     notstring       ; if bit not set, then go to "else" branch
+</pre>
+<p>We use the all-purpose <code>rlwinm</code> instruction here. We shift by zero positions, but specify a mask of (25,25). On the PowerPC, bits are numbered starting from the most significant bit, so position 25 has value <code>1 &lt;&lt; (31-25) = 0x40</code>. Therefore, this instruction is functionally equivalent to </p>
+<pre>
+    andi.   r3,r3,0x40      ; r3 = r3 &amp; 0x40 (_IOSTRG)
+</pre>
+<p>Since the <code>rlwinm</code> opcode is followed by a period, it sets flags in <var>cr0</var> based on the result. We test these flags in the subsequent <code>beq</code> and jump if the bit is not set. Recall that if you don’t specify a condition register for <code>beq</code>, it defaults to <var>cr0</var>. </p>
+<p>Otherwise, we fall through: </p>
+<pre>
+;       stream-&gt;_flag = 0;
+    stw     r4,0xC(r31)     ; stream-&gt;_flag = 0
+    b       done            ; end of "true" branch
+</pre>
+<p>We preloaded zero into the <var>r4</var> register, so we can use a <code>stw</code> to store that zero into the  <code>stream-&gt;_flags</code>. That’s the end of the <code>true</code> branch of the <code>if</code> statement, so we jump to the function exit code. </p>
+<pre>
+    } else {
+notstring:
+;       int index = stream - _iob;
+    lwz     r3,-0x7F3C(r2)  ; r3 = &amp;_iob
+    subfc   r3,r3,r31       ; calculate raw pointer offset
+    srawi   r29,r3,5        ; divide by 32 to get the index (saved in r29)
+</pre>
+<p>First, we need to calculate the address of the <code>_iob</code> global address. The addresses of global variables are kept in the table of contents. The displacement in memory access instructions is a signed 16-bit value, so the table of contents register usually points 32<a href="https://blogs.msdn.microsoft.com/oldnewthing/20090611-00/?p=17933">KB</a> past the start of the actual table of contents, so that the code can use both positive and negative offsets to access a 64KB block of data. And since most programs don’t have more than 8192 global variables, the offsets you see will almost always be negative. </p>
+<p>After we get the address of the <code>_iob</code> global variable, we subtract the raw pointers to get the byte difference, and then we divide by <code>sizeof(FILE)</code> to get the index. We’re lucky that the size of a <code>FILE</code> is a power of 2, so a shift instruction can be used instead of a full division. </p>
+<pre>
+;       _lock_str(index);
+    mr      r3,r29          ; first function parameter is "index"
+    bl      _lock_str       ; call _lock_str
+    nop                     ; don't need to restore toc
+</pre>
+<p>Now that we’ve calculated the index, set it up as the argument for the <code>_lock_str</code> function and call it. At the time the compiler generated the code, it was not sure whether <code>_lock_str</code> was a function in the same module or was a naïvely-imported function, so it left a <code>nop</code> after the <code>bl</code>. If the function turned out to be a naïvely-imported function, the linker would have changed the <code>nop</code> to <code>lwz r2, 4(sp)</code> in order to restore the table of contents. </p>
+<pre>
+;       result = _fclose_lk(stream);
+    mr     r3,r31           ; load parameter for _fclose_lk
+    bl     _fclose_lk
+    mr     r30,r3           ; save return value in "result"
+</pre>
+<p>The next thing to do is to call <code>_fclose_lk</code>, so we put the <code>stream</code> parameter in <var>r3</var>, copying it from <var>r31</var> which is where we saved it at the start of the function. This time, the compiler knows that <code>_fclose_lk</code> is in the same module, presumably because it was in the same translation unit, so it doesn’t need to leave a <code>nop</code> after the <code>bl</code>. </p>
+<pre>
+;       _unlock_str(index);
+    mr     r3,r29           ; load parameter for _unlock_str
+    bl     _unlock_str
+    nop                     ; don't need to restore toc
+</pre>
+<p>After the <code>_fclose_lk</code>, we call <code>_unlock_str</code>, and this time the compiler didn’t know whether <code>_unlock_str</code> was in the same module or not, so it leaves a precautionary <code>nop</code> after the <code>bl</code>. </p>
+<pre>
+;  }
+done:
+    mr     r3,r30           ; set return value
+
+    lwz    r0,0x40(r1)      ; recover return address
+    lwz    r29,0x44(r1)     ; restore non-volatile register
+    lwz    r30,0x48(r1)     ; restore non-volatile register
+    lwz    r31,0x4C(r1)     ; restore non-volatile register
+    mtlr   r0               ; move return address to lr so we can jump to it
+    addi   r1,r1,0x50       ; clean the stack
+    blr                     ; return to caller
+</pre>
+<p>We set the return value to the <code>result</code>, and then we enter the epilogue. In the epilogue, we load the return address into <var>r0</var>, and then restore the non-volatile registers. We load the return address first so that the <code>mtlr</code> is less likely to stall waiting for the answer to come back from memory. </p>
+<p>One thing you may notice is that the non-volatile registers are saved with negative offsets (into the red zone) but restored from positive offsets (from the local frame). This makes it harder to match up the two, but you can generally assume that the compiler knows how to do math and didn’t mess that up. </p>
+<p>The more significant consequence of this is that it’s harder to manually unwind the stack in order to see what was in the registers of the caller. You can disassemble at the start of the function to see where the registers were saved, but they are saved at negative offsets, which you then need to mentally add to the size of the stack frame expressed in the <code>stwu</code> instruction at the end of the prologue. To get the positive offsets, you need to disassemble at the end of the function, which is harder to find since you just keep disassembling forward until you find that you’ve started disassembling another function. And even that trick doesn’t work if the module has undergone profile-guided optimization, which can make the code for a function discontiguous. </p>
+<p>Anyway, after restoring the non-volatile registers, we move the return address into the <var>lr</var> register, pop the stack frame, and return. (The Windows NT software conventions require that the return instruction be encoded exactly as <code>blr</code> and not one of its functional equivalents.) </p>
+<p>This concludes our very quick tour of the PowerPC 600 series of processors. Like the MIPS R4000, I never had to do any significant work with PowerPC, so I probably won’t be able to answer interesting questions. The focus was on learning enough to be able to read valid compiler output, with a few extra notes on the architecture to call out what makes it different. </p>
+
+
+</body>

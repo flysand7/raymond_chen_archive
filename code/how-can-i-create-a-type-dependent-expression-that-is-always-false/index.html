@@ -1,0 +1,58 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I create a type-dependent expression that is always false?</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/how-can-i-give-a-c-lambda-expression-more-than-one-operator"> Giving a C++ lambda expression more than one <code>operator()</code></a> was an abuse of the language.¹ But one of the side effects of exploring ways to abuse the language is that during your explorations, you may <a href="https://devblogs.microsoft.com/oldnewthing/20190711-00/?p=102682"> discover a useful trick</a>.</p>
+<p>One of the things I had to do was prevent compilation from succeeding if the lambda was called incorrectly. I had a chain of <code>if constexpr</code> tests for the valid cases, and I needed to put a <code>static_assert</code> in the <code>else</code> that said “You should never get here.”</p>
+<pre>auto lambda = [<span style="opacity: .5;">total</span>](auto op, auto value) mutable
+{
+  <span style="opacity: .5;">using Op = decltype(op);</span>
+  <b>if constexpr</b> (<span style="opacity: .5;">std::is_same_v&lt;Op, add_tax_t&gt;</span>) {
+   <span style="opacity: .5;"><span style="text-decoration: line-through;">total += total * value; // value is the tax rate</span>
+   <span style="text-decoration: line-through;">return total;</span></span>
+  } <b>else if constexpr</b> (<span style="opacity: .5;">std::is_same_v&lt;Op, apply_discount_t&gt;</span>) {
+   <span style="opacity: .5;"><span style="text-decoration: line-through;">total -= std::max(value, total); // value is the discount</span>
+   <span style="text-decoration: line-through;">return total;</span></span>
+  } <b>else</b> {
+   <b>static_assert(false,</b> "Don't know what you are asking me to do.");
+  }
+};
+</pre>
+<p>However, this does not compile because the <code>static_<code></code>assert</code> fails immediately.</p>
+<p>The reason is that the controlling expression for the <code>static_<code></code>assert</code> is not dependent upon the type of the arguments, and therefore it is evaluated when the lambda is compiled, not when the lambda is invoked (and the implicit template instantiated).²</p>
+<p>In order to defer the <code>static_<code></code>assert</code> to instantiation, we need to make it type-dependent.</p>
+<p>What is a type-dependent expression that is always false?</p>
+<p>We could always make up our own:</p>
+<pre>template&lt;typename T&gt;
+inline constexpr bool always_false_v = false;
+
+...
+
+ static_assert(<span style="color: blue;">always_false_v&lt;Op&gt;</span>,
+               "Don't know what you are asking me to do.");
+</pre>
+<p>but it feels weird creating a whole new variable template just to generate a fixed <code>false</code> value.³ Maybe we can live off the land.</p>
+<p>We could take advantage of the fact that <code>sizeof</code> is never zero.⁴</p>
+<pre> static_assert(<span style="color: blue;">!sizeof(Op)</span>,
+               "Don't know what you are asking me to do.");
+</pre>
+<p>but this runs into problems if <code>Op</code> is an incomplete type or <code>void</code>. Now, the way we happen to have written our code, an incomplete type and <code>void</code> are not possible because the type corresponds to an actual parameter. But let’s look for a more general solution.</p>
+<p>If the type is indeed incomplete or <code>void</code>, then the code will fail to compile, but the error message will be confusing because the provided error text will not be used: The error occurred before the compiler could get that far.</p>
+<p>However, <i>pointers to</i> incomplete types or <code>void</code> are valid. So we could do this:</p>
+<pre> static_assert(<span style="color: blue;">!sizeof(Op*)</span>,
+               "Don't know what you are asking me to do.");
+</pre>
+<p>A static assertion of a type-dependent expression that is always false is a handy thing to put into templates, because it defers the assertion failure to the instantiation of the template. Here, we used it in a potentially-discarded statement, so that the instantiation does not occur when the statement is discarded.</p>
+<p>We’ll find another use next time.</p>
+<p><b>Bonus chatter</b>: <a href="https://twitter.com/MalwareMinigun"> Billy O’Neal</a> called out some gotchas with this approach, which I’ll take up in a future entry.</p>
+<p>¹ What some people call an abuse of the language others call a <i>proxy object</i>, such as the one produced by <code>std::vector&lt;bool&gt;</code>‘s <code>[]</code> operator.</p>
+<p>² This does raise a confusing point in the C++ standard. According to the standard, the not-used branch of an <code>if constexpr</code> is a <i>discarded statement</i>. This is the only place where the term <i>discarded statement</i> appears in the standard. And it is never defined! The closest thing to a definition is the sentence</p>
+<blockquote class="q"><p>During the instantiation of an enclosing templated entity (Clause 17), if the condition is not value-dependent after its instantiation, the discarded substatement (if any) is not instantiated.</p></blockquote>
+<p>which describes a <i>discarded <u>sub</u>statement</i>. And it doesn’t really define what a discarded substatement is. It just names one characteristic of discarded substatements.</p>
+<p>I think the standard intended the sentence to be something like</p>
+<blockquote class="q"><p><u>A <i>discarded statement</i> is treated the same as a statement, except that</u> during the instantiation of an enclosing templated entity (Clause 17), if the condition is not value-dependent after its instantiation, the discarded statement (if any) is not instantiated.</p></blockquote>
+<p>³ See <a href="http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2019/p1830r1.pdf"> the proposal for <code>std::dependent_</code><code>false</code></a> (and <a href="https://github.com/cplusplus/papers/issues/572"> committee sentiment</a>) for further discussion.</p>
+<p>⁴ <a href="https://en.cppreference.com/w/cpp/language/ebo"> Empty base optimization</a> and <a href="https://en.cppreference.com/w/cpp/language/attributes/no_unique_address"> <code>[[no_<code></code>unique_<code></code>address]]</code></a> also scare me, because they can lead to an object having an effective size of zero. I don’t want to get caught out if a future version of the standard makes some subtle changes that lead to <code>sizeof(T) == 0</code> in some fringe cases.</p>
+<p> </p>
+
+
+</body>

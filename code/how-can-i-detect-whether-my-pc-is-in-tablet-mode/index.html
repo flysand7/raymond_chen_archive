@@ -1,0 +1,121 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I detect whether my PC is in tablet mode?</h1>  <!-- .entry-meta -->
+
+<p><a href="http://windows.microsoft.com/en-us/windows-10/getstarted-like-a-tablet">Tablet Mode</a>, introduced in Windows 10, is a blah blah blah blah.</p>
+<p>Okay, enough with the introduction.</p>
+<p>From a Store app, you detect whether you are in tablet mode by inspecting the <code>User­Interaction­Mode</code> for your view. Sample code for this is given in <a href="http://go.microsoft.com/fwlink/p/?LinkId=619894">the UserInteractionMode sample</a>, but the short version is that you do this:</p>
+<pre>UIViewSettings^ uiViewSettings = UIViewSettings::GetForCurrentView();
+UserInteractionMode mode = uiViewSettings-&gt;UserInteractionMode;
+switch (mode)
+{
+case UserInteractionMode::Touch:
+  // PC is in tablet mode or other touch-first environment
+  break;
+
+case UserInteractionMode::Mouse:
+  // PC is not in tablet mode or other mouse-first environment
+  break;
+}
+</pre>
+<p>The user interaction mode is a per-view property because the system may have multiple monitors, some of which are in tablet mode and some of which aren’t. An app can detect when the user interaction mode of a view has changed by listening for the <code>Size­Changed</code> event.</p>
+<p>This is a general convention for view properties: View properties that affect layout generally raise the <code>Size­Changed</code> event when they change. The idea behind this is that this gives you a single event to trigger the recalculation of your app’s layout policy. If multiple things change at once, such as the window size, the user interaction mode, and the full-screen mode, then you run only one layout recalculation instead of three.</p>
+<p>Okay, that’s great for a Store app, but what about your classic desktop app? How does a classic desktop app learn whether a window is on a monitor that is in tablet mode?</p>
+<p>You basically do exactly the same thing as the Store app: You get the <code>UIView­Settings</code> and ask it for the user interaction mode. The gotcha is that <code>Get­For­Current­View</code> doesn’t make sense in a desktop app because desktop apps don’t have have a <code>Core­Application­View</code>.</p>
+<p>The answer is to use the interop interface <code>IUIView­Settings­Interop</code>. The general design pattern for the interop interface is that it each view-related static method has a corresponding method on the interop interface that takes a window handle instead of a view.</p>
+<p>We’ll see these as we go through the Little Program. (Remember, Little Programs do little to no error checking.) Start with <a href="https://blogs.msdn.microsoft.com/oldnewthing/20030723-00/?p=43073">the scratch program</a> and make these changes:</p>
+<pre><span style="color: blue;">#include &lt;wrl/client.h&gt;
+#include &lt;wrl/wrappers/corewrappers.h&gt;
+#include &lt;windows.ui.viewmanagement.h&gt;
+#include &lt;UIViewSettingsInterop.h&gt;
+#include &lt;tchar.h&gt; // Huh? Why are you still using ANSI?
+
+namespace WRL = Microsoft::WRL;
+namespace vm = ABI::Windows::UI::ViewManagement;
+
+WRL::ComPtr&lt;vm::IUIViewSettings&gt; g_viewSettings;
+
+vm::UserInteractionMode g_mode = vm::UserInteractionMode_Mouse;</span>
+</pre>
+<p>So far, we’re just declaring some global thingies. In a real program, these would probably be instance members of some C++ class, but I’m being lazy.</p>
+<pre><span style="color: blue;">void CheckTabletMode(HWND hwnd)
+{
+  if (g_viewSettings)
+  {
+    vm::UserInteractionMode currentMode;
+    g_viewSettings-&gt;get_UserInteractionMode(&amp;currentMode);
+    if (g_mode != currentMode)
+    {
+      g_mode = currentMode;
+      // This sample just updates some text.
+      InvalidateRect(hwnd, nullptr, true);
+    }
+  }
+}</span>
+</pre>
+<p>Okay, here’s the part where we read the current user interaction mode from the <code>IUIView­Settings</code>, and if it changed, we do whatever we do when the user interact mode changes. In a real problem, we would do some relayout, but in this sample program, we’re just going to update a string, so we invalidate our window so we can draw the new string.</p>
+<pre>BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  <span style="color: blue;">WRL::ComPtr&lt;IUIViewSettingsInterop&gt; interop;
+  Windows::Foundation::GetActivationFactory(WRL::Wrappers::HStringReference(
+     RuntimeClass_Windows_UI_ViewManagement_UIViewSettings).Get(),
+     &amp;interop);
+
+  interop-&gt;GetForWindow(hwnd, IID_PPV_ARGS(&amp;g_viewSettings));
+
+  CheckTabletMode(hwnd);</span>
+  return TRUE;
+}
+</pre>
+<p>Okay, now things get exciting. To get the <code>UIView­Settings</code> for a window, you first get the activation factory (which is where all the static methods hang out) and ask for the <code>IUIView­Settings­Interop</code> interface. From there, call <code>Get­For­Window</code>, which is the window-based version of <code>Get­For­Current­View</code>.</p>
+<p>That’s the only wrinkle. Once you have the <code>UIView­Settings</code>, you can get its user interaction mode as usual.</p>
+<pre>void
+OnDestroy(HWND hwnd)
+{
+  <span style="color: blue;">g_viewSettings.Reset();</span>
+  PostQuitMessage(0);
+}
+</pre>
+<p>Naturally, we need to clean up when we’re done.</p>
+<pre>void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+  <span style="color: blue;">PCTSTR message = TEXT("?");
+
+  // adapt to the new mode! We just update our string.
+  switch (g_mode)
+  {
+  case vm::UserInteractionMode_Mouse: message = TEXT("Mouse"); break;
+  case vm::UserInteractionMode_Touch: message = TEXT("Touch"); break;
+  }
+
+  TextOut(pps-&gt;hdc, 0, 0, message, _tcslen(message));</span>
+}
+</pre>
+<p>Our <code>Paint­Content</code> function prints the current mode.</p>
+<p>Wait, what about the <code>Size­Changed</code> event? Oh, right, for classic Win32, you can just use the <code>WM_WINDOW­POS­CHANGED</code> message, which will give us a chance to see if we moved to a monitor that is in a different tablet mode state from where we were before.</p>
+<pre><span style="color: blue;">void
+OnWindowPosChanged(HWND hwnd, LPWINDOWPOS lpwpos)
+{
+  CheckTabletMode(hwnd);
+}</span>
+</pre>
+<p>The last wrinkle is the case where the global tablet mode state changes.</p>
+<pre><span style="color: blue;">void OnSettingsChange(HWND hwnd, LPCTSTR sectionName)
+{
+  if (sectionName &amp;&amp;
+      lstrcmpi(sectionName, TEXT("UserInteractionMode")) == 0)
+  {
+    CheckTabletMode(hwnd);
+  }
+}</span>
+</pre>
+<p>When the global tablet mode state changes, the shell broadcasts the <code>"User­Interaction­Mode"</code> setting change notification.</p>
+<pre><span style="color: blue;">HANDLE_MSG(hwnd, WM_WINDOWPOSCHANGED, OnWindowPosChanged);
+HANDLE_MSG(hwnd, WM_WININICHANGE, OnSettingsChange);</span>
+</pre>
+<p>And finally, we hook up our message handlers.</p>
+<p>There you go, a program that knows whether it is in tablet mode.</p>
+
+
+</body>

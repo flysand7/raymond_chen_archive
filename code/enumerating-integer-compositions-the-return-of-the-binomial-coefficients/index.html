@@ -1,0 +1,192 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Enumerating integer compositions (the return of the binomial coefficients)</h1>  <!-- .entry-meta -->
+
+<p>In number theory,
+a
+<a href="http://en.wikipedia.org/wiki/Composition_(number_theory)">
+composition of an integer</a>
+is an ordered sequence of positive integers which sum to the target value.
+For example, the value 3 can be written as
+3, 1+2, 2+1, or 1+1+1.
+</p>
+<p>
+You can think about the target number as a string of stars,
+and a composition is a way of breaking the stars into groups.
+For example, here are the compositions of 3:
+</p>
+<table border="0">
+<tr>
+<td><tt>* * *</tt></td>
+<td>3</td>
+</tr>
+<tr>
+<td><tt>*|* *</tt></td>
+<td>1+2</td>
+</tr>
+<tr>
+<td><tt>* *|*</tt></td>
+<td>2+1</td>
+</tr>
+<tr>
+<td><tt>*|*|*</tt>  </td>
+<td>1+1+1</td>
+</tr>
+</table>
+<p>
+How would you generate all compositions of a particular length?
+In the above example, the compositions of length 2 would be 1+2 and 2+1.
+Let’s take a look at the last star in the composition.
+If it is immediately preceded by a space,
+then removing it results in a string one star shorter,
+but with the same number of groups (but the last group is
+one star smaller).
+In other words, what’s left behind
+is a composition of <var>n</var> − 1 of length <var>k</var>.
+You can recover the original string by adding a star at the end.
+</p>
+<p>
+On the other hand, if the last star is immediately preceded by a vertical
+line,
+then removing it deletes an entire group,
+so what remains is a string one star shorter with one fewer group.
+In other words, what’s left behind
+is a composition of <var>n</var> − 1 of length <var>k</var> − 1.
+You can recover the original string by adding a separator
+and a star at the end.
+</p>
+<p>
+Therefore, our algorithm goes like this:
+</p>
+<ul>
+<li>Handle base cases.
+<li>Otherwise,
+<ul>
+<li>Recursively call
+    Compositions(<var>n</var> − 1,
+    <var>k</var>) and add a star to the end.
+    (<i>I.e.</i>, increment the last term.)
+<li>Recursively call
+    Compositions(<var>n</var> − 1,
+    <var>k</var> − 1) and add
+    a vertical line and a star to the end.
+    (<i>I.e.</i>, add a <tt>+1</tt> to the end.)
+</li></li></ul>
+</li></li></ul>
+<pre>
+function Compositions(n, k, f) {
+ if (n == 0) { return; }
+ if (k == 1) { f([n]); return; }
+ Compositions(n-1, k, function(s) {
+  f(s.map(function(v, i) { // increment the last element
+    return i == s.length - 1 ? v + 1 : v;
+  }));
+ });
+ Compositions(n-1, k-1, function(s) {
+  f(s.concat(1)); // append a 1
+ });
+}
+Compositions(5, 3, function(s) { console.log(s.join("+")); });
+</pre>
+<p>
+Once again,
+this algorithm should look awfully familiar,
+because we’ve seen it twice before,
+once in the context of
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/04/14/10516909.aspx">
+enumerating subsets with binomial coefficients<a>,
+and again when
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/06/16/10534442.aspx">
+Enumerating bit strings with a specific number of bits set</a>.
+All we’re doing is decorating the results differently.
+</a></a></p>
+<p>
+Here’s a way to see directly how compositions are the same
+as subset selection.
+Let’s ignore the stars and instead look at the gaps between them.
+</p>
+<pre>
+* * * * *
+ ^ ^ ^ ^
+</pre>
+<p>
+Each of the gaps can hold either a space or a vertical line.
+Breaking <var>n</var> into <var>k</var> pieces is the same as
+drawing <var>k</var> − 1
+vertical lines in the <var>n</var> − 1 gaps.
+In other words,
+you have <var>n</var> − 1 locations
+and you want to choose <var>k</var> − 1 of them:
+Ta da, we converted the problem into generating
+subsets of size
+<var>k</var> − 1 from a collection of size
+<var>n</var> − 1.
+(In mathematics, this visualization is known as
+<a href="http://en.wikipedia.org/wiki/Stars_and_bars_(combinatorics)">
+stars and bars</a>.)
+</p>
+<p>
+Therefore, we could have made the
+<code>Subsets</code> function do the work:
+</p>
+<pre>
+function Compositions(n, k, f) {
+ Subsets(n-1, k-1, function(s) {
+  s.push(n);
+  f(s.map(function(v, i) { return v - (s[i-1]||0); }));
+  s.pop();
+ });
+}
+</pre>
+<p>
+The callback merely calculates the differences between
+adjacent elements of the subset, which is the number of stars
+between each line.
+There is a little extra playing around in order to create
+a virtual vertical bar at the beginning and end.
+</p>
+<p>
+Since there is an incremental way of enumerating subsets,
+there should be an incremental way of enumerating compositions.
+If you look at how the incremental subset enumerator works,
+you can see how it maps to incremental composition enumeration:
+Incrementing an index is the same as moving a bar to the right,
+which maps to incrementing one term and decrementing the subsequent
+term.
+Resetting subsequent indices to the minimum values corresponds
+to setting the corresponding term to 1.
+The only trick is maintaining the value of the final term,
+which gathers all the values squeezed out of earlier terms.
+</p>
+<pre>
+function NextComposition(s) {
+ var k = s.length;
+ for (var i = k - 1; i &gt;= 1; i--) {
+  if (s[i] &gt; 1) {
+   s[i]--;
+   s[i-1]++;
+   for (; i &lt; k - 1; i++) { s[k-1] += s[i] - 1; s[i] = 1; }
+   return true;
+  }
+ }
+ return false;
+}
+</pre>
+<p>
+<b>Exercise</b>:
+If you wanted to generate all compositions of any length,
+you could do it by generating all compositions of length 1,
+then compositions of length 2, and so on up to length <var>n</var>.
+What’s the easier way of doing it?</p>
+<p>
+<b>Bonus chatter</b>:
+If you want to generate all partitions
+(which is like compositions, except that order doesn’t matter),
+you can use
+<a href="http://code.activestate.com/recipes/218332-generator-for-integer-partitions/">
+this recursive version</a>
+or
+<a href="http://homepages.ed.ac.uk/jkellehe/partitions.php">
+this iterative one</a>.</p>
+
+
+</body>

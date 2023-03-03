@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I emulate the REG_NOTIFY_THREAD_AGNOSTIC flag on systems that don’t support it? part 1</h1>  <!-- .entry-meta -->
+
+<p>Windows 8 introduced the <code>REG_<wbr/>NOTIFY_<wbr/>THREAD_<wbr/>AGNOSTIC</code> flag to the <code>Reg­Notify­Change­Key­Value</code> function. But what if you need to run on systems older than that?</p>
+<p>One of the recommended workarounds for the lack of support for the <code>REG_<wbr/>NOTIFY_<wbr/>THREAD_<wbr/>AGNOSTIC</code> flag is to do the registration from a persistent thread, or at least a thread that is guaranteed to exist for as long as you need the registration. Maybe your program already has such a persistent thread. In that case, you can marshal the request to that thread. For example, if the registration is made by a class whose lifetime is tied to some UI, then you can perform the registration on the UI thread.</p>
+<pre>struct RegNotifyChangeKeyValueAsyncArgs
+{
+  HKEY hkey;
+  BOOL bWatchSubtree;
+  DWORD dwNotifyFilter;
+  HANDLE hEvent;
+  LONG result;
+};
+
+#define WM_REGNOTIFYCHANGEKEYVALUEASYNC (WM_APP + somevalue)
+
+LONG MyClass::RegNotifyChangeKeyValueAsync(
+  HWND hwnd,
+  HKEY hkey,
+  BOOL bWatchSubtree,
+  DWORD dwNotifyFilter,
+  HANDLE hEvent)
+{
+  RegNotifyChangeKeyValueAsyncArgs args = 
+    { hkey, bWatchSubtree, dwNotifyFilter, hEvent,
+      ERROR_INVALID_PARAMETER };
+  SendMessage(m_hwnd, WM_REGNOTIFYCHANGEKEYVALUEASYNC,
+              0, reinterpret_cast&lt;LPARAM&gt;(&amp;args));
+  return args.result;
+}
+
+// in the WndProc
+case WM_REGNOTIFYCHANGEKEYVALUEASYNC:
+  {
+    auto args = reinterpret_cast&lt;
+                 RegNotifyChangeKeyValueAsyncArgs*&gt;(lParam);
+    args-&gt;result = RegNotifyChangeKeyValue(
+      args-&gt;hkey,
+      args-&gt;bWatchSubtree,
+      args-&gt;dwNotifyFilter,
+      args-&gt;hEvent,
+      TRUE);
+    return TRUE;
+  }
+</pre>
+<p>This version marshals the call to the UI thread. I’m assuming the purpose of this class is to implement some UI element, so the UI thread will exist for as long as the corresponding window exists.</p>
+<p>Next time, we’ll discuss what we can do if we don’t have a UI thread or other persistent thread that we can rely upon to do our bidding.</p>
+
+
+</body>

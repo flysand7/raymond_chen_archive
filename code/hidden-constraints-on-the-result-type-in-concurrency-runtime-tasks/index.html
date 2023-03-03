@@ -1,0 +1,33 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Hidden constraints on the result type in Concurrency Runtime tasks</h1>  <!-- .entry-meta -->
+
+<p>If you are using the Concurrency Runtime <a href="https://docs.microsoft.com/en-us/cpp/parallel/concrt/reference/task-class"> <code>task&lt;T&gt;</code></a> to represent asynchronous activity, there are some hidden constraints on the type <code>T</code>. If you violate these constraints, the compiler will complain, but perhaps not in an obvious way.¹</p>
+<p>If you try to create a <code>task&lt;T&gt;</code> where <code>T</code> does not have a public default constructor, then you get an error like</p>
+<pre style="white-space: pre-wrap;">ppltasks.h: error C2280: 'Concurrency::details::_ResultHolder&lt;_ReturnType&gt;::_ResultHolder(void)': attempting to reference a deleted function
+with _ReturnType = T
+</pre>
+<p>And if the <code>T</code> is not copyable, then you get something like</p>
+<pre style="white-space: pre-wrap;">ppltasks.h: Error C2280: 'T::T(const T&amp;) noexcept' attempting to reference a deleted function
+</pre>
+<p>What’s going on?</p>
+<p>Let’s look at the copyability first. Task results must be copyable because the task result can be consumed multiple times in multiple ways. You can <code>get()</code> multiple times, and each time returns the task result. You can call <code>then()</code> multiple times, and each continuation is given the task result. If the task result were not copyable, then only one of the calls to <code>get()</code> or <code>then()</code> will get the result, and the others would get, um, a letter of apology?</p>
+<p>The requirement that the type be publicly constructible is a consequence of the fact that the task contains a copy of the <code>T</code>, and if the task hasn’t completed yet, then the <code>T</code> object needs to contains <i>something</i>, so the library just puts a default-constructed <code>T</code> in it. This requirement is confessed in the source code:</p>
+<pre>    // this means that the result type must have a public default ctor.
+    _ResultHolder&lt;_ReturnType&gt; _M_Result;
+</pre>
+<p>Okay, so how can you work around these limitations? We’ll look at that <a href="https://devblogs.microsoft.com/oldnewthing/20200813-00/?p=104080" title="Working around the requirement that Concurrency Runtime task results must be default-constructible and copyable"> next time</a>.</p>
+<p>¹ <b>Related reading</b>: <a href="https://devblogs.microsoft.com/oldnewthing/20200206-00/?p=103414"> Why does my C++/WinRT project get errors of the form “<code>abi&lt;…&gt;::…</code> is abstract see reference to <code>producer&lt;…&gt;</code>“?</a>, on the underappreciated need for libraries to generate comprehensible error messages when used incorrectly, and the difficulty of compiler error message meta-programming. For these two cases, the Concurrency Runtime could have added some <code>static_assert</code>s to generate custom error messages.</p>
+<pre>template&lt;typename _Type&gt;
+struct _ResultHolder
+{
+    static_assert(std::is_default_constructible&lt;_Type&gt;::value,
+        "The result type of a task must be default constructible");
+    static_assert(std::is_copy_constructible&lt;T&gt;::value,
+        "The result type of a task must be copy constructible");
+
+    ....
+};
+</pre>
+
+
+</body>

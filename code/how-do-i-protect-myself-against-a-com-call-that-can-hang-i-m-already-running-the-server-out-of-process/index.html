@@ -1,0 +1,18 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I protect myself against a COM call that can hang? I’m already running the server out-of-process.</h1>  <!-- .entry-meta -->
+
+<p>Say you invoke a cross-process COM method, and then you decide to cancel it, say, because it’s taking too long.</p>
+<p>What you definitely <i>don’t</i> want to do is call <code>Terminate­Thread</code>. That way lies madness.</p>
+<p>What you can do is enable call cancellation by calling <code>Co­Enable­Call­Cancellation</code>, then make the potentially-hanging cross-process COM method call, and then after the call returns, call <code>Co­Disable­Call­Cancellation</code> to return things to the way they were.</p>
+<p>Meanwhile, you can set a timer, and if the timer fires, the handler can call <code>Co­Cancel­Call</code> with the thread ID of the thread that is making the potentially-hanging cross-process COM method call. If the potentially-hanging cross-process COM method call returns, then cancel the timer, since you don’t need it any more.</p>
+<p>But wait, the <a href="https://docs.microsoft.com/en-us/windows/win32/api/objidl/nf-objidl-icancelmethodcalls-cancel"> documentation for the <code>ICancelMethodCalls::</code><code>Cancel</code> method</a> says, “The behavior of the cancel object on receiving a cancel request is entirely at the discretion of the implementer.” What if the server never calls <code>Co­Test­Cancel</code>, or it pointedly ignores cancel requests? Is this whole exercise pointless?</p>
+<p>While it’s true that the <code>Cancel</code> method could do whatever the implementation wants, it’s also the case that <code>Co­Get­Cancel­Object</code> will return a standard cancellation object for a cross-process call. And the system provides that implementation.</p>
+<p>The system implementation issues a cancel request to the remote process and waits up to the specified timeout for the remote process to complete the call. Issuing the cancel request is what makes <code>Co­Test­Cancel</code> report that a cancellation was requested, and if you’re lucky, the remote process will abandon whatever it was doing and return back to you quickly.</p>
+<p>If you’re not lucky, the remote process will ignore the cancellation request, and after the timeout period elapses, the <code>Co­Cancel­Call</code> function will force the original COM method call to return some cancellation error code, I forget exactly which. (You can pass a time of zero to issue the cancel request and not bother waiting for any sort of acknowledgement.)</p>
+<p>If the remote server never calls <code>Co­Test­Cancel</code>, that’s fine. The server just keeps on going, unaware that its caller has given up waiting for the result.</p>
+<p><b>Supplementary reading</b>: <a href="https://devblogs.microsoft.com/oldnewthing/20110204-00/?p=11583"> Ready… cancel… wait for it!</a></p>
+<p><b>Bonus chatter</b>: There is a race condition if the timer fires before your original thread can manage to initiate the call at all. In that case, you’ll try to cancel a nonexistent operation. You probably want to wait a little while and retry the cancellation, in the hope that the main thread has finally gotten around to issuing the call that you are trying to cancel.</p>
+<p>What I do is schedule a recurring timer, and each time the timer fires, attempt to cancel. Eventually, one of them will succeed, and then the main thread can cancel the periodic timer. Even after the successful cancellation, I keep cancelling, because the main thread might be performing a series of operations, and I need to cancel all of them.</p>
+
+
+</body>

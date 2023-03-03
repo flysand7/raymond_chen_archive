@@ -1,0 +1,92 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Just because you're using a smart pointer class doesn't mean you can abdicate understanding what it does</h1>  <!-- .entry-meta -->
+
+<p>
+It’s great when you have a tool to make programming easier,
+but you still must understand what it does or you’re
+just replacing one set of problems with another set of more subtle
+problems.
+For example, we discussed earlier the importance of knowing
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/05/20/135841.aspx">
+when your destructor runs</a>.
+Here’s another example, courtesy of my colleague Chris Ashton.
+This was posted
+<a href="http://blogs.msdn.com/oldnewthing/pages/407234.aspx#515856">
+as a Suggestion Box entry</a>,
+but it’s pretty much a complete article on its own.
+</p>
+<blockquote class="m">
+<p>
+I came across an interesting bug this weekend
+that I’ve never seen described anywhere else,
+I thought it might be good fodder for your blog.
+</p>
+<p>
+What do you suppose the following code does?
+</p>
+<pre>
+CComBSTR bstr;
+bstr = ::SysAllocStringLen(NULL, 100);
+</pre>
+<ol type="a">
+<li>Allocates a <code>BSTR</code> 100 characters long.
+<li>Leaks memory and,
+    if you’re really lucky,
+    opens the door for an insidious memory corruption.
+</li></li></ol>
+<p>
+Obviously I’m writing here,
+so the answer cannot be A.  It is, in fact, B.
+</p>
+<p>
+The key is that <code>CComBSTR</code> is involved here,
+so <code>operator=</code> is being invoked.
+And <code>operator=</code>, as you might recall,
+does a deep copy of the entire string,
+not just a shallow copy of the <code>BSTR</code> pointer.
+But how long does <code>operator=</code> think the string is?
+Well, since <code>BSTR</code> and <code>LPCOLESTR</code> are equivalent
+(at least as far as the C++ compiler is concerned),
+the argument to <code>operator=</code> is an <code>LPCOLESTR</code> –
+so <code>operator=</code> naturally tries to use the
+<code>wcslen</code> length of the string,
+not the <code>SysStringLen</code> length.
+And in this case, since the string is uninitialized,
+<code>wcslen</code> often returns a much smaller value than
+<code>SysStringLen</code> would.
+As a result, the original 100-character string is leaked,
+and you get back a buffer that can only hold, say, 25 characters.
+</p>
+<p>
+The code you <i>really</i> want here is:
+</p>
+<pre>
+CComBSTR bstr;
+bstr.Attach(::SysAllocStringLen(NULL, 100));
+</pre>
+<p>
+Or:
+</p>
+<pre>
+CComBSTR bstr(100);
+</pre>
+<p>
+I’m still a big fan of smart pointers
+(surely the hours spent finding this bug
+would have been spent finding memory leaks
+caused by other incautious programmers),
+but this example gives pause –
+<code>CComBSTR</code> and some OLE calls just don’t mix.
+</p>
+</blockquote>
+<p>
+All I can add to this story is an exercise:
+Chris writes,
+“Since the string is uninitialized,
+<code>wcslen</code> often returns a much smaller value than
+<code>SysStringLen</code> would.”
+Can it possibly return a <i>larger</i> value?
+Is there a potential read overflow here?</p>
+
+
+</body>

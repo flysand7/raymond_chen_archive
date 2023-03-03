@@ -1,0 +1,189 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">You can read a contract from the other side</h1>  <!-- .entry-meta -->
+
+<p>
+An interface is a contract,
+but remember that a contract applies to both parties.
+Most of the time, when you read an interface,
+you look at it from the point of view of the client side of the contract,
+but often it helps to read it from the server side.
+</p>
+<p>
+For example, let’s look at
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/programmersguide/shell_adv/conpanel.asp">the
+interface for control panel applications</a>.
+</p>
+<p>
+Most of the time, when you’re reading this documentation,
+you are wearing your “I am writing a Control Panel application” hat.
+So, for example, the documentation says
+</p>
+<blockquote class="q"><p>
+When the controlling application first loads the Control Panel application,
+it retrieves the address of the <b>CPlApplet</b> function and
+subsequently uses the address to call the function and pass it messages.
+</p></blockquote>
+<p>
+With your “I am writing a Control Panel application” hat,
+this means
+“Gosh, I had better have a function called CPlApplet
+and export it so I can receive messages.”
+</p>
+<p>
+But if you are instead wearing your
+“I am hosting a Control Panel application” hat,
+this means,
+“Gosh, I had better call GetProcAddress()
+to get the address of the application’s CPlApplet function
+so I can send it messages.”
+</p>
+<p>
+Similarly, under the “Message Processing” section
+it lists the messages that are sent from the controlling application
+to the Control Panel application.
+If you are wearing your
+“I am writing a Control Panel application” hat,
+this means
+“Gosh, I had better be ready to receive these messages in this order.”
+But if you are wearing your “I am hosting a Control Panel application” hat,
+this means “Gosh, I had better send these messages in the order listed.”
+</p>
+<p>
+And finally, when it says
+“the controlling application release the Control Panel application
+by calling the FreeLibrary function,”
+your “I am writing a Control Panel application” hat says
+“I had better be prepared to be unloaded,”
+whereas your “I am hosting a Control Panel application” hat says,
+“This is where I unload the DLL.”
+</p>
+<p>
+So let’s try it.
+As always, start with our scratch program and change the WinMain:
+</p>
+<pre>
+<font color="red">#include &lt;cpl.h&gt;</font>
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+  HWND hwnd;
+  g_hinst = hinst;
+  if (!InitApp()) return 0;
+  if (SUCCEEDED(CoInitialize(NULL))) {/* In case we use COM */
+      hwnd = CreateWindow(
+          "Scratch",                      /* Class Name */
+          "Scratch",                      /* Title */
+          WS_OVERLAPPEDWINDOW,            /* Style */
+          CW_USEDEFAULT, CW_USEDEFAULT,   /* Position */
+          CW_USEDEFAULT, CW_USEDEFAULT,   /* Size */
+          NULL,                           /* Parent */
+          NULL,                           /* No menu */
+          hinst,                          /* Instance */
+          0);                             /* No special parameters */
+<font color="red">
+      if (hwnd) {
+        TCHAR szPath[MAX_PATH];
+        LPTSTR pszLast;
+        DWORD cch = SearchPath(NULL, TEXT("access.cpl"),
+                     NULL, MAX_PATH, szPath, &amp;pszLast);
+        if (cch &gt; 0 &amp;&amp; cch &lt; MAX_PATH) {
+          RunControlPanel(hwnd, szPath);
+      }
+    }</font>
+    CoUninitialize();
+  }
+  return 0;
+}
+</pre>
+<p>
+Instead of showing the window and entering the message loop,
+we start acting like a Control Panel host.
+Our victim today is access.cpl, the accessibility control panel.
+After locating the program on the path,
+we ask RunControlPanel to do the heavy lifting:</p>
+<pre>
+void RunControlPanel(HWND hwnd, LPCTSTR pszPath)
+{
+<font color="red">  // Maybe this control panel application has a custom manifest
+  ACTCTX act = { 0 };
+  act.cbSize = sizeof(act);
+  act.dwFlags = 0;
+  act.lpSource = pszPath;
+  act.lpResourceName = MAKEINTRESOURCE(123);
+  HANDLE hctx = CreateActCtx(&amp;act);
+  ULONG_PTR ulCookie;
+  if (hctx == INVALID_HANDLE_VALUE ||
+      ActivateActCtx(hctx, &amp;ulCookie)) {</font>
+    HINSTANCE hinstCPL = LoadLibrary(pszPath);
+    if (hinstCPL) {
+      APPLET_PROC pfnCPlApplet = (APPLET_PROC)
+        GetProcAddress(hinstCPL, "CPlApplet");
+      if (pfnCPlApplet) {
+        if (pfnCPlApplet(hwnd, CPL_INIT, 0, 0)) {
+          int cApplets = pfnCPlApplet(hwnd, CPL_GETCOUNT, 0, 0);
+          //  We're going to run application zero
+          //  (In real life we might show the user a list of them
+          //  and let them pick one)
+          if (cApplets &gt; 0) {
+            CPLINFO cpli;
+            pfnCPlApplet(hwnd, CPL_INQUIRE, 0, (LPARAM)&amp;cpli);
+            pfnCPlApplet(hwnd, CPL_DBLCLK, 0, cpli.lData);
+            pfnCPlApplet(hwnd, CPL_STOP, 0, cpli.lData);
+          }
+        }
+        pfnCPlApplet(hwnd, CPL_EXIT, 0, 0);
+      }
+      FreeLibrary(hinstCPL);
+    }
+<font color="red">
+    if (hctx != INVALID_HANDLE_VALUE) {
+      DeactivateActCtx(0, ulCookie);
+      ReleaseActCtx(hctx);
+    }</font>
+  }
+}
+</pre>
+<p>
+Ignore the red lines for now; we’ll discuss them later.
+</p>
+<p>
+All we’re doing is following the specification
+but reading it from the host side.
+So we load the library, locate its entry point,
+and call it with CPL_INIT, then CPL_GETCOUNT.
+If there are any control panel applications inside this CPL file,
+we inquire after the first one,
+double-click it (this is where all the interesting stuff happens),
+then stop it.
+After all that excitement,
+we clean up according to the rules set out for the host
+(namely, by sending a CPL_EXIT message.)
+</p>
+<p>
+So that’s all. Well, except for the red parts. What’s that about?
+</p>
+<p>The red parts are to support Control Panel applications
+that have a custom manifest.
+This is something new with Windows XP and is
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/commctls/userex/cookbook.asp">documented
+in MSDN here</a>.
+</p>
+<p>
+If you go down to the
+“Using ComCtl32 Version 6 in Control Panel or a DLL That Is Run
+by RunDll32.exe” section,
+you’ll see that the application provides its manifest
+to the Control Panel host by attaching it as resource number 123.
+So that’s what the red code does:
+It loads and activates the manifest,
+then invites the Control Panel application to do its thing
+(with its manifest active), then cleans up.
+If there is no manifest, CreateActCtx will return INVALID_HANDLE_VALUE.
+We do not treat that as an error,
+since many programs don’t yet provide a manifest.
+</p>
+<p><b>Exercise</b>: What are the security implications of passing NULL
+as the first parameter to SearchPath?</p>
+
+
+</body>

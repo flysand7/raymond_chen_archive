@@ -1,0 +1,72 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Comparing WaitOnAddress with futexes (futexi? futexen?)</h1>  <!-- .entry-meta -->
+
+<p>Linux has a synchronization primitive called a <i>futex</i> which is similar to Windows’s <code>Wait­On­Address</code> in that both let you create a synchronization object out of nothing. (Well, okay, you need to set aside some memory.) </p>
+<p>The basic operations on a futex depend on what color glasses you’re wearing. If you are wearing <a href="http://man7.org/linux/man-pages/man2/futex.2.html">syscall-colored glasses</a>, then the basic operations are WAIT and WAKE. But we’re going to wear <a href="http://man7.org/linux/man-pages/man7/futex.7.html">user-mode-colored glasses</a>, in which the basic operations are UP and DOWN. (In futex-speak, “up” and “down” are verbs. And you thought Microspeak was weird.) </p>
+<p>Conceptually, a futex is a 32-bit variable that acts like a semaphore with a maximum count of 1. </p>
+<p>To initialize a futex, set it to 0 if you want it to be initially unavailable, or 1 if you want it to be initially available. </p>
+<p> “Downing” a futex is what you do when you want to wait for the futex to become available. Atomically decrement the futex, and if the result is 0, then you have successfully claimed the futex. Otherwise, call into the kernel to wait for the futex to become available. (This isn’t perfectly accurate, but bear with me.) </p>
+<p>“Upping” a futex is what you do when you want to make the futex available. Atomically increment the futex, and if the result is 1, then there are no waiters, and you’re done. Otherwise, set it to 1 explicitly (indicating that the futex is now free) and call into the kernel to tell it to release the waiting threads. (It is an error to “up” a futex that is already available.) </p>
+<p>In theory, the values of a futex correspond to these states: </p>
+<ul>
+<li>1 means that the futex is available. </li>
+<li>0 means that the futex is unavailable, and there are no waiters. </li>
+<li>A negative number means that the futex is unavailable, and the number of waiters is the negative of the value. For example, a value of −2 means that there are two waiters. </li>
+</ul>
+<p>In practice, however, any negative number means that the futex is unavailable. The actual number of waiting threads is kept in the kernel. The actual rule for “downing” a futex is that if you down it to a negative number, you should set the futex to −1 and then call into the kernel. Forcing the value to −1 avoids underflow if more than 2 billion threads wait on the futex.¹ </p>
+<p>A futex, therefore, is a lightweight version of an auto-reset event. There is at most one token, and the only operations are to claim the token (waiting as necessary for a token to become available) and to release the token. </p>
+<p>An obvious difference between futexes and <code>Wait­On­Address</code> is that a futex mimics an auto-reset event (or a single-token semaphore, which is basically the same thing), whereas <code>Wait­On­Address</code> can be used to mimic a large number of things depending on how you use it. </p>
+<p>A notable difference between futexes and <code>Wait­On­Address</code> is that the contents of the futex are not your choice; the contents are controlled by the rules for futexes. If you have other information you want to keep track of, you need to keep it somewhere outside the futex. On the other hand, <code>Wait­On­Address</code> lets you put anything you want in the memory, and it is typically some central bookkeeping information that you would have needed to keep track of anyway. </p>
+<p>A big difference is that futexes work across processes (via shared memory), whereas <code>Wait­On­Address</code> works only within a process. </p>
+<p>Here’s a summary table, because people like tables. </p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tr>
+<th></th>
+<th>futex</th>
+<th>Wait­On­Address</th>
+</tr>
+<tr>
+<td>Size</td>
+<td>4 bytes</td>
+<td>1, 2, 4, or 8 bytes (your choice)</td>
+</tr>
+<tr>
+<td>Contents</td>
+<td>Controlled by futex</td>
+<td>Controlled by you</td>
+</tr>
+<tr>
+<td>Access</td>
+<td>Must use atomic primitives</td>
+<td>No restrictions</td>
+</tr>
+<tr>
+<td>Scope</td>
+<td>Can be cross-process</td>
+<td>Limited to a single process</td>
+</tr>
+<tr>
+<td rowspan="2">Operations</td>
+<td>“Down” (wait for object)</td>
+<td>Wait for value to change</td>
+</tr>
+<tr>
+<td>“Up” (release object, wake waiters)</td>
+<td>Wake waiters</td>
+</tr>
+<tr>
+<td>Acts like</td>
+<td>Event (or single-token semaphore)</td>
+<td>Whatever you want</td>
+</tr>
+<tr>
+<td>Spurious wakes?</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+</table>
+<p>Both primitives enter kernel mode only if they need to wait or wake. If there is no contention, then both primitives operate entirely in user mode. </p>
+<p>¹ If you can get 2 billion threads to wait on a futex, then I’m both impressed and disappointed. Impressed that you were able to create 2 billion threads in the first place, and disappointed that you have a futex so hot that you managed to get 2 billion threads waiting on it. You should fix that. </p>
+
+
+</body>

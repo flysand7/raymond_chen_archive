@@ -1,0 +1,145 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">You can use an OVERLAPPED structure with synchronous I/O, too</h1>  <!-- .entry-meta -->
+
+<p>
+Even if you didn’t open a file with
+<code>FILE_FLAG_OVERLAPPED</code>,
+you can still use the <code>OVERLAPPED</code> structure
+when you issue reads and writes.
+Mind you,
+the I/O will still complete synchronously,
+but you can take advantage of the other stuff
+that <code>OVERLAPPED</code> has to offer.
+</p>
+<p>
+Specifically, you can take advantage of the
+<code>Offset</code> and <code>OffsetHigh</code> members
+to issue the I/O against a file location different from
+the current file pointer.
+(This is a file pointer in the sense of
+<code>Set­File­Pointer</code>
+and not in the sense of the C runtime <code>FILE*</code>.)
+If your program does a lot of reads and writes to random locations
+in a file, using the synchronous <code>OVERLAPPED</code>
+structure saves you a call to
+<code>Set­File­Pointer</code> at each I/O.
+</p>
+<p>
+Let’s illustrate this by writing some code to walk through
+a file format that contains a lot of offsets to other
+parts of the file:
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/10/18/10077133.aspx">
+The ICO file format</a>.
+First, the old-fashioned way:
+</p>
+<pre>
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/02/12/71851.aspx">UNICODE</a>
+#define _UNICODE
+#include &lt;windows.h&gt;
+#include &lt;pshpack1.h&gt;
+struct ICONDIRHEADER {
+    WORD idReserved;
+    WORD idType;
+    WORD idCount;
+};
+struct ICONDIRENTRY {
+    BYTE bWidth;
+    BYTE bHeight;
+    BYTE bColorCount;
+    BYTE  bReserved;
+    WORD  wPlanes;
+    WORD  wBitCount;
+    DWORD dwBytesInRes;
+    DWORD dwImageOffset;
+};
+#include &lt;poppack.h&gt;
+BOOL ReadBufferAt(__in HANDLE hFile,
+    __out_bcount(cbBuffer) void *pvBuffer,
+    DWORD cbBuffer,
+    DWORD64 offset)
+{
+ LARGE_INTEGER li;
+ DWORD cbRead;
+ li.QuadPart = offset;
+ return SetFilePointerEx(hFile, li, nullptr, FILE_BEGIN) &amp;&amp;
+        ReadFile(hFile, pvBuffer, cbBuffer, &amp;cbRead, nullptr) &amp;&amp;
+        cbBuffer == cbRead;
+}
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ HANDLE hFile = CreateFile(argv[1], GENERIC_READ,
+  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+  nullptr, OPEN_EXISTING, 0, nullptr);
+ if (hFile != INVALID_HANDLE_VALUE) {
+  ICONDIRHEADER hdr;
+  if (ReadBufferAt(hFile, &amp;hdr, sizeof(hdr), 0) &amp;&amp;
+      hdr.idReserved == 0 &amp;&amp; hdr.idType == 1) {
+   for (UINT uiIcon = 0; uiIcon &lt; hdr.idCount; uiIcon++) {
+    ICONDIRENTRY entry;
+    if (ReadBufferAt(hFile, &amp;entry, sizeof(entry),
+                     sizeof(hdr) + uiIcon * sizeof(entry))) {
+     void *pvData = LocalAlloc(LMEM_FIXED, entry.dwBytesInRes);
+     if (pvData) {
+      if (ReadBufferAt(hFile, pvData,
+                       entry.dwBytesInRes, entry.dwImageOffset)) {
+       // process one image in the icon
+      }
+      LocalFree(pvData);
+     }
+    }
+   }
+  }
+  CloseHandle(hFile);
+ }
+ return 0;
+}
+</pre>
+<p>
+Run this program with the name of an icon file on the command line,
+and nothing interesting happens because the program doesn’t
+generate any output.
+But if you step through it, you can see that we start by
+reading the <code>ICON­DIR­HEADER</code>
+to verify that it’s an icon and determine the number of images.
+We then loop through the images: For each one,
+we read the <code>ICON­DIR­ENTRY</code>
+(specifying the explicit file offset),
+then read the image data (again, specifying the explicit
+file offset).
+</p>
+<p>
+We use the <code>Read­Buffer­At</code> function
+to read data from the file.
+For each read, we first call <code>Set­File­Pointer</code>
+to position the file pointer at the byte we want to read,
+then call <code>Read­File</code> to read it.
+</p>
+<p>
+Let’s change this program to take advantage of our newfound knowledge:
+</p>
+<pre>
+BOOL ReadBufferAt(__in HANDLE hFile,
+    __out_bcount(cbBuffer) void *pvBuffer,
+    DWORD cbBuffer,
+    DWORD64 offset)
+{
+ OVERLAPPED o = { 0 };
+ o.Offset = static_cast&lt;DWORD&gt;(offset);
+ o.OffsetHigh = static_cast&lt;DWORD&gt;(offset &gt;&gt; 32);
+ DWORD cbRead;
+ return ReadFile(hFile, pvBuffer, cbBuffer, &amp;cbRead, &amp;o) &amp;&amp;
+        cbBuffer == cbRead;
+}
+</pre>
+<p>
+We merge the
+<code>Set­File­Pointer</code> call into the
+<code>Read­File</code> by specifying the desired byte
+offset in the optional <code>OVERLAPPED</code> structure.
+The I/O will still complete synchronously
+(since we opened the handle synchronously),
+but we saved ourselves the hassle of having to call
+two functions when it could be done with just one.</p>
+
+
+</body>

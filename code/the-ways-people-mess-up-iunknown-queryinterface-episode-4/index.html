@@ -1,0 +1,223 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ways people mess up IUnknown::QueryInterface, episode 4</h1>  <!-- .entry-meta -->
+
+<p>
+One of the rules for <code>IUnknown::Query­Interface</code> is so
+obvious that nobody even bothers to state it explicitly as a rule:
+“If somebody asks you for an interface,
+and you return <code>S_OK</code>,
+then the pointer you return must point to the interface the caller
+requested.”
+(This feels like the software version of
+<a href="http://www.amazon.com/dp/0743244753?tag=tholneth-20">
+dumb warning labels</a>.)
+</p>
+<p>
+During compatibility testing for Windows Vista,
+we found a shell extension that behaved rather strangely.
+Eventually, the problem was traced to
+a broken <code>IUnknown::Query­Interface</code>
+implementation which depended subtly on the order in which
+interfaces were queried.
+</p>
+<p>
+The shell asked for the <code>IExtract­IconA</code> and
+<code>IExtract­IconW</code> interfaces in the following
+order:
+</p>
+<pre>
+// not the actual code but it gets the point across
+IExtractIconA *pxia;
+IExtractIconW *pxiw;
+punk-&gt;QueryInterface(IID_IExtractIconA, &amp;pxia);
+punk-&gt;QueryInterface(IID_IExtractIconW, &amp;pxiw);
+</pre>
+<p>
+One particular shell extension would return the same pointer to
+both queries;
+<i>i.e.</i>,
+after the above code executed,
+<code>pxia == pxiw</code> even though neither interface
+derived from the other.
+The two interfaces are not binary-compatible,
+because <code>IExtract­IconA::Get­Icon­Location</code>
+operates on ANSI strings, whereas
+<code>IExtract­IconW::Get­Icon­Location</code> operates
+on Unicode strings.
+</p>
+<p>
+The shell called <code>pxiw-&gt;Get­Icon­Location</code>,
+but the object interpreted the <code>szIcon­File</code> as
+an ANSI string buffer; as a result, when the shell went to look at it,
+it saw gibberish.
+</p>
+<p>
+Further experimentation revealed that if the order of the two
+<code>Query­Interface</code> calls were reversed,
+then <code>pxiw-&gt;Get­Icon­Location</code> worked as expected.
+In other words,
+the first interface you requested “locked” the object into that
+interface, and asking for any other interface just returned
+a pointer to the locked interface.
+This struck me as very odd; coding up the object this way
+seems to be <i>harder</i> than doing it the right way!
+</p>
+<pre>
+<i>// this code is wrong - see discussion above
+class CShellExtension : public IExtractIcon
+{
+ enum { MODE_UNKNOWN, MODE_ANSI, MODE_UNICODE };
+  HRESULT CShellExtension::QueryInterface(REFIID riid, void **ppv)
+  {
+   *ppv = NULL;
+   if (riid == IID_IUnknown) *ppv = this;
+   else if (riid == IID_IExtractIconA) {
+    if (m_mode == MODE_UNKNOWN) m_mode = MODE_ANSI;
+    *ppv = this;
+   } else if (riid == IID_IExtractIconW) {
+    if (m_mode == MODE_UNKNOWN) m_mode = MODE_UNICODE;
+    *ppv = this;
+   }
+   if (*ppv) AddRef();
+   return *ppv ? S_OK : E_NOINTERFACE;
+  }
+  ... AddRef / Release ...
+  HRESULT GetIconLocation(UINT uFlags, LPTSTR szIconFile, UINT cchMax,
+                          int *piIndex, UINT *pwFlags)
+  {
+   if (m_mode == MODE_ANSI) lstrcpynA((char*)szIconFile, "foo", cchMax);
+   else lstrcpynW((WCHAR*)szIconFile, L"foo", cchMax);
+   ...
+  }
+  ...
+}</i>
+</pre>
+<p>
+Instead of implementing both <code>IExtract­IconA</code> and
+<code>IExtract­IconW</code>, my guess is that they implemented
+just one of the interfaces and made it alter its behavior based
+on which interface it thinks it needs to pretend to be.
+It never occurred to them that the single interface might need
+to pretend to be two different things at the same time.
+</p>
+<p>
+The right way of supporting two interfaces is to actually implement
+two interfaces and not write a single morphing interface.
+</p>
+<pre>
+class CShellExtension : public IExtractIconA, public IExtractIconW
+{
+  HRESULT CShellExtension::QueryInterface(REFIID riid, void **ppv)
+  {
+   *ppv = NULL;
+   if (riid == IID_IUnknown ||
+       riid == IID_IExtractIconA) {
+    *ppv = static_cast&lt;IExtractIconA*&gt;(this);
+   } else if (riid == IID_IExtractIconW) {
+    *ppv = static_cast&lt;IExtractIconW*&gt;(this);
+   }
+   if (*ppv) AddRef();
+   return *ppv ? S_OK : E_NOINTERFACE;
+  }
+  ... AddRef / Release ...
+  HRESULT GetIconLocation(UINT uFlags, LPSTR szIconFile, UINT cchMax,
+                          int *piIndex, UINT *pwFlags)
+  {
+   lstrcpynA(szIconFile, "foo", cchMax);
+   return GetIconLocationCommon(uFlags, piIndex, pwFlags);
+  }
+  HRESULT GetIconLocation(UINT uFlags, LPWSTR szIconFile, UINT cchMax,
+                          int *piIndex, UINT *pwFlags)
+  {
+   lstrcpynW(szIconFile, L"foo", cchMax);
+   return GetIconLocationCommon(uFlags, piIndex, pwFlags);
+  }
+  ...
+}
+</pre>
+<p>
+We worked around this in the shell by simply changing the order
+in which we perform the calls to
+<code>IUnknown::Query­Interface</code>
+and adding a comment explaining why the order of the calls is important.
+</p>
+<p>
+(This is another example of how the cost of a compatibility fix
+<a href="http://blogs.msdn.com/oldnewthing/archive/2007/07/23/4003873.aspx">
+is small potatoes</a>.
+<a href="http://blogs.msdn.com/oldnewthing/archive/2010/01/11/9946339.aspx">
+The cost of deciding whether or not to apply the fix far exceeds
+the cost of just doing it for everybody</a>.)
+</p>
+<p>
+A different shell extension had a compatibility problem that also was
+traced back to a dependency on the order in which the shell
+asked for interfaces.
+The shell extension registered as a context menu extension,
+but when the shell tried to create it, it got <code>E_NO­INTERFACE</code>
+back:
+</p>
+<pre>
+CoCreateInstance(CLSID_YourAwesomeExtension, NULL,
+                 CLSCTX_INPROC_SERVER, IID_IContextMenu, &amp;pcm);
+// returns E_NOINTERFACE?
+</pre>
+<p>
+This was kind of bizarre.
+I mean, the shell extension went to the effort of registering itself
+as a context menu extension,
+but when the shell said,
+“Okay, it’s show time, let’s do the context menu dance!”
+it replied,
+“Sorry, I don’t do that.”
+</p>
+<p>
+The vendor explained that the shell extension relies
+on the order in which the shell asked for interfaces.
+The shell used to create and initialize the extension like this:
+</p>
+<pre>
+// error checking and other random bookkeeping removed
+IShellExtInit *psei;
+IContextMenu *pcm;
+CoCreateInstance(CLSID_YourAwesomeExtension, NULL,
+                 CLSCTX_INPROC_SERVER, IID_IShellExtInit, &amp;psei);
+psei-&gt;Initialize(...);
+psei-&gt;QueryInterface(IID_IContextMenu, &amp;pcm);
+psei-&gt;Release();
+// use pcm
+</pre>
+<p>
+We changed the order in a manner that you would think should be equivalent:
+</p>
+<pre>
+CoCreateInstance(CLSID_YourAwesomeExtension, NULL,
+                 CLSCTX_INPROC_SERVER, IID_IContextMenu, &amp;pcm);
+pcm-&gt;QueryInterface(IID_IShellExtInit, &amp;psei);
+psei-&gt;Initialize(...);
+psei-&gt;Release();
+</pre>
+<p>
+(Of course, it’s not written in so many words in the code;
+the various parts are spread out over different components and
+helper functions,
+but this is the sequence of calls the shell extension sees.)
+</p>
+<p>
+The vendor explained that their shell extension will not respond
+to any shell extension interfaces (aside from
+<code>IShell­Ext­Init</code>)
+until it has been initialized,
+because it is at that point that they decide which extensions
+they want to support.
+Unfortunately, this violates the first of the
+<a href="http://msdn.microsoft.com/ms682521.aspx">
+four explicit rules for <code>IUnknown::Query­Interface</code></a>,
+namely that the set of interfaces must be static.
+(It’s okay to have an object expose different interfaces
+conditionally, as long as it understands that once it says yes or no
+to a particular interface,
+it is committed to answering the same way for the lifetime of the object.)</p>
+
+
+</body>

@@ -1,0 +1,27 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;"><code>STATUS_<wbr/>STACK_<wbr/>BUFFER_<wbr/>OVERRUN</code> doesn’t mean that there was a stack buffer overrun</h1>  <!-- .entry-meta -->
+
+<p>A category of dubious security vulnerability is people who recently discovered the <code>STATUS_<wbr>STACK_<wbr>BUFFER_<wbr>OVERRUN</wbr></wbr></wbr></code> status code.</p>
+<p>The confusion is made even worse by the fact that the human-readable description is</p>
+<blockquote class="q"><p>The system detected an overrun of a stack-based buffer in this application. This overrun could potentially allow a malicious user to gain control of this application.</p></blockquote>
+<p>First, the history.</p>
+<p><a href="https://docs.microsoft.com/en-us/cpp/build/reference/gs-buffer-security-check"> The <code>/GS</code> compiler switch</a> enables the creation of a stack “cookie” value which is used as a canary to detect that a stack buffer overflow occurred. If the cookie is corrupted, then the process terminates itself immediately with the status code <code>STATUS_<wbr/>STACK_<wbr/>BUFFER_<wbr/>OVERRUN</code>.</p>
+<p>It was a good name at the time it was introduced.</p>
+<p>Over time, other reasons for immediate process termination were invented. Some of them were security-related. Others weren’t. The term <i><a href="https://en.wikipedia.org/wiki/Fail-fast">fail fast</a></i> was given to these sort of <i>oh no things are really bad I should just stop immediately before they get any worse</i> immediate process termination situations.</p>
+<p>There’s even <a href="https://docs.microsoft.com/en-us/cpp/intrinsics/fastfail"> a compiler intrinsic for terminating the current process using this special status code</a>. It seems that people can’t agree on whether it’s <i>fail fast</i> or <i>fast fail</i>, so in practice you see both variations.</p>
+<p>What this means is that nowadays when you get a <code>STATUS_<wbr/>STACK_<wbr/>BUFFER_<wbr/>OVERRUN</code>, it doesn’t actually mean that there is a stack buffer overrun. It just means that the application decided to terminate itself with great haste.</p>
+<p>If you look in the <code>winnt.h</code> file, you’ll see a list of various fast-fail codes. These codes indicate which type of fast-fail occurred.</p>
+<pre>#define FAST_FAIL_LEGACY_GS_VIOLATION         0
+#define FAST_FAIL_VTGUARD_CHECK_FAILURE       1
+#define FAST_FAIL_STACK_COOKIE_CHECK_FAILURE  2
+#define FAST_FAIL_CORRUPT_LIST_ENTRY          3
+#define FAST_FAIL_INCORRECT_STACK             4
+#define FAST_FAIL_INVALID_ARG                 5
+#define FAST_FAIL_GS_COOKIE_INIT              6
+#define FAST_FAIL_FATAL_APP_EXIT              7
+</pre>
+<p>From the above list, the interesting one for me is the <code>FAST_<wbr/>FAIL_<wbr/>FATAL_<wbr/>APP_<wbr/>EXIT</code> code. This code is used when the C runtime function <code>abort()</code> gets called. And <code>abort()</code> is called by <code>std::terminate()</code>. And <code>std::terminate()</code> is called automatically for things like <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180928-00/?p=99855"> throwing an exception out of a <code>noexcept</code> function</a>, or if a thrown exception goes unhandled. It’s also used by some modules when an internal assertion failure is hit, or when an error occurs and the program simply wants to give up rather than try to recover. These are not necessarily security issues. It’s just the program saying, “Um, I’m in trouble. I think I’ll just stop right here.”</p>
+<p><b>Related</b>: <a href="https://devblogs.microsoft.com/oldnewthing/20080404-00/?p=22863"> <code>STATUS_<wbr/>BUFFER_<wbr/>OVERFLOW</code> really should be named <code>STATUS_<wbr/>BUFFER_<wbr/>OVERFLOW_<wbr/>PREVENTED</code></a>.</p>
+
+
+</body>

@@ -1,0 +1,59 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Handy delegate shortcut hides important details: The hidden delegate</h1>  <!-- .entry-meta -->
+
+<p>One of my colleagues was having trouble with a little tool he wrote. <span id="more-91761"></span></p>
+<blockquote class="q">
+<p>I installed a low-level keyboard hook following the code in <a href="http://blogs.msdn.com/b/toub/archive/2006/05/03/589423.aspx">this article</a>, but it crashes randomly. Here’s what I know so far: </p>
+<ul>
+<li>I spawn a new STA thread to register the hook,     so that it can run a message pump,     which is a requirement for low-level hooks. 
+<li>After setting the hook, the program waits on     a <code>Manual­Reset­Event</code>     with <code>Wait­One()</code>.     Since this is being called from an STA thread,     <a href="http://blogs.msdn.com/b/cbrumme/archive/2003/04/17/51361.aspx">    it will pump messages while waiting</a>, which is     what we want. 
+<li>The event is signaled by another part of the program     when the hook is no longer needed,     at which point the thread unregisters the hook     before exiting normally. </li></li></li></ul>
+<p>The crash happens inside <code>Wait­One()</code> immediately after keyboard activity occurs. The debugger tells me that it is crashing trying to dispatch a call into a managed stub via the message pump, but that’s all I was able to extract. </p>
+</blockquote>
+<p>I took a look at the article that my colleague referenced and observed that there was a subtlety in the code that not obvious, and which may have been lost in translation. I shared my observation in the form a psychic prediction. </p>
+<blockquote class="m">
+<p>My psychic powers tell me that you did not prevent the delegate from getting GCd. The next time GC runs, the delegate will get collected, and the next attempt to fire the callback will AV because its calling into memory that has been freed. </p>
+<p>The sample code from the blog avoids this problem by putting the delegate in a private static, which makes it a GC root, ineligible for collection. </p>
+<pre>
+private static LowLevelKeyboardProc _proc = HookCallback;
+</pre>
+<p>This is subtle because the private static is decoupled from <code>Set­Hook</code>. If you copied <code>Set­Hook</code> but not the private static, then you inadvertently created a bug because local variables can get optimized out. </p>
+<p>Either put it in a static, like the sample does, or explicitly extend the delegates lifetime by calling <code>GC.Keep­Alive()</code> after you unhook the hook. </p>
+<pre>
+LowLevelKeyboardProc proc = HookCallback;
+IntPtr hookId = SetHook(proc);
+WaitOne();
+RemoveHook(hookId);
+GC.KeepAlive(proc); // keep the proc alive until this line is reached
+</pre>
+</blockquote>
+<p>My colleague realized that was the problem. </p>
+<blockquote class="q">
+<p>I’d actually thought of that (mostly). I made my callback method itself a static, thinking that this was enough. What I forgot is that C# wraps that in an instance of the delegate automatically, and it was this hidden delegate that was getting GC’d not the callback function itself. This explains why I could always inspect the callback method and see that it was alive and well, yet we were still jumping into space when invoking the callback. </p>
+<p>Explicitly calling out the assignment reminded me of the details of delegates. Thanks! </p>
+</blockquote>
+<p>The classical notation for creating a delegate is </p>
+<pre>
+    DelegateType d = new DelegateType(o.Method);
+    DelegateType d = new DelegateType(Method); // this.Method
+</pre>
+<p>C# version 2.0 added <i>delegate inference</i> which lets you omit the <code>new DelegateType</code> most of the time. The compiler will automatically convert the method name (and optional <code>this</code> object) into a delegate. </p>
+<pre>
+    DelegateType d = o.Method;
+    DelegateType d = Method; // this.Method
+</pre>
+<p>This shorthand is so old, you may not even remember (or realize) that it is a shorthand for a <i>hidden delegate</i>. </p>
+<p>In my colleague’s program, the line </p>
+<pre>
+    IntPtr hookId = SetHook(HookCallback);
+</pre>
+<p>was shorthand for </p>
+<pre>
+    LowLevelKeyboardProc temp = HookCallback;
+    IntPtr hookId = SetHook(temp);
+</pre>
+<p>Once the delegate was made explicit rather than hidden, the issue became clear: Since there was nothing keeping the delegate alive, the delegate disappeared at the next GC, and the unmanaged function pointer disappeared with it. </p>
+<p>And now CLR Week will disappear until next time. </p>
+
+
+</body>

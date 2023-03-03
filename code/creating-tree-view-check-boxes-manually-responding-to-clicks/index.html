@@ -1,0 +1,90 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating tree view check boxes manually: Responding to clicks</h1>  <!-- .entry-meta -->
+
+<p><a href="https://blogs.msdn.microsoft.com/oldnewthing/20171129-00/?p=97485">Last time</a>, we added state images to the tree view, but we didn’t provide any way for the user to click on them. Let’s add the code so that the user can click on the check box to change the value. For simplicity, we will just cycle through the state images. In real life, you would probably have more complex logic for deciding what to do when the user clicks on the check box, such as ignoring clicks on disabled check boxes. </p>
+<p>Take our program from last time and make these additions: </p>
+<pre>
+void CycleStateImage(HWND hwndTV, HTREEITEM hti)
+{
+  UINT oldState = TreeView_GetItemState(hwndTV, hti,
+                                        TVIS_STATEIMAGEMASK);
+  int stateIndex = (int)(oldState &amp; TVIS_STATEIMAGEMASK) &gt;&gt; 12;
+
+  stateIndex = stateIndex + 1;
+  if (stateIndex &gt;= ImageList_GetImageCount(
+                TreeView_GetImageList(hwndTV, TVSIL_STATE)))
+  {
+    // We ran out of states. Wrap around to the first state.
+    stateIndex = 1;
+  }
+
+  TreeView_SetItemState(hwndTV, hti,
+      INDEXTOSTATEIMAGEMASK(stateIndex), TVIS_STATEIMAGEMASK);
+}
+</pre>
+<p>To cycle to the next state image, we request the state image mask from the current state, isolate the state image mask, and increment it, wrapping around to 1 if we were on the last state. (Note that we wrap around to 1 rather than to 0, because we saw last time that state image zero is not used; if you ask for state image zero, that means that you want no state image at all.) </p>
+<pre>
+LRESULT OnNotifyTVClicked(HWND hwndTV)
+{
+  TVHITTESTINFO tvhti;
+  DWORD dwPos = GetMessagePos();
+  tvhti.pt.x = GET_X_LPARAM(dwPos);
+  tvhti.pt.y = GET_Y_LPARAM(dwPos);
+  MapWindowPoints(HWND_DESKTOP, hwndTV, &amp;tvhti.pt, 1);
+  HTREEITEM hti = TreeView_HitTest(hwndTV, &amp;tvhti);
+  if (tvhti.flags &amp; TVHT_ONITEMSTATEICON)
+  {
+    CycleStateImage(hwndTV, hti);
+    return TRUE; // handled
+  }
+  return FALSE; // not handled
+}
+</pre>
+<p>Frustratingly, the tree view control notifies us when it receives a click, but it doesn’t tell us where the click was. We have to fetch it ourselves by calling <code>Get­Message­Pos()</code>, and then converting screen coordinates to client coordinates. Once we have those coordinates, we ask the tree view what is at those coordinates, and if it says “Oh, no big deal, just the state image¹ for an item,” then we get all excited and cycle the state image. </p>
+<pre>
+LRESULT OnNotifyTVKeyDown(HWND hwndTV, NMTVKEYDOWN* ptvkd)
+{
+  switch (ptvkd-&gt;wVKey)
+  {
+  case VK_SPACE:
+    HTREEITEM hti = TreeView_GetNextItem(hwndTV, nullptr,
+                                         TVGN_CARET);
+    if (hti)
+    {
+      CycleStateImage(hwndTV, hti);
+      return TRUE; // handled
+    }
+  }
+  return FALSE; // not handled
+}
+</pre>
+<p>For keyboard accessibility, we use the space bar as an equivalent to clicking on the state image. </p>
+<pre>
+LRESULT OnNotify(HWND hwnd, int idFrom, NMHDR* pnm)
+{
+  if (pnm-&gt;hwndFrom == g_hwndChild)
+  {
+    switch (pnm-&gt;code)
+    {
+    case NM_CLICK:
+      return OnNotifyTVClicked(pnm-&gt;hwndFrom);
+
+    case TVN_KEYDOWN:
+      return OnNotifyTVKeyDown(pnm-&gt;hwndFrom,
+         CONTAINING_RECORD(pnm, NMTVKEYDOWN, hdr));
+    }
+  }
+  return 0; // unhandled
+}
+
+// Add to WndProc
+  HANDLE_MSG(hwnd, WM_NOTIFY, OnNotify);
+</pre>
+<p>Here is our <code>WM_</code><code>NOTIFY</code> handler. If the notification is coming from the tree view control, then dispatch click notifications to <code>On­Notify­TV­Clicked</code> and dispatch key-down notifications to <code>On­Notify­TV­Key­Down</code>. The <code>TVN_</code><code>KEY­DOWN</code> notification comes with a custom notification structure, so we convert our generic <code>NMHDR</code> pointer to a <code>NMTV­KEY­DOWN</code> pointer. </p>
+<p>And there we have it. We manually implemented tree view check boxes. This code is effectively equivalent² to what you get when you turn on <code>TVS_</code><code>CHECK­BOXES</code> and it’s this code that was moved into the tree view control. </p>
+<p>Next time, we’ll bring tree view check boxes into the 21st century. </p>
+<p>¹ Note the inconsistent terminology. Normally, the state image is called a “state image”, but here, it’s called a “state icon”. </p>
+<p>² Plus a few more quirks we’ll learn about later. </p>
+
+
+</body>

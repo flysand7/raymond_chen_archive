@@ -1,0 +1,200 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why can't I create my dialog with DialogBox, DialogBoxParam, CreateDialog, CreateDialogParam, or the indirect versions of same?</h1>  <!-- .entry-meta -->
+
+<p>
+One of the purposes of my
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/03/29/403298.aspx">
+dialog manager series</a>
+was to help people diagnose problems with their dialog boxes.
+But since I embedded the tips inside the series body,
+it’s hard for people to find them,
+and I still end up answering the same questions over and over.
+</p>
+<p>
+So here it is in a separate article that hopefully people can find.
+</p>
+<p>
+Why your call to <code>Dialog­Box</code> or
+<code>Create­Dialog</code> is failing.
+This also goes for <code>CDialog::Do­Modal</code>,
+but perhaps extra so because the MFC source code says
+</p>
+<pre>
+* 3) CreateDialogIndirect() did NOT create the window (ie. due to error in template)
+*    and returns NULL.
+</pre>
+<p>
+even though the problem is rarely due to an error in the template.
+A wrong comment is worse than no comment at all.¹
+</p>
+<p>
+I’ve decided to put the reasons in most-likely-error-first order
+rather than chronological.
+</p>
+<ul>
+<li>Your dialog template uses a custom control which has not
+been registered.
+</li></ul>
+<p>
+This is by far the number one reason why dialog boxes fail
+to be created.
+As we saw in
+<a href="blogs.msdn.com/b/oldnewthing/archive/2005/03/31/404108.aspx">
+Part 3</a>,
+if a child control cannot be created from the template,
+then the dialog creation fails.
+(There is a special dialog box style
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/ff729172%28v=vs.85%29.aspx">
+<code>DS_NO­FAIL­CREATE</code></a> that tells the dialog manager
+to ignore the error and just continue without the child control.)
+</p>
+<p>
+For example, maybe your dialog box template uses a List View
+control, but you forgot to call
+<code>Init­Common­Controls</code> or
+<code>Init­Common­Controls­Ex</code>.
+Or it uses a Rich Edit control and you forgot to
+load
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/bb787873%28v=vs.85%29.aspx">
+the appropriate library</a>.
+Or it contains an ActiveX control but you forgot to
+call
+<code>Afx­Enable­Control­Container</code>
+to enable ActiveX control hosting.
+</p>
+<p>
+A special case of this error is where your
+dialog template uses a custom control which was
+registered in a different activation context.
+If you are trying to use a control from version 6
+of the common controls, then you must
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/bb773175%28v=vs.85%29.aspx">
+use the appropriate manifest</a>
+and make sure that the manifest’s activation context is active at the time
+you call <code>Dialog­Box</code> or whatever.
+If you forget to do this, then you will be using whatever activation
+context happens to be lying around at the time you call
+<code>Dialog­Box</code>,
+and it may not be the one you want.
+(It’s like walking up to a computer and looking on the Desktop
+and not seeing the file you created yesterday.
+“Hey, who deleted my file!”
+But you forgot to do a Switch User to your own account.
+You’re looking at the Desktop of whoever used the computer last.
+You’re in the wrong context.)
+</p>
+<ul>
+<li>Your resource name is incorrectly declared in the resource template.
+</li></ul>
+<p>
+One of the annoying features of the Resource Compiler is that it
+happily accepts typos!
+For example, suppose you have the following resource header file:
+</p>
+<pre>
+// ids.h
+#define IDD_BRILLIANT 100
+</pre>
+<p>
+and the following resource file:
+</p>
+<pre>
+<a href="http://thedailywtf.com/Articles/The_Brillant_Paula_Bean.aspx">IDD_BRILLANT</a> DIALOG ...
+</pre>
+<p>
+Since you misspelled <code>IDD_BRILLIANT</code>,
+you are not in fact creating a dialog box whose ID is 100
+(which is what would have happened if you had spelled it correctly).
+Instead, you’re creating a dialog whose name is the string
+<code>"IDD_BRILLANT"</code>.
+</p>
+<p>
+Later, your code passes
+<code>MAKE­INT­RESOURCE(IDD_BRILLIANT)</code> to ask for dialog 100,
+and the dialog manager says, “Sorry, I don’t see one of those.”
+(To get the typo’d dialog template, you would have to pass
+<code>TEXT("IDD_BRILLANT")</code> as the template name.)
+</p>
+<p>
+Even if you spell everything correctly, you will also have this problem
+if you forget to
+<code>#include "ids.h"</code> in your resource template file
+in the first place!
+</p>
+<p>
+To diagnose this error,
+you can
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/03/29/403298.aspx">
+add a diagnostic call to
+<code>Find­Resource</code></a>
+(or simply trace through the dialog manager’s call to the same function)
+to see if it can find the resource.
+Many IDEs will let you load a DLL and inspect its resources interactively.
+You can check the dialog template to see whether it is listed as resource 100
+or as resource <code>"IDD_BRILLANT"</code>.
+</p>
+<ul>
+<li>You passed the wrong instance handle or dialog ID.
+</li></ul>
+<p>
+This is a generalization of the previous error.
+The dialog template needs to exist in the module you passed,
+with the ID or name you passed.
+If you pass the wrong module or the wrong name,
+then you’re not going to find it.
+</p>
+<p>
+An even more generalized version of this error is
+the case where you forgot to add the dialog to the
+module’s resources in the first place.
+(Maybe you forgot to add the resource file to your project.)
+</p>
+<p>
+The diagnosis for this case is the same as the
+case of the misspelled dialog identifier.
+</p>
+<ul>
+<li>
+The control refused its creation.
+</li></ul>
+<p>
+In rare cases, a control may fail its creation
+by returning <code>FALSE</code> in response to
+the <code>WM_NC­CREATE</code> message
+or <code>-1</code> in response to the
+<code>WM_CREATE</code> message.
+</p>
+<ul>
+<li>You passed a bad window handle as the <code>hwnd­Parent</code>.
+</li></ul>
+<p>
+An invalid parameter will naturally result in the function failing.
+This rarely occurs in practice because you should be using the handle
+of a window under your control, so it shouldn’t be destroyed out
+from under you.
+</p>
+<ul>
+<li>There is an error in the dialog template.
+</li></ul>
+<p>
+I have never seen this occur.
+The Resource Compiler is pretty good about
+not generating erroneous templates.
+</p>
+<p>
+¹ Perhaps the author meant to use
+<i>e.g.</i> (<i>exempli gratia</i>,
+which means “for example”) instead of
+<i>i.e.</i> (<i>id est</i>, which means
+“that is”). As written, the comment is saying
+that an error in the template is the only reason
+that <code>Create­Dialog­Indirect</code>
+could have failed, when in fact it is only one
+example of a failure.
+Getting the two Latin abbreviations confused is not
+just a pedantic error;
+here, it created genuine confusion and probably
+wasted a lot of developers’ time.</p>
+
+
+</body>

@@ -1,0 +1,225 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Pointers to member functions are very strange animals</h1>  <!-- .entry-meta -->
+
+<p>
+Pointers to member functions are very strange animals.</p>
+<p>
+<b>Warning</b>: The discussion that follows is specific to
+the way pointers to member functions are implemented by the
+Microsoft Visual C++ compiler.  Other compilers may do things
+differently.
+</p>
+<p>
+Well, okay, if you only use single inheritance, then
+pointers to member functions are just a pointer to the
+start of the function, since all the base classes
+share the same “this” pointer:
+</p>
+<pre>
+class Simple { int s; void SimpleMethod(); };
+class Simple2 : public Simple
+  { int s2; void Simple2Method(); };
+class Simple3 : public Simple2
+  { int s3; Simple3Method(); };
+</pre>
+<table border="0">
+<col align="center" span="3"/>
+<tr>
+<td valign="top">p</td>
+<td valign="top">→</td>
+<td style="border: solid 1px buttonshadow;width: 10em">
+
+<p>    Simple3::s3
+</p></td>
+</tr>
+</table>
+<p>
+Since they all use the same “this” pointer (p), a pointer to
+a member function of Base can be used as if it were a pointer
+to a member function of Derived2 without any adjustment
+necessary.
+</p>
+<blockquote class="m"><p>
+The size of a pointer-to-member-function of a class that
+uses only single inheritance is just the size of a pointer.
+</p></blockquote>
+<p>
+But if you have multiple base classes, then things get interesting.</p>
+<pre>
+class Base1 { int b1; void Base1Method(); };
+class Base2 { int b2; void Base2Method(); };
+class Derived : public Base1, Base2
+  { int d; void DerivedMethod(); };
+</pre>
+<table border="0" cellspacing="0">
+<col align="center" span="3"/>
+<tr>
+<td valign="top">p</td>
+<td valign="top">→</td>
+<td style="border: solid 1px buttonshadow;border-bottom: none;width: 10em">
+
+</td>
+</tr>
+<tr>
+<td valign="top">q</td>
+<td valign="top">→</td>
+<td style="border: solid 1px buttonshadow;border-top: none;width: 10em">
+
+<p>       Derived::d
+    </p></td>
+</tr>
+</table>
+<p>
+There are now two possible “this” pointers.  The first (p) is used
+by both Derived and Base1, but the second (q) is used by Base2.
+</p>
+<p>
+A pointer to a member function of Base1 can be used as a pointer
+to a member function of Derived, since they both use the same “this”
+pointer.  But a pointer to a member function of Base2 cannot be
+used as-is as a pointer to a member function of Derived, since the
+“this” pointer needs to be adjusted.
+</p>
+<p>
+There are many ways of solving this.
+Here’s how the Visual Studio compiler decides to handle it:
+</p>
+<p>
+A pointer to a member function of a multiply-inherited class
+is really a structure.
+</p>
+<table border="0">
+<col align="center"/>
+<tr>
+<td style="border: solid 1px buttonshadow;width: 10em">
+    Address of function
+    </td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow;width: 10em">
+       Adjustor
+    </td>
+</tr>
+</table>
+<blockquote class="m"><p>
+The size of a pointer-to-member-function of a class that
+uses multiple inheritance is the size of a pointer plus the
+size of a size_t.
+</p></blockquote>
+<p>
+Compare this to the case of a class that uses only single inheritance.
+</p>
+<blockquote class="m"><p>
+The size of a pointer-to-member-function can change depending on
+the class!
+</p></blockquote>
+<p>
+Aside: Sadly, this means that Rich Hickey’s wonderful technique of
+<a href="http://www.tutok.sk/fastgl/callback.html">Callbacks
+in C++ Using Template Functors</a> cannot be used as-is.
+You have to fix the place where he writes the comment</p>
+<pre>
+// Note: this code depends on all ptr-to-mem-funcs being same size
+</pre>
+
+<p>
+Okay, back to our story.
+</p>
+<p>To call through a pointer to a member function, the “this”
+pointer is adjusted by the Adjustor, and then the function
+provided is called.  A call through
+a function pointer might be compiled like this:
+</p>
+<pre>
+void (Derived::*pfn)();
+Derived d;
+(d.*pfn)();
+  lea  ecx, d       ; ecx = "this"
+  add  ecx, pfn[4]  ; add adjustor
+  call pfn[0]       ; call
+</pre>
+<p>
+When would an adjustor be nonzero?  Consider the case above.
+The function Derived::Base2Method() is really Base2::Base2Method()
+and therefore expects to receive “q” as its “this” pointer.
+In order to convert a “p” to a “q”, the adjustor must have the
+value sizeof(Base1), so that when the first line of Base2::Base2Method()
+executes, it receives the expected “q” as its “this” pointer.
+</p>
+<p>
+“But why not just use a thunk instead of manually adding the adjustor?”
+In other words, why not just use a simple pointer to a thunk that
+goes like this:
+</p>
+<pre>
+Derived::Base2Method thunk:
+    add ecx, sizeof(Base1)  ; convert "p" to "q"
+    jmp Base2::Base2Method  ; continue
+</pre>
+<p>
+and use that thunk as the function pointer?
+</p>
+<p>
+The reason: Function pointer casts.
+</p>
+<p>
+Consider the following code:</p>
+<pre>
+void (Base2::*pfnBase2)();
+void (Derived::*pfnDerived)();
+pfnDerived = pfnBase2;
+  mov  ecx, pfnBase2            ; ecx = address
+  mov  pfnDerived[0], ecx
+  mov  pfnDerived[4], sizeof(Base1) ; adjustor!
+</pre>
+<p>
+We start with a pointer to a member function of Base2,
+which is a class that uses only single inheritance, so it
+consists of just a pointer to the code.
+To assign it to a pointer to a member function
+of Derived, which uses multiple inheritance, we can re-use
+the function address, but we now need an adjustor so that
+the pointer “p” can properly be converted to a “q”.
+</p>
+<p>
+Notice that the code doesn’t know what function pfnBase2
+points to, so it can’t just replace it with the matching thunk.
+It would have to generate a thunk at runtime and somehow
+use its psychic powers to decide when the memory can safely
+be freed.  (This is C++.  No garbage collector here.)
+</p>
+<p>
+Notice also that when pfnBase2
+got cast to a pointer to member function of Derived, its size changed,
+since it went from a pointer to a function in a class that uses only single
+inheritance to a pointer to a function in a class
+that uses multiple inheritance.
+</p>
+<blockquote class="m"><p>
+Casting a function pointer can change its size!
+</p></blockquote>
+<p>
+I bet that you didn’t know that before reading this entry.
+</p>
+<p>
+There’s still an awful lot more to this topic,
+but I’m going to stop here before everybody’s head explodes.
+</p>
+<p>
+<b>Exercise</b>:
+Consider the class</p>
+<pre>
+class Base3 { int b3; void Base3Method(); };
+class Derived2 : public Base3, public Derived { };
+</pre>
+<p>How would the following code be compiled?</p>
+<pre>
+void (Derived::*pfnDerived)();
+void (Derived2::*pfnDerived2();
+pfnDerived2 = pfnDerived;
+</pre>
+<p>
+Answer to appear tomorrow.</p>
+
+
+</body>

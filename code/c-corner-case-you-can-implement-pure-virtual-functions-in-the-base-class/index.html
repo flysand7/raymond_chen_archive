@@ -1,0 +1,229 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ corner case: You can implement pure virtual functions in the base class</h1>  <!-- .entry-meta -->
+
+<p>
+In our
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/04/28/122037.aspx">
+discussion <code>__purecall</code></a>,
+we saw that you can declare a pure virtual function with the
+<code>= 0</code> syntax,
+and if you try to call one of these functions from the base class,
+you will get the dreaded <i>R6025 – pure virtual function call</i>
+error.
+</p>
+<p>
+In that article, I wrote that a pure virtual function is
+“a method which is declared by the base class, but for which
+no implementation is provided.”
+That statement is false.
+</p>
+<p>
+You can provide an implementation for a pure virtual method in C++.
+</p>
+<p>
+“That’s crazy talk,” I hear you say.
+</p>
+<p>
+Okay, let’s start talking crazy:
+</p>
+<pre>
+#include &lt;iostream&gt;
+class Base {
+public:
+ Base() { f(); }
+ virtual void f() = 0;
+};
+class Derived : public Base {
+public:
+ Derived() { f(); }
+ virtual void f() { std::cout &lt;&lt; "D"; }
+};
+int main(int, char **)
+{
+ Derived d;
+ return 0;
+}
+</pre>
+<p>
+What happens when the <code>test</code>
+function constructs a <code>Derived</code>?
+</p>
+<p>
+Trick question,
+because you get a linker error
+when you try to build the project.
+</p>
+<p>
+There are many questions lurking here,
+like “Why do I get a linker error?”
+and “Why isn’t it a compiler error?”
+We’ll get back to those questions later.
+For now, let’s get the code to build.
+</p>
+<pre>
+class Base {
+public:
+ Base() { <font color="blue">call_f()</font>; }
+ virtual void f() = 0;
+ <font color="blue">void call_f() { f(); }</font>
+};
+</pre>
+<p>
+Okay, with this change (hiding the call to <code>f</code>
+inside a function called <code>call_f</code>),
+the code compiles,
+so now we can answer the question:
+</p>
+<p>
+<b>Answer</b>: You get the dreaded purecall error,
+because the base class constructor
+has engaged in a conspiracy with the function <code>call_f</code>
+to call the function <code>f</code> from its constructor.
+Since <code>f</code> is a pure virtual function,
+you get the purecall error.
+</p>
+<p>
+Okay, next question:
+Why didn’t the original code result in a compiler error?
+</p>
+<p>
+<b>Answer</b>:
+The compiler is not required to do a full code flow analysis
+to determine whether you are calling a pure virtual method
+from a constructor.
+The language forbids it, but no diagnostic is required
+and the behavior is undefined.
+</p>
+<blockquote class="q"><p>
+Member functions can be called from a constructor (or destructor)
+of an abstract class;
+the effect of making a virtual call (10.3) to a pure virtual
+function directly or indirectly for the object being created
+(or destroyed) from such a constructor (or destructor) is undefined.
+</p></blockquote>
+<p>
+But why did it result in a linker error?
+</p>
+<p>
+<b>Answer</b>:
+As we learned during the discussion of <code>__purecall</code>,
+C++ objects change identity during their construction,
+and at the point that the <code>Base</code> constructor is running,
+the object is still a <code>Base</code>,
+so the <i>final overrider</i> method is <code>Base::f</code>
+Therefore, when you called
+<code>f()</code> from the <code>Base</code> constructor,
+you were actually calling <code>Base::f</code>.
+</p>
+<p>
+And you never defined <code>Base::f</code>,
+so the linker complained.
+</p>
+<p>
+“Wait, I can define <code>Base::f</code>?”
+</p>
+<p>
+Sure, let’s do it.
+<i>At the end of the program</i> (even after the definition
+of <code>main</code>)
+add this code:
+</p>
+<pre>
+void Base::f()
+{
+ std::cout &lt;&lt; "B";
+}
+</pre>
+<p>
+Now the program compiles,
+and when you run it, well, we saw that the standard leaves this
+undefined, so you might crash, or monkeys might fly out of your nose,
+or the runtime library may go back in time and kill your parents.
+(We’ll see in a future article
+how undefined behavior can lead to time travel.
+How’s that for a teaser!)
+</p>
+<p>
+But one implementation might generate this program output:
+</p>
+<pre>
+BD
+</pre>
+<p>
+This particular implementation decided not to try very hard to detect the
+case where you are calling <code>Base::f</code> during the
+constructor and just lets the call happen,
+and it ends up calling the method you defined later.
+</p>
+<p>
+“But if I’m not allowed to call the pure virtual function from
+a constructor or destructor,
+and if I call the method
+after construction, it always calls the version of the function
+that the derived class overrode,
+then how could this code ever execute at all (legitimiately)?
+In other words,
+what conforming program could ever print the letter <code>B</code>?”
+</p>
+<p>
+The function cannot be called implicitly, but it can be called explicitly:
+</p>
+<pre>
+class Base {
+public:
+ Base() { <font color="red">/* f(); */</font> }
+ virtual void f() = 0;
+};
+void Base::f()
+{
+ std::cout &lt;&lt; "B";
+}
+class Derived : public Base {
+public:
+ Derived() { f(); }
+ virtual void f() { std::cout &lt;&lt; "D"; <font color="blue">Base::f();</font> }
+};
+int main(int, char **)
+{
+ Derived d;
+ return 0;
+}
+</pre>
+<p>
+First, we got rid of the illegal call to <code>f()</code>
+in the base class constructor (to keep our code legit).
+Next, we adjusted our override version of <code>f</code>
+so that it calls the base class method after doing some
+custom work.
+</p>
+<p>
+This time, the program prints <code>DB</code>,
+and the code is perfectly legitimate this time.
+No undefined behavior, nothing up my sleeve.
+</p>
+<p>
+What happened here?
+</p>
+<p>
+The derived class constructor called the <code>f</code>
+method, which maps to
+<code>Derived::f</code>.
+That function prints the letter D,
+and then it calls the base class version
+<code>Base::f</code> explicitly.
+The base class version then prints the letter B.
+</p>
+<p>
+This is actually nothing new; this is how overridden
+methods work in general.
+The only wrinkle here is that the base class method
+can be called only via explicit qualification;
+there is no way to call it implicitly.
+</p>
+<p>
+This was a rather long-winded way of calling out a weird
+corner case in C++ that most people don’t even realize exists:
+A pure virtual function can have an implementation.</p>
+
+
+</body>

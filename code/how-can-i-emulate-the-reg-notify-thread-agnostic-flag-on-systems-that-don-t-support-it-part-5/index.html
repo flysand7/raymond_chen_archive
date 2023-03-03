@@ -1,0 +1,84 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I emulate the REG_NOTIFY_THREAD_AGNOSTIC flag on systems that don’t support it? part 5</h1>  <!-- .entry-meta -->
+
+<p>We complete our somewhat pointless exercise of <a href="/code/how-can-i-emulate-the-reg-notify-thread-agnostic-flag-on-systems-that-don-t-support-it-part-4"> emulating the <code>REG_<wbr/>NOTIFY_<wbr/>THREAD_<wbr/>AGNOSTIC</code> flag</a> by making our coroutine resilient to failure partway through. This requires you to accept the anachronism of using C++20 coroutines, while also dropping Windows XP support, since we will be relying on thread pool features new to Windows Vista.</p>
+<pre>auto RegNotifyChangeKeyValueAsync(
+  HKEY hkey,
+  BOOL bWatchSubtree,
+  DWORD dwNotifyFilter,
+  HANDLE hEvent)
+{
+  struct awaiter
+  {
+    awaiter(awaiter const&amp;) = delete;
+    void operator=awaiter(awaiter const&amp;) = delete;
+
+    HKEY m_hkey;
+    BOOL m_bWatchSubtree;
+    DWORD m_dwNotifyFilter;
+    HANDLE m_hEvent;
+    LONG m_result;
+    PTP_WORK m_completionWork = nullptr;
+    std::experimental::coroutine_handle&lt;&gt; m_handle;
+
+    ~awaiter()
+    {
+      if (m_completionWork) CloseThreadpoolWork(m_completionWork);
+    }
+
+    bool await_ready() const noexcept { return false; }
+
+    bool await_suspend(std::experimental::coroutine_handle&lt;&gt; handle)
+    {
+      m_completionWork = CreateThreadpoolWork(Complete, this, nullptr);
+      if (!m_completionWork) {
+        m_result = static_cast&lt;LONG&gt;(GetLastError());
+        return false;
+      }
+
+      m_handle = handle;
+
+      if (!QueueUserWorkItem(
+          Register,
+          this,
+          WT_EXECUTEINPERSISTENTTHREAD)) {
+        m_result = static_cast&lt;LONG&gt;(GetLastError());
+        return false;
+      }
+
+      return true;
+    }
+
+    LONG await_ready() const noexcept { return m_result; }
+
+    DWORD CALLBACK Register(void* param)
+    {
+      auto self = reinterpret_cast&lt;awaiter*&gt;(param);
+      self-&gt;m_result = RegNotifyChangeKeyValue(
+        self-&gt;m_hkey,
+        self-&gt;m_bWatchSubtree,
+        self-&gt;m_dwNotifyFilter,
+        self-&gt;m_hEvent,
+        TRUE);
+      SubmitThreadpoolWork(m_completionWork);
+      return 0;
+    }
+
+    DWORD CALLBACK Complete(void* param)
+    {
+      auto self = reinterpret_cast&lt;awaiter*&gt;(param);
+      self-&gt;m_handle();
+      return 0;
+    }
+  };
+
+  return awaiter(hkey, bWatchSubtree, dwNotifyFilter, hEvent);
+}
+</pre>
+<p>The idea here is that we have two work items. The first (for which we use <code>Queue­User­Work­Item</code>) is scheduled onto a persistent thread. When that first work item runs (<code>Register</code>), we register the notification and save the result. And then we submit the second work item, which brings us to a normal thread pool thread, which is where we resume the caller by invoking its coroutine handle.</p>
+<p>As before, if anything goes wrong during the set-up, we save the error and declare that the caller shouldn’t suspend. That way, it picks up the error immediately.</p>
+<p>There’s a subtlety here: You might be tempted to clean up the completion work item as soon as <code>Submit­Threadpool­Work</code> returns, but that would be wrong. There is a race condition where the submitted work runs to completion before <code>Submit­Threadpool­Work</code> returns. In that case, the coroutine has already resumed, and the <code>awaiter</code> has already destructed. The subsequent call to <code>Close­Threadpool­Work(<wbr/>m_completionWork);</code> is accessing an object after it has been destroyed.</p>
+<p><b>Bonus chatter</b>: Commenter Paul Jackson <a href="https://devblogs.microsoft.com/oldnewthing/20201223-00/?p=104584#comment-137566"> observed that</a> the thread which executes <code>WT_<wbr/>EXECUTE­IN­PERSISTENT­THREAD</code> work items can exit if there are no pending I/O requests. Is RegNotifyChangeKeyValue a pending I/O request? I’m not sure. So maybe <code>WT_<wbr/>EXECUTE­IN­PERSISTENT­THREAD</code> doesn’t solve the problem after all. Fortunately, this was all a pointless exercise.</p>
+
+
+</body>

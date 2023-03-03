@@ -1,0 +1,40 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why won’t C++/WinRT let me <code>co_await</code> a <code>CoreDispatcher</code> or <code>DispatcherQueue</code>?</h1>  <!-- .entry-meta -->
+
+<p>A customer was trying to use a <code>Core­Dispatcher</code> to switch threads, but they couldn’t get it to work:</p>
+<pre>winrt::fire_and_forget MyPage::OnExternalEvent()
+{
+    auto lifetime = get_strong();
+
+    // this doesn't compile
+    co_await Dispatcher();
+
+    // neither does this
+    co_await winrt::resume_foreground(Dispatcher());
+
+    ...
+}
+</pre>
+<p>Performing a direct <code>co_await</code> on a <code>Core­Dispatcher</code> or <code>Dispatcher­Queue</code> <a href="https://docs.microsoft.com/en-us/windows/uwp/cpp-and-winrt-apis/concurrency-2"> appears to be commonplace</a>, but for some reason, this customer couldn’t get it to work:</p>
+<pre style="white-space: pre-wrap;">error C2338: Not an awaitable type (compiling source file {sourceFile}.cpp)
+see reference to function template instantiation 'decltype(auto) winrt::impl::get_awaiter&lt;T&gt;(T &amp;&amp;) noexcept' being compiled
+with
+[
+    T=winrt::Windows::UI::Core::CoreDispatcher
+] (compiling source file {sourceFile}.cpp)
+</pre>
+<p>If they used the <code>resume_<wbr/>foreground</code> helper function, they got</p>
+<pre style="white-space: pre-wrap;">error C3861: 'resume_foreground': identifier not found
+</pre>
+<p>That second error message is a very strong clue that some definition is missing.</p>
+<p>The problem is that they broke one of the rules of C++/WinRT: If you want to use a Windows Runtime object, you must include the header file for the namespace that contains the object.</p>
+<p>In this case, they failed to <code>#include &lt;winrt/Windows.UI.Core.h&gt;</code>. It is the namespace header that defines the operations that can be performed on the object. In the case of <code>Core­Dispatcher</code>, the namespace header defines is what provides <code>co_await</code> and <code>resume_<wbr/>foreground</code> support.</p>
+<p>Similar logic applies to the case of <code>co_await</code>‘ing a <code>Dispatcher­Queue</code>.</p>
+<p>The customer confirmed that including the required header file solved the problem.</p>
+<p><b>Bonus chatter</b>: Another possibility is that you get</p>
+<pre style="white-space: pre-wrap;">error C2664: 'winrt::resume_foreground::awaitable winrt::resume_foreground(const winrt::Windows::System::DispatcherQueue &amp;,const winrt::Windows::System::DispatcherQueuePriority) noexcept': cannot convert argument 1 from 'winrt::Windows::UI::Core::CoreDispatcher' to 'const winrt::Windows::System::DispatcherQueue &amp;'
+</pre>
+<p>This is what happens when you include the header file for some other dispatcher, but you forgot to include the header file for the dispatcher you actually want to use. The compiler sees the <code>resume_<wbr/>foreground</code> function, but the overload that you want isn’t there because you forgot to include the header file that provides it.</p>
+
+
+</body>

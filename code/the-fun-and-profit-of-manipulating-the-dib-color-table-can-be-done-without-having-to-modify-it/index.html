@@ -1,0 +1,143 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The fun and profit of manipulating the DIB color table can be done without having to modify it</h1>  <!-- .entry-meta -->
+
+<p>
+If I were
+<a href="http://blogs.msdn.com/michkap/">
+Michael Kaplan</a>,
+I’d have a more clever title like
+<i>I’m not touching you!</i>
+or <i>Look but don’t touch</i>
+or maybe <i>Looking at a DIB through <code>BITMAPINFO</code>-colored
+glasses</i>.
+</p>
+<p>
+We saw
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/11/15/1081320.aspx">
+some time ago</a>
+that you can manipulate the DIB color table to perform wholesale color
+remapping.
+But in fact you can do this even without modifying the DIB color table,
+which is a handy trick if you want to do color remapping but you
+don’t want to change the bitmap itself.
+For example,
+the bitmap is not one that is under your control
+(so you shouldn’t be modifying it),
+or the bitmap might be in use on multiple threads
+(so modifying it will result in race conditions).
+</p>
+<p>
+Let’s demonstrate this technique by converting the “Gone Fishing” bitmap
+to grayscale, but doing so without actually modifying the bitmap.
+As always, we start with our
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make the following changes:
+</p>
+<pre>
+<font color="blue">HBITMAP g_hbm;</font>
+
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+<font color="blue"> // change path as appropriate
+ g_hbm = (HBITMAP)LoadImage(g_hinst,
+                      TEXT("C:\\Windows\\Gone Fishing.bmp"),
+                      IMAGE_BITMAP, 0, 0,
+                      LR_CREATEDIBSECTION | LR_LOADFROMFILE);</font>
+ return TRUE;
+}
+void
+OnDestroy(HWND hwnd)
+{
+ <font color="blue">if (g_hbm) DeleteObject(g_hbm);</font>
+ PostQuitMessage(0);
+}
+void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+ <font color="blue">if (g_hbm) {
+  BITMAP bm;
+  if (GetObject(g_hbm, sizeof(bm), &amp;bm) == sizeof(bm) &amp;&amp;
+                bm.bmBits != NULL &amp;&amp;
+                bm.<a href="http://blogs.msdn.com/oldnewthing/archive/2004/12/01/273018.aspx">bmPlanes</a> * bm.bmBitsPixel &lt;= 8) {
+   struct BITMAPINFO256 {
+    BITMAPINFOHEADER bmiHeader;
+    RGBQUAD bmiColors[256];
+   } bmiGray;
+   <a href="http://blogs.msdn.com/oldnewthing/archive/2005/06/28/433341.aspx">ZeroMemory</a>(&amp;bmiGray, sizeof(bmiGray));
+   HDC hdc = CreateCompatibleDC(NULL);
+   if (hdc) {
+    HBITMAP hbmPrev = SelectBitmap(hdc, g_hbm);
+    UINT cColors = GetDIBColorTable(hdc, 0, 256, bmiGray.bmiColors);
+    for (UINT iColor = 0; iColor &lt; cColors; iColor++) {
+     BYTE b = (BYTE)((<a href="http://en.wikipedia.org/wiki/Grayscale#Converting_color_to_grayscale">30</a> * bmiGray.bmiColors[iColor].rgbRed +
+                      <a href="http://en.wikipedia.org/wiki/Grayscale#Converting_color_to_grayscale">59</a> * bmiGray.bmiColors[iColor].rgbGreen +
+                      <a href="http://en.wikipedia.org/wiki/Grayscale#Converting_color_to_grayscale">11</a> * bmiGray.bmiColors[iColor].rgbBlue) / 100);
+     bmiGray.bmiColors[iColor].rgbRed   = b;
+     bmiGray.bmiColors[iColor].rgbGreen = b;
+     bmiGray.bmiColors[iColor].rgbBlue  = b;
+    }
+    bmiGray.bmiHeader.biSize        = sizeof(bmiGray.bmiHeader);
+    bmiGray.bmiHeader.biWidth       = bm.bmWidth;
+    bmiGray.bmiHeader.biHeight      = bm.bmHeight;
+    bmiGray.bmiHeader.biPlanes      = bm.bmPlanes;
+    bmiGray.bmiHeader.biBitCount    = bm.bmBitsPixel;
+    bmiGray.bmiHeader.biCompression = BI_RGB;
+    bmiGray.bmiHeader.biClrUsed     = cColors;
+    SetDIBitsToDevice(pps-&gt;hdc, 0, 0,
+                      bmiGray.bmiHeader.biWidth,
+                      bmiGray.bmiHeader.biHeight, 0, 0,
+                      0, bmiGray.bmiHeader.biHeight,
+                      bm.bmBits,
+                     (BITMAPINFO*)&amp;bmiGray, DIB_RGB_COLORS);
+    BitBlt(pps-&gt;hdc, bm.bmWidth, 0, bm.bmWidth, bm.bmHeight,
+           hdc, 0, 0, SRCCOPY);
+    SelectBitmap(hdc, hbmPrev);
+    DeleteDC(hdc);
+   }
+  }
+ }</font>
+}
+</pre>
+<p>
+Things start off innocently enough, loading the bitmap into a
+DIB section for use during painting.
+</p>
+<p>
+We do our work at paint time.
+First, we confirm
+that we indeed have a DIB section and that it is 8bpp or lower,
+because bitmaps at higher than 8bpp do not use color tables.
+</p>
+<p>
+We then select the bitmap into a DC so we can call
+<code>GetDIBColorTable</code> to get its current color table.
+(This is the only step that
+requires the bitmap to be selected into a device context.)
+We then edit the color table to convert each color to
+its grayscale equivalent.
+</p>
+<p>
+Finally, we fill in the <code>BITMAPINFO</code> structure
+with the description of the bitmap bits,
+and then we call <code>SetDIBitsToDevice</code> to send
+the pixels to the destination DC.
+</p>
+<p>
+Just for good measure, we also <code>BitBlt</code> the
+original unmodified bitmap,
+to prove that the original bitmap is intact and unchanged.
+</p>
+<p>
+This mini-program is really just a stepping stone to other
+things you can do with this technique of separating the
+metadata (the <code>BITMAPINFO</code>) from the pixels.
+We’ll continue our investigations tomorrow.
+</p>
+<p>
+(Before you all run out and use this technique everywhere you can imagine,
+wait for the remarks in Friday’s installment.)</p>
+
+
+</body>

@@ -1,0 +1,100 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Should I pay attention to the warning that I’m <code>std::move</code>‘ing from a trivial type? Part 2</h1>  <!-- .entry-meta -->
+
+<p>Last time, <a href="/code/should-i-pay-attention-to-the-warning-that-i-m-std-move-ing-from-a-trivial-type-part-1" title="Should I pay attention to the warning that I'm std::move'ing from a trivial type? Part 1"> we looked at motivations for <code>std::move</code>‘ing from a trivial type</a>. Our investigation looked at the problem through the eyes of the object moved <i>from</i>, but there’s another way to look at the problem, and that’s from the point of view of the object being moved <i>to</i>.</p>
+<pre>struct widget_id
+{
+    int value;
+};
+
+void destroy_id(widget_id&amp;&amp; id)
+{
+    auto value = std::exchange(id.value, 0);
+}
+</pre>
+<p>The intention of the <code>destroy_id</code> function is to destroy the <code>id</code>. Now, the widget ID is just an integer, so you technically don’t “destroy” it, but the function accepts the <code>widget_id</code> by rvalue reference so it can set the <code>value</code> of the source to zero, thereby reducing the likelihood that the caller will try to use the <code>id</code> later.</p>
+<pre>widget_id id = get_id();
+destroy_id(std::move(id));
+
+// accidentally use the id
+activate_id(id); // blatantly invalid id of 0
+</pre>
+<p>Accepting an rvalue reference helps with two problems: First of all, if the ID is held in a variable, the caller must perform an explicit <code>std::move</code>, which tickles the C++ brain cells into recognizing that “This <code>id</code> is consumed by the <code>destroy_id</code> function and is therefore not useful any more.”</p>
+<p>Second of all, it means that if the caller messes up and tries to use the <code>id</code> after it was moved from, the <code>value</code> it contains is guaranteed invalid, instead of possibly using an already-destroyed ID which might by coincidence have been reassigned to another new widget in the meantime. That converts a bug that occurs only if you hit just the right race condition (harder to debug) into a bug that occurs every time guaranteed (easier to debug).</p>
+<p>You can even use the “accept an rvalue when destroying or taking ownership” trick for primitive types like pointers.</p>
+<pre>template&lt;typename T&gt;
+struct uniquer_ptr
+{
+    T* m_ptr = nullptr;
+
+    uniquer_ptr(T*&amp;&amp; ptr = nullptr)
+        : m_ptr(ptr)
+    {
+        ptr = nullptr;
+    }
+
+    ...
+    void reset(T*&amp;&amp; ptr = nullptr)
+    {
+        T* old_ptr = m_ptr;
+        m_ptr = ptr;
+        ptr = nullptr;
+
+        if (old_ptr != nullptr) get_deleter()(old_ptr);
+    }
+};
+
+// or, if you like one-liners...
+
+template&lt;typename T&gt;
+struct uniquer_ptr
+{
+    T* m_ptr = nullptr;
+
+    uniquer_ptr(T*&amp;&amp; ptr = nullptr)
+        : m_ptr(std::exchange(ptr, nullprt))
+    {
+    }
+
+    ...
+    void reset(T*&amp;&amp; ptr = nullptr)
+    {
+        T* old_ptr = std::exchange(m_ptr, std::exchange(ptr, nullptr));
+        if (old_ptr != nullptr) get_deleter()(old_ptr);
+    }
+};
+</pre>
+<p>This variant of <code>std::<wbr/>unique_ptr</code> accepts the raw pointer by rvalue reference so that it can null it out, thereby emphasizing that it has taken ownership.</p>
+<pre>// two-timing widget: This compiles
+// and runs, but you crash when ptr
+// destructs.
+Widget* widget = new Widget();
+auto ptr = std::unique_ptr(widget);
+auto ptr2 = std::unique_ptr(widget);
+</pre>
+<p>Accepting the pointer by rvalue reference reduces the likelihood of two-timing:</p>
+<pre>// doesn't compile
+Widget* widget = new Widget();
+auto ptr = std::unique_ptr(widget);
+auto ptr2 = std::unique_ptr(widget);
+
+// compiles but looks suspicious
+Widget* widget = new Widget();
+auto ptr = uniquer_ptr(std::move(widget));
+auto ptr2 = uniquer_ptr(std::move(widget));
+</pre>
+<p>The revised version looks suspicious because you are using an object (the <code>widget</code>) after it has been <code>std::<wbr/>move</code>‘d. At run time, the <code>widget</code> is set to <code>nullptr</code> by the first <code>uniquer_ptr</code> constructor, so <code>ptr2</code> constructs from <code>nullptr</code> and is consequently empty. There is no crash at runtime. (Though you might scratch your head if you expected <code>ptr2</code> to be non-empty.)</p>
+<p>Is this a good use for rvalue references to primitive types? I’m not sure.</p>
+<p><b>Bonus chatter</b>: Many years ago, the Windows division was given an experimental version¹ of the Visual C++ compiler which treated the argument of the <code>delete</code> statement as an lvalue reference if possible, and nulled out the value as part of the deletion.</p>
+<pre>int* p = new int();
+delete p;
+// p is now nullptr!
+</pre>
+<p>The theory behind this change was that the pointer <code>p</code> is unusable after being deleted, so the compiler may as well turn it into a provably unusable value, so you can’t use it by mistake.</p>
+<p>Unfortunately, this silent breaking change resulted in some runtime crashes because there were some calling patterns that relied on the old value remaining unchanged, even though it wasn’t dereferenceable. I forget the details, but I vaguely recall that it involved some sort of reentrancy, and the reentrant call checked the pointer value to see if it had already been processed.</p>
+<p>The compiler team backed out the change.</p>
+<p>Of course, if you enforce this rule from the start, then mutating the inbound rvalue reference is no longer a breaking change.</p>
+<p>¹ One of the ways that the Visual C++ compiler team tests out some of their ideas is to give a copy of their experimental compiler to the Windows team and see what happens. This lets them exercise their compiler with a monstrous real-world code base.</p>
+
+
+</body>

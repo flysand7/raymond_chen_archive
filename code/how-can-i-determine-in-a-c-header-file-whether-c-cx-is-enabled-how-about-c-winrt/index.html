@@ -1,0 +1,64 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I determine in a C++ header file whether C++/CX is enabled? How about C++/WinRT?</h1>  <!-- .entry-meta -->
+
+<p>Suppose you’re writing a header file that wants to take advantage of C++/CX or C++/WinRT features if the corresponding functionality is available.</p>
+<pre>// async_event_helpers.h
+
+#if (? what goes here ?)
+
+// RAII type to ensure that a C++/CX deferral is completed.
+
+template&lt;typename T&gt;
+struct ensure_complete
+{
+   ensure_complete(T^ deferral) : m_deferral(deferral) { }
+   ~ensure_complete() { if (m_deferral) m_deferral-&gt;Complete(); }
+
+  ensure_complete(ensure_complete const&amp;) = delete;
+  ensure_complete&amp; operator=(ensure_complete const&amp;) = delete;
+
+  ensure_complete(ensure_complete&amp;&amp; other)
+  : m_deferral(std::exchange(other.m_deferral, {})) { }
+  ensure_complete&amp; operator=(ensure_complete&amp;&amp; other)
+  { m_deferral = std::exchange(other.m_deferral, {}); return *this; }
+
+private:
+   T^ m_deferral;
+};
+#endif
+
+#if (? what goes here?)
+
+// RAII type to ensure that a C++/WinRT deferral is completed.
+
+template&lt;typename T&gt;
+struct ensure_complete
+{
+   ensure_complete(T const&amp; deferral) : m_deferral(deferral) { }
+   ~ensure_complete() { if (m_deferral) m_deferral.Complete(); }
+
+  ensure_complete(ensure_complete const&amp;) = delete;
+  ensure_complete&amp; operator=(ensure_complete const&amp;) = delete;
+
+  ensure_complete(ensure_complete&amp;&amp;) = default;
+  ensure_complete&amp; operator=(ensure_complete&amp;&amp;) = default;
+
+private:
+   T m_deferral{ nullptr };
+};
+#endif
+</pre>
+<p>What magic goes into the <code>#if</code> statement to enable the corresponding helpers only if the prerequisites have been met?</p>
+<p>For C++/CX, the magic incantation is</p>
+<pre>#ifdef __cplusplus_winrt
+</pre>
+<p>If C++/CX is enabled, then the <code>__cplusplus_winrt</code> symbol <a href="https://docs.microsoft.com/en-us/cpp/preprocessor/predefined-macros?view=vs-2017"> is defined as the integer 201009</a>, which is presumably a version number.</p>
+<p>For C++/WinRT, the magic symbol is</p>
+<pre>#ifdef CPPWINRT_VERSION
+</pre>
+<p>This is defined to a string literal representing the version of C++/WinRT that is active. In addition to serving as a feature detector, this macro is used to ensure that all of the C++/WinRT header files you use are compatible with each other. (If not, you will get a compile-time assertion failure.)</p>
+<p>The C++/WinRT team cautions that this is the <i>only</i> macro in the C++/WinRT header file that is supported for feature detection. Do not rely on the other <code>WINRT_*</code> macros in the C++/WinRT header files. They are implementation details and may change at any time.</p>
+<p> </p>
+
+
+</body>

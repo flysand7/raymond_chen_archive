@@ -1,0 +1,59 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I emulate the REG_NOTIFY_THREAD_AGNOSTIC flag on systems that don’t support it? part 4</h1>  <!-- .entry-meta -->
+
+<p>We <a href="/code/how-can-i-emulate-the-reg-notify-thread-agnostic-flag-on-systems-that-don-t-support-it-part-3"> continue our exercise of emulating the <code>REG_<wbr/>NOTIFY_<wbr/>THREAD_<wbr/>AGNOSTIC</code> flag</a> by making the whole thing a coroutine, assuming you’re willing to take the anachronism to an extreme by using C++20 features in code intended to run on Windows XP.</p>
+<pre>auto RegNotifyChangeKeyValueAsync(
+  HKEY hkey,
+  BOOL bWatchSubtree,
+  DWORD dwNotifyFilter,
+  HANDLE hEvent)
+{
+  struct awaiter
+  {
+    HKEY m_hkey;
+    BOOL m_bWatchSubtree;
+    DWORD m_dwNotifyFilter;
+    HANDLE m_hEvent;
+    LONG m_result;
+    std::experimental::coroutine_handle&lt;&gt; m_handle;
+
+    bool await_ready() const noexcept { return false; }
+
+    bool await_suspend(std::experimental::coroutine_handle&lt;&gt; handle)
+    {
+      m_handle = handle;
+      if (!QueueUserWorkItem(
+          Callback,
+          this,
+          WT_EXECUTEINPERSISTENTTHREAD)) {
+        m_result = static_cast&lt;LONG&gt;(GetLastError());
+        return false;
+      }
+      return true;
+    }
+
+    LONG await_ready() const noexcept { return m_result; }
+
+    DWORD CALLBACK Callback(void* param)
+    {
+      auto self = reinterpret_cast&lt;awaiter*&gt;(param);
+      self-&gt;m_result = RegNotifyChangeKeyValueArgs(
+        self-&gt;m_hkey,
+        self-&gt;m_bWatchSubtree,
+        self-&gt;m_dwNotifyFilter,
+        self-&gt;m_hEvent,
+        TRUE);
+      self-&gt;m_handle();
+      return 0;
+    }
+  };
+
+  return awaiter(hkey, bWatchSubtree, dwNotifyFilter, hEvent);
+}
+</pre>
+<p>The catch here is that the coroutine continues on the persistent thread, and you’re not supposed to run long operations on the persistent thread, so the caller should probably <code>resume_background</code> to get onto a non-persistent thread pool thread.</p>
+<p>We can’t do the work ourselves of resuming on a non-persistent thread pool thread, say, by doing another <code>Queue<wbr/>User<wbr/>Work<wbr/>Item</code>, because if the second call fails, we are stuck on the persistent thread. If we are willing to bump the minimum system requirements to Windows Vista, we could preallocate the work items and remove the possibility of getting stuck halfway through.</p>
+<p>So let’s go all the way with this absurd exercise, next time.</p>
+
+
+</body>

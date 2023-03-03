@@ -1,0 +1,181 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is so special about the Application STA?</h1>  <!-- .entry-meta -->
+
+<p>Windows 8 introduced a new COM threading model which is a variation of the single-threaded apartment (STA). It’s called the <i>Application STA</i>.</p>
+<p>The Application STA is a single-threaded apartment, but with the additional restriction that it cannot be re-entered. Consider the following timeline, with time proceeding from top to bottom:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th valign="top">Thread 1</th>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<th valign="top">Thread 2<br/>
+(normal STA)</th>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<th valign="top">Thread 3</th>
+</tr>
+<tr>
+<td> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td>Call thread 2</td>
+<td style="border: 1px black; border-style: none solid;">→</td>
+<td>Start operation A</td>
+</tr>
+<tr style="height: 4em;">
+<td> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td>(waiting)</td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td>(working)</td>
+</tr>
+<tr>
+<td>Call thread 2</td>
+<td style="border: 1px black; border-style: none solid;">→</td>
+<td>Start operation B</td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>We have three threads, call them Threads 1, 2, and 3. Thread 2 makes a call to Thread 3 and waits for a response. While Thread 2 is waiting, Thread 1 makes a call into Thread 2. This causes Thread 2 to become re-entered, and that’s a tricky situation.</p>
+<p>If the second call is to perform some operation unrelated to the first call, then you’re probably going to be okay. But suppose the second call is to perform an operation on the same object that the first call is working on. In that case, the first call will have its object modified out from under it.</p>
+<pre>void FrobAllWidgets()
+{
+  for (auto&amp;&amp; widget : m_widgets) {
+    widget.Frob(); // calls to thread 3
+  }
+}
+
+void AddWidget(Widget const&amp; widget)
+{
+  m_widgets.push_back(widget);
+}
+</pre>
+<p>Suppose Thread 2 is doing a <code>Frob­All­Widgets</code>, and the call to <code>widget.Frob();</code> results in a call to Thread 3.</p>
+<p>While one of those calls is in progress, Thread 2 is just sitting around waiting for the call to complete.</p>
+<p>And just at that moment, Thread 1 comes in and adds another widget.</p>
+<p>This mutates the vector of widgets, causing the <code>for</code> loop in <code>Frob­All­Widgets</code> to go haywire because the vector was resized, causing all the iterators to become invalid.</p>
+<p>You might try to fix this by adding a critical section:</p>
+<pre><span style="color: blue;">wil::critical_section m_cs;</span>
+
+void FrobAllWidgets()
+{
+  <span style="color: blue;">auto guard = m_cs.lock();</span>
+  for (auto&amp;&amp; widget : m_widgets) {
+    widget.Frob(); // calls to thread 3
+  }
+}
+
+void AddWidget(Widget const&amp; widget)
+{
+  <span style="color: blue;">auto guard = m_cs.lock();</span>
+  m_widgets.push_back(widget);
+}
+</pre>
+<p>You think you fixed it, but in fact nothing has changed. Critical sections support recursive acquisition, so what happens is that the re-entrant call to <code>Add­Widget</code> tries to acquire the critical section, and it <i>succeeds</i>, because the owner is the same thread.</p>
+<p>Okay, so switch to something that does not support recursive acquisition, like a shared reader-writer lock.</p>
+<pre><span style="color: blue;">wil::srwlock m_srw;</span>
+
+void FrobAllWidgets()
+{
+  <span style="color: blue;">auto guard = m_srw.lock_shared();</span>
+  for (auto&amp;&amp; widget : m_widgets) {
+    widget.Frob(); // calls to thread 3
+  }
+}
+
+void AddWidget(Widget const&amp; widget)
+{
+  <span style="color: blue;">auto guard = m_srw.lock_exclusive();</span>
+  m_widgets.push_back(widget);
+}
+</pre>
+<p>Well, at least this time there’s no crash. Instead the call hangs, because the re-entrant call to to <code>Add­Widget</code> tries to acquire the exclusive lock, but it cannot because of the existing call to <code>Frob­All­Widgets</code>. And that existing call cannot complete until <code>Add­Widgets</code> completes, because <code>Add­Widgets</code> is running on the same stack.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3">
+<tbody>
+<tr>
+<td>FrobAllWidgets</td>
+</tr>
+<tr>
+<td>↳ Widget::Frob</td>
+</tr>
+<tr>
+<td style="padding-left: 1em;">↳ WaitForFrobToFinish</td>
+</tr>
+<tr>
+<td style="padding-left: 2em;">↳ ReceiveInboundCall</td>
+</tr>
+<tr>
+<td style="padding-left: 3em;">↳ AddWidget</td>
+</tr>
+</tbody>
+</table>
+<p><code>Add­Widget</code> is running on the same stack, so <code>Frob­All­Widgets</code> cannot return until the stack unwinds, which means that <code>Add­Widget</code> needs to return, but it can’t.</p>
+<p>The Application STA tries to address this problem by blocking re-entrancy. The diagram now looks like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th valign="top">Thread 1</th>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<th valign="top">Thread 2<br/>
+(application STA)</th>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<th valign="top">Thread 3</th>
+</tr>
+<tr>
+<td> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td>Call thread 2</td>
+<td style="border: 1px black; border-style: none solid;">→</td>
+<td>Start operation A</td>
+</tr>
+<tr style="height: 4em;">
+<td> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td>(waiting)</td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td>(working)</td>
+</tr>
+<tr>
+<td>Call thread 2</td>
+<td style="border: 1px black; border-style: none solid;">↴</td>
+<td> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: 1px black; border-style: none solid;">↓</td>
+<td> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: 1px black; border-style: none solid;">↓</td>
+<td> </td>
+<td style="border: 1px black; border-style: none solid;">←</td>
+<td>Finished</td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: 1px black; border-style: none solid;">↓</td>
+<td>Finish</td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: 1px black; border-style: none solid;">↳</td>
+<td>Operation B starts</td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>When Thread 1 makes a call into the Application STA while the Application STA is waiting for a response from Thread 3, the call is not allowed to proceed, because that would result in re-entrancy. The call from Thread 1 is placed on hold until Thread 2 is no longer waiting for an outbound call to complete. Once Thread 2 returns to a normal state, it can receive inbound calls again.</p>
+<p>You can detect that you are running in an Application STA by calling <code>Co­Get­Apartment­Type</code> and checking for an apartment type of STA and an apartment type qualifier of APPLICATION_<wbr/>STA.</p>
+<p>Next time, we’ll look at another quirk of the Application STA.</p>
+<p><b>Bonus chatter</b>: I forgot to include the Application STA in my <a href="/code/what-do-the-output-values-from-cogetapartmenttype-mean"> list of possible results from <code>Co­Get­Apartment­Type</code></a>, so I’ve retroactively updated it.</p>
+
+
+</body>

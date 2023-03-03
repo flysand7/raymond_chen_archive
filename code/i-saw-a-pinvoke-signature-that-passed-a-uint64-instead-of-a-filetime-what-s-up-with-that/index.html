@@ -1,0 +1,37 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">I saw a pinvoke signature that passed a UInt64 instead of a FILETIME, what’s up with that?</h1>  <!-- .entry-meta -->
+
+<p>A customer had a question about a pinvoke signature that used a <code>UInt64</code> to hold a <code>FILETIME</code> structure. <span id="more-91771"></span></p>
+<blockquote class="q">
+<pre>
+[DllImport("kernel32.dll", SetLastError = true)
+static external bool GetProcessTimes(
+    IntPtr hProcess,
+    out UInt64 creationTime,
+    out UInt64 exitTime,
+    out UInt64 kernelTime,
+    out UInt64 userTime);
+</pre>
+<p>Is this legal? <a href="http://msdn.microsoft.com/library/windows/desktop/ms724284">The documentation for <code>FILETIME</code></a> says </p>
+<blockquote class="q"><p>Do not cast a pointer to a <b>FILETIME</b> structure to either a <b>ULARGE_INTEGER*</b> or <b>__int64*</b> value because it can cause alignment faults on 64-bit Windows. </p></blockquote>
+<p>Are we guilty of this cast in the above code? After all <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/08/25/220195.aspx">you can’t treat a <code>FILETIME</code> as an <code>__int64</code></a>. </p>
+</blockquote>
+<p>There are two types of casts possible in this scenario. </p>
+<ul>
+<li>Casting from <code>FILETIME*</code> to     <code>__int64*</code>. 
+<li>Casting from     <code>__int64*</code> to     <code>FILETIME*</code>. </li></li></ul>
+<p>The <code>FILETIME</code> structure requires 4-byte alignment, and the <code>__int64</code> data type requires 8-byte alignment. Therefore the first cast is unsafe, because you are casting from a pointer with lax alignment requirements to one with stricter requirements. The second cast is safe because you are casting from a pointer with strict alignment requirements to one with laxer requirements. </p>
+<table bgcolor="pink" border="0" style="border: solid 1px black;width: 10em;height: 10em">
+<tr>
+<td valign="top" width="50%">4-byte aligned</td>
+<td style="border: solid 1px black;background-color: lightblue" valign="top" width="50%">8-byte aligned</td>
+</tr>
+</table>
+<p>Everything in the blue box is also in the pink box, but not vice versa. </p>
+<p>Which cast is the one occurring in the above pinvoke signature? </p>
+<p>In the above signature, the <code>UInt64</code> is being allocated by the interop code, and therefore it is naturally aligned for <code>UInt64</code>, which means that it is 8-byte aligned. The <code>Get­Process­Times</code> function then treats those eight bytes as a <code>FILETIME</code>. So we are in the second case, where we cast from <code>__int64*</code> to <code>FILETIME*</code>. </p>
+<p>Mind you, you can avoid all this worrying by simply declaring your pinvoke more accurately. The correct solution is to declare the last four parameters as <code>ComTypes.FILETIME</code>. Now there are no sneaky games. Everything is exactly what it says it is. </p>
+<p><b>Bonus reading</b>: The article <a href="https://blogs.technet.com/b/heyscriptingguy/archive/2013/12/30/use-powershell-to-access-registry-last-modified-time-stamp.aspx">Use PowerShell to access registry last-modified time stamp</a> shows how to use the <code>ComTypes.FILETIME</code> technique from PowerShell. </p>
+
+
+</body>

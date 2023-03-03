@@ -1,0 +1,34 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why can’t you return an <code>IAsync­Action</code> from a coroutine that also does a <code>co_await</code>?</h1>  <!-- .entry-meta -->
+
+<p>Suppose you’re writing a coroutine, and the last thing you do is call another coroutine which has exactly the same signature as your function. You might hope to be able to pull off some sort of tail call elimination.</p>
+<pre>IAsyncAction DoSomethingAsync(int value);
+
+IAsyncAction MySomethingAsync(int value)
+{
+  auto adjusted_value = adjust_value(value);
+  return DoSomethingAsync(adjusted_value);
+}
+</pre>
+<p>If there are no <code>co_await</code> or <code>co_return</code> statements in your function, then it is not compiled as a coroutine, and you can just propagate the <code>IAsync­Action</code> as your own return value.</p>
+<p>But if you use <code>co_await</code> or <code>co_return</code>, then your function becomes a coroutine, and propagation doesn’t work:</p>
+<pre>IAsyncAction MySomethingAsync(int value)
+{
+  auto adjusted_value = co_await AdjustValueAsync(value);
+  return DoSomethingAsync(adjusted_value); // doesn't compile
+}
+</pre>
+<p>Instead, you have to <code>co_await</code> the final coroutine.</p>
+<pre>IAsyncAction DoSomethingTwiceAsync(value)
+{
+  auto adjusted_value = co_await AdjustValueAsync(value);
+  co_await DoSomethingAsync(adjusted_value);
+}
+</pre>
+<p>Why can’t you just propagate the final coroutine as the return value of your own coroutine?</p>
+<p>You can look at it in terms of the mechanics of <code>co_await</code>: The caller is going to <code>co_await Do­Something­Twice­Async()</code>, which means that they are going to obtain an awaiter for <code>IAsync­Action</code> and hook up their continuation to it. That awaiter is going to be managing the <code>IAsync­Action</code> that <code>Do­Something­Twice­Async</code> returns, which is not the same as the <code>IAsync­Action</code> that the inner <code>Do­Something­Async</code> returns.</p>
+<p>Or you can look at it in terms of time travel: The transformation of <code>Do­Something­Twice­Async</code> into a coroutine causes the function to return an <code>IAsync­Action</code> at the point of the first suspension, whcih is at the <code>co_await Adjust­Value­Async()</code> call. When the function performs the <code>co_await</code>, it returns an <code>IAsync­Action</code> that represents the remainder of the coroutine. The code that calls <code>Do­Something­Async</code> hasn’t run yet, and consequently its <code>IAsync­Action</code> does not yet exist. When the coroutine resumes, it eventually gets around to calling <code>Do­Something­Async</code> and obtains an <code>IAsync­Action</code>. But it’s far too late to return that as the return value of <code>Do­Something­Twice­Async</code>; that function returned ages ago. You can’t go back in time and say, “Oops, sorry, that’s not the <code>IAsync­Action</code> I wanted to give you. Use this one instead.”</p>
+<p> </p>
+
+
+</body>

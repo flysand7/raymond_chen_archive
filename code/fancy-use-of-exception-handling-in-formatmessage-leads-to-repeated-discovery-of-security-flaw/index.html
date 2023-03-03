@@ -1,0 +1,572 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Fancy use of exception handling in FormatMessage leads to repeated "discovery" of security flaw</h1>  <!-- .entry-meta -->
+
+<p>
+Every so often, somebody “discovers” an alleged
+security vulnerability in the <code>Format­Message</code> function.
+You can try it yourself:
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+char buf[2048];
+char extralong[128*1024];
+int __cdecl main(int argc, char **argv)
+{
+ memset(extralong, 'x', 128 * 1024 - 1);
+ DWORD_PTR args[] = { (DWORD_PTR)extralong };
+ FormatMessage(FORMAT_MESSAGE_FROM_STRING |
+               FORMAT_MESSAGE_ARGUMENT_ARRAY, "%1", 0, 0,
+               buf, 2048, (va_list*)args);
+ return 0;
+}
+</pre>
+<p>
+If you run this program under the debugger and you tell it to break
+on all exceptions,
+then you will find that it breaks on an access violation
+trying to write to an invalid address.
+</p>
+<pre>
+eax=00060078 ebx=fffe0001 ecx=0006fa34 edx=00781000 esi=0006fa08 edi=01004330
+eip=77f5b279 esp=0006f5ac ebp=0006fa1c iopl=0         nv up ei pl nz na pe cy
+cs=001b  ss=0023  ds=0023  es=0023  fs=0038  gs=0000             efl=00010203
+ntdll!fputwc+0x14:
+77f5b279 668902           mov     [edx],ax              ds:0023:00781000=????
+</pre>
+<p>
+Did you just find a buffer overflow security vulnerability?
+</p>
+<p>
+The <code>FormatMessage</code> function was part of the original
+Win32 interface,
+back in the days when you had lots of address space
+(two whole <i>gigabytes</i>) but not a lot of RAM (12 megabytes,
+or 16 if you were running Server).
+The implementation of <code>FormatMessage</code> reflects
+this historical reality by
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/10/10/55256.aspx">
+working hard to conserve RAM</a>
+but not worrying too much about conserving address space.
+And it takes advantage of this fancy new <i>structured
+exception handling</i> feature.
+</p>
+<p>
+The <code>FormatMessage</code> uses the
+<i>reserve a bunch of address space but commit pages only as they
+are necessary</i> pattern, illustrated in MSDN
+under the topic
+<a href="http://msdn.microsoft.com/library/aa366803.aspx">
+Reserving and Committing Memory</a>.
+Except that the sample code on that page contains serious errors.
+For example, if the sample code encounters an exception other than
+<code>STATUS_ACCESS_VIOLATION</code>, it still “handles”
+it by doing nothing and returning
+<code>EXCEPTION_EXECUTE_HANDLER</code>.
+It fails to handle random access to the buffer
+or access violations caused by DEP.
+Though in the very specific sample, it mostly works since the
+protected region does only one thing, so there aren’t many
+opportunities for the other types of exceptions to occur.
+(Though if you’re really unlucky, you might get an
+<code>STATUS_IN_PAGE_ERROR</code>.)
+But enough complaining about that sample.
+</p>
+<p>
+The <code>FormatMessage</code>
+function reserves
+64<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/06/11/9725386.aspx">KB</a>
+of address space, commits the first page,
+and then calls an internal helper function whose job it is
+to generate the output,
+passing the start of the 64KB block of address space as the
+starting address and telling it to give up when it reaches 64KB.
+Something like this:
+</p>
+<pre>
+struct DEMANDBUFFER
+{
+  void *Base;
+  SIZE_T Length;
+};
+int
+PageFaultExceptionFilter(DEMANDBUFFER *Buffer,
+                         EXCEPTION_RECORD ExceptionRecord)
+{
+  int Result;
+  <a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/02/09/10265660.aspx">DWORD dwLastError = GetLastError();</a>
+  // The only exception we handle is a continuable read/write
+  // access violation inside our demand-commit buffer.
+  if (ExceptionRecord-&gt;ExceptionFlags &amp; EXCEPTION_NONCONTINUABLE)
+    Result = EXCEPTION_CONTINUE_SEARCH;
+  else if (ExceptionRecord-&gt;ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+    Result = EXCEPTION_CONTINUE_SEARCH;
+  else if (ExceptionRecord-&gt;NumberParameters &lt; 2)
+    Result = EXCEPTION_CONTINUE_SEARCH;
+  else if (ExceptionRecord-&gt;ExceptionInformation[0] &amp;
+      ~(EXCEPTION_READ_FAULT | EXCEPTION_WRITE_FAULT))
+    Result = EXCEPTION_CONTINUE_SEARCH;
+  else if (ExceptionRecord-&gt;ExceptionInformation[1] -
+      (ULONG_PTR)Buffer-&gt;Base &gt;= Buffer-&gt;Length)
+    Result = EXCEPTION_CONTINUE_SEARCH;
+  else {
+    // If the memory is already committed, then committing memory won't help!
+    // (The problem is something like writing to a read-only page.)
+    void *ExceptionAddress = (void*)ExceptionInformation[1];
+    MEMORY_BASIC_INFORMATION Information;
+    if (VirtualQuery(ExceptionAddress, &amp;Information,
+                     sizeof(Information)) != sizeof(Information))
+      Result = EXCEPTION_CONTINUE_SEARCH;
+    else if (Information.State != MEM_RESERVE)
+      Result = EXCEPTION_CONTINUE_SEARCH;
+    // Okay, handle the exception by committing the page.
+    // Exercise: What happens if the faulting memory access
+    // spans two pages?
+    else if (!VirtualAlloc(ExceptionAddress, 1, MEM_COMMIT, PAGE_READWRITE))
+      Result = EXCEPTION_CONTINUE_SEARCH;
+    // We successfully committed the memory - retry the operation
+    else Result = EXCEPTION_CONTINUE_EXECUTION;
+  }
+  <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/29/10159322.aspx">RestoreLastError</a>(dwLastError);
+  return Result;
+}
+DWORD FormatMessage(...)
+{
+  DWORD Result = 0;
+  DWORD Error;
+  DEMANDBUFFER Buffer;
+  Error = InitializeDemandBuffer(&amp;Buffer, FORMATMESSAGE_MAXIMUM_OUTPUT);
+  if (Error == ERROR_SUCCESS) {
+    __try {
+     Error = FormatMessageIntoBuffer(&amp;Result,
+                                     Buffer.Base, Buffer.Length, ...);
+    } __except (PageFaultExceptionFilter(&amp;Buffer,
+                   GetExceptionInformation()-&gt;ExceptionRecord)) {
+     // never reached - we never handle the exception
+    }
+  }
+  if (Error == ERROR_SUCCESS) {
+   Error = CopyResultsOutOfBuffer(...);
+  }
+  DeleteDemandBuffer(&amp;Buffer);
+  if (Result == 0) {
+    SetLastError(Error);
+  }
+  return Result;
+}
+</pre>
+<p>
+The <code>FormatMessageIntoBuffer</code> function takes an output
+buffer and a buffer size, and it writes the result to the output buffer,
+stopping when the buffer is full.
+The <code>DEMANDBUFFER</code> structure and the
+<code>PageFaultExceptionHandler</code>
+work together to create the output buffer on demand
+as the <code>FormatMessageIntoBuffer</code> function does its work.
+</p>
+<p>
+To make discussion easier, let’s say that the
+<code>FormatMessage</code> function merely took printf-style arguments
+and supported only
+<code>FORMAT_MESSAGE_FROM_STRING | FORMAT_MESSAGE_ALLOCATE_BUFFER</code>.
+</p>
+<pre>
+DWORD FormatMessageFromStringPrintfAllocateBuffer(
+    PWSTR *ResultBuffer,
+    PCWSTR FormatString,
+    ...)
+{
+  DWORD Result = 0;
+  DWORD ResultString = NULL;
+  DWORD Error;
+  DEMANDBUFFER Buffer;
+  va_list ap;
+  va_start(ap, FormatString);
+  Error = InitializeDemandBuffer(&amp;Buffer, FORMATMESSAGE_MAXIMUM_OUTPUT);
+  if (Error == ERROR_SUCCESS) {
+    __try {
+     SIZE_T MaxChars = Buffer.Length / sizeof(WCHAR);
+     int i = _vsnwprintf((WCHAR*)Buffer.Base, MaxChars,
+                         FormatString, ap);
+     if (i &lt; 0 || i &gt;= MaxChars) Error = ERROR_MORE_DATA;
+     else Result = i;
+    } __except (PageFaultExceptionFilter(&amp;Buffer,
+                   GetExceptionInformation()-&gt;ExceptionRecord)) {
+     // never reached - we never handle the exception
+    }
+  }
+  if (Error == ERROR_SUCCESS) {
+   // Exercise: Why don't we need to worry about integer overflow?
+   DWORD BytesNeeded = sizeof(WCHAR) * (Result + 1);
+   ResultString = (PWSTR)LocalAlloc(LMEM_FIXED, BytesNeeded);
+   if (ResultBuffer) {
+    // Exercise: Why CopyMemory and not StringCchCopy?
+    CopyMemory(ResultString, Buffer.Base, BytesNeeded);
+   } else Error = ERROR_NOT_ENOUGH_MEMORY;
+  }
+  DeleteDemandBuffer(&amp;Buffer);
+  if (Result == 0) {
+    SetLastError(Error);
+  }
+  *ResultBuffer = ResultString;
+  va_end(ap);
+  return Result;
+}
+</pre>
+<p>
+Let’s run this function in our head to see what happens if
+somebody triggers the alleged buffer overflow by calling
+</p>
+<pre>
+PWSTR ResultString;
+DWORD Result = FormatMessageFromStringPrintfAllocateBuffer(
+                   &amp;ResultString, L"%s", VeryLongString);
+</pre>
+<p>
+After setting up the demand buffer, we call
+<code>_vsnwprintf</code>
+to format the output into the demand buffer,
+but telling it not to go past the buffer’s total length.
+The <code>_vsnwprintf</code> function parses the format
+string and sees that it needs to copy <code>VeryLongString</code>
+to the output buffer.
+Let’s say that the <code>DEMANDBUFFER</code> was allocated at
+address <code>0x00780000</code> on a system with 4KB pages.
+At the start of the copy, the address space looks like this:
+</p>
+<table style="border-collapse: collapse;text-align: center">
+<tr>
+<td align="center" colspan="16" style="border-top: solid .75pt black;border-left: solid .75pt black;border-right: solid .75pt black">64KB</td>
+<td></td>
+</tr>
+<tr>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>0000</code></font><br/>C</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>1000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>2000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>3000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>4000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>5000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>6000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>7000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>8000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>9000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>A000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>B000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>C000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>D000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>E000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>F000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0079<br/>0000</code></font><br/>X</td>
+</tr>
+<tr>
+<td align="left" colspan="16">^ output pointer</td>
+</tr>
+</table>
+<p>
+“C” stands for a committed page, “R” stands for a reserved page,
+and “X” stands for a page that, if accessed, would be a buffer overflow.
+We start copying <code>VeryLongString</code> into the output buffer.
+After copying 2048 characters, we fill the first committed page;
+copying character 2049 raises a page fault exception.
+</p>
+<table style="border-collapse: collapse;text-align: center">
+<tr>
+<td align="center" colspan="16" style="border-top: solid .75pt black;border-left: solid .75pt black;border-right: solid .75pt black">64KB</td>
+<td></td>
+</tr>
+<tr>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>0000</code></font><br/>C</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>1000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>2000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>3000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>4000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>5000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>6000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>7000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>8000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>9000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>A000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>B000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>C000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>D000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>E000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>F000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0079<br/>0000</code></font><br/>X</td>
+</tr>
+<tr>
+<td></td>
+<td align="left" colspan="15">^ output pointer</td>
+</tr>
+</table>
+<p>
+This is the point at which over-eager people observe the first-chance
+exception, capture the register dump above,
+and begin writing up their security vulnerability report,
+cackling with glee.
+(Observe that in the register dump,
+the address we are writing to is of the form <code>0x####1000</code>.)
+</p>
+<p>
+As with all first-chance exceptions,
+it goes down the exception chain.
+Our custom <code>PageFaultExceptionFilter</code> recognizes this
+as an access violation in a page that it is responsible for,
+and the page hasn’t yet been committed, so it commits the page as
+read/write and resumes execution.
+</p>
+<table style="border-collapse: collapse;text-align: center">
+<tr>
+<td align="center" colspan="16" style="border-top: solid .75pt black;border-left: solid .75pt black;border-right: solid .75pt black">64KB</td>
+<td></td>
+</tr>
+<tr>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>0000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>1000</code></font><br/>C</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>2000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>3000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>4000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>5000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>6000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>7000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>8000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>9000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>A000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>B000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>C000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>D000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>E000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>F000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0079<br/>0000</code></font><br/>X</td>
+</tr>
+<tr>
+<td></td>
+<td align="left" colspan="15">^ output pointer</td>
+</tr>
+</table>
+<p>
+Copying character 2049 now succeeds, as does the copying of characters
+2050 through 4096.
+When we hit character 4097, the cycle repeats:
+</p>
+<table style="border-collapse: collapse;text-align: center">
+<tr>
+<td align="center" colspan="16" style="border-top: solid .75pt black;border-left: solid .75pt black;border-right: solid .75pt black">64KB</td>
+<td></td>
+</tr>
+<tr>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>0000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>1000</code></font><br/>C</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>2000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>3000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>4000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>5000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>6000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>7000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>8000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>9000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>A000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>B000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>C000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>D000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>E000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>F000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0079<br/>0000</code></font><br/>X</td>
+</tr>
+<tr>
+<td colspan="2"></td>
+<td align="left" colspan="14">^ output pointer</td>
+</tr>
+</table>
+<p>
+Again, the first-chance exception is sent down the chain,
+our
+<code>PageFaultExceptionFilter</code>
+recognizes this as a page it is responsible for,
+and it commits the page and resumes execution.
+</p>
+<table style="border-collapse: collapse;text-align: center">
+<tr>
+<td align="center" colspan="16" style="border-top: solid .75pt black;border-left: solid .75pt black;border-right: solid .75pt black">64KB</td>
+<td></td>
+</tr>
+<tr>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>0000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>1000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>2000</code></font><br/>C</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>3000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>4000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>5000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>6000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>7000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>8000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>9000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>A000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>B000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>C000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>D000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>E000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>F000</code></font><br/>R</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0079<br/>0000</code></font><br/>X</td>
+</tr>
+<tr>
+<td colspan="2"></td>
+<td align="left" colspan="14">^ output pointer</td>
+</tr>
+</table>
+<p>
+If you think about it, this is exactly what the memory manager does
+with memory that has been allocated but not yet accessed:
+The memory is not present,
+and the moment an application tries to access it,
+the not-present page fault is raised,
+the memory manager commits the page,
+and then execution resumes normally.
+It’s memory-on-demand, which is one of the essential elements of
+virtual memory.
+What’s going on with the <code>DEMANDBUFFER</code> is that we are
+simulating in user mode what the memory manager does in kernel mode.
+(The difference is that while the memory manager takes committed
+memory and makes it present on demand,
+the <code>DEMANDBUFFER</code> takes reserved address space
+and commits it on demand.)
+</p>
+<p>
+The cycle repeats 13 more times, and then we reach another interesting
+part of the scenario:
+</p>
+<table style="border-collapse: collapse;text-align: center">
+<tr>
+<td align="center" colspan="16" style="border-top: solid .75pt black;border-left: solid .75pt black;border-right: solid .75pt black">64KB</td>
+<td></td>
+</tr>
+<tr>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>0000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>1000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>2000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>3000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>4000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>5000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>6000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>7000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>8000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>9000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>A000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>B000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>C000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>D000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>E000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>F000</code></font><br/>C</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0079<br/>0000</code></font><br/>X</td>
+</tr>
+<tr>
+<td align="right" colspan="16">output pointer ^</td>
+</tr>
+</table>
+<p>
+We are about to write 32768th character into the
+<code>DEMANDBUFFER</code>.
+Once that’s done, the buffer will be completely full.
+One more byte and we will overflow the buffer.
+(Not even a wafer-thin byte will fit.)
+</p>
+<p>
+Let’s write that last character and
+<a href="http://www.slipups.com/items/698.html">
+cover our ears in anticipation</a>.
+</p>
+<table style="border-collapse: collapse;text-align: center">
+<tr>
+<td align="center" colspan="16" style="border-top: solid .75pt black;border-left: solid .75pt black;border-right: solid .75pt black">64KB</td>
+<td></td>
+</tr>
+<tr>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>0000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>1000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>2000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>3000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>4000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>5000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>6000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>7000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>8000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>9000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>A000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>B000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>C000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>D000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>E000</code></font><br/>C</td>
+<td bgcolor="#FFFF80" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0078<br/>F000</code></font><br/>C</td>
+<td bgcolor="#808080" style="width: 5%;border: .75pt solid black"><font size="-1"><code>0079<br/>0000</code></font><br/>X</td>
+</tr>
+<tr>
+<td align="right" colspan="16">output pointer</td>
+<td align="left">^</td>
+</tr>
+</table>
+<p>
+Oh noes!
+Completely full!
+Run for cover!
+</p>
+<p>
+But wait.
+We passed a buffer size to the
+<code>_vsnwprintf</code> function, remember?
+We already told it never to write more than 32768 characters.
+As it’s about to write character 32769, it realizes,
+“Wait a second, this would overflow the buffer I was given.
+I’ll return a failure code instead.”
+</p>
+<p>
+The feared write of the 32769th character never takes place.
+We never write to the “X” page.
+Instead, the <code>_vnswprintf</code> call returns that the
+buffer was not large enough, which is converted into
+<code>ERROR_MORE_DATA</code> and returned to the caller.
+</p>
+<p>
+If you follow through the entire story, you see that everything
+worked as it was supposed to and no overflow took place.
+The <code>_vnswprintf</code> function ran up to the brink of
+disaster but stopped before taking that last step.
+This is hardly anything surprising; it happens whenever
+the <code>_vnswprintf</code> function encounters a buffer
+too small to hold the output.
+The only difference is that along the way, we saw a few
+first-chance exceptions,
+exceptions that had nothing to do with avoiding the buffer
+overflow in the first place.
+They were just part of <code>FormatMessage</code>‘s
+fancy buffer management.
+</p>
+<p>
+It so happens that in Windows Vista,
+the fancy buffer management technique was abandoned, and
+the code just allocates 64KB of memory up front and doesn’t
+try any fancy commit-on-demand games.
+Computer memory has become plentiful enough that a momentary allocation
+of 64KB has less of an impact than it did twenty years ago,
+and performance measurements showed that the new
+“Stop trying to be so clever” technique was now about 80 times
+faster than the “gotta scrimp and save every last byte of memory”
+technique.
+</p>
+<p>
+The change had more than just a performance effect.
+It also removed the first-chance exception from <code>FormatMessage</code>,
+which means that it no longer does that thing which everybody
+mistakes for a security vulnerability.
+The good news is that nobody reports this as a vulnerability
+in Windows Vista any more.
+The bad news is that people still report it as a vulnerability
+in Windows XP,
+and each
+time this issue comes up,
+somebody (possibly me) has to sit down and
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2007/12/18/6793468.aspx">
+reverify that the previous analysis is still correct</a>,
+in the specific scenario being reported,
+because who knows, maybe this time they really did find a problem.</p>
+
+
+</body>

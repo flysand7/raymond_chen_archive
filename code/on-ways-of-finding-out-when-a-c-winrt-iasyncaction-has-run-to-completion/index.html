@@ -1,0 +1,142 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On ways of finding out when a C++/WinRT IAsyncAction has run to completion</h1>  <!-- .entry-meta -->
+
+<p>A customer had a C++/WinRT coroutine that just kept on running until you told it to stop.</p>
+<pre>struct Widget : winrt::implements&lt;Widget, IWidget&gt;
+{
+private:
+    winrt::Windows::Foundation::IAsyncAction m_work;
+
+    IAsyncAction DoStuffUntilCancelled()
+    {
+        co_await winrt::resume_background();
+
+        auto cancellation = co_await winrt::get_cancellation_token();
+        cancellation.enable_propagation();
+
+        // Run this loop until cancelled.
+        while (!cancellation()) {
+            one();
+            co_await two();
+            co_await three();
+
+            // pause a little bit before going again
+            co_await 1s;
+        }
+    }
+
+public:
+    void Start()
+    {
+        m_work = DoStuffUntilCancelled();
+    }
+
+    void Stop()
+    {
+        m_work.Cancel();
+        ... wait until DoStuffUntilCancelled
+            has definitely stopped ...
+    }
+};
+</pre>
+<p>The idea is that you can <code>Start()</code> the Widget to make it begin doing something in the background, and you can <code>Stop()</code> it to make that thing stop.</p>
+<p>Let’s assume rules that say you can <code>Start()</code> a Widget at most once, and you cannot <code>Stop()</code> without a preceding <code>Stop()</code>. Because that’s not really the point of the exercise.</p>
+<p>The point of the exercise is to figure out how to implement the “wait until <code>Do­Stuff­Until­Cancelled</code> has definitely stopped” part.</p>
+<p>In the C++/WinRT implementation of <code>IAsyncAction</code>, when the coroutine is cancelled, polling for cancellation will begin returning <code>true</code>, and any <code>co_await</code> operation will raise a cancellation exception. Furthermore, since we enabled cancellation propagation, if the coroutine is cancelled while it is suspended in a <code>co_await</code>, the cancellation will be propagated to the thing being <code>co_await</code>ed.</p>
+<p>The choice of expressing the background activity in the form of an <code>IAsyncAction</code> limits your ways of communicating with the coroutine. The only thing you can do to alter the behavior of a running <code>IAsyncAction</code> is to <code>Cancel()</code> it, which triggers the cancellation flow summarized above.</p>
+<p>So we’ll just have to deal with the cancellation.¹</p>
+<p>One thing we could do is give the coroutine an event handle to signal, and have the coroutine set the event either when it chooses to exit on its own, or when it <a href="/code/c-winrt-doesn-t-let-your-coroutine-cheat-death-but-it-does-get-to-say-good-bye" title="C++/WinRT doesn't let your coroutine cheat death, but it does get to say good-bye"> observes the cancellation from within the coroutine</a>:</p>
+<pre>    IAsyncAction DoStuffUntilCancelled(HANDLE event)
+    {
+      <span style="color: blue;">try {</span>
+        co_await winrt::resume_background();
+
+        auto cancellation = co_await winrt::get_cancellation_token();
+        cancellation.enable_propagation();
+
+        // Run this loop until cancelled.
+        while (!cancellation()) {
+            one();
+            co_await two();
+            co_await three();
+
+            // pause a little bit before going again
+            co_await 1s;
+        }
+        <span style="color: blue;">SetEvent(event);
+      } catch (hresult_canceled const&amp;) {
+        SetEvent(event);
+        throw;
+      }</span>
+    }
+</pre>
+<p>Of course, this is more easily expressed as an RAII type.</p>
+<pre>    IAsyncAction DoStuffUntilCancelled(HANDLE event)
+    {
+        <span style="color: blue;">auto setOnExit = wil::SetEvent_scope_exit(event);</span>
+
+        co_await winrt::resume_background();
+
+        auto cancellation = co_await winrt::get_cancellation_token();
+        cancellation.enable_propagation();
+
+        // Run this loop until cancelled.
+        while (!cancellation()) {
+            one();
+            co_await two();
+            co_await three();
+
+            // pause a little bit before going again
+            co_await 1s;
+        }
+    }
+</pre>
+<p>This alternative version has the advantage of also working if the coroutine is destroyed before running to completion. (C++/WinRT coroutines don’t behave like this, but coroutines from some other library might.)</p>
+<p>Another pattern you often run into is wanting to stop the background coroutine when the Widget destructs. For that, you can take advantage of <a href="/code/c-winrt-implementation-extension-points-abi-guard-abi-enter-abi-exit-and-final-release" title="C++/WinRT implementation extension points: abi_guard, abi_enter, abi_exit, and final_release"> the <code>final_<wbr/>release</code> extension point</a>, which allows you to run extra code prior to destruction, possibly even itself a coroutine.</p>
+<pre>struct Widget : winrt::implements&lt;Widget, IWidget&gt;
+{
+private:
+    <span style="color: blue;"><a href="/code/creating-other-types-of-synchronization-objects-that-can-be-used-with-co-await-part-4-the-manual-reset-event">awaitable_manual_reset_event</a> m_done;</span>
+    winrt::Windows::Foundation::IAsyncAction m_work;
+
+    IAsyncAction DoStuffUntilCancelled(<span style="color: blue;">awaitable_manual_reset_event done</span>)
+    {
+        <span style="color: blue;">auto setOnExit = wil::scope_exit([&amp;] { done.set(); });</span>
+
+        co_await winrt::resume_background();
+
+        auto cancellation = co_await winrt::get_cancellation_token();
+        cancellation.enable_propagation();
+
+        // Run this loop until cancelled.
+        while (!cancellation()) {
+            one();
+            co_await two();
+            co_await three();
+
+            // pause a little bit before going again
+            co_await 1s;
+        }
+    }
+
+public:
+    void Start()
+    {
+        m_work = DoStuffUntilCancelled();
+    }
+
+    <span style="color: blue;">static winrt::fire_and_forget final_release(std::unique_ptr&lt;Widget&gt; widget)
+    {
+        if (widget-&gt;m_work) {
+            widget-&gt;m_work.Cancel();
+
+            // make sure coroutine has exited before we destruct
+            co_await widget-&gt;m_done;
+        }
+    }</span>
+};
+</pre>
+<p>¹ Another way out is to change the game. Instead of returning an <code>IAsyncAction</code>, return an Operation object, with methods to request a stop, and to wait for the stop to complete.</p>
+
+
+</body>

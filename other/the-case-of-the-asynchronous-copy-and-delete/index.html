@@ -1,0 +1,119 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the asynchronous copy and delete</h1>  <!-- .entry-meta -->
+
+<p>
+A customer reported some strange behavior in the
+<code>Copy­File</code> and <code>Delete­File</code>
+functions.
+They were able to reduce the problem to a simple test program,
+which went like this (pseudocode):
+</p>
+<pre>
+// assume "a" is a large file, say, 1MB.
+while (true)
+{
+  // Try twice to copy the file
+  if (!CopyFile("a", "b", FALSE)) {
+    Sleep(1000);
+    if (!CopyFile("a", "b", FALSE)) {
+      fatalerror
+    }
+  }
+  // Try twice to delete the file
+  if (!DeleteFile("b")) {
+    Sleep(1000);
+    if (!DeleteFile("b")) {
+      fatalerror
+    }
+  }
+}
+</pre>
+<p>
+When they ran the program, they found that sometimes the copy
+failed on the first try with error 5
+(<code>ERROR_ACCESS_DENIED</code>)
+but if they waited a second and tried again, it succeeded.
+Similarly, sometimes the delete failed on the first try,
+but succeeded on the second try if you waited a bit.
+</p>
+<p>
+What’s going on here?
+It looks like the
+<code>Copy­File</code> is returning before the file copy
+is complete, causing the
+<code>Delete­File</code>
+to fail because the copy is still in progress.
+Conversely, it looks like the
+<code>Delete­File</code> returns before the file is deleted,
+causing the
+<code>Copy­File</code> to fail because the destination exists.
+</p>
+<p>
+The operations
+<code>Copy­File</code> and
+<code>Delete­File</code> are synchronous.
+However, the NT model for file deletion is that a file is
+deleted when the last open handle is closed.¹
+If <code>Delete­File</code> returns and the file still exists,
+then it means that somebody else still has an open handle to the file.
+</p>
+<p>
+So who has the open handle?
+The file was freshly created, so there can’t be any pre-existing
+handles to the file,
+and we never open it between the copy and the delete.
+</p>
+<p>
+My psychic powers said,
+“The offending component is your anti-virus software.”
+</p>
+<p>
+I can think of two types of software that goes around snooping
+on recently-created files.
+One of them is an indexing tool,
+but those tend not to be very aggressive about accessing files
+the moment they are created.
+They tend to wait until the computer is idle to do their work.
+Anti-virus software, however, runs in real-time mode,
+where they check every file as it is created.
+And that’s more likely to be the software that snuck in and
+opened the file after the copy completes so it can perform a
+scan on it,
+and that open is the extra handle that is preventing the deletion
+from completing.
+</p>
+<p>
+But wait, aren’t anti-virus software supposed to be using
+oplocks so that they can close their handle and get out of the way
+if somebody wants to delete the file?
+</p>
+<p>
+Well, um, yes, but “what they should do” and “what they actually do”
+are often not the same.
+</p>
+<p>
+We never did hear back from the customer whether the guess was
+correct,
+which could mean one of various things:
+</p>
+<ol>
+<li>They confirmed the diagnosis and didn’t feel the need to
+    reply.
+<li>They determined that the diagnosis was incorrect but didn’t
+    bother coming back for more help,
+    because “those Windows guys don’t know what they’re talking about.”
+<li>They didn’t test the theory at all, so had nothing to report.
+</li></li></li></ol>
+<p>
+We may never know what the answer is.
+</p>
+<p>
+<b>Note</b>
+</p>
+<p>
+¹Every so often, the NT file system folks dream of changing
+the deletion model to be more Unix-like, but then they wonder if
+that would end up breaking more things than it fixes.</p>
+
+
+</body>

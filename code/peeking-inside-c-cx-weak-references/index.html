@@ -1,0 +1,45 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Peeking inside C++/CX weak references</h1>  <!-- .entry-meta -->
+
+<p>Let’s hope you never need to do this, but if you are forced to debug code written in C++/CX, and you have a C++/CX weak reference, say because you <!-- backref: Peeking inside C++/CX Windows Runtime delegates --> pulled it out of a C++/CX delegate, and you want to know what it actually refers to, well, here goes.</p>
+<pre>0:003&gt; $ 64-bit version
+0:003&gt; dps 00000203`a8773600
+00000203`a8773600  00007ffd`b63d6600 wincorlib!Platform::Details::ControlBlock::`vftable'
+00000203`a8773608  00000006`0000006d ⇐ reference counts
+00000203`a8773610  00000203`a7edb710 ⇐ target
+
+0:003&gt; $ 32-bit version
+0:003&gt; dps 18773600
+18773600  163d6600 wincorlib!Platform::Details::ControlBlock::`vftable'
+18773604  00000006 ⇐ weak reference count
+18773608  0000006d ⇐ strong reference count
+1877360c  17edb710 ⇐ target
+</pre>
+<p>You can find this structure in the header file <code>vccorlib.h</code>:</p>
+<pre>namespace Platform { namespace Details
+{
+    class ControlBlock sealed : public __abi_IWeakReference
+    {
+    private:
+        volatile long __weakRefCount;
+        volatile long __strongRefCount;
+        __abi_IUnknown* __target;
+        ...
+    }
+</pre>
+<p>In general, weak references tend to rely on a <i>control block</i> which keeps track of the number of active references. In the case of C++/CX, the control block consists of the following:</p>
+<ul>
+<li>A pointer-sized vtable for exposing the methods of <i>IWeakReference</i>.</li>
+<li>A 32-bit count of outstanding weak references.</li>
+<li>A 32-bit count of outstanding strong references.</li>
+<li>A pointer to the target of the weak reference, if still valid.</li>
+</ul>
+<p>If the target no longer exists, then the strong reference count is zero and the target pointer is null.</p>
+<p>In our case, we have a non-null target, so we can pull it out and find the target of the weak reference.</p>
+<pre>0:003&gt; dps 00000203`a7edb710 l1
+00000203`a7edb710  00007ffd`aee74450 contoso!Contoso::Widget::`vftable'
+</pre>
+<p>In this case, it’s a <code>Contoso::</code><code>Widget</code>.</p>
+
+
+</body>

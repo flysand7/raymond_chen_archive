@@ -1,0 +1,79 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Hidden gotcha in the thread pool sample program on MSDN</h1>  <!-- .entry-meta -->
+
+<p>There’s a hidden gotcha in <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/ms686980(v=vs.85).aspx">the MSDN thread pool sample</a> that one of our interns stumbled across. </p>
+<p>“I am trying to create a simple thread pool rather than creating a new thread for each task I want to perform. I based this program on <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/ms686980(v=vs.85).aspx">the MSDN thread pool sample</a>, but I found that the work items never run in parallel. They always run sequentially. All calls succeed. Can anybody explain why this is happening? Thanks.” </p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;iostream&gt;
+#include &lt;cstdlib&gt;
+
+VOID
+CALLBACK
+Callback(
+    PTP_CALLBACK_INSTANCE Instance,
+    PVOID                 /* Parameter */,
+    PTP_WORK              /* Work */
+    )
+{
+    std::cout &lt;&lt; "Starting " &lt;&lt; Instance &lt;&lt; std::endl;
+    Sleep(3000); // Pretend to do work
+    std::cout &lt;&lt; "Ending " &lt;&lt; Instance &lt;&lt; std::endl;
+}
+
+int
+__cdecl
+main(int, char**)
+{
+    TP_CALLBACK_ENVIRON CallBackEnviron;
+
+    InitializeThreadpoolEnvironment(&amp;CallBackEnviron);
+
+    auto pool = CreateThreadpool(NULL);
+
+    SetThreadpoolThreadMaximum(pool, 1);
+
+    SetThreadpoolThreadMinimum(pool, 1);
+
+    auto cleanupGroup = CreateThreadpoolCleanupGroup();
+
+    SetThreadpoolCallbackPool(&amp;CallBackEnviron, pool);
+
+
+    SetThreadpoolCallbackCleanupGroup(&amp;CallBackEnviron,
+                                      cleanupGroup,
+                                      NULL);
+
+
+    auto work = CreateThreadpoolWork(Callback,
+                                NULL, 
+                                &amp;CallBackEnviron);
+
+    for (int i = 0; i&lt; 100; i++) {
+        SubmitThreadpoolWork(work);
+    }
+
+    CloseThreadpoolCleanupGroupMembers(cleanupGroup,
+                                       FALSE,
+                                       NULL);
+
+
+    CloseThreadpoolCleanupGroup(cleanupgroup);
+
+    CloseThreadpool(pool);
+
+    return 0;
+}
+</pre>
+<p>The tasks all run sequentially because of these two lines: </p>
+<pre>
+    SetThreadpoolThreadMaximum(pool, 1);
+    SetThreadpoolThreadMinimum(pool, 1);
+</pre>
+<p>If you set the minimum and maximum thread counts both to one, then that means that the thread pool consists of a single permanent thread. This really isn’t much of a thread pool any more, although I guess it gives you the convenience of being able to add work to it relatively easily. </p>
+<p>This hidden gotcha was called out in the sample where it says “The pool consists of one persistent thread.” Mind you, it says so in a rather unobtrusive place, so I don’t blame you for missing it. </p>
+<p>If you want to allow tasks to run in parallel, remove the call to <code>Set­Thread­pool­Thread­Maximum</code>, or at least set the maximum to more than one. While you’re at it, remove the call to <code>Set­Thread­pool­Thread­Minimum</code>, since there is nothing in this sample that requires that the threads be persistent. (If there is no work queued on the thread pool, we should let the thread pool destroy all its threads.) </p>
+<p>And while I understand that this was just an intern playing around with a sample program, it should be called out that in general, you don’t need to create your own thread pool. <!-- backref: What's the point of using a custom timer queue if there is a default one already? -->Just use the system one, and <!-- backref: Using thread pool cleanup groups to clean up many things at once -->use a cleanup group if you want to be able to do bulk cancellation. </p>
+
+
+</body>

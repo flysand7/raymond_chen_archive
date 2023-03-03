@@ -1,0 +1,45 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Don’t pass lambdas (or other multi-line entities) as parameters to macros</h1>  <!-- .entry-meta -->
+
+<p>Consider this macro: </p>
+<pre>
+#ifdef DEBUG
+#define LOG(value) LogValue(value)
+#else
+// In production, evaluate but don't log.
+#define LOG(value) (value)
+#endif
+</pre>
+<p>This seems not entirely unreasonable, but bad things happen if you pass a multi-line entity as the macro parameter. </p>
+<pre>
+// Suppose this is line 12
+LOG(zap_if([&amp;](auto&amp;&amp; item)
+{
+ ... decide whether to zap this item ...
+});
+</pre>
+<p>You will never to be able to debug this lambda, because the preprocessor slurps up the entire macro parameter list, and then spits the text back out when the macro is expanded. </p>
+<p>But when it spits the text out, <i>it spits it all into one giant line of code</i>. The result is as if you had written </p>
+<pre>
+LogValue(zap_if([&amp;](auto&amp;&amp; item) { ... decide whether to zap this item ... });
+</pre>
+<p>Therefore, all compiler errors in the <code>... decide whether to zap this item ...</code> are reported on line 12. Your IDE will just send you to that line and tell you, “Good luck!” </p>
+<p>But wait, the pain doesn’t stop there. </p>
+<p>Even it you manage to fix the compiler errors in the code, you won’t be able to debug it. You’ll put the cursor inside the lambda on line 14 and tell the debugger, “Set a breakpoint here,” and the debugger will say, “There is no code here for me to set a breakpoint on.” Because there really is no code there. All the code you wrote on line 14 got mashed into the huge line of regurgitated text back on line 12. </p>
+<p>To make your life sane, don’t pass lambdas or other multi-line entities as macro parameters. Break the lambda out into a place where it won’t be part of a macro. </p>
+<pre>
+auto result = zap_if([&amp;](auto&amp;&amp; item)
+{
+ ... decide whether to zap this item ...
+});
+
+LOG(result);
+</pre>
+<p><b>Bonus chatter</b>: The <a href="https://github.com/isocpp/CppCoreGuidelines/blob/master/CppCoreGuidelines.md">C++ Core Guidelines</a> recommends </p>
+<blockquote class="q">
+<p>Scream when you see a macro that isn’t just used for source control (e.g., <code>#ifdef</code>) </p>
+</blockquote>
+<p>On the other hand, you may be forced into using macros that you didn’t write, such as the <code>SUCCEEDED</code> macro provided by COM. </p>
+
+
+</body>

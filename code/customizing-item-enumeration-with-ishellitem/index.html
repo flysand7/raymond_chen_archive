@@ -1,0 +1,71 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Customizing item enumeration with IShellItem</h1>  <!-- .entry-meta -->
+
+<p>If you are using the original <code>IShell­Folder</code> interface, then <a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/03/17/10508309.aspx">you can use <code>SHCONTF</code> values to customize how child items are enumerated</a>. But what if you’re using <code>IShell­Item</code>? </p>
+<p>Let’s take it one step at a time. First, the basic program. (Remember, Little Programs do little to no error checking.) </p>
+<pre>
+#define UNICODE
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/02/12/71851.aspx">_UNICODE</a>
+#define STRICT
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/24/10387757.aspx">STRICT_TYPED_ITEMIDS</a>
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;atlalloc.h&gt;
+#include &lt;propsys.h&gt;
+#include &lt;stdio.h&gt;
+
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+
+ if (argc &lt; 2) return 0;
+ CComPtr&lt;IShellItem&gt; spsiFolder;
+ SHCreateItemFromParsingName(argv[1], nullptr,
+                             IID_PPV_ARGS(&amp;spsiFolder));
+
+ CComPtr&lt;IEnumShellItems&gt; spesi;
+ spsiFolder-&gt;BindToHandler(nullptr, BHID_EnumItems,
+                              IID_PPV_ARGS(&amp;spesi));
+
+ for (CComPtr&lt;IShellItem&gt; spsi;
+      spesi-&gt;Next(1, &amp;spsi, nullptr) == S_OK;
+      spsi.Release()) {
+  <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/08/30/10202076.aspx">PrintDisplayName</a>(spsi, SIGDN_NORMALDISPLAY, L"Display Name");
+  PrintDisplayName(spsi, SIGDN_FILESYSPATH, L"File system path");
+  wprintf(L"\n");
+ }
+ return 0;
+}
+</pre>
+<p>Run this program with the fully-qualified path to a directory as the command line argument, and it enumerates all the items in the folder. This uses the default enumeration, which is “include both folders and non-folders, and include hidden items, but not super-hidden items.” </p>
+<p>But what if we want to customize the enumeration? </p>
+<p>We saw that the <code>IBindCtx</code> parameter <a href="http://blogs.msdn.com/b/oldnewthing/archive/2015/01/22/10587918.aspx">acts as a catch-all <i>options</i> parameter</a>. In this case, we need to look at the options available for <code>BHID_Enum­Items</code> and see if any of them help us. </p>
+<p>Fortunately, we have <code>STR_ENUM_ITEMS_FLAGS</code> which lets us override the default enumeration mode. Let’s say that we want only folders, and we want to respect the user’s preferences for hidden items (which means that we omit <code>SHCONTF_HIDDEN</code>). </p>
+<p>I’m goint to do this two ways. First the flat version: </p>
+<p><pre>
+ ...
+ <font color="blue">CComPtr&lt;IBindCtx&gt; spbcEnum;
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2015/01/23/10588226.aspx">CreateDwordBindCtx</a>(STR_ENUM_ITEMS_FLAGS, SHCONTF_FOLDERS,
+                    &amp;spbcEnum);</font>
+
+ CComPtr&lt;IEnumShellItems&gt; spesi;
+ spsiFolder-&gt;BindToHandler(<font color="blue">spbcEnum</font>, BHID_EnumItems,
+                              IID_PPV_ARGS(&amp;spesi));
+</pre>
+<p>Now the fluent version: </p>
+<pre>
+ ...
+ <font color="blue"><a href="http://blogs.msdn.com/b/oldnewthing/archive/2015/01/23/10588226.aspx">CBindCtxBuilder</a> builder;
+ builder.SetVariantDword(STR_ENUM_ITEMS_FLAGS, SHCONTF_FOLDERS);</font>
+
+ CComPtr&lt;IEnumShellItems&gt; spesi;
+ spsiFolder-&gt;BindToHandler(<font color="blue">builder.GetBindCtx()</font>, BHID_EnumItems,
+                              IID_PPV_ARGS(&amp;spesi));
+</pre>
+<p>(Don’t forget that error checking has been elided for expository purposes.) </p>
+<p>The <code>STR_ENUM_ITEMS_FLAGS</code> bind context string was added in Windows 8, so it has no effect on older versions of Windows. We’ll address this next week. </p>
+<p>Note that the <code>IEnum­Shell­Items</code> interface is incorrectly-named. The convention for enumeration interfaces is to name them <code>IEnum­XXX</code>, where XXX is <i>singular</i>. </p>
+
+
+</p></body>

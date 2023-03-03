@@ -1,0 +1,116 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutine gotcha: Falling off the end of a function-level catch</h1>  <!-- .entry-meta -->
+
+<p>Allowing execution to flow off the end of a coroutine is equivalent to performing a <code>co_return</code> with no operand, assuming the coroutine completes with no value. Otherwise, the behavior is undefined.</p>
+<p>This is the same rule as with regular functions, just with the letters “co” in front.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>
+<pre>void f1()
+{
+    DoSomething();
+    // implicit "return"
+}
+</pre>
+</td>
+<td>
+<pre>simple_task&lt;void&gt; f1co()
+{
+    co_await DoSomething();
+    // implicit "co_return"
+}
+</pre>
+</td>
+</tr>
+<tr>
+<td>
+<pre>int f2()
+{
+    DoSomething();
+    // illegal fall-of-the-end
+}
+</pre>
+</td>
+<td>
+<pre>simple_task&lt;int&gt; f2co()
+{
+    co_await DoSomething();
+    // illegal fall-of-the-end
+}
+</pre>
+</td>
+</tr>
+</tbody>
+</table>
+<p>Unfortunately, many compilers (as of this writing) aren’t consistent in diagnosing this type of programming error.</p>
+<pre>simple_task&lt;int&gt; f2co()
+{
+    co_await DoSomething();
+    // illegal fall-of-the-end
+}
+</pre>
+<pre style="white-space: pre-wrap;">// gcc 11.3 -std=c++20 -Wall
+(no errors or warnings)
+
+// clang 14.0.0 -std=c++20 -Wall
+warning: non-void coroutine does not return a value
+
+// msvc 19.31 -std:c++20 -W4
+warning C4033: 'f2co' must return a value
+note: Flowing off the end of a coroutine results in undefined behavior when promise type 'std::<wbr/>coroutine_traits::<wbr/>promise_type' does not declare 'return_void'
+</pre>
+<p>In this case, clang and msvc notice that you forgot to return a value, but gcc doesn’t notice.</p>
+<p>If we tweak the function slightly, we get different results:</p>
+<pre>simple_task&lt;int&gt; f3co()
+{
+    if (Maybe()) co_return 1;
+    // illegal fall-of-the-end
+}
+</pre>
+<pre style="white-space: pre-wrap;">// gcc 11.3 -std=c++20 -Wall
+(no errors or warnings)
+
+// clang 14.0.0 -std=c++20 -Wall
+warning: non-void coroutine does not return a value in all control paths
+
+// msvc 19.31 -std:c++20 -W4
+(no errors or warnings)
+</pre>
+<p>Adding a <code>co_return</code> on one branch of an <code>if</code> statement is enough to fool msvc; it doesn’t notice that there’s still a code path that fails to <code>co_return</code> something.</p>
+<p>And then there’s this wrinkle:</p>
+<pre>simple_task&lt;int&gt; f4co() try
+{
+    co_return 1;
+}
+catch (...)
+{
+    // illegal fall-of-the-end
+}
+</pre>
+<pre style="white-space: pre-wrap;">// gcc 11.3 -std=c++20 -Wall
+(no errors or warnings)
+
+// clang 14.0.0 -std=c++20 -Wall
+warning: non-void coroutine does not return a value in all control paths
+
+// msvc 19.31 -std:c++20 -W4
+(no errors or warnings)
+</pre>
+<p>The <code>catch</code> block fails to <code>co_return</code> anything, which makes it an illegal fall-off-the-end, but gcc and msvc fail to detect it.</p>
+<p>This particular failure is easy to miss if you use the WIL exception handling macros like <code>CATCH_LOG</code>:</p>
+<pre>simple_task&lt;int&gt; f4co() try
+{
+    co_return 1;
+}
+CATCH_LOG(); // invisible fall-off-the-end
+</pre>
+<p>The <code>CATCH_LOG</code> macro catches all exceptions, logs them through the WIL infrastructure, and then falls off the end of the function. It is intended to be used only in cases where falling off the end is allowed (namely, function returning <code>void</code> or coroutine completing with <code>void</code>). If you use it in a coroutine that has a completion value, then you will just fall off the end, and if you’re unlucky, the error will go undiagnosed, and you’re off in undefined territory.</p>
+<p><b>Bonus chatter</b>: But really, what happens when you fall off the end of the coroutine without <code>co_return</code>ing a value? As I noted, it’s technically undefined behavior, but in practice what happens is that the promise’s <code>return_value</code> method is never called before reaching <code>final_suspend</code>. What happens next depends on how the promise is implemented.</p>
+<p>In our <code>simple_task</code>, it means that the promise state remains <code>empty</code>, and then when you try to <code>co_await</code> the <code>simple_task</code>, <a href="/code/c-coroutines-getting-rid-of-our-atomic-variant-discriminator"> the <code>get_value</code> method hits an assertion failure and then forcibly <code>std::terminate</code>s the program</a>.</p>
+<p>For PPL tasks, the promise implementation just returns a default-constructed result; For hat-types, that means a null pointer. For C++/WinRT asynchronous operations, the promise implementation returns an empty result: For value types, you get a default-constructed value type; for reference types, you get a null pointer.</p>
+<p>This can lead to a good amount of head-scratching when you <code>co_await</code> the task or asynchronous operation and get an empty result / null pointer even though you go back to the code and see that at no point does it ever <code>co_return nullptr;</code>.</p>
+<p>From what you can tell, the compiler appears to have lost its mind, but really, you’re the one who went crazy. You just didn’t realize it.</p>
+
+
+</body>

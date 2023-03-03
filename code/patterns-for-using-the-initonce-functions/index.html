@@ -1,0 +1,254 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Patterns for using the InitOnce functions</h1>  <!-- .entry-meta -->
+
+<p>
+Since writing lock-free code is is
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/07/10150728.aspx#10151021">
+such a headache-inducer</a>,
+you’re probably best off making some other people suffer the headaches
+for you.
+And those other people are the kernel folks, who have developed
+quite a few lock-free building blocks so you don’t have to.
+For example, there’s a collection of functions for manipulating
+<a href="http://msdn.microsoft.com/en-us/library/ms684121(VS.85).aspx">
+interlocked lists</a>.
+But today we’re going to look at the
+<a href="http://msdn.microsoft.com/en-us/library/aa363808">
+one-time initialization</a> functions.
+</p>
+<p>
+The simplest version of the one-time initialization functions
+isn’t actually lock-free,
+but it does implement the double-checked-lock pattern for you
+so you don’t have to worry about the details.
+The usage pattern for the
+<a href="http://msdn.microsoft.com/en-us/library/ms683493(v=VS.85).aspx">
+<code>Init­Once­Execute­Once</code> function</a>
+is pretty simple.
+Here it is in its simplest form:
+</p>
+<pre>
+int SomeGlobalInteger;
+BOOL CALLBACK ThisRunsAtMostOnce(
+    PINIT_ONCE initOnce,
+    PVOID Parameter,
+    PVOID *Context)
+{
+    calculate_an_integer(&amp;SomeGlobalInteger);
+    return TRUE;
+}
+void InitializeThatGlobalInteger()
+{
+    static INIT_ONCE initOnce = INIT_ONCE_STATIC_INIT;
+    InitOnceExecuteOnce(&amp;initOnce,
+                        ThisRunsAtMostOnce,
+                        nullptr, nullptr);
+}
+</pre>
+<p>
+In the simplest form, you give
+<code>Init­Once­Execute­Once</code> an
+<code>INIT_ONCE</code> structure (where it records
+its state),
+and a callback.
+If this is the first time that
+<code>Init­Once­Execute­Once</code> is called
+for a particular
+<code>INIT_ONCE</code> structure,
+it calls the callback.
+The callback can do whatever it likes,
+but presumably it’s doing some one-time initialization.
+If another thread calls
+<code>Init­Once­Execute­Once</code> on the same
+<code>INIT_ONCE</code> structure,
+that other thread will wait until the first thread is finished
+its one-time execution.
+</p>
+<p>
+We can make this a tiny bit fancier by supposing that
+the calculation of the integer can fail.
+</p>
+<pre>
+BOOL CALLBACK ThisSucceedsAtMostOnce(
+    PINIT_ONCE initOnce,
+    PVOID Parameter,
+    PVOID *Context)
+{
+    return SUCCEEDED(calculate_an_integer(&amp;SomeGlobalInteger));
+}
+BOOL TryToInitializeThatGlobalInteger()
+{
+    static INIT_ONCE initOnce = INIT_ONCE_STATIC_INIT;
+    return InitOnceExecuteOnce(&amp;initOnce,
+                               ThisSucceedsAtMostOnce,
+                               nullptr, nullptr);
+}
+</pre>
+<p>
+If your initialization function returns <code>FALSE</code>,
+then the initialization is considered to have failed,
+and the next time somebody calls
+<code>Init­Once­Execute­Once</code>,
+it will try to initialize again.
+</p>
+<p>
+A slightly fancier use of the
+<code>Init­Once­Execute­Once</code> function
+takes advantage of the <code>Context</code> parameter.
+The kernel folks noticed that an
+<code>INIT_ONCE</code> structure in the “initialized”
+state has a lot of unused bits,
+and they’ve offered to let you use them.
+This is convenient if the thing you’re initializing is a pointer
+to a C++ object, because it means that there’s only one thing
+you need to worry about instead of two.
+</p>
+<pre>
+BOOL CALLBACK AllocateAndInitializeTheThing(
+    PINIT_ONCE initOnce,
+    PVOID Parameter,
+    PVOID *Context)
+{
+    *Context = new(nothrow) Thing();
+    return *Context != nullptr;
+}
+Thing *GetSingletonThing(int arg1, int arg2)
+{
+    static INIT_ONCE initOnce = INIT_ONCE_STATIC_INIT;
+    void *Result;
+    if (InitOnceExecuteOnce(&amp;initOnce,
+                            AllocateAndInitializeTheThing,
+                            nullptr, &amp;Result))
+    {
+        return static_cast&lt;Thing*&gt;(Result);
+    }
+    return nullptr;
+}
+</pre>
+<p>
+The final parameter to
+<code>Init­Once­Execute­Once</code> function
+receives the magic almost-pointer-sized data that the function
+will remember for you.
+Your callback function passes this magic value back through
+the <code>Context</code> parameter,
+and then
+<code>Init­Once­Execute­Once</code> gives it
+back to you as the <code>Result</code>.
+</p>
+<p>
+As before, if two threads call
+<code>Init­Once­Execute­Once</code> simultaneously
+on an uninitialized <code>INIT_ONCE</code> structure,
+one of them will call the initialization function and the other will wait.
+</p>
+<p>
+Up until now, we’ve been looking at the synchronous initialization
+patterns.
+They aren’t lock-free:
+If you call <code>Init­Once­Execute­Once</code>
+and initialization of the the <code>INIT_ONCE</code> structure is
+already in progress, your call will wait until that initialization
+attempt completes (either successfully or unsuccessfully).
+</p>
+<p>
+More interesting is the asynchronous pattern.
+Here it is, as applied to our <code>Singleton­Manager</code> exercise:
+</p>
+<pre>
+ SingletonManager(const SINGLETONINFO *rgsi, UINT csi)
+               : m_rgsi(rgsi), m_csi(csi),
+                 m_rgio(new INITONCE[csi]) {
+   for (UINT iio = 0; iio &lt; csi; iio++) {
+    InitOnceInitialize(&amp;m_rgio[iio]);
+   }
+ }
+ ...
+ // Array that describes objects we've created
+ // runs parallel to m_rgsi
+ INIT_ONCE *m_rgio;
+};
+ITEMCONTROLLER *SingletonManager::Lookup(DWORD dwId)
+{
+ ... same as before until we reach the "singleton constructor pattern"
+ void *pv = NULL;
+ BOOL fPending;
+ if (!InitOnceBeginInitialize(&amp;m_rgio[i], INIT_ONCE_ASYNC,
+                              &amp;fPending, &amp;pv)) return NULL;
+ if (fPending) {
+  ITEMCONTROLLER *pic = m_rgsi[i].pfnCreateController();
+  if (pic &amp;&amp; InitOnceComplete(&amp;m_rgio[i],
+                              INIT_ONCE_ASYNC, pic)) {
+   pv = pic;
+  } else {
+   // lost the race - discard ours and retrieve the winner
+   delete pic;
+   InitOnceBeginInitialize(&amp;m_rgio[i], INIT_ONCE_CHECK_ONLY,
+                           &amp;fPending, &amp;pv);
+  }
+ }
+ return static_cast&lt;ITEMCONTROLLER *&gt;(pv);
+}
+</pre>
+<p>
+The pattern for asynchronous initialization is as follows:
+</p>
+<ul>
+<li>Call <code>Init­Once­Begin­Initialize</code>
+    in async mode.
+<li>If it returns <code>fPending == FALSE</code>,
+    then initialization has already been performed and you can
+    go ahead and use the result passed back in the final parameter.
+<li>Otherwise, initialization is pending.
+    Do your initialization, but remember that since this is a lock-free
+    algorithm, there can be many threads trying to initialize
+    simultaneously, so you have to be careful
+    <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/07/10150728.aspx">
+    how you manipulate global state</a>.
+    This pattern works best if initialization takes the form of
+    creating a new object (because that means multiple threads
+    performining initialization are each creating independent objects).
+<li>If you successfully created the object,
+    call <code>Init­Once­Complete</code> with the result
+    of your initialization.
+<li>If <code>Init­Once­Complete</code> succeeds,
+    then you won the initialization race, and you’re done.
+<li>If <code>Init­Once­Complete</code> fails,
+    then you lost the initialization race and should clean up your
+    failed initialization.
+    In that case, you should call
+    <code>Init­Once­Begin­Initialize</code>
+    one last time to get the answer from the winner.
+</li></li></li></li></li></li></ul>
+<p>
+it’s conceptually simple; it just takes a while to explain.
+but at least now it’s in recipe form.
+</p>
+<p>
+<b>Exercise</b>: Instead of calling
+<code>Init­Once­Complete</code> with
+<code>INIT_ONCE_INIT_FAILED</code>,
+what happens if the function simply returns
+without ever completing the init-once?
+</p>
+<p>
+<b>Exercise</b>:
+What happens if two threads try to perform
+asynchronous initialization and the first one
+to complete fails?
+</p>
+<p>
+<b>Exercise</b>:
+Combine the results of the first two exercises
+and draw a conclusion.
+</p>
+<p>
+<b>Update</b>:
+I got it wrong in the case of a failed asynchronous
+initialization.
+You’re just supposed to abandon the initialization
+rather than report failure.
+The code and discussion have been updated.</p>
+
+
+</body>

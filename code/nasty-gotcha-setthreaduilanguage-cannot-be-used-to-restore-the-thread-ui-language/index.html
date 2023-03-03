@@ -1,0 +1,32 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Nasty gotcha: SetThreadUILanguage cannot be used to restore the thread UI language</h1>  <!-- .entry-meta -->
+
+<p>Suppose you want to change the thread UI language temporarily. You might be tempted to do this: </p>
+<pre>
+<i>// Code in italics is wrong
+void Something()
+{
+  // Save the original language.
+  LANGID originalLanguage = GetThreadUILanguage();
+
+  // Set a new language temporarily.
+  SetThreadUILanguage(newLanguage);
+
+  // ... do stuff that uses the new language ...
+
+  // Restore the original language.
+  SetThreadUILanguage(originalLanguage);
+}</i>
+</pre>
+<p>This seems to work, but in fact it doesn’t. </p>
+<p>The <code>Get­Thread­UI­Language</code> function returns the first user interface language for the current thread. If a preferred language has been set for the thread, it will use that. Otherwise, it will follow a documented fallback algorithm.¹ </p>
+<p>On the other hand, <code>Set­Thread­UI­Language</code> sets the UI language for the current thread. It never sets the thread language back to “not set”. </p>
+<p>In the above code fragment, the result is that the thread UI language is locked to whatever the effective thread UI language was at the time the function was called, even if the fallback languages change. </p>
+<p>For example, suppose the user’s preferred language is English, the process’s preferred language is German, and the thread has no preferred language. The call to <code>Get­Thread­UI­Language</code> will return German, and when the function tries to restore the original language, it sets the thread’s preferred language to German. This is not the same as clearing the thread’s preferred language, however. If the process changes its preferred language to Swedish, and the thread has no preferred language, then the effective language should change to Swedish. But the code fragment above explicitly sets the thread language to German, so the effective language will be German. </p>
+<p>The way to restore the thread preferred UI language state is to capture the thread preferred UI languages with the <code>Get­Thread­Preferred­UI­Languages</code> function and restore them with the <code>Set­Thread­Preferred­UI­Languages</code> function. For more information, <a href="https://blogs.msdn.microsoft.com/oldnewthing/20101223-00/?p=11933">see my earlier discussion</a>. </p>
+<p>¹ The documentation for <a href="https://msdn.microsoft.com/library/windows/desktop/dd318129(v=vs.85).aspx"><code>Get­Thread­UI­Language</code></a> says </p>
+<blockquote class="q"><p>Calling this function is identical to calling <b>Get­Thread­Preferred­UI­Languages</b> with <i>dwFlags</i> set to <code>MUI_</code><code>MERGE_</code><code>SYSTEM_</code><code>FALLBACK | MUI_</code><code>MERGE_</code><code>USER_</code><code>FALLBACK | MUI_</code><code>LANGUAGE_</code><code>ID</code> and using the first language in the retrieved list. </p></blockquote>
+<p>You can then follow the bouncing ball to <a href="https://msdn.microsoft.com/library/windows/desktop/dd318128(v=vs.85).aspx">the documentation for <code>Get­Thread­Preferred­UI­Languages</code></a> and read the description of what happens when you ask for both system and user fallbacks. </p>
+
+
+</body>

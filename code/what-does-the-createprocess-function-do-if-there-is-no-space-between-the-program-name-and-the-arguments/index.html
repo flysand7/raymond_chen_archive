@@ -1,0 +1,103 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What does the CreateProcess function do if there is no space between the program name and the arguments?</h1>  <!-- .entry-meta -->
+
+<p>
+In an old discussion of
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/06/01/9673254.aspx">
+why the <code>Create­Process</code> function modifies its command line</a>,
+commenter Random832 asked,
+“<a href="http://blogs.msdn.com/oldnewthing/archive/2009/06/01/9673254.aspx#9701807">What if there is no space between the program name and arguments
+– like “cmd/?” – where does it put the null then?</a>”
+</p>
+<p>
+The <code>Create­Process</code> function requires a space between the
+program name and arguments.
+If you leave out the space, then the arguments are considered as part
+of the program name
+(and you’ll almost certainly get
+<code>ERROR_FILE_NOT_FOUND</code> back).
+</p>
+<p>
+It sounds like Random832 has confused <code>Create­Process</code> command
+line parsing with <code>cmd.exe</code> command line parsing.
+Clearly the two parsers are different; you can see this even without
+playing with spaces between the program name and the arguments:
+</p>
+<pre>
+C:\&gt;C:\Program Files\Windows NT\Accessories\wordpad.exe
+'C:\Program' is not recognized as an internal or external command,
+operable program or batch file.
+</pre>
+<p>
+If the command line had been parsed by <code>Create­Process</code>,
+this would have succeeded in running the Wordpad program,
+because, as I noted in the original article,
+the <code>Create­Process</code> function
+modifies its command line in order to find
+where the program name ends and the command lines begin,
+an example of which can be found
+<a href="http://msdn.microsoft.com/ms682425.aspx">
+in the <code>Create­Process</code> documentation</a>.
+In this case, it would have plunked the null character into each
+of the spaces in the command line, finding that each one failed,
+until it finally tried treating the entire string as the program name,
+at which point it would have succeeded.
+The fact that it failed demonstrates that <code>Create­Process</code>
+didn’t do the parsing.
+</p>
+<p>
+The <code>cmd.exe</code> program permits the space between a program
+name and its arguments to be elided if the arguments begin with a character
+not permitted in file names.
+Once it figures out what you’re running, and it determines that what
+you’re running is a program,
+it call the <code>Create­Process</code> function
+with an explicit application and command line.
+</p>
+<p>
+But you don’t have to take my word for it.
+You can just see for yourself.
+(In fact, this is exactly what I did to investigate the issue
+in the first place.)
+</p>
+<pre>
+C:&gt;ntsd -2 cmd.exe
+</pre>
+<p>
+Two windows will open, one for your debugger and one for <code>cmd.exe</code>.
+(You are welcome to replace <code>ntsd</code> with your favorite debugger.
+I chose <code>ntsd</code> because—at least until Windows XP—it
+came preinstalled, thereby avoiding
+<a href="http://blogs.msdn.com/oldnewthing/archive/2010/01/07/9944907.aspx#9945268">
+multiplying the problem from one to two</a>.)
+</p>
+<p>
+In the debugger, set a breakpoint on
+<code>kernel32!Create­ProcessW</code>,
+then resume execution.
+In the <code>cmd.exe</code> window, type <code>cmd/?</code>.
+The breakpoint will fire, and you can look at the parameters:
+</p>
+<pre>
+Breakpoint 0 hit
+eax=0046f600 ebx=00000000 ecx=004f8de0 edx=00000000 esi=00000000 edi=00000001
+eip=757820ba esp=0046f544 ebp=0046f704 iopl=0         nv up ei pl zr na pe nc
+cs=001b  ss=0023  ds=0023  es=0023  fs=003b  gs=0000             efl=00000246
+kernel32!CreateProcessW:
+757820ba 8bff            mov     edi,edi
+0:000&gt; dd esp l4
+0046f544  4a5e3dd7 004f5420 004f8db0 00000000
+0:000&gt; du 004f5420
+004f5420  "C:\Windows\system32\cmd.exe"
+0:000&gt; du 004f8db0
+004f8db0  "cmd /?"
+</pre>
+<p>
+Observe that <code>cmd.exe</code> did its own manual path search
+to arrive at an executable of
+<code>C:\Windows\system32\cmd.exe</code>,
+and also that it secretly inserted a space between the
+<code>cmd</code> and the slash.</p>
+
+
+</body>

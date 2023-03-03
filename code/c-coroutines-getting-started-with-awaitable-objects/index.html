@@ -1,0 +1,151 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Getting started with awaitable objects</h1>  <!-- .entry-meta -->
+
+<p>Coroutines were added to C++20, and <a href="http://lewissbaker.github.io/"> Lewis Baker</a> has a nice introduction to them.</p>
+<ul>
+<li><a href="https://lewissbaker.github.io/2017/09/25/coroutine-theory"> Coroutine theory</a>.</li>
+<li><a href="https://lewissbaker.github.io/2017/11/17/understanding-operator-co-await"> Understanding <code>operator co_await</code></a>.</li>
+<li><a href="https://lewissbaker.github.io/2018/09/05/understanding-the-promise-type
+"> Understanding the promise type</a>.</li>
+</ul>
+<p>But I’m going to write another one, taking a more practical approach: The least you need to know to accomplish various coroutine tasks.</p>
+<p>We’ll start by looking at awaitable objects: Things that can be passed to <code>co_await</code>.</p>
+<p>When you do a <code>co_await x</code>, the compiler tries to come up with a thing called an <i>awaiter</i>.</p>
+<ol>
+<li>(We’re not ready to talk about step 1 yet.)</li>
+<li>(We’re not ready to talk about step 2 yet.)</li>
+<li>Otherwise, <code>x</code> is its own awaiter.</li>
+</ol>
+<p>Now that we have an awaiter, we can use it to wait for <code>x</code> to complete. I’ll start with the basic idea, and then gradually make it more complicated.</p>
+<p>The basic idea is that the compiler generates code like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td> </td>
+<td>
+
+
+</td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black;" valign="middle"><code>co_await</code></td>
+<td style="border: solid 1px black;">
+
+
+
+
+
+</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;">
+
+
+
+</td>
+</tr>
+<tr>
+<td> </td>
+<td>execution continues</td>
+</tr>
+</tbody>
+</table>
+<p>The main job of the <code>await_suspend</code> method is to arrange <i>somehow</i> for the <code>handle</code> to be invoked when it’s time for the <code>co_await</code> to be considered to have completed execution.</p>
+<p>The main job of the <code>await_resume</code> method is to report the result of the <code>co_await</code> operation. If the <code>await_resume</code> method returns <code>void</code>, then the <code>co_await</code> also returns <code>void</code>.</p>
+<p>You can invoke the <code>handle</code> at any time once the <code>await_suspend</code> starts. It’s even possible (for example, due to race conditions) that the <i>somehow</i> caused the <code>handle</code> to be invoked even before the <code>await_suspend</code> finishes running. The entire function could even have run to completion!</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>Thread 1</td>
+<td>Thread 2</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;">
+
+
+</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;">
+
+
+
+
+</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;"> </td>
+<td>
+
+
+
+
+</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;">
+
+
+
+</td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>One of the things that will happen when execution continues is that the awaiter destructs according to the normal rules. In particular, if the awaiter was a temporary (and it almost always is), then it destructs according to the rules for destruction of temporaries.</p>
+<p>Observe that the <code>handler</code> was invoked before <code>await_</code><code>suspend</code> could finish running. Any attempt to use members of the temporary <code>awaiter</code> will use an object after it has been destructed.</p>
+<p>Therefore, it is important that your awaiter not use its <code>this</code> pointer once it has arranged for the <code>handle</code> to be invoked <i>somehow</i>, because the <code>this</code> pointer may no longer be valid.</p>
+<p>The C++ language coroutine library comes with a predefined awaiter known as <code>suspend_</code><code>always</code>. Its <code>await_suspend</code> throws away the handle without doing anything, which means that the continuation will never run. In other words, <code>suspend_</code><code>always</code> suspends and never wakes up. Like a dark version of the Snow White fairy tale.</p>
+<p>Now, you may think that <code>suspend_</code><code>always</code> is not particularly useful, seeing as it basically hangs the coroutine. But it’s a convenient starting point to build on, because it fills out all the necessary paperwork for being an awaiter. All you have to do is provide a better <code>await_</code><code>suspend</code> method.</p>
+<p>Even with this extremely rudimentary understanding of coroutines, we can already write something interesting.</p>
+<pre>struct resume_new_thread : std::experimental::suspend_always
+{
+  void await_suspend(
+      std::experimental::coroutine_handle&lt;&gt; handle)
+  {
+    std::thread([handle]{ handle(); }).detach();
+  }
+};
+</pre>
+<p>Since is this our first time, let’s walk through the steps one at a time.</p>
+<p>When you do a</p>
+<pre>co_await resume_new_thread();
+</pre>
+<p>we start by default-constructing a <code>resume_</code><code>new_</code><code>thread</code> object.</p>
+<p>The compiler then sees that you are <code>co_await</code>ing it, so it saves the coroutine state, and then step 3 above treats the object as its own awaiter, so the compiler calls the <code>await</code><code>_suspend</code> method.</p>
+<p>Our custom awaiter suspends the coroutine by creating a thread, detaching it (so it continues to run after the thread object destructs), and returns.</p>
+<p>The thread runs the lambda. The lambda invokes the coroutine handle, which resumes the coroutine.¹</p>
+<p>Upon resumption, the compiler calls the <code>await_</code><code>resume</code> method to get the result. The built-in <code>suspend_</code><code>always</code> has an <code>await_</code><code>resume</code> method that returns nothing, and since we didn’t override it, our custom awaiter also returns nothing. In other words, the result of the <code>co_await</code> is <code>void</code>.</p>
+<p>And finally, we have reached the end of the full expression, so the temporary <code>resume_</code><code>new_</code><code>thread</code> object destructs.</p>
+<p>The result of this exercise is that if you do a</p>
+<pre>co_await resume_new_thread();
+</pre>
+<p>your coroutine resumes in a new thread. It’s magic!²</p>
+<pre>winrt::fire_and_forget StartWidget(
+    std::shared_ptr&lt;Widget&gt; widget,
+    WidgetStartOptions options)
+{
+    auto ticket = widget-&gt;GetStartTicket(options);
+    co_await resume_new_thread();
+    widget-&gt;PlugIn();
+    widget-&gt;SwitchOn();
+    // ticket destructor runs here
+}
+</pre>
+<p>In this example, we have a coroutine that does some up-front validation by trying to obtain a start ticket. And then it moves to a new thread for actually performing the widget operations to get the thing started. At the close-brace, the ticket destructs, which releases the widget to be manipulated by others. Also at the close-brace, the function parameters are destructed. In this case, it means that the <code>shared_</code><code>ptr</code> and <code>options</code> destruct.</p>
+<p>Note that the destruction of the <code>ticket</code>, <code>shared_ptr</code>, and <code>options</code> all occur on the new thread, not on the original thread.</p>
+<p>These simple one-shot awaitables are typically either simple objects or functions that return simple objects. In this case, it was a simple object. Next time, we’ll look at the function pattern and compare the two patterns.</p>
+<p><b>Bonus chatter</b>: C++ coroutines are single-use. Once you invoke the handle, it is dead and may not be invoked again.</p>
+<p>¹ The <code>std::thread</code> constructor accepts any <i>Callable</i>, and the <code>coroutine_</code><code>handle&lt;&gt;</code> is itself callable. Therefore, we could have written the function a bit more tersely as</p>
+<pre>  void await_suspend(
+      std::experimental::coroutine_handle&lt;&gt; handle)
+  {
+    std::thread(<span style="color: blue;">handle</span>).detach();
+  }
+</pre>
+<p>² Observe that in the <code>resume_</code><code>new_</code><code>thread</code> example, it’s possible for the new thread to start up and run to completion before our <code>await_</code><code>suspend</code> finishes. This is an example of the race condition I cautioned about earlier.</p>
+<p> </p>
+
+
+</body>

@@ -1,0 +1,311 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Playing with the Windows Animation Manager: Moving lots of stuff around</h1>  <!-- .entry-meta -->
+
+<p><p>
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/03/14/10399699.aspx">
+We saw last time</a>
+a sample program that moved a circle around.
+Today I’ll try to build the classic demo of animating a lot of
+objects in a list.
+</p>
+<p>
+This isn’t the prettiest code, but I wanted to make as few changes
+as possible.
+Start with the
+<a href="http://archive.msdn.microsoft.com/animationmanager">
+Timer-Driven Animation</a>,
+and make these changes to the
+<code>Main­Window.h</code> header file.
+</p>
+<pre>
+<font color="blue">struct Item
+{
+    IUIAnimationVariable *m_pAnimationVariableX;
+    IUIAnimationVariable *m_pAnimationVariableY;
+    Gdiplus::Color m_color;
+};</font></pre></p>
+<p>class MainWindow
+{
+    …</p>
+<p> <font color="red">// <strike>HRESULT ChangeColor(</strike></font>
+<font color="red">//     <strike>DOUBLE red,</strike></font>
+<font color="red">//     <strike>DOUBLE green,</strike></font>
+<font color="red">//     <strike>DOUBLE blue</strike></font>
+<font color="red">//     <strike>);</strike></font>
+<font color="blue">HRESULT ChangePos();</font></p>
+<p>    …
+private:</p>
+<p> <font color="blue">static const int ItemCount = 100;
+    static const int ItemWidth = 40;
+    static const int ItemHeight = 40;
+    static int XFromIndex(int index)
+    {
+        return (index % 10) * 50;
+    }
+    static int YFromIndex(int index)
+    {
+        return (index / 10) * 50;
+    }</font></p>
+<p>    …</p>
+<p> <font color="red">// <strike>IUIAnimationVariable *m_pAnimationVariableRed;</strike></font>
+<font color="red">// <strike>IUIAnimationVariable *m_pAnimationVariableGreen;</strike></font>
+<font color="red">// <strike>IUIAnimationVariable *m_pAnimationVariableBlue;</strike></font>
+<font color="blue">Item m_Items[ItemCount];</font>
+};
+
+<p>
+From the changes in the header file,
+I think you see where this is going.
+Instead of just having one item on the screen,
+I’m going to put a hundred.
+</p>
+<p>
+Here are the changes to
+<code>Main­Window.cpp</code>.
+First, we need to null out our pointers at construction
+and clean them up at destruction.
+(This sample program does not use smart pointers,
+so I won’t either.)
+</p>
+<pre>
+CMainWindow::CMainWindow() :
+    m_hwnd(NULL),
+    m_pAnimationManager(NULL),
+    m_pAnimationTimer(NULL),
+    m_pTransitionLibrary(NULL)<font color="red">// <strike>,</strike></font>
+    <font color="red">// <strike>m_pAnimationVariableRed(NULL),</strike></font>
+    <font color="red">// <strike>m_pAnimationVariableGreen(NULL),</strike></font>
+    <font color="red">// <strike>m_pAnimationVariableBlue(NULL)</strike></font>
+{
+    <font color="blue">for (int i = 0; i &lt; ItemCount; i++)
+    {
+        m_Items[i].m_pAnimationVariableX = NULL;
+        m_Items[i].m_pAnimationVariableY = NULL;
+    }</font>
+}</pre></p>
+<p>CMainWindow::~CMainWindow()
+{
+    // Animated Variables
+    <font color="red">// <strike>SafeRelease(&amp;m_pAnimationVariableRed);</strike></font>
+<font color="red">// <strike>SafeRelease(&amp;m_pAnimationVariableGreen);</strike></font>
+<font color="red">// <strike>SafeRelease(&amp;m_pAnimationVariableBlue);</strike></font>
+<font color="blue">for (int i = 0; i &lt; ItemCount; i++)
+    {
+        SafeRelease(&amp;m_Items[i].m_pAnimationVariableX);
+        SafeRelease(&amp;m_Items[i].m_pAnimationVariableY);
+    }</font></p>
+<p>    …
+}</p>
+<p>
+<p>
+Next we get rid of the initial animation.
+</p>
+<pre>
+HRESULT CMainWindow::Initialize(
+    HINSTANCE hInstance                            
+    )
+{
+    …
+                <font color="red">// <strike>Fade in with Red</strike></font>
+                <font color="red">// <strike>hr = ChangeColor(COLOR_MAX, COLOR_MIN, COLOR_MIN);</strike></font>
+    …
+}
+</pre>
+<p>
+As you might expect, the <code>Create­Animation­Variables</code>
+method changed completely, since it now has to create the variables
+for each item.
+But the basic idea is the same:
+Create each variable with the appropriate initial value.
+(It’s also a lot shorter!)
+</p>
+<pre>
+HRESULT CMainWindow::CreateAnimationVariables()
+{
+    <font color="blue">HRESULT hr = S_OK;</font></pre></p>
+<p>    for (int i = 0; SUCCEEDED(hr) &amp;&amp; i &lt; ItemCount; i++)
+    {
+        m_Items[i].m_color = Color(
+            static_cast&lt;BYTE&gt;(RandomFromRange(COLOR_MIN, COLOR_MAX)),
+            static_cast&lt;BYTE&gt;(RandomFromRange(COLOR_MIN, COLOR_MAX)),
+            static_cast&lt;BYTE&gt;(RandomFromRange(COLOR_MIN, COLOR_MAX))
+        );
+        hr = m_pAnimationManager-&gt;CreateAnimationVariable(
+            XFromIndex(i),
+            &amp;m_Items[i].m_pAnimationVariableX
+        );
+        if (SUCCEEDED(hr))
+        {
+            hr = m_pAnimationManager-&gt;CreateAnimationVariable(
+            YFromIndex(i),
+                &amp;m_Items[i].m_pAnimationVariableY
+                );
+        }
+    }</p>
+<p>    return hr;
+}
+
+<p>
+The <code>Draw­Background</code> method is becoming
+increasingly inaccurately-named,
+since in addition to drawing the background, we also draw
+the foreground!
+</p>
+<pre>
+HRESULT CMainWindow::DrawBackground(
+    Graphics &amp;graphics,
+    const RectF &amp;rectPaint
+    )
+{
+    <font color="blue">SolidBrush brushBackground(Color(255, 255, 255));
+    HRESULT</font> hr = HrFromStatus(graphics.FillRectangle(
+            &amp;brushBackground,
+            rectPaint
+            ));</pre></p>
+<p> <font color="blue">for (int i = 0; SUCCEEDED(hr) &amp;&amp; i &lt; ItemCount; i++)
+    {
+        INT32 x;
+        hr = m_Items[i].m_pAnimationVariableX-&gt;GetIntegerValue(
+            &amp;x
+            );
+        if (SUCCEEDED(hr))
+        {
+            INT32 y;
+            hr = m_Items[i].m_pAnimationVariableY-&gt;GetIntegerValue(
+                &amp;y
+                );
+            if (SUCCEEDED(hr))
+            {
+                SolidBrush brush(m_Items[i].m_color);
+                RectF rectItem(
+                    static_cast&lt;REAL&gt;(x),
+                    static_cast&lt;REAL&gt;(y),
+                    static_cast&lt;REAL&gt;(ItemWidth),
+                    static_cast&lt;REAL&gt;(ItemHeight));
+                hr = HrFromStatus(graphics.FillRectangle(
+                    &amp;brush,
+                    rectItem
+                    ));
+            }
+        }
+    }</font></p>
+<p>    return hr;
+}
+
+<p>
+We change what happens when you click the left mouse button.
+Instead of changing the color, we shuffle the items randomly.
+</p>
+<pre>
+HRESULT CMainWindow::OnLButtonDown()
+{
+    HRESULT hr = <font color="blue">ChangePos();</font></pre></p>
+<p>    return hr; 
+}
+
+<p>
+And now the money function:
+Shuffling the items and animating them to their new locations.
+</p>
+<pre>
+HRESULT CMainWindow::<font color="blue">ChangePos()</font>
+{
+    const UI_ANIMATION_SECONDS DURATION = 0.5;
+    const DOUBLE ACCELERATION_RATIO = 0.5;
+    const DOUBLE DECELERATION_RATIO = 0.5;</pre></p>
+<p> <font color="blue">// Assign final locations randomly
+    int Destination[ItemCount];
+    Destination[0] = 0;
+    for (int i = 1; i &lt; ItemCount; i++)
+    {
+        int j = rand() % (i + 1);
+        Destination[i] = Destination[j];
+        Destination[j] = i;
+    }</font></p>
+<p>    // Create a storyboard</p>
+<p>    IUIAnimationStoryboard *pStoryboard = NULL;
+    HRESULT hr = m_pAnimationManager-&gt;CreateStoryboard(
+        &amp;pStoryboard
+        );
+    if (SUCCEEDED(hr))
+    {
+        <font color="blue">for (int i = 0; SUCCEEDED(hr) &amp;&amp; i &lt; ItemCount; i++)
+        {</font>
+            // Create transitions for the <font color="blue">position</font> animation variables</p>
+<p>            IUIAnimationTransition *pTransition<font color="blue">X</font>;
+            hr = m_pTransitionLibrary-&gt;CreateAccelerateDecelerateTransition(
+                DURATION,
+                <font color="blue">XFromIndex(Destination[i])</font>,
+                ACCELERATION_RATIO,
+                DECELERATION_RATIO,
+                &amp;pTransition<font color="blue">X</font>
+                );</p>
+<p>            if (SUCCEEDED(hr))
+            {
+                IUIAnimationTransition *pTransition<font color="blue">Y</font>;
+                hr = m_pTransitionLibrary-&gt;CreateAccelerateDecelerateTransition(
+                    DURATION,
+                    <font color="blue">YFromIndex(Destination[i])</font>,
+                    ACCELERATION_RATIO,
+                    DECELERATION_RATIO,
+                    &amp;pTransition<font color="blue">Y</font>
+                );</p>
+<p>                // <font color="red">Delete “blue” transition</font></p>
+<p>                if (SUCCEEDED(hr))
+                {
+                    // Add transitions to the storyboard</p>
+<p>                    hr = pStoryboard-&gt;AddTransition(
+                        <font color="blue">m_Items[i].</font>m_pAnimationVariable<font color="blue">X</font>,
+                        pTransition<font color="blue">X</font>
+                        );
+                    if (SUCCEEDED(hr))
+                    {
+                        hr = pStoryboard-&gt;AddTransition(
+                            <font color="blue">m_Items[i].</font>m_pAnimationVariable<font color="blue">Y</font>,
+                            pTransition<font color="blue">Y</font>
+                            );
+                        // <font color="red">Delete “blue” transition</font>
+                        // <font color="red">Move “Schedule” out of the loop</font>
+                    }</p>
+<p>                    pTransition<font color="blue">Y</font>-&gt;Release();
+                }</p>
+<p>                pTransition<font color="blue">X</font>-&gt;Release();
+            }
+        }</p>
+<p> <font color="blue">// Scheduling code moved outside the loop</font>
+        if (SUCCEEDED(hr))
+        {
+            // Get the current time and schedule the storyboard for play</p>
+<p>            UI_ANIMATION_SECONDS secondsNow;
+            hr = m_pAnimationTimer-&gt;GetTime(
+                &amp;secondsNow
+                );
+            if (SUCCEEDED(hr))
+            {
+                hr = pStoryboard-&gt;Schedule(
+                    secondsNow
+                    );
+            }
+        }</p>
+<p>        pStoryboard-&gt;Release();
+    }</p>
+<p>    return hr;
+}
+
+<p>
+It looked like a lot of code, but really wasn’t.
+The only real change was to add the shuffling code
+and to put a loop around the code that generates
+the transitions and adds them to the storyboard.
+</p>
+<p>
+And there you have it,
+a program that smoothly animates 100 items
+each time you click on the window.
+For me, the fun thing to do is to
+just click repeatedly on the window and
+watch the items swirl around like a swarm of insects.
+</p></p>
+
+
+</body>

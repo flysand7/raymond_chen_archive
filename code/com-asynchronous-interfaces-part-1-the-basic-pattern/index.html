@@ -1,0 +1,152 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">COM asynchronous interfaces, part 1: The basic pattern</h1>  <!-- .entry-meta -->
+
+<p>You can mark your marshaled COM interfaces as supporting asynchronous calls, which unlocks a brand new calling pattern. When you attach the <a href="https://docs.microsoft.com/en-us/windows/win32/midl/async-uuid"> <code>async_uuid</code></a> attribute to your interface, COM generates a parallel interface with the same name as the synchronous interface, but with the <code>Async</code> prefix. For example, the asynchronous partner of <code>IMumble</code> is <code>AsyncIMumble</code>. (This is an exception to the general rule that COM interface begin with the letter “I”.)</p>
+<p>For each method on the synchronous interface, COM creates <i>two</i> methods on the asynchronous interface: <code>Begin_<wbr/>MethodName</code> and <code>Finish_<wbr/>MethodName</code>. The parameters to the <code>Begin_<wbr/>MethodName</code> method are all of the <code>[in]</code> parameters of the original method, and the parameters to the <code>Finish_<wbr/>MethodName</code> method are all of the <code>[out]</code> parameters. A parameter that is annotated as <code>[in, out]</code> shows up in <i>both</i> methods.</p>
+<p>The general pattern for making an asynchronous call is</p>
+<ul>
+<li>Query the proxy for <code>ICallFactory</code>.</li>
+<li>Call <code>ICallFactory::CreateCall</code> with the asynchronous interface you want to call. This produces a <i>call object</i>.</li>
+<li>Call the <code>Begin_<wbr/>MethodName</code> method on the call object.</li>
+<li>Go do something else for a while, if you like.</li>
+<li>Optionally, check in on the progress of the asynchronous operation by calling <code>ISynchronize::Wait</code> on the call object.</li>
+<li>Call the <code>Finish_<wbr/>MethodName</code> method to wait for the call to complete and get the results.</li>
+</ul>
+<p>Today, we’ll kick the tires a bit. In future articles, we’ll try out some variations, finishing with a practical application of asynchronous calls that you can use even if your interface isn’t marked as asynchronous.</p>
+<p>Today’s smart pointer library is (rolls dice)¹ C++/WinRT.</p>
+<pre>#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt; // Horrors! Mixing C and C++!
+
+struct SlowPipe :
+    winrt::implements&lt;SlowPipe, ::IPipeByte, winrt::non_agile&gt;
+{
+  // exit the STA thread when we destruct
+  ~SlowPipe() {  PostQuitMessage(0); }
+
+  STDMETHODIMP Pull(BYTE* buffer, ULONG size, ULONG* written)
+  {
+    printf("Pulling %lu bytes...\n", size);
+    ULONG index;
+    for (index = 0; index &lt; size / 2; index++) {
+      Sleep(100);
+      buffer[index] = 42;
+      printf("Pulled byte %lu of %lu\n", index, size);
+    }
+    *written = index;
+    printf("Finished pulling %lu% of %lu bytes\n", index, size);
+    return S_OK;
+  }
+
+  STDMETHODIMP Push(BYTE* buffer, ULONG size)
+  {
+    printf("Pushing %lu bytes...\n", size);
+    ULONG index;
+    for (index = 0; index &lt; size; index++) {
+      Sleep(100);
+      printf("Pushed byte %08x\n", buffer[index]);
+    }
+    printf("Finished pushing %lu bytes\n", size);
+    return S_OK;
+  }
+};
+</pre>
+<p>Our <code>SlowPipe</code> object is a pipe that is slow, taking 100ms for each byte. C++/WinRT objects are agile by default, but we mark ours as <code>winrt::<wbr/>not_<wbr/>agile</code> to override this, thereby forcing the interface to be marshaled through a proxy. Just for fun, our <code>Pull</code> method pulls only half of the bytes requested.</p>
+<p>Let’s create a thread that hosts our <code>SlowPipe</code> object.</p>
+<pre>struct CreateSlowPipeInfo
+{
+  winrt::agile_ref&lt;::IPipeByte&gt; agile;
+  bool ready = false;
+};
+
+
+DWORD CALLBACK ThreadProc(void* p)
+{
+  winrt::init_apartment(winrt::apartment_type::single_threaded);
+
+  auto&amp; info = *reinterpret_cast&lt;CreateSlowPipeInfo&gt;(p);
+  info.agile = winrt::make&lt;SlowPipe&gt;();
+  info.ready = true;
+  WakeByAddressSingle(&amp;info.ready);
+
+  MSG msg;
+  while (GetMessage(&amp;msg, nullptr, 0, 0)) {
+    TranslateMessage(&amp;msg);
+    DispatchMessageW(&amp;msg);
+  }
+
+  winrt::uninit_apartment();
+  return 0;
+}
+</pre>
+<p>The thread is given a pointer to a <code>Create­Slow­Pipe­Info</code> structure. We initialize COM in single-threaded mode on the thread, create a <code>Slow­Pipe</code> object, and store an agile reference to that object in the thread creator-provided structure. We then let the thread creator know that the agile reference is ready. And then we process messages until we get a quit message, which will happen when the <code>Slow­Pipe</code> is destructed.</p>
+<p>So let’s write the code that creates the thread and gets the <code>Slow­Pipe</code> from that thread.</p>
+<pre>winrt::com_ptr&lt;::IPipeByte&gt; CreateSlowPipeOnOtherThread()
+{
+    CreateSlowPipeInfo info;
+    auto nope = info.ready;
+
+    DWORD id;
+    winrt::handle(winrt::check_pointer(
+        CreateThread(0, 0, ThreadProc, &amp;info, 0, &amp;id)));
+
+    while (!info.ready) {
+      WaitOnAddress(&amp;info.ready, &amp;nope, sizeof(nope), INFINITE);
+    }
+    return info.agile.get();
+}
+</pre>
+<p>We create the thread with the <code>Create­Slow­Pipe­Info</code> and wait for it to signal that it’s ready, at which point we convert the agile reference to a <code>com_ptr&lt;IPipe­Byte&gt;</code> so we can use it locally.</p>
+<p>Okay, now on to the main event:</p>
+<pre>int main(int, char**)
+{
+  winrt::init_apartment(winrt::apartment_type::multi_threaded);
+
+  auto pipe = CreateSlowPipeOnOtherThread();
+
+  winrt::com_ptr&lt;::AsyncIPipeByte&gt; call;
+  auto factory = pipe.as&lt;ICallFactory&gt;();
+  winrt::check_hresult(factory-&gt;CreateCall(
+    __uuidof(::AsyncIPipeByte), nullptr,
+    __uuidof(::AsyncIPipeByte),
+    reinterpret_cast&lt;::IUnknown**&gt;(call.put())));
+
+  printf("Beginning the Pull\n");
+  winrt::check_hresult(call-&gt;Begin_Pull(100));
+
+  printf("Doing something else for a while...\n");
+  Sleep(100);
+
+  printf("Getting the answer\n");
+  BYTE buffer[100];
+  ULONG actual;
+  winrt::check_hresult(call-&gt;Finish_Pull(buffer, &amp;actual));
+  printf("Pulled %lu bytes\n", actual);
+
+  return 0;
+}
+</pre>
+<p>Once we create the pipe on another thread and marshal it back to the main thread, we make an asynchronous call to the <code>Pull</code> method.</p>
+<p>First step: Get the factory, which we do by querying the proxy for <code>ICallFactory</code>.</p>
+<p>Second step: Create a new call. The parameters to <code>Create­Call</code> take a little time to get used to.</p>
+<ul>
+<li>First is the asynchronous interface you want to call.</li>
+<li>Second is the controlling unknown. You usually pass <code>nullptr</code> here, but we’ll see later how you can replace this to get special effects.</li>
+<li>Third and fourth are the usual pair of an interface ID and an output pointer. Somewhat cumbersome here is that the final parameter is typed as <code>IUnknown**</code> rather than the traditional <code>void**</code>, which means you can’t use the usual <code>IID_PPV_ARGS</code> pattern.</li>
+</ul>
+<p>The call object itself supports the following interfaces:</p>
+<ul>
+<li><code>IUnknown</code> because all COM objects support <code>IUnknown</code>.</li>
+<li><code>AsyncIMumble</code>, the asynchronous interface you are calling.</li>
+<li><code>ISynchronize</code>, which we’ll learn about later.</li>
+<li><code>ISynchronize­Handle</code>, which we’ll learn about later.</li>
+<li><code>ICancel­Method­Calls</code>, which we’ll learn about later.</li>
+<li><code>IClient­Security</code>, which you can use to <a href="https://docs.microsoft.com/en-us/windows/win32/com/client-security-during-an-asynchronous-call"> customize the security of the marshaled call</a>. I’m not going to go into this part.</li>
+</ul>
+<p>You definitely are going to need the <code>AsyncIMumble</code>, seeing as that’s how you’re going to make the asynchronous call in the first place. The other interfaces might or might not be useful, depending on the scenario.</p>
+<p>We call the <code>Begin_<wbr/>Pull</code> method with the input parameters to initiate the pull operation. This call goes out to the helper thread, but since we are calling asynchronously, the call to <code>Begin_<wbr/>Pull</code> returns immediately, while the call gets delivered to the other thread for execution.</p>
+<p>We pretend to do some other work for a while, and then come back and call <code>Finish_<wbr/>Pull</code> method to get the answer. This is a blocking call that waits for the operation to complete, and then propagates the unmarshaled output parameters and <code>HRESULT</code>.</p>
+<p>That’s the basics of COM asynchronous calls. Next time, we’ll start getting a little fancier.</p>
+<p>¹ The dice are loaded.</p>
+
+
+</body>

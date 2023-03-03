@@ -1,0 +1,77 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you’re not keeping the parameter, then you still want to have separate <code>T const&amp;</code> and <code>T&amp;&amp;</code> overloads</h1>  <!-- .entry-meta -->
+
+<p>Last time, I noted that <a href="/code/if-you-plan-on-keeping-the-parameter-anyway-then-there-s-no-need-to-have-separate-t-const-and-t-overloads"> if you plan on keeping the parameter anyway, then there’s no need to have separate <code>T const&amp;</code> and <code>T&amp;&amp;</code> overloads</a>. However, the converse also applies: If you’re not keeping the parameter, then you still want to have separate <code>T const&amp;</code> and <code>T&amp;&amp;</code> overloads.</p>
+<p>To recap, we started with a class like this:</p>
+<pre>class Widget
+{
+public:
+  <span style="color: blue;">void SetValues(std::vector&lt;int&gt; const&amp; values)</span>
+  {
+    m_values = values;
+  }
+
+  <span style="color: blue;">void SetValues(std::vector&lt;int&gt;&amp;&amp; values)</span>
+  {
+    m_values = std::move(values);
+  }
+private:
+  std::vector&lt;int&gt; m_values;
+};
+</pre>
+<p>We were able to simplify this to</p>
+<pre>class Widget
+{
+public:
+  <span style="color: blue;">void SetValues(std::vector&lt;int&gt; values)</span>
+  {
+    m_values = std::move(values);
+  }
+
+private:
+  std::vector&lt;int&gt; m_values;
+};
+</pre>
+<p>because we are going to keep the parameter either way. (The old way resulted in either a copy or a move. The new way produces either a copy+move or a move. The expectation is that a single move is relatively inexpensive.)</p>
+<p>However, the simplification doesn’t apply if we are not the ones consuming the value.</p>
+<pre>Widget CreateWidgetWithValues(std::vector&lt;int&gt; values)
+{
+  Widget widget;
+  widget.SetValues(std::move(values));
+  return widget;
+}
+</pre>
+<p>In this case, we are moving the <code>values</code> onward to the <code>SetValues</code> method, who is the final consumer. Writing the method this way generates an extra move constructor, because we have to move the value from our inbound parameter into the outbound parameter to <code>SetValues</code>. We also incur an extra destruction of our now-empty inbound parameter. If the parameter is passed through multiple layers, each layer adds an extra move constructor and destruction.</p>
+<p>Since we are not the final consumer, we should forward the parameter.</p>
+<pre>template&lt;typename Values&gt;
+Widget CreateWidgetWithValues(Values&amp;&amp; values)
+{
+  Widget widget;
+  widget.SetValues(std::forward&lt;Values&gt;(values));
+  return widget;
+}
+</pre>
+<p>Unfortunately, this causes us to break existing code, since you cannot forward uniform initialization.</p>
+<pre>// doesn't work any more
+CreateWidgetWithValues({ range.begin(), range.end() });
+</pre>
+<p>We end up returning to the overload.</p>
+<pre>Widget CreateWidgetWithValues(const std::vector&lt;int&gt;&amp; values)
+{
+  Widget widget;
+  widget.SetValues(values);
+  return widget;
+}
+
+Widget CreateWidgetWithValues(std::vector&lt;int&gt;&amp;&amp; values)
+{
+  Widget widget;
+  widget.SetValues(std::move(values));
+  return widget;
+}
+</pre>
+<p>I’m not too happy with this, though. Maybe there’s an easier way. Let me know.</p>
+<p><b>Bonus chatter</b>: The Microsoft compiler makes the function responsible for destructing its inbound parameters, in which case the code to destruct the <code>std::vector&lt;int&gt;</code> is part of the consuming function and is therefore shared. gcc and clang make it the caller’s responsibility, so the destruction of the parameter is repeated at each call site.</p>
+
+
+</body>

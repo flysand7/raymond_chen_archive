@@ -1,0 +1,79 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When you think you found a problem with a function, make sure you’re actually calling the function, episode 2</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that the <code>Duplicate­Handle</code> function was failing with <code>ERROR_INVALID_HANDLE</code> even though the handle being passed to it seemed legitimate: </p>
+<pre>
+  // Create the handle here
+  m_Event =
+    ::CreateEvent(NULL, FALSE/*bManualReset*/,
+                       FALSE/*bInitialState*/, NULL/*lpName*/));
+  ... error checking removed ...
+
+
+// Duplicate it here
+HRESULT MyClass::CopyTheHandle(HANDLE *pEvent)
+{
+ HRESULT hr = S_OK;
+ 
+ if (m_Event != NULL) {
+  BOOL result = ::DuplicateHandle(
+                GetCurrentProcess(),
+                m_Event,
+                GetCurrentProcess(),
+                pEvent,
+                0,
+                FALSE,
+                DUPLICATE_SAME_ACCESS
+                );
+  if (!result) {
+    // always fails with ERROR_INVALID_HANDLE
+    return HRESULT_FROM_WIN32(GetLastError());
+  }
+ } else {
+  *pEvent = NULL;
+ }
+ 
+ return hr;
+}
+</pre>
+<p>The handle in <code>m_Event</code> appears to be valid. It is non-null, and we can still set and reset it. But we can’t duplicate it. </p>
+<p>Now, before claiming that a function doesn’t work, <a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/08/01/10546597.aspx">you should check what you’re passing to it and what it returns</a>. The customer checked the <code>m_Event</code> parameter, but what about the other parameters? The function takes <i>three</i> handle parameters, after all, and they checked only one of them. According to the debugger, <code>Duplicate­Handle</code> was called with the parameters </p>
+<table>
+<tr>
+<td><code>hSourceProcessHandle</code></td>
+<td><code> = 0x0aa15b80</code></td>
+
+<tr>
+<td><code>hSourceHandle</code></td>
+<td><code> = 0x00000ed8</code></td>
+
+<td>← <code>m_Event</code>, appears to be valid 
+<tr>
+<td><code>hTargetProcessHandle</code></td>
+<td><code> = 0x0aa15b80</code></td>
+</tr></td>
+<tr>
+<td><code>lpTargetHandle</code></td>
+<td><code> = 0x00b0d914</code></td>
+
+<tr>
+<td><code>dwDesiredAccess</code></td>
+<td><code> = 0x00000000</code></td>
+
+<tr>
+<td><code>bInheritHandle</code></td>
+<td><code> = 0x00000000</code></td>
+
+<tr>
+<td><code>dwOptions</code></td>
+<td><code> = 0x00000002</code></td>
+
+</tr></tr></tr></tr></tr></tr></table>
+<p>Upon sharing this information, the customer immediately saw the problem: The other two handle parameters come from the <code>Get­Current­Process</code> function, and that function was returning <code>0x0aa15b80</code> rather than the expected pseudo-handle (which is currently <code>-1</code>, but that is not contractual). </p>
+<p>The customer explained that their <code>My­Class</code> has a method with the name <code>Get­Current­Process</code>, and it was that method which was being called rather than the Win32 function <code>Get­Current­Process</code>. They left off the leading <code>::</code> and ended up calling the wrong <code>Get­Current­Process</code>. </p>
+<p>By default, Visual Studio colors member functions and global functions the same, but you can change this in <a href="http://msdn.microsoft.com/en-us/library/vstudio/kw7t0545%28v=vs.110%29.aspx">the <i>Fonts and Colors</i> options dialog</a>. Under <i>Show settings for</i>, select <i>Text Editor</i>, and then under <i>Display items</i> you can customize the colors to use for various language elements. In particular, you can choose a special color for static and instance member functions. </p>
+<p>Or, as a matter of style, you could have a policy of not giving member functions the same name as global functions. (This has the bonus benefit of reducing false positives when grepping.) </p>
+<p><b>Bonus story</b>: A different customer reported a problem with visual styles in the common tab control. After a few rounds of asking questions, coming up with theories, testing the theories, disproving the theories, the customer wrote back: “We figured out what was happening when we tried to step into the call to <code>Create­Dialog­Indirect­ParamW</code>. Someone else in our code base redefined all the dialog creation functions in an attempt to enforce a standard font on all of them, but in doing so, they effectively made our code no longer isolation aware, because in the overriding routines, they called <code>Create­Dialog­Indirect­ParamW</code> instead of <code>Isolation­Aawre­Create­Dialog­Indirect­ParamW</code>. Thanks for all the help, and apologies for the false alarm.” </p>
+
+
+</body>

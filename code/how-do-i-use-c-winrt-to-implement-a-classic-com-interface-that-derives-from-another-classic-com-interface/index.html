@@ -1,0 +1,56 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I use C++/WinRT to implement a classic COM interface that derives from another classic COM interface?</h1>  <!-- .entry-meta -->
+
+<p>The C++/WinRT library can be used to implement both Windows Runtime interfaces as well as classic COM interfaces. One feature of classic COM that is absent (intentionally) from the Windows Runtime is interface derivation. If you’re writing a class that needs to implement a derived COM interface, how do you express it? (The WRL library calls this a “chained interface”.)</p>
+<p>For concreteness, let’s suppose that you are implementing <code>IFileSystemBindData</code> and <code>IFileSystemBindData2</code>.</p>
+<p>The naïve way is to say that you implement both interfaces:</p>
+<pre>struct MyFileSystemBindData :
+    implements&lt;MyFileSystemBindData,
+        <span style="color: blue;">IFileSystemBindData,
+        IFileSystemBindData2</span>&gt;
+{
+    // IFileSystemBindData
+    HRESULT SetFindData(const WIN32_FIND_DATAW* pfd) override;
+    HRESULT GetFindData(WIN32_FIND_DATAW* pfd) override;
+
+    // IFileSystemBindData2
+    HRESULT SetFileID(LARGE_INTEGER liFileID) override;
+    HRESULT GetFileID(LARGE_INTEGER *pliFileID) override;
+    HRESULT SetJunctionCLSID(REFCLSID clsid) override;
+    HRESULT GetJunctionCLSID(CLSID *pclsid) override;
+};
+</pre>
+<p>If you do this, you get ambiguous cast errors because the <code>Query­Interface</code> provided by the <code>implements</code> template ends up doing something like this:</p>
+<pre>if (is_guid_of&lt;IFileSystemBindData&gt;(iid)) {
+  *result = static_cast&lt;IFileSystemBindData*&gt;(this);
+} else if (is_guid_of&lt;IFileSystemBindData2&gt;(iid)) {
+  *result = static_cast&lt;IFileSystemBindData2*&gt;(this);
+}
+</pre>
+<p>The cast to <code>IFileSystemBindData*</code> is ambiguous because the compiler can’t tell whether you want the <code>IFileSystemBindData</code> that is the immediate base class, or whether you want the <code>IFileSystemBindData</code> that is the base class of the <code>IFileSystemBindData2</code> interface.</p>
+<p>But you didn’t need to do that anyway. The COM interfaces derive from each other, so you probably want them to share a vtable. Declaring that you implement both interfaces means that you get two vtables (one for each interface) rather than a shared vtable.</p>
+<p>The way to define your object is to say that you implement only the derived interface:</p>
+<pre>struct MyFileSystemBindData :
+    implements&lt;MyFileSystemBindData,
+        <span style="color: blue;">IFileSystemBindData2</span>&gt;
+{
+    ...
+};
+</pre>
+<p>This gets rid of the ambiguous cast, because there is now only one way to get a <code>IFileSystemBindData</code>.</p>
+<p>However, you also need to get the <code>Query­Interface</code> to respond to <code>IID_IFileSystemBindData</code>.</p>
+<p>To do that, you can overload the <code>winrt::is_guid_of</code> function so that a check for <code>IFileSystemBindData2</code> includes a test for <code>IFileSystemBindData</code>.</p>
+<pre>namespace winrt
+{
+  template&lt;&gt;
+  bool is_guid_of&lt;IFileSystemBindData2&gt;(guid const&amp; id) noexcept
+  {
+    return is_guid_of&lt;IFileSystemBindData2, IFileSystemBindData&gt;(id);
+  }
+}
+</pre>
+<p>This takes advantage of the variadic template overload of <code>is_guid_of</code> introduced in <a href="https://github.com/microsoft/xlang/pull/107"> PR 107</a>.</p>
+<p> </p>
+
+
+</body>

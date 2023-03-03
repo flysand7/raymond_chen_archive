@@ -1,0 +1,182 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Extracting GPS coordinates from a photo and plotting it on a map</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s Little Program extracts GPS coordinates from a photo and plots
+it on a map.
+Remember, Little Programs do little to no error checking,
+because that’s how they roll.
+</p>
+<pre>
+#define STRICT
+#define UNICODE
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/02/12/71851.aspx">_UNICODE</a>
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;shellapi.h&gt;
+#include &lt;propidl.h&gt;
+#include &lt;propkey.h&gt;
+#include &lt;propvarutil.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;atlalloc.h&gt;
+#include &lt;strsafe.h&gt;
+void OpenMap(double dblLatitude, double dblLongitude)
+{
+ wchar_t szUrl[1024];
+ StringCchPrintf(szUrl, ARRAYSIZE(szUrl),
+  L"http://www.bing.com/maps/default.aspx?v=2&amp;q=%f,%f",
+  dblLatitude, dblLongitude);
+ ShellExecute(nullptr, nullptr, szUrl, nullptr, nullptr, SW_NORMAL);
+}
+</pre>
+<p>
+We start with a simple function that takes a latitude and longitude
+and opens a Web page that highlights that coordinate.
+In a real program, you probably would do something more interesting
+with the coordinates, but I’m opening a Web page just to do
+<i>something</i>.
+</p>
+<pre>
+class CPropVariant : public PROPVARIANT {
+public:
+ CPropVariant() { PropVariantInit(this); }
+ ~CPropVariant() { PropVariantClear(this); }
+};
+</pre>
+<p>
+The <code>CProp­Variant</code> class
+is an incredibly lame wrapper around
+<code>PROP­VARIANT</code> for RAII purposes.
+</p>
+<pre>
+HRESULT GetGPSCoordinateAsDecimal(
+    IShellItem2 *psi2,
+    REFPROPERTYKEY pkey,
+    REFPROPERTYKEY pkeyRef,
+    double *pdbl)
+{
+ CPropVariant spvar;
+ HRESULT hr = psi2-&gt;GetProperty(pkey, &amp;spvar);
+ if (FAILED(hr)) return hr;
+ double rgdbl[3];
+ ULONG cElt;
+ hr = PropVariantToDoubleVector(spvar, rgdbl, 3, &amp;cElt);
+ if (FAILED(hr)) return hr;
+ if (cElt != 3) return E_INVALIDARG;
+ double coord = rgdbl[0] + rgdbl[1] / 60.0 + rgdbl[2] / 60.0 / 60.0;
+ CComHeapPtr&lt;wchar_t&gt; spszDir;
+ hr = psi2-&gt;GetString(pkeyRef, &amp;spszDir);
+ if (FAILED(hr)) return hr;
+ if (spszDir[0] == L'W' || spszDir[0] == L'S') coord = -coord;
+ *pdbl = coord;
+ return S_OK;
+}
+</pre>
+<p>
+The
+<code>Get­GPS­Coordinate­As­Decimal</code>
+function is where the real work happens.
+GPS latitude and longitude are
+encoded in the shell property system as
+a bunch of related properties.
+</p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td>System.GPS.DestLatitudeNumerator</td>
+<td>UINT[3]</td>
+<td>numerators for degrees, minutes, and seconds of latitude</td>
+</tr>
+<tr>
+<td>System.GPS.DestLatitudeDenominator</td>
+<td>UINT[3]</td>
+<td>denominators for degrees, minutes, and seconds of latitude</td>
+</tr>
+<tr>
+<td>System.GPS.DestLatitude</td>
+<td>double[3]</td>
+<td>degrees, minutes, and seconds of latitude (numerator ÷ denominator)</td>
+</tr>
+<tr>
+<td>System.GPS.DestLatitudeRef</td>
+<td>string</td>
+<td>“N” or “S”</td>
+</tr>
+<tr>
+<td>System.GPS.DestLongitudeNumerator</td>
+<td>UINT[3]</td>
+<td>numerators for degrees, minutes, and seconds of longitude</td>
+</tr>
+<tr>
+<td>System.GPS.DestLongitudeDenominator</td>
+<td>UINT[3]</td>
+<td>denominators for degrees, minutes, and seconds of longitude</td>
+</tr>
+<tr>
+<td>System.GPS.DestLongitude</td>
+<td>double[3]</td>
+<td>degrees, minutes, and seconds of Longitude (numerator ÷ denominator)</td>
+</tr>
+<tr>
+<td>System.GPS.DestLongitudeRef</td>
+<td>string</td>
+<td>“E” or “W”</td>
+</tr>
+</table>
+<p>
+Each of the coordinates is recorded in DMS form as pairs of unsigned
+integers (numerator and denominator).
+The direction is recorded as a string as a separate property.
+Why this wacky format?
+Probably because that’s the way EXIF records it.
+</p>
+<p>
+For convenience, there is a combo property which does the division for you
+(but frustratingly, does not flip the sign for direction).
+And if you want the coordinates in decimal form,
+then you’ll have to do the DMS-to-decimal conversion yourself.
+</p>
+<p>
+We start by getting the DMS value as a <code>PROP­VARIANT</code>
+then converting it to an array of <code>double</code>s.
+(There had better be three of them.)
+We then use the power of mathematics to convert from DMS to decimal degrees.
+</p>
+<p>
+Finally, we flip the sign if the direction from center is
+West or South.
+</p>
+<p>
+Now it’s time to put these functions together.
+</p>
+<pre>
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ if (argc &lt; 2) return 0;
+ CCoInitialize init;
+ CComPtr&lt;IShellItem2&gt; spsi2;
+ if (FAILED(SHCreateItemFromParsingName(argv[1],
+              nullptr, IID_PPV_ARGS(&amp;spsi2)))) return 0;
+ double dblLong, dblLat;
+ if (FAILED(GetGPSCoordinateAsDecimal(spsi2, PKEY_GPS_Longitude,
+                    PKEY_GPS_LongitudeRef, &amp;dblLong))) return 0;
+ if (FAILED(GetGPSCoordinateAsDecimal(spsi2, PKEY_GPS_Latitude,
+                    PKEY_GPS_LatitudeRef, &amp;dblLat))) return 0;
+ OpenMap(dblLong, dblLat);
+ return 0;
+}
+</pre>
+<p>
+Find a photo with GPS information encoded inside it
+and pass it on the command line as a fully-qualified path.
+(Because I’m too lazy to call
+<code>Get­Full­Path­Name</code>.)
+The program should open a Web page that shows where the
+picture was taken.</p>
+
+
+</body>

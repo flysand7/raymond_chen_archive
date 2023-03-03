@@ -1,0 +1,133 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A history of the <code>fd_set</code>, <code>FD_SETSIZE</code>, and how it relates to WinSock</h1>  <!-- .entry-meta -->
+
+<p>The <code>select</code> function takes three sets of file descriptors (<code>readfds</code>, <code>writefds</code>, <code>exceptfds</code>) and waits for any of the following things to happen:</p>
+<ul>
+<li>A file descriptor in <code>readfds</code> is available to read without blocking. (Usually this means that there is data available.)</li>
+<li>A file descriptor in <code>writefds</code> is available to write without blocking. (Usually this means that there is buffer space available.)</li>
+<li>A file descriptor in <code>exceptfds</code> is in an error state.</li>
+<li>The call times out, if a timeout is provided.</li>
+</ul>
+<p>The function signature is</p>
+<pre>int select(int nfds, fd_set *readfds,
+    fd_set *writefds, fd_set *exceptfds,
+    struct timeval *timeout);
+</pre>
+<p>where <code>nfds</code> is one greater than the highest-numbered file descriptor in any of the <code>fd_set</code>s.</p>
+<p>When originally implemented, the ABI representation of <code>fd_set</code> was a bit array consisting of <code>nfds</code> bits.¹ The bits are numbered starting with zero, and the file descriptors you want to be part of the <code>fd_set</code> have the corresponding bits set in the array.</p>
+<p>For example, if you wanted the <code>fd_set</code> to represent file descriptors 4 and 6, you would use a bit array whose first byte was <code>(1 &lt;&lt; 4) | (1 &lt;&lt; 6) = 0x50</code>.</p>
+<p>The <code>sys/select.h</code> header file provided a stock implementation of <code>fd_set</code>: The stock implementation represented a a bit array of <code>FD_SETSIZE</code> bits. You could configure the header file by defining the <code>FD_SETSIZE</code> preprocessor symbol to the number of bits you desire, and if you didn’t customize the value, it defaulted to 1024. (We’ll see why later.)</p>
+<p>The physical representation of the <code>fd_set</code> was hidden behind macros, and you were expected to use those macros rather than trying to build the bitmap yourself.</p>
+<pre>FD_ZERO(set)        // set all bits in the fd_set to zero
+FD_SET(set, fd)     // set bit "fd" in the fd_set to 1
+FD_CLR(set, fd)     // set bit "fd" in the fd_set to 0
+FD_ISSET(set, fd)   // returns nonzero if bit "fd" is set
+</pre>
+<p>Picking a value for <code>FD_SETSIZE</code> size is a bit of a balancing act. You don’t want the bitmap to be too big, because that’s a lot of memory for each <code>fd_set</code>, and the <code>select</code> function is going to have to scan that many bits to find the ones that are set. On the other hand, you need it to be big enough to handle all reasonable workloads.</p>
+<p>The operating system itself imposes a limit on the size of the bitmap, because large bitmaps require a lot of memory and are slow to scan for set bits.² At the time that <code>select</code> was invented, each process was limited to 1024 simultaneous open files, which seemed like a generous allowance at the time. I mean, who’s going to write a program that opens over a thousand sockets at once?</p>
+<p>Since you could have at most 1024 open file descriptors at a time, file descriptors were in practice always in the range 0…1023, and therefore a default value for <code>FD_SETSIZE</code> of 1024 would be sufficient to cover all the file descriptors a program could possibly open.</p>
+<p>Although the <code>fd_set</code> was in theory an opaque data type, it was effectively immutable because the management of the <code>fd_set</code> was done by macros, so all of the manipulations were hard-coded into every program that used <code>fd_set</code>s. And of course the entire thing was a bit array at the ABI layer, and you don’t want to break the ABI.</p>
+<p>The 1024-file descriptor limit became a problem as computers became larger and more powerful, and the choice of representation as a bit array meant that just increasing the bit array size limit was not a good solution. If you wanted to wait for file descriptors 4000 and 8000, you’d have to allocate three kilobyte-sized bit arrays. That’s three big bit arrays just to set two bits.</p>
+<p>At this point, the history splits into two story lines.</p>
+<p>On the Unix side, instead of making the bit arrays larger and larger, POSIX invented <code>poll</code>, a replacement for <code>select</code> which expresses the file descriptor set differently. Instead of being a bit array whose size is proportional to the total number of file descriptors the process has opened, it’s an array of <code>pollfd</code> structures, each of which describes a file descriptor you want to wait for.</p>
+<p>This brings the size and complexity of the operation down to a reasonable level, since the amount of memory that is needed now grows with the number of file descriptors you are monitoring, rather than with the total number of file descriptors in the process. (Linux, meanwhile, added their own extension to <code>poll</code> called <code>epoll</code>.)</p>
+<p>The <code>select</code> function never gained the ability to pass bit arrays larger than 1024 bits. The functionality got frozen at its old level of support, with the expectation that people who need to manage thousands of file descriptors will move to <code>poll</code>.</p>
+<p>Meanwhile, WinSock wanted to maintain source compatiblity with existing Unix-based networking code, including code that used <code>select</code>. On the other hand, the <code>fd_set</code> design didn’t fit well with Windows, because Windows sockets are handles (arbitrary pointer-sized values), not guaranteed to be small integers. Fortunately, WinSock could invent its own ABI, since there were no pre-existing binaries to be compatible with. The ABI for <code>fd_set</code> in WinSock takes a different form:</p>
+<pre>struct fd_set_abi
+{
+    uint32_t count;
+    SOCKET   sockets[count]; // variable-length array
+};
+</pre>
+<p>The WinSock ABI for the <code>fd_set</code> consists of a count (specifying how many sockets are in the set), followed by an array of that many socket handles.</p>
+<p>The various <code>FD_</code> macros were redefined so that they preserved the programming interface but operated on this alternate representation on an <code>fd_set</code>.</p>
+<p>This alternate design avoids tying the bit array to the numeric values of the socket handles, which could in theory force an array larger than available memory: If a handle happened to be <code>0xdeadbeef</code>, that would require nearly a half-gigabyte-sized bit array just so you could set the 3 billionth bit (and leave all the other bits zero). It also avoids the problem of having to validate and capture very large bit arrays at the kernel boundary.</p>
+<p>As with the original <code>sys/select.h</code>, you can define the preprocessor symbol <code>FD_SETSIZE</code> before including <code>winsock.h</code>, and that changes the size of the default implementation of <code>fd_set</code> as well as the behavior of the corresponding <code>fd_set</code>-manipulation macros.</p>
+<p>A caveat applies to both the Unix-style and the WinSock-style <code>fd_set</code> structures: Since the definition changes depending on how you set <code>FD_SETSIZE</code>, a program which defines <code>FD_SETSIZE</code> differently in different translation units is technically in violation of the C++ standard One Definition Rule, because it results in different definitions of <code>fd_set</code> in different translation units. In practice, you usually get away with it if you pass the <code>fd_set</code> objects only by address or by reference. Still, bad things will happen if one function creates an <code>fd_set</code> with one <code>FD_SETSIZE</code>, and passes it to another function that was compiled with a different <code>FD_SETSIZE</code>, and the recipient function tries to modify the <code>fd_set</code>, because the recipient will operate on the assumption that the <code>fd_set</code> can hold <code>FD_SETSIZE</code> entries, for a different value of <code>FD_SETSIZE</code>.</p>
+<p>For Windows, you can define your own ABI-compatible version of <code>fd_set</code> that encodes its own maximum size:</p>
+<pre>// Warning: Works only for WinSock fd_set.
+
+template&lt;uint32_t Capacity = FD_SETSIZE&gt;
+struct fd_setN
+{
+    uint32_t count = 0;
+    std::array&lt;SOCKET, Capacity&gt; array;
+
+    operator fd_set*() noexcept { return reinterpret_cast&lt;fd_set*&gt;(this); }
+
+    constexpr auto capacity() const noexcept { return Capacity; }
+    auto begin() noexcept { return &amp;array[0]; }
+    auto end() noexcept { return &amp;array[count]; }
+
+    bool add(SOCKET s) noexcept
+    {
+        if (count &gt;= capacity()) return false;
+        array[count++] = s;
+        return true;
+    }
+
+    bool remove(SOCKET s) noexcept
+    {
+        auto it = std::find(begin(), end(), s);
+        if (it == end()) return false;
+        *it = array[--count];
+        return true;
+    }
+
+    bool contains(SOCKET s) noexcept const
+    {
+        return std::find(begin(), end(), s) != end();
+    }
+
+    bool clear() noexcept
+    {
+        count = 0;
+    }
+};
+</pre>
+<p>You are welcome to add your own methods to this class, like say <code>push_back</code> to make it satisfy more of the C++ Container requirements,¹ but this is the basic idea.</p>
+<p>Of course, passing large arrays to <code>select</code> generates a lot of busy-work both for you and the operating system: You have to go into a loop filling the <code>fd_set</code> before each call to <code>select</code> (because <code>select</code> modifies the <code>fd_set</code> before returning), and the operating system has to go into a loop to set up a monitor to track the status of each socket, and then another loop to cancel the monitor once one of them becomes ready.</p>
+<p>A better model for this is to use <code>WSASelectEvent</code> to associate an event with each socket. This association is independent of activity on other sockets, so you don’t have to keep re-establishing it.</p>
+<p>Even better would be to use an I/O completion port to deal with each socket’s readiness.</p>
+<p><b>Exercise</b>: Armed with this information, maybe you can help this customer, who reported that <code>FD_ISSET</code> is unreliable on Windows:</p>
+<pre>struct socket_manager
+{
+    fd_set sockets;
+
+    socket_manager()
+    {
+        FD_ZERO(&amp;sockets);
+    }
+
+    void add(int socket)
+    {
+        FD_SET(socket, &amp;sockets);
+    }
+
+    bool select()
+    {
+        fd_set ready = sockets;
+        if (select(FD_SETSIZE, &amp;ready,
+                   nullptr, nullptr, nullptr) &lt; 0) {
+            return false;
+        }
+        // Process each ready socket.
+        for (int socket = 0; socket &lt; FD_SETSIZE; socket++) {
+            if (FD_ISSET(socket, &amp;ready)) {
+                DoSomething(socket);
+            }
+        }
+    }
+
+};
+</pre>
+<p>The customer found that the <code>FD_ISSET</code> always returns 0. The <code>FD_ISSET</code> macro cannot find any of the sockets that were put into it. What’s going on?</p>
+<p><b>Bonus chatter</b>: People unfamiliar with the history of <code>select</code> and <code>fd_set</code> will sometimes ask, “Why do I have to pass <code>nfds</code> as the first parameter to <code>select</code>? The system already knows the size of an <code>fd_set</code>. Why do I have to tell it?” You have to tell it because the <code>fd_set</code> is variable-sized structure. Your program might set a custom value of <code>FD_SETSIZE</code>, and the <code>nfds</code> tells the operating system how big those bit arrays are.</p>
+<p>I’ve seen arguments that <a href="https://unix.stackexchange.com/questions/7742/whats-the-purpose-of-the-first-argument-to-select-system-call"> <code>nfds</code> was a performance optimization</a>, but really it was just a requirement for the ABI to know how many bits to scan. The performance optimization was a side effect.</p>
+<p><b>Bonus reading</b>: <a href="/code/what-is-the-maximum-numeric-value-for-a-socket-and-what-is-the-maximum-number-of-sockets-a-windows-program-can-create"> What is the maximum numeric value for a socket, and what is the maximum number of sockets a Windows program can create?</a></p>
+<p><b>Answer to exercise</b>: There are no macros for enumerating the contents of an <code>fd_set</code>, so this code tries to fake it by simply trying “every possible number” and seeing if it’s a socket. The problem is that the numeric values of the Windows sockets created by the program are all larger than <code>FD_SETSIZE</code>, Therefore, the loop through “all possible sockets” numbered 0 through <code>FD_SETSIZE - 1</code> doesn’t find them. According to <a href="https://pubs.opengroup.org/onlinepubs/9699919799/functions/FD_ISSET.html"> the POSIX documentation for <code>FD_ISSET</code></a>, the file descriptor parameter to <code>FD_ISSET</code> must be a valid file descriptor; you can’t just loop over “every possible number” hunting for them. The customer needs to adapt their code so they keep track of the handles which they have put in their <code>fd_set</code> and iterate over those handles (and only those handles) when calling <code>FD_ISSET</code>.</p>
+<p>¹ If you want it to support equality comparison, you’ll probably have to switch to a sorted array.</p>
+<p>² And an attacker could trigger a memory exhaustion denial of service by tricking the kernel into taking a snapshot of a a ridiculously-sized bitmap.</p>
+
+
+</body>

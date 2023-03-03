@@ -1,0 +1,68 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I set the alpha channel of a GDI bitmap to 255?</h1>  <!-- .entry-meta -->
+
+<p>Most GDI operations will destroy the alpha channel, because GDI was invented back in the days of monochrome and CGA, where you had one, maybe two bits per pixel, and <a href="http://graphics.pixar.com/library/Compositing/paper.pdf"> the paper introducing the concept of an alpha channel</a> wouldn’t be published for another year.</p>
+<p>Since the alpha channel hadn’t been invented yet, the top eight bits of 32bpp pixel formats were unused. Whenever GDI needed to generate a 32bpp pixel, say as the result of text rendering, the results had zero in the top eight bits because, well, the bits had no defined meaning. And if you thought those bits were your alpha channel, well, you just lost your alpha channel.</p>
+<p>Okay, so you accept that GDI operations are going to wipe out your alpha channel. How do you get it back, assuming you just want to make your bitmap opaque again?</p>
+<p>Fortunately, there’s still a GDI operation that doesn’t destroy the alpha channel: <code>BitBlt</code>. Probably because <code>BltBlt</code> is <a href="https://devblogs.microsoft.com/oldnewthing/20180528-00/?p=98845"> defined in terms of bitwise operations</a>, so the work is done without really thinking about what the bits <i>mean</i>. And we can take advantage of that.</p>
+<pre>// hdc is a memory DC with a 32bpp bitmap selected into it.
+// This function sets the alpha channel to 255 without
+// affecting any of the color channels.
+
+void MakeBitmapOpaque(
+    HDC hdc, int x, int y, int cx, int cy)
+{
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth       = 1;
+    bi.bmiHeader.biHeight      = 1;
+    bi.bmiHeader.biPlanes      = 1;
+    bi.bmiHeader.biBitCount    = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+
+    RGBQUAD bitmapBits = { 0x00, 0x00, 0x00, 0xFF };
+
+    StretchDIBits(hdc, x, y, cx, cy,
+                  0, 0, 1, 1, &amp;bitmapBits, &amp;bi,
+                  DIB_RGB_COLORS, SRCPAINT);
+}
+</pre>
+<p>The first step is to create a <code>BITMAPINFO</code> structure that describes a 1×1 32bpp bitmap.</p>
+<p>We then create that single pixel consisting of an alpha channel (which resides in the reserved bits) of 255, and zero for the color channels.</p>
+<p>And then we ask to stretch that 1×1 bitmap over the destination bitmap, using the <code>SRCPAINT</code> raster operation.</p>
+<p>The secret sauce is that the <code>SRCPAINT</code> raster operation means that the source and destination should be OR’d together to form the result. Our source pixel is <code>{ 0x00, 0x00, 0x00, 0xFF }</code>, so this means that for each destination pixel, the color channels are left unchanged (OR’d with zero) and the alpha channel is set to 255 (OR’d with 255).</p>
+<p>Bingo, this sets the alpha channel of the entire bitmap back to 255.</p>
+<p>This lets you use functions like <code>FillRect</code> or <code>DrawText</code>, and let them destroy the alpha channel of your opaque bitmap. Then come back and repair the alpha channel by setting the bitmap back to opaque without changing any of the color channels.</p>
+<p>This trick makes the specified portion of the bitmap opaque. If you want it to have a different alpha channel, you could use two <code>StretchBlt</code> operations, one to zero out the alpha channel, and another to OR in the desired value.</p>
+<pre>// hdc is a memory DC with a 32bpp bitmap selected into it.
+// This function sets the alpha channel without
+// affecting any of the color channels.
+
+void SetBitmapAlphaChannel(
+    HDC hdc, int x, int y, int cx, int cy, BYTE alpha)
+{
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth       = 1;
+    bi.bmiHeader.biHeight      = 1;
+    bi.bmiHeader.biPlanes      = 1;
+    bi.bmiHeader.biBitCount    = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+
+    if (alpha != 255) {
+        RGBQUAD zeroAlpha = { 0xFF, 0xFF, 0xFF, 0x00 };
+        StretchDIBits(hdc, x, y, cx, cy,
+                      0, 0, 1, 1, &amp;zeroAlpha, &amp;bi,
+                      DIB_RGB_COLORS, SRCAND);
+    }
+
+    RGBQUAD alphaOnly = { 0x00, 0x00, 0x00, alpha };
+    StretchDIBits(hdc, x, y, cx, cy,
+                  0, 0, 1, 1, &amp;alphaOnly, &amp;bi,
+                  DIB_RGB_COLORS, SRCPAINT);
+}
+</pre>
+<p>The <code>SRCAND</code> raster operation performs a logical AND of the source and destination. We set the entire alpha channel to zero by ANDing it with zero, and then we set the value to the desired value by ORing the new value in. (And we can skip the AND step if the desired alpha is 255.)</p>
+
+
+</body>

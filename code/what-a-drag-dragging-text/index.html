@@ -1,0 +1,231 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What a drag: Dragging text</h1>  <!-- .entry-meta -->
+
+<p>This week’s mini-series was almost titled “It’s the least you could do” because I’m going to try to do the absolute least amount of work to accomplish something interesting with drag and drop. The real purpose today is to lay some groundwork, but just to have something to show for our effort, I’ll show you how to drag text around.</p>
+<p>We’re going to need <a href="/code/dragging-a-shell-object-part-1-getting-the-idataobject" title="Dragging a shell object, part 1: Getting the IDataObject"> the <code>CDropSource</code> class</a> from an earlier series on drag-and-drop. Also take the change from <code>CoInitialize</code> to <code>OleInitialize</code> (and similarly <code>CoUninitialize</code>), as well as the line</p>
+<pre>    HANDLE_MSG(hwnd, WM_LBUTTONDOWN, OnLButtonDown);
+</pre>
+<p>Our mission for today is to create the tiniest data object possible.</p>
+<pre>#include &lt;strsafe.h&gt; // for StringCchCopy
+#include &lt;shlobj.h&gt; // (will be needed in future articles)
+
+/* note: apartment-threaded object */
+class CTinyDataObject : public IDataObject
+{
+public:
+  // IUnknown
+  STDMETHODIMP QueryInterface(REFIID riid, void **ppvObj);
+  STDMETHODIMP_(ULONG) AddRef();
+  STDMETHODIMP_(ULONG) Release();
+
+  // IDataObject
+  STDMETHODIMP GetData(FORMATETC *pfe, STGMEDIUM *pmed);
+  STDMETHODIMP GetDataHere(FORMATETC *pfe, STGMEDIUM *pmed);
+  STDMETHODIMP QueryGetData(FORMATETC *pfe);
+  STDMETHODIMP GetCanonicalFormatEtc(FORMATETC *pfeIn,
+                                     FORMATETC *pfeOut);
+  STDMETHODIMP SetData(FORMATETC *pfe, STGMEDIUM *pmed,
+                       BOOL fRelease);
+  STDMETHODIMP EnumFormatEtc(DWORD dwDirection,
+                             LPENUMFORMATETC *ppefe);
+  STDMETHODIMP DAdvise(FORMATETC *pfe, DWORD grfAdv,
+                    IAdviseSink *pAdvSink, DWORD *pdwConnection);
+  STDMETHODIMP DUnadvise(DWORD dwConnection);
+  STDMETHODIMP EnumDAdvise(LPENUMSTATDATA *ppefe);
+
+  CTinyDataObject();
+
+private:
+  enum {
+    DATA_TEXT,
+    DATA_NUM,
+    DATA_INVALID = -1,
+  };
+
+  int GetDataIndex(const FORMATETC *pfe);
+
+private:
+  ULONG m_cRef;
+  FORMATETC m_rgfe[DATA_NUM];
+};
+</pre>
+<p>We’ll learn more about those private members later. Let’s start with the boring stuff: The <code>IUnknown</code> interface.</p>
+<pre>HRESULT CTinyDataObject::QueryInterface(REFIID riid, void **ppv)
+{
+  IUnknown *punk = NULL;
+  if (riid == IID_IUnknown) {
+    punk = static_cast&lt;IUnknown*&gt;(this);
+  } else if (riid == IID_IDataObject) {
+    punk = static_cast&lt;IDataObject*&gt;(this);
+  }
+
+  *ppv = punk;
+  if (punk) {
+    punk-&gt;AddRef();
+    return S_OK;
+  } else {
+    return E_NOINTERFACE;
+  }
+}
+
+ULONG CTinyDataObject::AddRef()
+{
+  return ++m_cRef;
+}
+
+ULONG CTinyDataObject::Release()
+{
+  ULONG cRef = --m_cRef;
+  if (cRef == 0) delete this;
+  return cRef;
+}
+</pre>
+<p>Yawners. The constructor is interesting, though, because we use our constructor to build the array of supported <code>FORMATETC</code>s which other members will consult.</p>
+<pre>void SetFORMATETC(FORMATETC *pfe, UINT cf,
+                  TYMED tymed = TYMED_HGLOBAL, LONG lindex = -1,
+                  DWORD dwAspect = DVASPECT_CONTENT,
+                  DVTARGETDEVICE *ptd = NULL)
+{
+  pfe-&gt;cfFormat = (CLIPFORMAT)cf;
+  pfe-&gt;tymed    = tymed;
+  pfe-&gt;lindex   = lindex;
+  pfe-&gt;dwAspect = dwAspect;
+  pfe-&gt;ptd      = ptd;
+}
+
+CTinyDataObject::CTinyDataObject() : m_cRef(1)
+{
+  SetFORMATETC(&amp;m_rgfe[DATA_TEXT], CF_TEXT);
+}
+</pre>
+<p>Our data object contains only thing: plain text. We set the clipboard format to <code>CF_TEXT</code>, indicating that that’s the data we have. The type medium is <code>TYMED_HGLOBAL</code> because we are going to provide the text in the form of an <code>HGLOBAL</code>. The other fields are boilerplate that you will rarely have to change: The aspect is <code>DVASPECT_CONTENT</code> because we are going to provide the actual data content. The <code>DVTARGETDEVICE</code> is <code>NULL</code> because our content is device-independent. And the <code>lindex</code> is <code>-1</code> because we’re going to provide all the data. I’ve created a helper function which uses the boilerplate values as default parameters.</p>
+<p>The first member function that will use this helper array is one that we will use quite a bit to do the preliminary validation of incoming <code>FORMATETC</code> structures.</p>
+<pre>int CTinyDataObject::GetDataIndex(const FORMATETC *pfe)
+{
+  for (int i = 0; i &lt; ARRAYSIZE(m_rgfe); i++) {
+    if (pfe-&gt;cfFormat == m_rgfe[i].cfFormat &amp;&amp;
+       (pfe-&gt;tymed    &amp;  m_rgfe[i].tymed)   &amp;&amp;
+        pfe-&gt;dwAspect == m_rgfe[i].dwAspect &amp;&amp;
+        pfe-&gt;lindex   == m_rgfe[i].lindex) {
+      return i;
+    }
+  }
+  return DATA_INVALID;
+}
+</pre>
+<p>The <code>GetDataIndex</code> method takes a candidate <code>FORMATETC</code> and looks to see whether it matches any of the ones in our table of supported formats, <code>m_rgfe</code>, returning its index or <code>DATA_INVALID</code> indicating that there was no match. Note that we consider it a match if any of the requested type media match the supported type media. For example, the caller might pass <code>TYMED_HGLOBAL | TYMED_STREAM</code>, indicating that the caller can handle receiving either an <code>HGLOBAL</code> or an <code>IStream</code>. If our format matches either one, then we’ll call that a success.</p>
+<p>Before we continue, here’s a handy helper function when working with clipboard data: It takes a block of memory and turns it into a <code>HGLOBAL</code>.</p>
+<pre>HRESULT CreateHGlobalFromBlob(const void *pvData, SIZE_T cbData,
+                              UINT uFlags, HGLOBAL *phglob)
+{
+  HGLOBAL hglob = GlobalAlloc(uFlags, cbData);
+  if (hglob) {
+    void *pvAlloc = GlobalLock(hglob);
+    if (pvAlloc) {
+      CopyMemory(pvAlloc, pvData, cbData);
+      GlobalUnlock(hglob);
+    } else {
+      GlobalFree(hglob);
+      hglob = NULL;
+    }
+  }
+  *phglob = hglob;
+  return hglob ? S_OK : E_OUTOFMEMORY;
+}
+</pre>
+<p>The money in a data object lies in the <code>IDataObject::GetData</code> method, because this is where the data object client gets to see what all the excitement is about.</p>
+<pre>CHAR c_szURL[] = "http://www.microsoft.com/";
+
+HRESULT CTinyDataObject::GetData(FORMATETC *pfe, STGMEDIUM *pmed)
+{
+  ZeroMemory(pmed, sizeof(*pmed));
+
+  switch (GetDataIndex(pfe)) {
+  case DATA_TEXT:
+    pmed-&gt;tymed = TYMED_HGLOBAL;
+    return CreateHGlobalFromBlob(c_szURL, sizeof(c_szURL),
+                              GMEM_MOVEABLE, &amp;pmed-&gt;hGlobal);
+  }
+
+  return DV_E_FORMATETC;
+}
+</pre>
+<p>Wow, that was deceptively simple. We ask <code>GetDataIndex</code> to look up the <code>FORMATETC</code>; if it’s <code>DATA_TEXT</code>, we return the desired text in the form of an <code>HGLOBAL</code>. Otherwise, it’s not supported, so we return an appropriate error code. Note that <code>CF_TEXT</code> is specifically ANSI text. For Unicode text, use <code>CF_UNICODE</code>.</p>
+<p>Very closely related to <code>IDataObject::GetData</code> is <code>IDataObject::QueryGetData</code>, which is just like <code>GetData</code> except that it doesn’t actually get the data. It just says whether the data object contains data in the specified format.</p>
+<pre>HRESULT CTinyDataObject::QueryGetData(FORMATETC *pfe)
+{
+  return GetDataIndex(pfe) == DATA_INVALID ? S_FALSE : S_OK;
+}
+</pre>
+<p>The only other interesting method is <code>IDataObject::EnumFormatEtc</code>, which can be asked to return an enumerator that lists all the formats contained in the data object.</p>
+<pre>HRESULT CTinyDataObject::EnumFormatEtc(DWORD dwDirection,
+                                       LPENUMFORMATETC *ppefe)
+{
+  if (dwDirection == DATADIR_GET) {
+    return SHCreateStdEnumFmtEtc(ARRAYSIZE(m_rgfe), m_rgfe, ppefe);
+  }
+  *ppefe = NULL;
+  return E_NOTIMPL;
+}
+</pre>
+<p>If the caller is asking for the formats that it can “get”, then we return an enumerator created from the shell stock format enumerator. Otherwise, we say that we don’t have one.</p>
+<p>The rest of the methods are just stubs.</p>
+<pre>HRESULT CTinyDataObject::GetDataHere(FORMATETC *pfe,
+                                     STGMEDIUM *pmed)
+{
+    return E_NOTIMPL;
+}
+
+HRESULT CTinyDataObject::GetCanonicalFormatEtc(FORMATETC *pfeIn,
+                                               FORMATETC *pfeOut)
+{
+  *pfeOut = *pfeIn;
+  pfeOut-&gt;ptd = NULL;
+  return DATA_S_SAMEFORMATETC;
+}
+
+HRESULT CTinyDataObject::SetData(FORMATETC *pfe, STGMEDIUM *pmed,
+                                                   BOOL fRelease)
+{
+    return E_NOTIMPL;
+}
+
+HRESULT CTinyDataObject::DAdvise(FORMATETC *pfe, DWORD grfAdv,
+                     IAdviseSink *pAdvSink, DWORD *pdwConnection)
+{
+    return OLE_E_ADVISENOTSUPPORTED;
+}
+
+HRESULT CTinyDataObject::DUnadvise(DWORD dwConnection)
+{
+    return OLE_E_ADVISENOTSUPPORTED;
+}
+
+HRESULT CTinyDataObject::EnumDAdvise(LPENUMSTATDATA *ppefe)
+{
+    return OLE_E_ADVISENOTSUPPORTED;
+}
+</pre>
+<p>And we’re done. Let’s take it for a spin.</p>
+<pre>void OnLButtonDown(HWND hwnd, BOOL fDoubleClick,
+                   int x, int y, UINT keyFlags)
+{
+  IDataObject *pdto = new CTinyDataObject();
+  if (pdto) {
+    IDropSource *pds = new CDropSource();
+    if (pds) {
+      DWORD dwEffect;
+      DoDragDrop(pdto, pds, DROPEFFECT_COPY, &amp;dwEffect);
+      pds-&gt;Release();
+    }
+    pdto-&gt;Release();
+  }
+}
+</pre>
+<p>Fire up Wordpad and then click in the client area of our scratch program and drag and drop the invisible text over to the Wordpad window. Ta-da, the text is inserted.</p>
+<p>This even works with Firefox to drag a URL into a Firefox window. But it doesn’t work for Internet Explorer. We’ll see why next time.</p>
+<p><b>Exercise</b>: Why didn’t we also have to set <code>CF_UNICODE</code> text?</p>
+<p><b>Pre-emptive Igor Levicki comment</b>: “<a href="http://blogs.msdn.com/oldnewthing/archive/2008/03/07/8080064.aspx#8109899">Windows Vista should be dragged and dropped to the trash can</a>.”</p>
+
+
+</body>

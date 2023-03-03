@@ -1,0 +1,185 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ARM processor (Thumb-2), part 12: Control transfer</h1>  <!-- .entry-meta -->
+
+<p>The most basic control transfer is a direct relative branch.</p>
+<pre>    b       label       ; unconditional branch
+</pre>
+<p>The reach of the relative branch is around ±16MB, with a compact 16-bit encoding available for branch targets within 2KB.</p>
+<p>The relative branch instruction can be conditionalized on the status flags:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Condition</th>
+<th>Meaning</th>
+<th>Evaluation</th>
+<th>Notes</th>
+</tr>
+<tr>
+<td><code>EQ</code></td>
+<td>equal</td>
+<td>Z = 1</td>
+<td> </td>
+</tr>
+<tr>
+<td><code>NE</code></td>
+<td>not equal</td>
+<td>Z = 0</td>
+<td> </td>
+</tr>
+<tr>
+<td><code>CS</code></td>
+<td>carry set</td>
+<td rowspan="2">C = 1</td>
+<td> </td>
+</tr>
+<tr>
+<td><code>HS</code></td>
+<td>high or same</td>
+<td>unsigned greater than or equal</td>
+</tr>
+<tr>
+<td><code>CC</code></td>
+<td>carry clear</td>
+<td rowspan="2">C = 0</td>
+<td> </td>
+</tr>
+<tr>
+<td><code>LO</code></td>
+<td>low</td>
+<td>unsigned less than</td>
+</tr>
+<tr>
+<td><code>MI</code></td>
+<td>minus</td>
+<td>N = 1</td>
+<td>signed negative</td>
+</tr>
+<tr>
+<td><code>PL</code></td>
+<td>plus</td>
+<td>N = 0</td>
+<td>signed positive or zero</td>
+</tr>
+<tr>
+<td><code>VS</code></td>
+<td>overflow set</td>
+<td>V = 1</td>
+<td>signed overflow</td>
+</tr>
+<tr>
+<td><code>VC</code></td>
+<td>overflow clear</td>
+<td>V = 0</td>
+<td>no signed overflow</td>
+</tr>
+<tr>
+<td><code>HI</code></td>
+<td>high</td>
+<td>C = 1 and Z = 0</td>
+<td>unsigned greater than</td>
+</tr>
+<tr>
+<td><code>LS</code></td>
+<td>low or same</td>
+<td>C = 0 or Z = 1</td>
+<td>unsigned less than or equal</td>
+</tr>
+<tr>
+<td><code>GE</code></td>
+<td>greater than or equal</td>
+<td>N = V</td>
+<td>signed greater than or equal</td>
+</tr>
+<tr>
+<td><code>LT</code></td>
+<td>less than</td>
+<td>N ≠ V</td>
+<td>signed less than</td>
+</tr>
+<tr>
+<td><code>GT</code></td>
+<td>greater than</td>
+<td>Z = 0 and N = V</td>
+<td>signed greater than</td>
+</tr>
+<tr>
+<td><code>LE</code></td>
+<td>less than or equal</td>
+<td>Z = 1 or N ≠ V</td>
+<td>signed less than</td>
+</tr>
+<tr>
+<td><code>AL</code></td>
+<td>always</td>
+<td>always true</td>
+<td>unconditional</td>
+</tr>
+</tbody>
+</table>
+<p>The conditions come in pairs (aside from <code>AL</code>), and toggling the bottom bit negates the condition. For 16-bit conditional branch encoding, this maps to the bottom bit of the first byte of the instruction. For 32-bit conditional branch encoding, you toggle <code>0x40</code> in the second byte of the instruction.</p>
+<p>The conditions are named after the behavior that is expected if they come directly after a <code>CMP</code> instruction. For example, a <code>BEQ</code> instruction that comes directly after a <code>CMP</code> is a conditional branch that is taken if the comparison was between two equal values.</p>
+<p>Four bits of instruction encoding space are lost to encode the condition, so it can reach only 1/16th as far as the unconditional branch: About ±254 bytes for the 16-bit encoding and about ±1MB for the 32-bit encoding.</p>
+<p>There are special conditional branch instructions for testing whether a register is zero.</p>
+<pre>    cbz     Rn, label       ; branch if Rn == 0
+    cbnz    Rn, label       ; branch if Rn != 0
+</pre>
+<p>These are 16-bit instructions which are available only for low registers, and they are capable only of branching <i>forward</i> by up to 126 bytes.¹</p>
+<p>Subroutine calls are performed by branching to the first instruction of the subroutine and putting the return address in the <var>lr</var> register. This should feel familiar, for all of the other non-x86 processors we’ve reviewed perform subroutine linkage the same way.</p>
+<pre>    ; branch and link, stay in Thumb-2
+    bl      label           ; lr = next instruction + 1
+                            ; execution resumes at label
+
+    ; branch and link with exchange, switch to classic ARM
+    blx     label           ; lr = next instruction + 1
+                            ; execution resumes at label
+</pre>
+<p>These instructions have a reach of approximately ±16MB.</p>
+<p>Windows uses Thumb-2 exclusively, so you won’t see the <code>blx</code> instruction used in this way. The <code>X</code> stands for “exchange”, which means that it swaps between Thumb-2 and classic ARM modes.²</p>
+<p>The return address is stored in <var>lr</var>, but with the bottom bit set. There’s a reason for this.</p>
+<p>Thumb-2 instructions must be halfword-aligned, and classic ARM instructions must be word-aligned. Therefore, the bottom bit of any code address is known to be zero, so the processor uses it to encode the target instruction set: If the bottom bit is clear, then execution resumes in classic ARM; if the bottom bit is set, then execution resumes in Thumb-2. Switching dynamically between classic ARM and Thumb-2 instruction sets is known as <i>interworking</i>.</p>
+<p>Windows uses Thumb-2 exclusively, and the convention is that the bottom bit of function pointers is always set. When you look at function pointers in the debugger, they will always be <i>one larger</i> than the address itself.</p>
+<pre>    ; branch with exchange
+    bx      Rn              ; switch to classic ARM if Rn is even
+                            ; execution resumes at Rn &amp; ~1
+
+    ; branch and link with exchange
+    blx     Rn              ; lr = next instruction + 1
+                            ; switch to classic ARM if Rn is even
+                            ; execution resumes at Rn &amp; ~1
+</pre>
+<p>Even though the <code>X</code> instructions can switch to classic ARM, that switching feature is never used in Windows. Function pointers always have the bottom bit set, so the destination of the <code>BLX</code> is always Thumb-2.</p>
+<p>The last branch instruction is the table-based branch:</p>
+<pre>    ; table branch byte
+    tbb     [Rn, Rm]            ; jump to pc + 2 * (byte at Rn + Rm)
+
+    ; table branch halfword
+    tbh     [Rn, Rm, lsl #1]    ; jump to pc + 2 * (halfword at Rn + Rm * 2)
+</pre>
+<p>The base register points to the start of a jump table, and the second register is a byte or word index into the table. The value read from the table is then treated as a forward relative branch offset in units of halfwords.</p>
+<p>Remember that <var>pc</var> has moved ahead four bytes when the instruction executes, so the forward branch is relative to the next instruction, not to the <code>TBB</code> or <code>TBH</code> instruction.</p>
+<p>Since the offsets are stored in an unsigned byte or halfword, the reach of <code>TBB</code> instruction is 514 bytes, and the reach of of the <code>TBH</code> instruction is around 128KB.</p>
+<p>One thing you might notice is that, if you assume that the bottom bit of the register is set, these two instructions are equivalent:</p>
+<pre>    bx      Rn          ; jump to Rn
+    mov     pc, Rn      ; jump to Rn
+</pre>
+<p>The second version takes advantage of the fact that storing a value into the <var>pc</var> register acts as a control transfer. In practice, you won’t see the <code>MOV</code> version because it takes a 32-bit encoding, whereas <code>BX</code> uses a 16-bit encoding.</p>
+<p>Nevertheless, other variations of loading a value into <var>pc</var> are still useful:</p>
+<pre>    mov     pc, [r0,#4] ; jump to address
+    pop     {pc}        ; pop return address and jump there
+</pre>
+<p>Popping a value into the instruction pointer is a common pattern. On entry to a function, you push the registers you need to preserve across the call, and on exit you pop them off. The two sets of registers line up, so that everything pops back to the original source register, <i>except</i> that you pop the old <var>lr</var> into <var>pc</var>, so that the <code>pop</code> instruction is a combination “pop registers from the stack” and “return to caller” instruction.</p>
+<pre>    ; save a bunch of registers, and the return address
+    push    {r3-r6,r11,lr}
+
+    ...
+
+    ; restore the registers, except that the return
+    ; address goes into pc, thereby jumping there
+    pop     {r3-r6,r11,pc}
+</pre>
+<p>Next time, we’ll look at conditional execution.</p>
+<p>¹ The inability to branch backward with <code>CBNZ</code> explains why the sample atomic sequence we used last time uses a two-instruction sequence of <code>cmp r3, #0</code> followd by <code>bne</code>: It can’t use <code>cbnz</code> because it wants to branch backward to retry the operation.</p>
+<p>² This instruction was clearly named back when there were <a href="https://www.youtube.com/watch?v=vS-zEH8YmiM&amp;t=28s"> only two modes</a>. Nowadays, naming the instruction “exchange” would be ambiguous about which of the many modes it is switching to.</p>
+
+
+</body>

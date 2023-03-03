@@ -1,0 +1,169 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is the underlying object behind a COM interface pointer?</h1>  <!-- .entry-meta -->
+
+<p>
+When you’re debugging,
+you might have a pointer to a COM interface and want to know
+what the underlying object is.
+Now, sometimes this trick won’t work because the interface pointer
+actually points to a stub or proxy,
+but in the case where no marshalling is involved, it works great.
+(This technique also works for many C++ compilers for
+any object that has virtual methods and therefore a vtable.)
+</p>
+<p>
+Recall that
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/02/05/68017.aspx">
+the layout of a COM object</a> requires that the
+pointer to a COM interface point to the object’s vtable,
+and it’s the vtable that is the key.
+</p>
+<pre>
+0:000&gt; dv
+            pstm = 0x000c7568
+0:000&gt; dt psf
+Local var @ 0x7cc2c Type IStream*
+0x000c7568
+   +0x000 __VFN_table : 0x1c9c8e84
+</pre>
+<p>
+Okay, so far all we know is that our <code>IStream *</code>
+lives at <code>0x000c7568</code> and its vtable is
+<code>0x1c9c8e84</code>.
+Whose stream implementation is it?
+</p>
+<pre>
+0:000&gt; ln 0x1c9c8e84
+(1c9c8e84)   ABC!CAlphaStream::`vftable'
+</pre>
+<p>
+Aha, it’s a <code>CAlphaStream</code> from <code>ABC.DLL</code>.
+Let’s take a look at it:
+</p>
+<pre>
+0:000&gt; dt ABC!CAlphaStream 0x000c7568
+   +0x000 __VFN_table : 0x1c9c8e84 <font color="blue">// our vtable</font>
+   +0x004 m_cRef           : 480022128
+   +0x008 lpVtbl           : 0x1c9d2d30
+   +0x00c lpVtbl           : 0x00000014
+   +0x010 m_pszName        : 0x000c7844 "??????????"
+   +0x014 m_dwFlags        : 0x3b8
+   +0x018 m_pBuffer        : 0x00000005
+   +0x01c m_cbBuffer       : 705235565
+   +0x020 m_cbPos          : 2031674
+</pre>
+<p>
+“Hey, how did you get the debugger to dump <code>m_pszName</code>
+as a string?”
+If you issue the <code>.enable_unicode 1</code> command,
+then the debugger will treat pointers to <code>unsigned short</code>
+as if they were pointers to Unicode strings.
+(By default, only pointers to <code>wchar_t</code> are treated
+as pointers to Unicode strings.)
+</p>
+<p>
+Okay, back to the structure dump.
+It doesn’t look right at all.
+The reference count is some absurd value,
+the vtable at offset <code>0x00c</code> is a bogus pointer,
+the name in <code>m_pszName</code> is garbage,
+pretty much every field aside from the initial vtable and
+the vtable at offset <code>0x008</code> is blatantly wrong.
+</p>
+<p>
+What happened?
+Well, clearly we were given a “<code>q</code>” pointer;
+i.e., a pointer to one of the vtables other than the first one.
+We have to adjust the pointer so it points to the start of the
+object instead of the middle.
+</p>
+<p>
+How do we do this adjustment?
+There’s the methodical way and the quick-and-dirty way.
+</p>
+<p>
+The methodical way is to use the
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/02/06/68695.aspx">
+adjustor thunks</a>
+to tell you how much the pointer needs to be adjusted
+in order to move from a secondary vtable to the primary one.
+(This assumes that the primary <code>IUnknown</code> implementation
+is the first base class.
+This is not guaranteed to be the case but it usually is.)
+</p>
+<pre>
+0:000&gt; dps 1c9c8e84 l1
+1c9c8e84  1c9eb08e ABC![thunk]:CAlphaStream::QueryInterface`adjustor{8}'
+</pre>
+<p>
+Aha, this adjustors adjust by eight bytes, so we just need to subtract
+eight from our pointer to get the object’s starting address.
+</p>
+<pre>
+0:000&gt; dt ABC!CAlphaStream 0x000c7560<font color="blue">-8</font>
+   +0x000 __VFN_table : 0x1c9c8ee8
+   +0x004 m_cRef           : 2
+   +0x008 lpVtbl           : 0x1c9c8e84
+   +0x00c lpVtbl           : 0x1c9c8e70
+   +0x010 m_pszName        : 0x1c9d2d30 "Scramble"
+   +0x014 m_dwFlags        : 0x14
+   +0x018 m_pBuffer        : 0x000c7844
+   +0x01c m_cbBuffer       : 952
+   +0x020 m_cbPos          : 5
+</pre>
+<p>
+Ah, that looks much nicer.
+Notice that the reference count is a more reasonable value of two,
+the name pointer looks good,
+the buffer size and position appear to be much more realistic.
+</p>
+<p>
+Now, I don’t bother with the whole adjustor thunk thing.
+Instead I rely on the principle of
+“<a href="http://blogs.msdn.com/oldnewthing/archive/2007/04/23/2215961.aspx">Assume it’s mostly correct</a>“:
+Assume that the object is not corrupted and just adjust the pointer by
+eye until the fields line up.
+Let’s take another look at the original (bad) dump:
+</p>
+<pre>
+0:000&gt; dt ABC!CAlphaStream 0x000c7568
+   +0x000 __VFN_table : 0x1c9c8e84
+   +0x004 m_cRef           : 480022128
+   +0x008 lpVtbl           : 0x1c9d2d30
+   +0x00c lpVtbl           : 0x00000014
+   +0x010 m_pszName        : 0x000c7844 "??????????"
+   +0x014 m_dwFlags        : 0x3b8
+   +0x018 m_pBuffer        : 0x00000005
+   +0x01c m_cbBuffer       : 705235565
+   +0x020 m_cbPos          : 2031674
+</pre>
+<p>
+This obviously doesn’t smell right, but what do we have to do
+to get things to line up?
+Well, we know that the vtable we have must go into one of the
+other two vtable slots, either the one at offset <code>0x008</code>
+or the one at offset <code>0x00c</code>.
+If we moved it to offset <code>0x00c</code>,
+then that would move the <code>0x00000014</code> currently at
+offset <code>0x00c</code> down twelve bytes, placing it at
+offset <code>0x018</code>, right at <code>m_pBuffer</code>.
+But obviously <code>0x00000014</code> is not a valid buffer
+pointer, so <code>0x00c</code> can’t be the correct adjustment.
+On the other hand, if we put our vtable at offset <code>0x008</code>,
+then that would move <code>0x000c7844</code> into the
+<code>m_pBuffer</code> position, which is not too unreasonable.
+Therefore, I would guess that the adjustor is eight,
+yielding the same structure dump that we got by dumping the
+vtable to see the adjustor.
+</p>
+<p>
+In real life, I tend to pay attention to the vtables, the
+reference count,
+and any string members because it’s usually pretty easy to see
+whether you got them right.
+(Vtables reside in code.
+Reference counts tend to be small integers.
+Strings are, well, strings.)</p>
+
+
+</body>

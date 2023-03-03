@@ -1,0 +1,41 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Can shrinking a <code>std::string</code> throw an exception?</h1>  <!-- .entry-meta -->
+
+<p>I had a C++ string that I wanted to truncate. Say, something like this:</p>
+<pre>void remove_extension(std::string&amp; s)
+{
+ auto pos = s.rfind('.');
+ if (pos != std::string::npos) {
+  s.resize(pos);
+ }
+}
+</pre>
+<p>The question is whether this function can throw an exception. Can the call to <code>resize</code> throw an exception when used to make a string smaller?</p>
+<p>And the answer appears to be <i>yes</i>, at least in C++17.</p>
+<p>The specification of the <code>resize(n)</code> method in C++17 says that in the case where <code>n &lt;= size()</code>, “the function replaces the string designated by <code>*this</code> with a string of length <code>n</code> whose elements are a copy of the initial elements of the original string designated by <code>*this</code>.”</p>
+<p>In other words, the <code>resize(n)</code> method, when shrinking a string (or leaving the size unchanged), behaves as if a new string is created, which replaces the current string. And creating a new string may throw <code>bad_alloc</code>.</p>
+<p>Of course, implementations may use the <i>as-if</i> rule and resize the string in place, but the standard does not require them to do so.</p>
+<p>But wait, all is not lost. Because another way to shrink a string is to use the <code>erase(n)</code> method.</p>
+<ul>
+<li><b>[basic.string]</b>: <code>basic_string</code> is a contiguous container.</li>
+<li><b>[container.requirements.general]</b> (11): Unless otherwise specified…, all container types defined in this Clause meet the following additional requirements:</li>
+<li><b>[container.requirements.general]</b> (11.3): No <code>erase()</code>… function throws an exception.</li>
+<li><b>[string.erase]</b>: <i>Throws</i>: <code>length_error</code> if <code>n &gt; max_size()</code>.</li>
+</ul>
+<p>There are a few things referenced in the “…” portion of <b>[container.requirements.general]</b> (11), but they do not apply to <code>basic_string</code>.</p>
+<p>Hooray, we can use the <code>erase</code> method to shrink the string and avoid an exception.</p>
+<pre>void remove_extension(std::string&amp; s)
+{
+ auto pos = s.rfind('.');
+ if (pos != std::string::npos) {
+  s.<span style="color: blue;">erase</span>(pos);
+ }
+}
+</pre>
+<p><b>Bonus chatter</b>: It appears that the issue of <code>resize()</code> throwing an exception when trimming was brought up¹ by <a href="https://twitter.com/StephanTLavavej"> Stephan T. Lavavej</a> and fixed by <a href="https://github.com/timsong-cpp"> Tim Song</a> in <a href="https://wg21.link/P1148"> P1148R0</a>: Starting in C++20, if you call the <code>resize()</code> method to shrink the string (or keep it the same size), the behavior is defined in terms of erasure and therefore does not throw an exception.</p>
+<p>¹ I could have written “raised” but I didn’t.²</p>
+<p>² Except that I just did.</p>
+<p> </p>
+
+
+</body>

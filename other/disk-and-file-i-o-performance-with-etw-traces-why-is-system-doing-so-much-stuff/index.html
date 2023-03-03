@@ -1,0 +1,100 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Disk and File I/O performance with ETW traces: Why is System doing so much stuff?</h1>  <!-- .entry-meta -->
+
+<p>Last time, I shared some <a href="/other/preliminary-notes-on-analyzing-disk-and-file-i-o-performance-with-etw-traces"> preliminary notes on analyzing Disk and File I/O performance with ETW traces</a>. Here are some notes on the mysterious <i>System</i> file. (These notes also apply to <i>Process Monitor</i>.)</p>
+<p>What is this <i>System</i> process, and why is it doing a ton of I/O?</p>
+<p>The <i>System</i> process represents work done in the kernel by drivers, not associated with any particular process. There are a few common reasons for activity in <i>System</i>.</p>
+<p>One is I/O issued by drivers, such as anti-malware. You can identify at least some of those anti-malware-initiated I/O by looking for I/O issued to the anti-malware’s databases or executables.</p>
+<p>Another is delayed writes from the disk cache. When an application writes to a file, you’ll see a File I/O logged for the application’s write operation, but that one usually completes into the disk cache. Dirty data in the disk cache is lazily written back to the drive, and that work gets charged to the <i>System</i>.</p>
+<p>There’s also a counterpart to lazy-writing, and that’s prefetching. If the system detects sequential I/O, it will issue a speculative read-ahead from the file into the disk cache. These speculative reads are charged to <i>System</i> as well.</p>
+<p>This work done by <i>System</i> means that a raw tally of file I/O activity may double-count some of the I/O.</p>
+<p>Consider an application that reads from a 64KB file as a series of sixteen 4KB reads. If you look at the File I/O operations for that file, you may see the following:</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Line #</th>
+<th>Process</th>
+<th>I/O Type</th>
+<th>Offset</th>
+<th>Size</th>
+</tr>
+<tr>
+<td align="right">1</td>
+<td>contoso.exe</td>
+<td>Read</td>
+<td align="right">0</td>
+<td align="right">4,096</td>
+</tr>
+<tr>
+<td align="right">2</td>
+<td>contoso.exe</td>
+<td>Read</td>
+<td align="right">4,096</td>
+<td align="right">4,096</td>
+</tr>
+<tr>
+<td align="right">3</td>
+<td>System</td>
+<td>Read</td>
+<td align="right">4,096</td>
+<td align="right">61,440</td>
+</tr>
+<tr>
+<td align="right">4</td>
+<td>contoso.exe</td>
+<td>Read</td>
+<td align="right">8,192</td>
+<td align="right">4,096</td>
+</tr>
+<tr>
+<td align="right">5</td>
+<td>contoso.exe</td>
+<td>Read</td>
+<td align="right">12,288</td>
+<td align="right">4,096</td>
+</tr>
+<tr>
+<td align="right">6</td>
+<td>contoso.exe</td>
+<td>Read</td>
+<td align="right">16,384</td>
+<td align="right">4,096</td>
+</tr>
+<tr style="text-align: center;">
+<td align="right">⋮</td>
+<td>⋮</td>
+<td>⋮</td>
+<td>⋮</td>
+<td>⋮</td>
+</tr>
+<tr>
+<td align="right">17</td>
+<td>contoso.exe</td>
+<td>Read</td>
+<td align="right">61,440</td>
+<td align="right">4,096</td>
+</tr>
+<tr>
+<th>Total</th>
+<td> </td>
+<td> </td>
+<td> </td>
+<td align="right">126,976</td>
+</tr>
+</tbody>
+</table>
+<p>Let’s walk through what happened.</p>
+<p>At line 1, the application issued a 4KB read to read the start of the file. This read went through normally.</p>
+<p>At line 2, the application issued a 4KB read to read the next part of the file. The system realized that the application appears to be doing a sequential read, so it initiated its own 60KB read from the file in anticipation of further reads coming soon. That system-initiated read was logged as line 3.</p>
+<p>The reads from lines 2 and 3 were coalesced at the disk layer, and a single 60KB read was issued to the disk (not shown here). The data went into the disk cache, and the first 4KB of the data was also returned to the application.</p>
+<p>For rotational media, once you pay for the cost of seeking the disk head to the right spot, the additional cost of a 60KB read over a 4KB read is negligible. You may as well get the extra 56KB while you’re already there, since getting there was the hard part.</p>
+<p>At line 4, the application issued another 4KB read. The system’s speculation paid off, and the read was satisfied from the disk cache.</p>
+<p>The same thing happens for lines 5 through 17. These reads were successfully speculated by the system, and they were all satisfied from the disk cache.</p>
+<p>This is great: Read-ahead speculation and the disk cache made the application run much faster. But if all you look at is the <i>Totals</i>, it looks like we read 124KB of data from the disk: 64KB issued by the application, and another 60KB mysteriously issued by <i>System</i>. You might wonder “Why is <i>System</i> coming in and issuing all this I/O? Can’t the system just leave me alone?”</p>
+<p>But now you know: <i>System</i> was issuing all this I/O in order to make <i>your</i> I/O run faster.</p>
+<p><b>Bonus chatter</b>: There’s another category of prefetch which occurs at application launch. The system traces the I/O operations performed by an application when it starts up, and it uses this historical information the next time the application starts up to decide which data to request from the hard drive before allowing the application to start. This serves two purposes: First of all, it gets the data ready before the application requests it. What’s more, since it’s a bulk request, the disk system can reorder the I/O operations to be more efficient. For example, if an application typically reads a file at offset 0, then offset 327,680, and then offset 4096, the prefetch will issue all the requests at once, and the disk I/O system will probably combine the reads at offset 0 and 4096 together.</p>
+<p><b>Bonus bonus chatter</b>: Yet another category of prefetch comes from <i>Superfetch</i>. One of the things that Superfetch does is predict that certain pieces of data are going to be used and use low-priority I/O to get that data into memory ahead of time.</p>
+<p><b>Bonus bonus bonus chatter</b>: If you have a very fast SSD, the system realizes this and turns off Superfetch, ReadyBoot, and the defragmenter.</p>
+
+
+</body>

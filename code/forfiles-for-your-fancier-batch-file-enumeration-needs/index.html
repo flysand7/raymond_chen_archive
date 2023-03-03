@@ -1,0 +1,111 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">FORFILES, for your fancier batch file enumeration needs</h1>  <!-- .entry-meta -->
+
+<p>
+Crack open open the champagne:
+Batch File Week is finally over!
+</p>
+<p>
+Variations on the
+<code>for /f %%i in ('dir /b ...')</code>
+will let you repeat an operation on the contents of a directory,
+possibly even recursively if you add the <code>/s</code> option,
+with some basic attribute-level filtering if you add the
+<code>/a</code> or /a- flags.
+</p>
+<p>
+For your fancy recursive file operations,
+there’s a tool called
+<code>FORFILES</code> which iterates through the contents of a
+directory (recursively if requested),
+executing a command on each item it finds.
+It also has additional filtering capability,
+like selecting files based on their last-modified time.
+For example,
+you could copy all files in the current directory which were
+modified today:
+</p>
+<pre>
+forfiles /D +0 /c "cmd /c copy @file \\server\today"
+</pre>
+<p>
+Unfortuantely, the <code>/D</code> option is not as flexible
+as one might like.
+For example, while it can pick files modified today,
+it can’t pick files modified in the last week,
+because the relative-date-picker knows only how to pick
+<i>files modified on or before a date in the past</i>
+or
+<i>files modified on or after a date in the future</i>.
+(Who the heck wants to operate on files modified in the future?
+Except perhaps the Microsoft Research folks who are working
+on that time machine.)
+</p>
+<p>
+You can type <code>FORFILES /?</code> for more information on what
+you can do (and by seeing what’s omitted, what you can’t do).
+</p>
+<p>
+If the command you want to execute is rather long,
+you can offload it back into the batch file being executed:
+</p>
+<pre>
+@echo off
+if "%1"=="/callback" goto callback
+forfiles /D +0 /c "cmd /c call "%~f0" /callback @isdir @file @fsize"
+goto :eof
+:callback
+rem %2 = @isdir
+rem %3 = @file
+rem %4 = @fsize
+if %2==TRUE echo Skipping directory %3.&amp;goto :eof
+echo Copying file %3 to \\server\today (%4 bytes)
+</pre>
+<p>
+One gotcha here is that since each command runs in a sub-shell,
+it can read environment variables, but any modifications it makes
+to environment variables will be lost since the command is modifying
+only its local environment variables.
+A workaround for this is to use <code>FORFILES</code> to select
+the data to operate on,
+but use <code>FOR</code> to actually perform the operation.
+Since <code>FOR</code> runs inside the main command interpreter,
+it can modify environment variables.
+</p>
+<pre>
+set TOTALSIZE=0
+for /f %%i in ('forfiles /d +0 /c "cmd /c if @isdir==FALSE echo @fsize"') <a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/08/06/8835317.aspx">^</a>
+do set /a TOTALSIZE=TOTALSIZE + %%i
+</pre>
+<p>
+Here, we use <code>FORFILES</code> to enumerate all the files
+(not directories)
+modified today
+and print their sizes.
+We wrap this inside a <code>FOR</code> which reads the sizes
+and adds them up.
+</p>
+<p>
+If the operation you want to perform on each file is complex,
+you can of course offload it into a
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/08/02/10334559.aspx">
+subroutine call</a>.
+</p>
+<pre>
+for /f %%i ^
+in ('forfiles /d +0 /c "cmd /c if @isdir==FALSE echo @fsize"') ^
+do call :subroutine %%i
+</pre>
+<p>
+I’m cheating here because I know that <code>@fsize</code> doesn’t
+contain spaces.
+If you are processing file names, then you need to be more careful.
+</p>
+<pre>
+for /f "tokens=*" %%i ^
+in ('forfiles /d +0 /c "cmd /c if @isdir==FALSE echo @fname"') ^
+do call :subroutine %%i
+</pre>
+
+
+</body>

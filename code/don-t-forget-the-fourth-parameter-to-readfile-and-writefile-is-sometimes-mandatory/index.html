@@ -1,0 +1,107 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Don’t forget, the fourth parameter to ReadFile and WriteFile is sometimes mandatory</h1>  <!-- .entry-meta -->
+
+<p><p>
+The <code>Read­File</code>
+and
+<code>Write­File</code>
+functions have a parameter called
+<code>lp­Number­Of­Byte­Read</code>,
+which is documented as
+</p>
+<pre>
+  __out_opt LPDWORD lpNumberOfBytesRead,
+// or
+  __out_opt LPDWORD lpNumberOfBytesWritten,
+</pre>
+<p>
+“Cool,” you think.
+“That parameter is optional, and I can safely pass <code>NULL</code>.”
+</p>
+<blockquote class="q">
+<p>
+My program runs fine if standard output is a console,
+but if I redirect standard output, then it crashes
+on the <code>Write­File</code> call.
+I verified that the handle is valid.
+</p>
+<pre>
+int __cdecl main(int, char **)
+{
+  // error checking removed for expository purposes
+  HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
+  WriteFile(hStdOut, “hello”, 5, NULL, NULL);
+  return 0;
+}
+</pre>
+<p>
+The crash occurs inside the <code>Write­File</code> function
+trying to write to a null pointer.
+</p>
+</blockquote>
+<p>
+But you need to read further in the documentation for
+<code>Write­File</code>:
+</p>
+<blockquote class="q">
+<dl>
+<dt><i>lp­Number­Of­Bytes­Written</i> [out, optional] 
+<dd>
+<p>
+    A pointer to the variable that receives the number of bytes written
+    when using a synchronous <i>hFile</i> parameter.
+    <b>Write­File</b> sets this value to zero
+    before doing any work or error checking.
+    Use <b>NULL</b> for this parameter if this is an asynchronous operation
+    to avoid potentially erroneous results.
+</p>
+<p>
+    This parameter can be <b>NULL</b>
+    only when the <i>lp­Over­lapped</i> parameter is not <b>NULL</b>.
+</p>
+</dd></dt></dl>
+</blockquote>
+<p>
+That second paragraph is the catch:
+The parameter is sometimes optional and sometimes mandatory.
+The annotation language used in the function head is not
+expressive enough to say,
+“Sometimes optional, sometimes mandatory,”
+so it chooses the weakest annotation (“optional”)
+so as not to generate false positives when run through
+<a href="http://msdn.microsoft.com/en-us/library/bb385907.aspx">
+static code analysis tools</a>.
+</p>
+<p>
+With the benefit of hindsight, the functions probably should have
+been split into pairs, one for use with an <code>OVERLAPPED</code>
+structure and one without.
+That way, one version of the function would have a mandatory
+<code>lp­Number­Of­Bytes­Written</code>
+parameter and no
+<code>lp­Over­lapped</code> parameter at all;
+the other would have a mandatory
+<code>lp­Over­lapped</code> parameter and no
+<code>lp­Number­Of­Bytes­Written</code>
+parameter at all.
+</p>
+<p>
+The crash trying to write to a null pointer is consistent with the
+remark in the documentation that
+the
+<code>lp­Number­Of­Bytes­Written</code>
+is set to zero before any work is performed.
+As for why the code runs okay if output is not redirected:
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/09/29/10217910.aspx">
+Appearing to succeed is a valid form of undefined behavior</a>.
+It appears that when the output handle is a console,
+the rule about
+<code>lp­Number­Of­Bytes­Written</code>
+is not consistently enforced.
+</p>
+<p>
+At least for now.
+</p></p>
+
+
+</body>

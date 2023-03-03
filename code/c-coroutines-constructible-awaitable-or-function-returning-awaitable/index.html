@@ -1,0 +1,159 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Constructible awaitable or function returning awaitable?</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/c-coroutines-getting-started-with-awaitable-objects"> Last time</a>, we learned how to create simple awaitable objects by creating a structure that implements the <code>await_</code><code>suspend</code> method (and relies on <code>suspend_</code><code>always</code> to do the coroutine paperwork for us). We can then construct the awaitable object and then <code>co_await</code> on it.</p>
+<p>As a reminder, here’s our <code>resume_</code><code>new_</code><code>thread</code> structure:</p>
+<pre>struct resume_new_thread : std::experimental::suspend_always
+{
+  void await_suspend(
+      std::experimental::coroutine_handle&lt;&gt; handle)
+  {
+    std::thread([handle]{ handle(); }).detach();
+  }
+};
+</pre>
+<p>Another option is to write a function that returns a simple awaitable object, and <code>co_await</code> on the return value.</p>
+<pre><span style="color: blue;">auto resume_new_thread()
+{</span>
+  struct awaiter : std::experimental::suspend_always
+  {
+    void await_suspend(
+        std::experimental::coroutine_handle&lt;&gt; handle)
+    {
+      std::thread([handle]{ handle(); }).detach();
+    }
+  };
+  <span style="color: blue;">return awaiter{};
+}</span>
+</pre>
+<p>What’s the difference? Which is better?</p>
+<p>Both awaitable object patterns let you put instance members on the awaitable object:</p>
+<pre>auto o = blah();
+o.configure_something(true);
+co_await o;
+
+// fluent interface pattern
+co_await blah().configure_something(true);
+</pre>
+<p>In order to have static members, the type must be publicly visible.</p>
+<pre>// blah can be a struct but not a function
+co_await blah::fluffy();
+</pre>
+<p>Both of the patterns permit the <code>blah</code> to be parameterized:</p>
+<pre>co_await blah(1, false);
+</pre>
+<p>but only the function pattern permits a different awaitable object to be returned based on the parameter types. That’s because the function pattern lets you create a different overloaded function for each set of parameters.</p>
+<pre>co_await blah(1);       // awaits whatever blah(int) returns
+co_await blah(false);   // awaits whatever blah(bool) returns
+</pre>
+<p>The function version also supports marking the return value as <code>[[nodiscard]]</code>, which recommends that the compiler issue a warning if the return value is not consumed. This avoids a common mistake of writing</p>
+<pre>blah();
+</pre>
+<p>instead of</p>
+<pre>co_await blah();
+</pre>
+<p>Let’s make a comparison table.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Property</th>
+<th>struct</th>
+<th>function</th>
+</tr>
+<tr>
+<td>Instance members</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Static members</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Allows parameters</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Different awaitable type<br/>
+depending on parameter types</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Different awaitable type<br/>
+depending on parameter values</td>
+<td>No</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Warn if not <code>co_await</code>ed</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<p>(Note that neither gives you the ability to change the awaitable type based on the parameter <i>values</i>.)</p>
+<p>Here’s a sketch of how each pattern would implement what it can:</p>
+<pre>struct blah : std::experimental::suspend_always
+{
+  void await_suspend(
+      std::experimental::coroutine_handle&lt;&gt; handle);
+
+  // instance member, fluent interface pattern
+  blah&amp; configure_something(bool value);
+
+  // static member
+  static blah fluffy();
+
+  // parameterized
+  blah();
+  blah(int value);
+  blah(bool value);
+};
+
+// function pattern
+[[nodiscard]] auto blah()
+{
+  struct awaiter : std::experimental::suspend_always
+  {
+    void await_suspend(
+        std::experimental::coroutine_handle&lt;&gt; handle) { ... }
+
+    // instance member, fluent interface pattern
+    awaiter&amp; configure_something(bool value) { ... }
+  };
+  return awaiter{};
+}
+
+[[nodiscard]] auto blah(int value)
+{
+  struct awaiter : std::experimental::suspend_always
+  {
+    void await_suspend(
+        std::experimental::coroutine_handle&lt;&gt; handle) { ... }
+
+    // instance member, used only for blah(int)
+    awaiter&amp; configure_int(bool value) { ... }
+  };
+  return awaiter{};
+}
+
+[[nodiscard]] auto blah(bool value)
+{
+  struct awaiter : std::experimental::suspend_always
+  {
+    void await_suspend(
+        std::experimental::coroutine_handle&lt;&gt; handle) { ... }
+
+    // instance member, used only for blah(bool)
+    awaiter&amp; configure_bool(bool value) { ... }
+  };
+  return awaiter{};
+}
+</pre>
+<p>The upside of the function pattern is that you can have completely different implementations depending on which overload is called. The downside is that you end up repeating yourself a lot. Though you may be able to reduce some of the extra typing by factoring into a base class in an implementation namespace.</p>
+
+
+</body>

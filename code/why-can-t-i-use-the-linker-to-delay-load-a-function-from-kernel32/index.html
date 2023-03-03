@@ -1,0 +1,103 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why can't I use the linker to delay-load a function from kernel32?</h1>  <!-- .entry-meta -->
+
+<p>
+For some time (I am too lazy to look up when it was introduced),
+the Visual Studio linker has supported
+a feature
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/02/04/7439592.aspx">
+known as delay-loading</a>.
+But why can’t you use this feature to delay-load a function
+from <code>kernel32</code>?
+It would be very handy:
+If you write
+</p>
+<pre>
+if (CurrentWindowsVersionSupportsKernelFunctionXyz())
+{
+  Xyz(...);
+}
+</pre>
+<p>
+the program fails to load on versions of Windows which do not
+support the function <code>Xyz</code>
+because
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/09/16/54938.aspx">
+the Win32 load rejects loading a module that contains unresolved
+references</a>.
+On the other hand, if you could mark <code>kernel32</code> as
+delay-loaded, then the code above would work,
+since the call to <code>Xyz</code> would be redirected to a stub
+that calls <code>GetProcAddress</code>.
+Since the <code>GetProcAddress</code>
+is performed only when the code path is hit,
+the loader won’t complain at load time.
+But if you try to delay-load <code>kernel32</code>,
+the linker gets upset at you.
+Why won’t it let me delay-load <code>kernel32</code>?
+</p>
+<p>
+The linker delay-load feature operates on the DLL level,
+not on the function level.
+When you put a DLL on the <code>/DELAYLOAD</code> list,
+the linker changes all calls to functions in that DLL
+into calls to linker-generated stubs.
+These stubs load the target DLL, call <code>GetProcAddress</code>,
+then resume execution at the target function.
+</p>
+<p>
+Since the delay-load feature operates on the DLL level,
+if you put <code>kernel32</code>
+on the delay-load list,
+then <i>all</i> calls to functions in <code>kernel32</code>
+turn into calls to stubs.
+</p>
+<p>
+And then you are trapped in this Catch-22.
+</p>
+<p>
+When a function from <code>kernel32</code> gets called,
+transfer goes to the stub function, which loads the
+target DLL (<code>kernel32</code>) to get the target function.
+Except that loading the target DLL means calling
+<code>LoadLibrary</code>,
+and finding the target function means calling
+<code>GetProcAddress</code>,
+and these functions
+<i>themselves reside in <code>kernel32</code></i>.
+</p>
+<p>
+Now you’re trapped.
+To load <code>kernel32</code>,
+we need to call <code>LoadLibrary</code>,
+but our call to <code>LoadLibrary</code> was redirected
+to a stub which… calls <code>LoadLibrary</code>.
+</p>
+<p>
+Sure, the linker folks could have added special casing for
+<code>kernel32</code>, say, having a list of core functions
+like <code>InitializeCriticalSection</code> which are
+never delay-loaded and always go directly into <code>kernel32</code>.
+But that’s really out of scope for the <code>/DELAYLOAD</code> feature,
+whose purpose is not to make it easier to call functions which
+might not be there,
+but rather to assist in application startup performance
+by avoiding the cost of loading the target DLL until a function from
+it is called.
+If there were functions that went directly into <code>kernel32</code>,
+then the stated purpose of delay-loading fails:
+that import of <code>InitializeCriticalSection</code> forces
+<code>kernel32</code> to be loaded when the module is loaded,
+completely contrary to the aim of delay-loading to avoid
+loading <code>kernel32</code> at module load time.
+</p>
+<p>
+Now, it’s certainly a nice feature to be able to perform
+delay-loading on a per-function level,
+in order to make it easier to write
+code which changes behavior based on the current version of Windows,
+but that’s a different problem from what the <code>/DELAYLOAD</code>
+switch was created to solve.</p>
+
+
+</body>

@@ -1,0 +1,84 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I create a shortcut whose target is specified by a relative path?</h1>  <!-- .entry-meta -->
+
+<p>Commenter Richard wonders <a href="https://devblogs.microsoft.com/oldnewthing/#comment-1263505">if there’s such a thing as a “relative” shortcut</a> whose target is specified by a path relative to the shortcut itself. </p>
+<p>Let’s start with a program that creates a normal shortcut. This is a Little Program which does little to no error checking. </p>
+<pre>
+#define UNICODE
+#define <a href="https://devblogs.microsoft.com/oldnewthing/">_UNICODE</a>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;pathcch.h&gt;
+
+int __cdecl wmain(int, wchar_t **)
+{
+ <a href="https://devblogs.microsoft.com/oldnewthing/">CCoInitialize</a> init;
+
+ CComPtr&lt;IShellLink&gt; link;
+ link.CoCreateInstance(CLSID_ShellLink);
+
+ wchar_t path[MAX_PATH];
+ GetModuleFileName(GetModuleHandle(nullptr), path, ARRAYSIZE(path));
+ link-&gt;SetPath(path);
+
+ PathCchRemoveFileSpec(path, ARRAYSIZE(path));
+ PathCchAppend(path, ARRAYSIZE(path), L"Awesome.lnk");
+
+ CComQIPtr&lt;IPersistFile&gt;(link)-&gt;Save(path, FALSE);
+
+ return 0;
+}
+</pre>
+<p>When run, this program creates a shortcut to itself in the same directory as the program. </p>
+<p>Here are the changes necessary to make the shortcut remember that the target’s location relative to the shortcut itself: </p>
+<pre>
+//
+</pre>
+<p>It’s a trick. Normal shortcuts already remember the target’s location relative to the shortcut itself. </p>
+<p>However, the relative path is not used until other avenues have been exhausted. To give the relative path more prominence, let’s disable the other avenues. </p>
+<pre>
+#define UNICODE
+#define <a href="https://devblogs.microsoft.com/oldnewthing/">_UNICODE</a>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;pathcch.h&gt;
+
+int __cdecl wmain(int, wchar_t **)
+{
+ <a href="https://devblogs.microsoft.com/oldnewthing/">CCoInitialize</a> init;
+
+ CComPtr&lt;IShellLink&gt; link;
+ link.CoCreateInstance(CLSID_ShellLink);
+
+ <font color="blue">// Disable other ways of resolving the shortcut
+ CComQIPtr&lt;IShellLinkDataList&gt; dataList(link);
+ DWORD flags;
+ dataList-&gt;GetFlags(&amp;flags);
+ flags |= SLDF_FORCE_NO_LINKINFO;
+ flags |= SLDF_FORCE_NO_LINKTRACK;
+ dataList-&gt;SetFlags(flags);</font>
+
+ wchar_t path[MAX_PATH];
+ GetModuleFileName(GetModuleHandle(nullptr), path, ARRAYSIZE(path));
+ link-&gt;SetPath(path);
+
+ PathCchRemoveFileSpec(path, ARRAYSIZE(path));
+ PathCchAppend(path, ARRAYSIZE(path), L"Awesome.lnk");
+
+ CComQIPtr&lt;IPersistFile&gt;(link)-&gt;Save(path, FALSE);
+
+ return 0;
+}
+</pre>
+<p>The <code>SLDF_</code><code>FORCE_</code><code>NO_</code><code>LINKINFO</code> flag disables the information the shell normally creates to identify the volume that contains the shortcut target. This is used, for example, if the target was on a network volume, so the shell can reconnect to that volume in order to find the target. </p>
+<p>The <code>SLDF_</code><code>FORCE_</code><code>NO_</code><code>LINKTRACK</code> flag disables the information the shell normally creates to identify the object with the assistance of the <a href="https://support.microsoft.com/help/312403/distributed-link-tracking-on-windows-based-domain-controllers">distributed link tracking service</a>. </p>
+<p>Deleting those two pieces of information means that the shell cannot use them to help find the shortcut. If the file doesn’t exist at the specified absolute path, then the relative path will be applied to the location of the shortcut itself, and the shell will look for the file at the resulting location. </p>
+<p><b>Bonus chatter</b>: The <code>IShell­Link::</code><code>Set­RelativePath</code> method is for the benefit of code which <a href="https://blogs.msdn.microsoft.com/oldnewthing/20110224-00/?p=11403">stores shortcuts in places other than files</a>. You call <code>IShell­Link::</code><code>Set­RelativePath</code> before saving the shortcut to memory, passing a path to a location you want to pretend the shortcut file is saved. The shell will remember the path to the shortcut target relative to the path you pass in. Conversely, after you load the shortcut from memory, you call <code>IShell­Link::</code><code>Set­RelativePath</code> to specify the path to pretend the shortcut was loaded from. The relative path remembered when the shortcut was saved will be applied to this path to help find the target. </p>
+<p><b>Double bonus chatter</b>: You can use a <a href="https://blogs.msdn.microsoft.com/oldnewthing/20130503-00/?p=4463">simple pidl</a> to make the shortcut target reside at any path you like. </p>
+
+
+</body>

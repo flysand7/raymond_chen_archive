@@ -1,0 +1,94 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Cancelling a Windows Runtime asynchronous operation, part 1: C#</h1>  <!-- .entry-meta -->
+
+<p>The Windows Runtime has a lot of asynchronous operations, and the typical way of dealing with them is to schedule a continuation when the operation completes. Depending on the language, it might be <code>Promise.then</code> or <code>task.then()</code> or <code>await</code> or <code>co_await</code>. They all boil down to “Return from the function immediately, and resume execution when this asynchronous thing produces a value.”</p>
+<p>Windows Runtime asynchronous operations can be cancelled, and then things get interesting.</p>
+<p>Invoking the <code>Cancel</code> method is, technically, merely a request and not a demand. Operations are advised to support cancellation, but it is not strictly required. An operation might choose to ignore your cancellation request outright. Or it could process the cancellation request by causing the operation to complete immediately with partial results.</p>
+<p>But let’s assume that the operation accepted your cancel request and indeed completed the operation with a status of <code>Canceled</code>.</p>
+<p>What does your code see as the result of the cancellation?</p>
+<p>Let’s start with C#. In order to cancel the operation, you have to wrap it in a task, and then cancel the task.</p>
+<pre>var picker = new FileOpenPicker { FileTypeFilter = { ".txt" } };
+<span style="color: blue;">var cts = new CancellationTokenSource();
+cts.CancelAfter(TimeSpan.FromSeconds(3));</span>
+
+StorageFile file;
+try {
+    file = await picker.PickSingleFileAsync()<span style="color: blue;">.AsTask(cts.Token)</span>;
+} <span style="color: blue;">catch (TaskCanceledException)</span> {
+    file = null;
+}
+
+if (file != null) {
+    DoSomething(file);
+}
+</pre>
+<p>We cancel the file picker dialog after three seconds. This is done by taking the <code>IAsyncOperation</code> returned by <code>Pick­Single­File­Async()</code>, convert it to a <code>Task</code> with <code>AsTask</code>, and associate it with a cancellation token source that has been configured to cancel after three seconds.</p>
+<p>When this operation is canceled, you get a <code>Task­Canceled­Exception</code>. This was the result of the Windows Runtime asynchronous operation completing with a status of <code>Canceled</code>. The C# projection then converts this to a <code>Task­Canceled­Exception</code>.</p>
+<p>This is the behavior that C# asynchronous code expects, so it’s natural that the C# projection of Windows Runtime asynchronous operations into tasks behaves this way.</p>
+<p>Next time, we’ll look at C++/CX with PPL.</p>
+<p><b>Bonus chatter</b>: You can also cancel the task by talking directly to the <code>IAsyncOperation</code> instead of converting it into a C# Task.</p>
+<pre>async void CancelAfter(IAsyncInfo info, TimeSpan delay)
+{
+    await Task.delay(delay);
+    info.Cancel();
+}
+
+var picker = new FileOpenPicker { FileTypeFilter = { ".txt" } };
+StorageFile file;
+try {
+    <span style="color: blue;">var op = picker.PickSingleFileAsync();
+    CancelAfter(op, TimeSpan.FromSeconds(3));
+    file = await op</span>;
+} <span style="color: blue;">catch (TaskCanceledException)</span> {
+    file = null;
+}
+
+if (file != null) {
+    DoSomething(file);
+}
+</pre>
+<p>You could try to earn some style points by moving the <code>CancelAfter</code> code inline.</p>
+<pre>var picker = new FileOpenPicker { FileTypeFilter = { ".txt" } };
+StorageFile file;
+try {
+    var op = picker.PickSingleFileAsync();
+    <span style="color: blue;">((Action)(async () =&gt; { await Task.Delay(TimeSpan.FromSeconds(3)); op.Cancel(); }))();</span>
+    file = await op;
+} catch (TaskCanceledException) {
+    file = null;
+}
+</pre>
+<p>Or perhaps more usefully, let <code>CancelAfter</code> return the original asynchronous operation, so you can cancel it and await it at one go.</p>
+<pre>public static class Helpers
+{
+    static async void CancelAfterHelper(IAsyncInfo info, TimeSpan delay)
+    {
+        await Task.Delay(delay);
+        info.Cancel();
+    }
+
+    static public IAsyncAction CancelAfter(this IAsyncAction action, TimeSpan delay)
+    {
+        CancelAfterHelper(action, delay);
+        return action;
+    }
+
+    static public IAsyncOperation&lt;T&gt;
+        CancelAfter&lt;T&gt;(this IAsyncOperation&lt;T&gt; op, TimeSpan delay)
+    {
+        CancelAfterHelper(op, delay);
+        return op;
+    }
+}
+
+var picker = new FileOpenPicker { FileTypeFilter = { ".txt" } };
+StorageFile file;
+try {
+    file = await picker.PickSingleFileAsync()<span style="color: blue;">.CancelAfter(TimeSpan.FromSeconds(3))</span>;
+} catch (TaskCanceledException) {
+    file = null;
+}
+</pre>
+
+
+</body>

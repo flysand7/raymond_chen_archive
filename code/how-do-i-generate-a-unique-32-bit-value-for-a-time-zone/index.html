@@ -1,0 +1,180 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I generate a unique 32-bit value for a time zone?</h1>  <!-- .entry-meta -->
+
+<p>
+Public Service Announcement:
+Daylight Saving Time ends in most parts of the United States this weekend.
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/11/05/10086404.aspx#10086843">
+Other parts of the world may change on a different day from the
+United States</a>.
+</p>
+<p>
+A customer asked the following question:
+</p>
+<blockquote class="q"><p>
+Given two
+<code>TIME_ZONE_INFORMATION</code> structures,
+I would like to compute a <code>LONG</code> for each
+that I can then compare to determine whether they represent
+the same time zone.
+ When I say the same, I mean that when the two are passed
+to <code>System­Time­To­Tz­Specific­Local­Time</code>
+with the same <code>LPSYSTEM­TIME</code> input, the output is the same.
+</p></blockquote>
+<p>
+A <code>TIME_ZONE_INFORMATION</code> structure
+contains more information than can be packed into a 32-bit value.
+(At least there’s no obvious way to pack it into a 32-bit value.)
+You’re not going to be able to squeeze the entire structure
+into a 32-bit value that is unique for each time zone,
+so that comparing the 32-bit values will tell you whether the
+time zones are the same or not.
+</p>
+<p>
+Fortunately, the customer also provided context for the
+question, explaining their underlying problem.
+And as is often the case, the customer had broken down the
+problem into two parts, one easy and one impossible.
+The customer solved the easy part
+and was asking for help with the impossible part.
+</p>
+<p>
+But on closer inspection, the problem wasn’t so much impossible
+as it was improperly specified:
+</p>
+<blockquote class="q"><p>
+The bigger problem I’m actually trying to solve is that we call
+<code>System­Time­To­Tz­Specific­Local­Time</code>
+inside a deeply
+nested loop.
+I would like to cache the results for performance,
+using the time zone as a key to a <code>CAtl­Map</code>
+which would hold the cached results for each time zone.
+I’m looking for help coming up with what combinaion of the
+structure members to use to uniquely identify the time zone.
+</p></blockquote>
+<p>
+Okay,
+the customer appears to be a bit confused about hash keys.
+Hash keys do not need to be unique for each time zone.
+It is perfectly legitimate for two different items to result
+in the same hash value;
+that’s why we have the term <i>hash collision</i>.
+Of course, you want to take reasonable steps to minimize collisions,
+but when you don’t control the domain space,
+hash collisions are a part of life.
+</p>
+<blockquote class="q">
+<p>
+From looking at some time zone data, it looks like
+<code>(Bias + Standard­Bias)</code> is unique for any time zone,
+but I know that there are a lot of complicated
+issues when dealing with time zones
+so I wanted to check if I could be sure of that.
+</p>
+<pre>
+LONG CTimeZoneTraits::GetHash(const TIME_ZONE_INFORMATION&amp; tz)
+{
+ return tz.Bias + tz.StandardBias;
+}
+int CTimeZoneTraits::Equals(const TIME_ZONE_INFORMATION&amp; tz1,
+                            const TIME_ZONE_INFORMATION&amp; tz2)
+{
+ return tz1.Bias         == tz2.Bias &amp;&amp;
+        tz1.StandardBias == tz2.StandardBias &amp;&amp;
+        tz1.DaylightBias == tz2.DaylightBias &amp;&amp;
+        memcmp(&amp;tz1.StandardDate, &amp;tz2.StandardDate,
+                                  sizeof(tz1.StandardDate) &amp;&amp;
+        memcmp(&amp;tz1.DaylightDate, &amp;tz2.DaylightDate,
+                                  sizeof(tz1.DaylightDate);
+}
+</pre>
+</blockquote>
+<p>
+If you think it about it, it’s clear that
+<code>(Bias + Standard­Bias)</code> does not always uniquely identify
+a time zone.
+Consider two cities at the same longitude in the same hemisphere
+in the middle of winter:
+They will have the same <code>Standard­Bias</code>
+(because they have the same longitude) and the same
+<code>Bias</code>
+(because Daylight Saving Time is not applicable during the winter),
+but if the cities are in different countries (or sometimes,
+even
+<a href="http://en.wikipedia.org/wiki/Time_in_Indiana">
+different parts of the same country</a>),
+they will transition to/from Daylight Saving Time differently
+and consequently do not belong to the same time zone.
+</p>
+<p>
+On the other hand, since this is being used simply as a hash key,
+uniqueness is not an absolute requirement,
+so even a bad hash function will still “work”;
+it’ll just be slower than a good hash function.
+</p>
+<p>
+If it were up to me, I would choose as a hash function
+something like this:
+</p>
+<pre>
+LONG CTimeZoneTraits::GetHash(const TIME_ZONE_INFORMATION&amp; tz)
+{
+ return tz.StandardBias +
+        tz.StandardDate.wDay +
+        (tz.StandardDate.wDayOfWeek &lt;&lt; 16) +
+        (tz.StandardDate.wMonth &lt;&lt; 24);
+}
+</pre>
+<p>
+I wouldn’t use the <code>Bias</code> in the hash code because
+the <code>Bias</code> changes over time.
+If the hash table lifetime extends across a daylight saving time transition,
+then the <code>Bias</code> will change.
+</p>
+<p>
+For the hash, I use the <code>Standard­Bias</code>, which is the number
+of minutes east of UTC.
+In practice this does not exceed
+60 × 25 = 1500,
+and it’s a multiple of 30.
+(But
+<a href="http://blogs.msdn.com/oldnewthing/archive/2007/03/09/1840625.aspx">
+not necessarily a multiple of 60</a>.)
+The <code>wDay</code> is typically in the range [0,5], though it can
+go as high as 31 if the transition is based on a specific day.
+Therefore, I’ll simply add it to the <code>Standard­Bias</code>,
+taking advantage of the fact that the <code>Standard­Bias</code> is
+a multiple of 30.
+The month and day of the week are thrown into the upper 16 bits.
+</p>
+<p>
+Now, this hash function will still have collisions: If there are
+two time zones at the same longitude
+which transition to Standard time with the same rule,
+but which transition to Daylight time according to different rules,
+then we will still have a collision.
+</p>
+<blockquote class="q"><p>
+I would like to reduce the number of collisions
+by understanding how often two equal values of
+<code>(Bias + Standard­Bias)</code>
+could represent different time zones.
+</p></blockquote>
+<p>
+How likely is such a collision?
+You can answer this question yourself:
+Take all the time zones currently known to the system and
+hash them all to see what happens.
+Of course,
+<a href="http://www.kyivpost.com/news/nation/detail/113166/">
+time zones change all the time</a>,
+so don’t assume that
+your results will hold true in perpetuity,
+but if you’re just looking for a rough guide, calculating
+against the current state of affairs is a pretty good one.
+It’s true that time zones change all the time,
+but they typically don’t change by much.</p>
+
+
+</body>

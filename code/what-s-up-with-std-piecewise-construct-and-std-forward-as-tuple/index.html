@@ -1,0 +1,132 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What’s up with <code>std::piecewise_construct</code> and <code>std::forward_as_tuple</code>?</h1>  <!-- .entry-meta -->
+
+<p>There is this curious marker type in the C++ standard library called <code>piecewise_<wbr/>construct_t</code>, and an inline variable <code>piecewise_<wbr/>construct</code> that produces it. What’s the deal with this guy, and his friend <code>std::forward_as_tuple</code>?</p>
+<p><a href="https://twitter.com/StephanTLavavej"> STL</a> explained it to me.</p>
+<p>We’ll start with <code>std::forward_as_tuple</code>: This takes its arguments and produces a tuple of corresponding references.</p>
+<pre>int x;
+
+// produces std::tuple&lt;int&amp;, std::string&amp;&amp;&gt;
+std::forward_as_tuple(x, std::string(L"hello"));
+</pre>
+<p>Note that this potentially contains a tuple of rvalue references, which means that you had better use the tuple before the end of the statement, before the temporaries are destroyed. If you don’t, then you have a use-after-free bug:</p>
+<pre>auto values = std::forward_as_tuple(x, std::string(L"hello"));
+<i>std::get&lt;1&gt;(values); // dangling reference to destructed string</i>
+</pre>
+<p>The purpose of <code>std::forward_as_tuple</code> is to wrap up a bunch of parameters, probably a parameter pack, into a single object that can be passed as a single non-pack parameter. This is handy if you need to work with a pattern that accepts only a single parameter, so you use the tuple as a way to aggregate multiple objects into one.</p>
+<pre>template&lt;typename...Args&gt;
+auto f(Args&amp;&amp;...args)
+{
+    auto t = std::forward_as_tuple(std::forward&lt;Args&gt;(args)...);
+    ... do something with t ...
+}
+</pre>
+<p>A case where you may want to wrap up a bunch of parameters into a single parameter is if you need to pass <i>multiple</i> groups of parameters. The C++ language doesn’t let you write</p>
+<pre>template&lt;typename...Group1,
+         typename...Group2&gt;
+void something(Group1&amp;&amp;... group1,
+               Group2&amp;&amp;... group2)
+{
+    ...
+}
+</pre>
+<p>because there’s no way to know where the first group ends and the second group begins. But you can do this if you pass the parameters as perfectly-forwarded tuples of references.</p>
+<pre>template&lt;typename...Group1,
+         typename...Group2&gt;
+void something(std::tuple&lt;Group1&amp;&amp;...&gt; group1,
+               std::tuple&lt;Group2&amp;&amp;...&gt; group2)
+{
+    ...
+}
+</pre>
+<p>This is where <code>std::piecewise_construct</code> enters the story.</p>
+<p>The <code>std::pair</code> wants to let you construct the components in place. The existing two-parameter constructor tries to construct the first element from the first parameter and the second element from the second parameter:</p>
+<pre>struct T1
+{
+    T1(int);
+    T1(int, std::string);
+};
+
+struct T2
+{
+    T2(std::string);
+    T2();
+};
+
+auto f()
+{
+    // uses T1(a1) and T2(a2)
+    return std::pair&lt;T1, T2&gt;(a1, a2);
+}
+</pre>
+<p>If you want to use a <code>T1</code> or <code>T2</code> constructor that takes any number of parameters other than one, you can pack them into tuples, and use the marker value <code>std::piecewise_construct</code> to say, “Hey, like, don’t pass the tuples as-is to the constructors. Instead, unpack the tuples and invoke the constructors with the tuple elements.”</p>
+<pre>auto f()
+{
+    // without piecewise_construct: tries to use
+    //      T1(std::tuple&lt;int, char const*&gt;(42, "hello"))
+    // and  T2(std::tuple&lt;&gt;())
+    // (neither of which works)
+    return std::pair&lt;T1, T2&gt;(
+        std::make_tuple(42, "hello"),
+        std::make_tuple());
+}
+
+auto f()
+{
+    // with piecewise_construct:
+    // uses T1(42, "hello")
+    // and  T2()
+    return std::pair&lt;T1, T2&gt;(
+        std::piecewise_construct,
+        std::make_tuple(42, "hello"),
+        std::make_tuple());
+}
+</pre>
+<p>The <code>T1</code> and <code>T2</code> are constructed in place directly into the pair, and in this case, it means that they are constructed in place directly into the return value (due to copy elision).</p>
+<p>Now, you could have done this without <code>std::piecewise_construct</code>:</p>
+<pre>// uses T1(42, "hello") with T1(T1 const&amp;)
+// and  T2()            with T2(T2 const&amp;)
+return std::pair&lt;T1, T2&gt;({ 42, "hello" }, {});
+</pre>
+<p>but this does not construct the <code>T1</code> and <code>T2</code> objects in place. It uses the <code>pair(T1 const&amp;, T2 const&amp;)</code> constructor. That means that it creates a temporary <code>T1(42, "hello")</code> and passes it as a <code>T1 const&amp;</code> to <code>T1</code>‘s constructor, which will copy it. Similarly, it creates a temporary <code>T2()</code> object, and then copies the temporary to the pair’s <code>T2</code>.</p>
+<p>Not only is it wasteful, but it also requires that <code>T1</code> and <code>T2</code> be copyable, which may not be possible for the <code>T1</code> and <code>T2</code> you need.</p>
+<p>If your <code>T1</code> and <code>T2</code> are at least movable, you could use</p>
+<pre>// uses T1(42, "hello") with T1(T1 &amp;&amp;)
+// and  T2()            with T2(T2 &amp;&amp;)
+return std::pair&lt;T1, T2&gt;(T1{ 42, "hello" }, T2{});
+</pre>
+<p>That saves you a copy, but it’s not quite the same as just constructing in place from the original parameters.</p>
+<p>The <code>std::piecewise_construct</code> marker works well in conjunction with <code>std::forward_as_tuple</code>:</p>
+<pre>template&lt;typename...Args&gt;
+auto make_t1_with_default_t2(Args&amp;&amp;...args)
+{
+    return std::pair&lt;T1, T2&gt;(
+        std::piecewise_construct,
+        std::forward_as_tuple(std::forward&lt;Args&gt;(args)...),
+        std::make_tuple());
+}
+</pre>
+<p>The <code>std::piecewise_construct</code> marker pattern propagates into all of the <code>emplace</code> methods, since emplacement is built out of the constructor.</p>
+<pre>std::vector&lt;std::pair&lt;T1, T2&gt;&gt; v;
+
+template&lt;typename...Args&gt;
+auto add_t1_with_default_t2(Args&amp;&amp;...args)
+{
+    v.emplace_back(
+        std::piecewise_construct,
+        std::forward_as_tuple(std::forward&lt;Args&gt;(args)...),
+        std::make_tuple());
+}
+</pre>
+<p>In particular, you’re likely to use it with <code>std::map::emplace</code>, since that takes a pair.</p>
+<pre>std::map&lt;T1, T2&gt; m;
+
+m.emplace(
+    std::piecewise_construct,
+    std::make_tuple(42, "hello"),
+    std::make_tuple());
+</pre>
+<p>Now you won’t be scared when you see <code>std::piecewise_construct</code>. It’s just a marker that means, “I’m going to construct multiple things, and the constructor parameters are provided as tuples, so you know where one set of parameters ends and the next one begins.”</p>
+
+
+</body>

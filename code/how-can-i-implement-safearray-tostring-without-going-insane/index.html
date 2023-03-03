@@ -1,0 +1,311 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I implement SAFEARRAY.ToString() without going insane?</h1>  <!-- .entry-meta -->
+
+<p>
+A colleague needed some help with manipulating <code>SAFEARRAY</code>s.
+</p>
+<blockquote class="q"><p>
+I have some generic code to execute WMI queries and store the
+result as strings.
+Normally,
+<code>Variant­Change­Type(VT_BSTR)</code> does the work,
+but
+<code>Variant­Change­Type</code> doesn’t know how to
+convert arrays (e.g. <code>VT_ARRAY | VT_INT</code>).
+And there doesn’t seem to be an easy way to convert the array
+element-by-element because <code>Safe­Array­Get­Element</code>
+expects a pointer to an object of the
+underlying type, so I’d have to write a switch statement
+for each variant type.
+Surely there’s an easier way?
+</p></blockquote>
+<p>
+One suggestion was to use
+the ATL <code>CComSafeArray</code> template,
+but since it’s a template, the underlying type of the array
+needs to be known at compile time,
+but we don’t know the underlying type until run time,
+which is exactly the problem.
+</p>
+<p>
+Let’s start with the big switch statement and then do some
+optimization.
+All before we start typing,
+because after all the goal of this exercise is to avoid having
+to type out the massive switch statement.
+(Except that I have to actually type it so you have something to read.)
+</p>
+<p>
+Here’s the version we’re trying to avoid having to type:
+</p>
+<pre>
+HRESULT SafeArrayGetElementAsString(
+    SAFEARRAY *psa,
+    long *rgIndices,
+    LCID lcid, // controls conversion to string
+    unsigned short wFlags, // controls conversion to string
+    BSTR *pbstrOut)
+{
+  *pbstrOut = nullptr;
+  VARTYPE vt;
+  HRESULT hr = SafeArrayGetVartype(psa, &amp;vt);
+  if (SUCCEEDED(hr)) {
+    switch (vt) {
+    case VT_I2:
+      {
+        SHORT iVal;
+        hr = SafeArrayGetElement(psa, rgIndices, &amp;iVal);
+        if (SUCCEEDED(hr)) {
+          hr = VarBstrFromI2(iVal, lcid, wFlags, pbstrOut);
+        }
+      }
+      break;
+    case VT_I4:
+      {
+        LONG lVal;
+        hr = SafeArrayGetElement(psa, rgIndices, &amp;lVal);
+        if (SUCCEEDED(hr)) {
+          hr = VarBstrFromI4(lVal, lcid, wFlags, pbstrOut);
+        }
+      }
+      break;
+    ... etc for another dozen or so cases ...
+    ... and then special cases for things that need special handling ...
+    case VT_VARIANT:
+      {
+        VARIANT varVal;
+        hr = SafeArrayGetElement(psa, rgIndices, &amp;varVal);
+        if (SUCCEEDED(hr)) {
+          hr = VariantChangeTypeEx(&amp;varVal, &amp;varVal,
+                                   lcid, wFlags, VT_BSTR);
+          if (SUCCEEDED(hr)) {
+            *pbstrOut = varVal.bstrVal;
+          } else {
+            VariantClear(&amp;varVal);
+          }
+        }
+      }
+      break;
+    case VT_UNKNOWN:
+    case VT_DISPATCH:
+    case VT_BSTR: // other cases where we need to release the object
+      ... more special cases ...
+    }
+  }
+  return hr;
+}
+</pre>
+<p>
+The first observation is that you can make
+<code>Variant­Change­Type</code> do the heavy lifting.
+Just read everything (whatever it is) into a variant, and then let
+<code>Variant­Change­Type</code> do the string conversion.
+</p>
+<pre>
+HRESULT SafeArrayGetElementAsString(
+    SAFEARRAY *psa,
+    long *rgIndices,
+    LCID lcid, // controls conversion to string
+    unsigned short wFlags, // controls conversion to string
+    BSTR *pbstrOut)
+{
+  *pbstrOut = nullptr;
+  VARTYPE vt;
+  HRESULT hr = SafeArrayGetVartype(psa, &amp;vt);
+  if (SUCCEEDED(hr)) {
+    VARIANT var;
+    switch (vt) {
+    case VT_I2:
+      hr = SafeArrayGetElement(psa, rgIndices, &amp;var.iVal);
+      if (SUCCEEDED(hr)) {
+        var.vt = vt;
+      }
+      break;
+    case VT_I4:
+      hr = SafeArrayGetElement(psa, rgIndices, &amp;var.lVal);
+      if (SUCCEEDED(hr)) {
+        var.vt = vt;
+      }
+      break;
+    case VT_R4:
+      hr = SafeArrayGetElement(psa, rgIndices, &amp;var.fltVal);
+      if (SUCCEEDED(hr)) {
+        var.vt = vt;
+      }
+      break;
+    ... etc for another dozen or so cases ...
+    ... there is just one special case now ...
+    case VT_VARIANT:
+      hr = SafeArrayGetElement(psa, rgIndices, &amp;var);
+      break;
+    default:
+      // an invalid array base type somehow snuck through
+      hr = E_INVALIDARG;
+      break;
+    }
+    if (SUCCEEDED(hr)) {
+      hr = VariantChangeTypeEx(&amp;var, &amp;var,
+                               lcid, wFlags, VT_BSTR);
+      if (SUCCEEDED(hr)) {
+        *pbstrOut = var.bstrVal;
+      } else {
+        VariantClear(&amp;var);
+      }
+    }
+  }
+  return hr;
+}
+</pre>
+<p>
+We can get rid of the special cases for
+<code>VT_UNKNOWN</code>,
+<code>VT_DISPATCH</code>,
+<code>VT_RECORDINFO</code>,
+and
+<code>VT_BSTR</code>,
+since <code>Variant­Clear</code> will do the appropriate
+cleanup for us.
+</p>
+<p>
+You can actually stop there, since the compiler will perform
+the next optimization for us.
+But since the goal is to save typing, we can perform the optimization
+manually to save us from having to write out all those
+<code>Safe­Array­Get­Element</code> calls.
+</p>
+<p>
+Observe that all the <code>var.iVal</code>,
+<code>var.lVal</code>,
+<code>var.fltVal</code>, etc., members
+are all unioned on top of each other.
+In other words, the address of all the members is the same.
+We can therefore merge all the cases together.
+(As noted, this is something the compiler will already do,
+so the goal here is not to create more efficient code but
+just to reduce typing.)</p>
+<p><pre>
+HRESULT SafeArrayGetElementAsString(
+    SAFEARRAY *psa,
+    long *rgIndices,
+    LCID lcid, // controls conversion to string
+    unsigned short wFlags, // controls conversion to string
+    BSTR *pbstrOut)
+{
+  *pbstrOut = nullptr;
+  VARTYPE vt;
+  HRESULT hr = SafeArrayGetVartype(psa, &amp;vt);
+  if (SUCCEEDED(hr)) {
+    VARIANT var;
+    switch (vt) {
+    case VT_I2:
+    case VT_I4:
+    case VT_R4:
+    case ... etc ...:
+      // All of the above cases store their data in the same place
+      hr = SafeArrayGetElement(psa, rgIndices, &amp;var.iVal);
+      if (SUCCEEDED(hr)) {
+        var.vt = vt;
+      }
+      break;
+    case VT_DECIMAL:
+      // Decimals are stored in a funny place.
+      hr = SafeArrayGetElement(psa, rgIndices, &amp;var.decVal);
+      if (SUCCEEDED(hr)) {
+        var.vt = vt;
+      }
+      break;
+    case VT_VARIANT:
+      // Variants too, because it obvious isn't a member of itself.
+      hr = SafeArrayGetElement(psa, rgIndices, &amp;var);
+      break;
+    default:
+      // an invalid array base type somehow snuck through
+      hr = E_INVALIDARG;
+      break;
+    }
+    if (SUCCEEDED(hr)) {
+      hr = VariantChangeTypeEx(&amp;var, &amp;var,
+                               lcid, wFlags, VT_BSTR);
+      if (SUCCEEDED(hr)) {
+        *pbstrOut = var.bstrVal;
+      } else {
+        VariantClear(&amp;var);
+      }
+    }
+  }
+  return hr;
+}
+</pre>
+<p>
+And then you can generalize this function so it returns
+a <code>VARIANT</code>,
+so that it becomes the caller’s responsibility to do the
+<code>Variant­Change­Type(VT_BSTR)</code>.
+This also allows the caller to figure out how to deal
+with things like <code>VT_UNKNOWN</code>, which
+<code>Variant­Change­Type</code> doesn’t know
+how to handle.
+(Perhaps it should be converted to the string <code>"[object]"</code>.)
+Or maybe the caller might want to use this function to convert
+all <code>SAFEARRAY</code>s to
+<code>VT_ARRAY | VT_FIXEDBASETYPE</code>.
+</p>
+<pre>
+HRESULT SafeArrayGetElementAsVariant(
+    SAFEARRAY *psa,
+    long *rgIndices,
+    VARIANT *pvarOut)
+{
+  VariantInit(pvarOut);
+  VARTYPE vt;
+  HRESULT hr = SafeArrayGetVartype(psa, &amp;vt);
+  if (SUCCEEDED(hr)) {
+    switch (vt) {
+    case VT_I2:
+    case VT_I4:
+    case VT_R4:
+    case ...:
+      hr = SafeArrayGetElement(psa, rgIndices, &amp;pvarOut-&gt;iVal);
+      if (SUCCEEDED(hr)) {
+        pvarOut-&gt;vt = vt;
+      }
+      break;
+    case VT_DECIMAL:
+      // Decimals are stored in a funny place.
+      hr = SafeArrayGetElement(psa, rgIndices, &amp;pvarOut-&gt;decVal);
+      if (SUCCEEDED(hr)) {
+        pvarOut-&gt;vt = vt;
+      }
+      break;
+    case VT_VARIANT:
+      // Variants too, because it obvious isn't a member of itself.
+      hr = SafeArrayGetElement(psa, rgIndices, pvarOut);
+      break;
+    default:
+      // an invalid array base type somehow snuck through
+      hr = E_INVALIDARG;
+      break;
+    }
+  }
+  return hr;
+}
+</pre>
+<p>
+<b>Exercise</b>:
+Since <code>decVal</code> is unioned against the <code>tagVARIANT</code>,
+can we also collapse the <code>VT_DECIMAL</code> and <code>VT_VARIANT</code>
+cases together?
+</p>
+<p>
+<b>Exercise</b>:
+Why is the final typing-saver (collapsing the case statements)
+valid?
+Don’t we have to worry about the
+possibility that the <code>VARIANT</code> type may change in the future?
+</p>
+<p>
+<b>Exercise</b>: What defensive actions could be taken to protect
+against that possibility raised by the previous exercise?</p>
+
+
+</p></body>

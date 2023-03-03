@@ -1,0 +1,263 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What can go wrong when you mismatch the calling convention?</h1>  <!-- .entry-meta -->
+
+<p>Believe it or not, calling conventions is one of the things that
+programs frequently get wrong. The compiler yells at you when
+you mismatch a calling convention, but lazy programmers will just
+stick a cast in there to get the compiler to “shut up already”.</p>
+<p>
+And then Windows is stuck having to support your buggy code forever.
+</p>
+<dl>
+<dt>The window procedure</dt>
+<dd>
+<p>
+So many people misdeclare their window procedures (usually by
+declaring them as __cdecl instead of __stdcall),
+that the function that dispatches messages to window procedures
+contains extra protection
+to detect incorrectly-declared window procedures and perform the
+appropriate fixup.  This is the source of the mysterious 0xdcbaabcd
+on the stack.  The function that dispatches messages to window
+procedures checks whether this value is on the stack in the correct
+place. If not, then it checks whether the window procedure popped
+one dword too much off the stack (if so, it fixes up the stack;
+I have no idea how this messed up a window procedure could have existed),
+or whether the window procedure was mistakenly declared as __cdecl
+instead of __stdcall (if so, it pops the parameters off the stack that
+the window procedure was supposed to do).
+</p>
+</dd>
+<dt>DirectX callbacks</dt>
+<dd>
+<p>
+Many DirectX functions use callbacks, and people once again misdeclared
+their callbacks as __cdecl instead of __stdcall, so the DirectX
+enumerators have to do special stack cleanup for those bad functions.
+</p>
+</dd>
+<dt>IShellFolder::CreateViewObject</dt>
+<dd>
+<p>
+I remember there was one program that decided to declare their
+CreateViewWindow function incorrectly, and somehow they managed
+to trick the compiler into accepting it!
+</p>
+<pre>
+class BuggyFolder : public IShellFolder ... {
+ ...
+ // wrong function signature!
+ HRESULT CreateViewObject(HWND hwnd) { return S_OK; }
+}
+</pre>
+<p>
+Not only did they get the function signature wrong, they
+returned S_OK even though they failed to do anything!
+I had to add extra code to clean up the stack after calling this
+function, as well as verify that the return value wasn’t a lie.
+</p>
+<dt>Rundll32.exe entry points</dt>
+<dd>
+<p>
+<a href="http://support.microsoft.com/support/kb/articles/q164/7/87.asp">
+The function signature required for functions called by rundll32.exe
+is documented in this Knowledge Base article</a>.
+That hasn’t stopped people from using rundll32 to call random functions
+that weren’t designed to be called by rundll32,
+<a href="http://weblogs.asp.net/bdesmond/archive/2003/12/11/43016.aspx">
+like user32 LockWorkStation</a> or
+<a href="http://is-it-true.org/nt/nt2000/utips/utips47.shtml">
+user32 ExitWindowsEx</a>.
+</p>
+<p>
+Let’s walk through what happens when you try to use rundll32.exe
+to call a function like ExitWindowsEx:
+</p>
+<p>
+The rundll32.exe program parses its command line and calls the
+ExitWindowsEx function on the assumption that the function is written
+like this:</p>
+<pre>
+void CALLBACK ExitWindowsEx(HWND hwnd, HINSTANCE hinst,
+       LPSTR pszCmdLine, int nCmdShow);
+</pre>
+<p>But it isn’t. The actual function signature for ExitWindowsEx is</p>
+<pre>
+BOOL WINAPI ExitWindowsEx(UINT uFlags, DWORD dwReserved);
+</pre>
+<p>What happens? Well, on entry to ExitWindowsEx, the stack
+looks like this:
+</p>
+<table border="0">
+<col align="center"/>
+<tr>
+<td style="border: solid 1px buttonshadow">.. rest of stack ..</td>
+<td></td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">nCmdShow</td>
+<td></td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">pszCmdLine</td>
+<td></td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">hinst</td>
+<td></td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">hwnd</td>
+<td></td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">return address</td>
+<td>&lt;- ESP</td>
+</tr>
+</table>
+<p>
+However, the function is expecting to see</p>
+<table border="0">
+<col align="center"/>
+<tr>
+<td style="border: solid 1px buttonshadow">.. rest of stack ..</td>
+<td></td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">dwReserved</td>
+<td></td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">uFlags</td>
+<td></td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">return address</td>
+<td>&lt;- ESP</td>
+</tr>
+</table>
+<p>
+What happens? The hwnd passed by rundll32.exe gets misinterpreted
+as uFlags and the hinst gets misinterpreted as dwReserved.
+Since window handles are pseudorandom, you end up passing random
+flags to ExitWindowsEx.  Maybe today it’s EWX_LOGOFF, tomorrow it’s
+EWX_FORCE, the next time it might be EWX_POWEROFF.
+</p>
+<p>
+Now suppose that the function manages to return. (For example,
+the exit fails.)  The ExitWindowsEx function cleans two parameters
+off the stack, unaware that it was passed four. The resulting stack
+is</p>
+<table border="0">
+<col align="center"/>
+<tr>
+<td style="border: solid 1px buttonshadow">.. rest of stack ..</td>
+<td></td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">nCmdShow</td>
+<td>(garbage not cleaned up)</td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">pszCmdLine</td>
+<td>&lt;- ESP (garbage not cleaned up)</td>
+</tr>
+</table>
+<p>Now the stack is corrupted and really fun things happen.
+For example, suppose the thing at “.. rest of the stack ..” is
+a return address.  Well, the original code is going to execute
+a “return” instruction to return through that return address,
+but with this corrupted stack, the “return” instruction will
+instead return to a command line and attempt to execute it as if
+it were code.
+</p>
+</dd>
+<dt>Random custom functions</dt>
+<dd>
+<a href="http://weblogs.asp.net/oldnewthing/archive/2004/01/08/48616.aspx#58017">
+An anonymous commenter exported a function as __cdecl but treated it as if
+it were __stdcall</a>.  This will seem to work, but on return, the stack
+will be corrupted (because the caller is expecting a __stdcall function
+that cleans the stack, but what it gets is a __cdecl funcion that doesn’t),
+and bad things will happen as a result.
+</dd>
+</dd></dl>
+<p>
+Okay, enough with the examples; I think you get the point.
+Here are some questions I’m sure you’re asking:
+</p>
+<dl>
+<dt>Why doesn’t the compiler catch all these errors?</dt>
+<dd>
+<p>
+It does. (Well, not the rundll32 one.)
+But people have gotten into the habit of just inserting the
+function cast to get the compiler to shut up.
+</p>
+<p>
+<a href="http://www.functionx.com/win32/ScrollBars.htm">Here’s
+a random example I found</a>:</p>
+<pre>
+LRESULT CALLBACK DlgProc(HWND hWnd, UINT Msg,
+   WPARAM wParam, LPARAM lParam);
+</pre>
+<p>
+This is the incorrect function signature for a dialog procedure.
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/DialogBoxes/DialogBoxReference/DialogBoxFunctions/DialogProc.asp">The
+correct signature</a> is</p>
+<pre>
+INT_PTR CALLBACK DialogProc(HWND hwndDlg, UINT uMsg,
+    WPARAM wParam, LPARAM lParam);
+</pre>
+
+<p>
+You start with</p>
+<pre>
+DialogBox(hInst, MAKEINTRESOURCE(IDD_CONTROLS_DLG),
+          hWnd, DlgProc);
+</pre>
+<p>but the compiler rightly spits out the error message</p>
+<pre>
+error C2664: 'DialogBoxParamA' : cannot convert parameter 4
+from 'LRESULT (HWND,UINT,WPARAM,LPARAM)' to 'DLGPROC'
+</pre>
+<p>so you fix it by slapping a cast in to make the compiler
+shut up:</p>
+<pre>
+DialogBox(hInst, MAKEINTRESOURCE(IDD_CONTROLS_DLG),
+          hWnd, <font color="red">reinterpret_cast&lt;DLGPROC&gt;</font>(DlgProc));
+</pre>
+
+<p>
+“Aw, come on, who would be so stupid as to insert a cast to
+make an error go away without actually fixing the error?”
+</p>
+<p>
+Apparently everyone.
+</p>
+<p>
+I stumbled across
+<a href="http://www.computing.net/programming/wwwboard/forum/8629.html">
+this page that does exactly the same
+thing</a>,
+<a href="http://www.willemer.de/informatik/windows/windial.htm">
+and this one in German which gets not only the return value wrong,
+but also misdeclares the third and fourth parameters</a>,
+<a href="http://www.kumei.ne.jp/c_lang/sdk/sdk_13.htm">
+and this one in Japanese</a>.
+<a href="http://www.codeguru.com/mfc/comments/29324.shtml">
+It’s as easy to fix (incorrectly) as 1-2-3</a>.
+</p>
+</dd>
+<dt>How did programs with these bugs ever work at all?
+Certainly these programs worked to some degree or people would have
+noticed and fixed the bug.
+How can the program survive a corrupted stack?</dt>
+<dd>
+<p>
+I’ll answer this question tomorrow.
+</p></dd>
+</dl>
+
+
+</body>

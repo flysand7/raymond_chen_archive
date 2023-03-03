@@ -1,0 +1,286 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Kicking around a function that formats stuff</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s “Little Program” is really a
+“Little Puzzle” that got out of hand.
+</p>
+<p>
+This started out as a practical question:
+This code fragment screams out for some sort of simplification.
+(I’ve changed the names of the classes.)
+</p>
+<pre>
+class FrogProperty
+{
+ public string Name { get; private set; }
+ public string Value { get; private set; }
+ ...
+}
+class ToadProperty
+{
+ public string Name { get; private set; }
+ public string Value { get; private set; }
+ ...
+}
+var frogStuff = new List&lt;string&gt;();
+foreach (var frogProp in FrogProperties) {
+  frogStuff.Add(string.Format("{0}: {1}", frogProp.Name, frogProp.Value));
+}
+frogStuff.Sort();
+Munge(frogStuff);
+var toadStuff = new List&lt;string&gt;();
+foreach (var toadProp in ToadProperties) {
+  toadStuff.Add(string.Format("{0} = {1}", toadProp.Name, toadProp.Value));
+}
+toadStuff.Sort();
+Munge(toadStuff);
+var catStuff = new List&lt;string&gt;();
+foreach (var cat in Cats) {
+  catStuff.Add(string.Format("{0}", cat.Name));
+}
+catStuff.Sort();
+Munge(catStuff);
+var dogStuff = new List&lt;string&gt;();
+foreach (var dogProp in DogProperties) {
+  dogStuff.Add(string.Format("{0} {1}", dogProp.Name, dogProp.Value));
+}
+dogStuff.Sort();
+Munge(dogStuff);
+...
+</pre>
+<p>
+Clearly, the pattern is
+</p>
+<pre>
+var stuff = new List&lt;string&gt;();
+foreach (var thing in thingCollection) {
+ stuff.Add(string.Format(formatstring, thing.Name, [optional: thing.Value]));
+}
+stuff.Sort();
+Munge(stuff);
+</pre>
+<p>
+Everything here is pretty straightforward,
+except for the
+<code>string.Format</code> part.
+Can we write a function that takes a <code>thing</code>
+and formats it in a somewhat flexible manner?
+</p>
+<p>
+Let’s start with the
+<code>Name</code>-and-<code>Value</code> cases.
+We might try something like this:
+</p>
+<pre>
+public static string FormatNameValue&lt;T&gt;(this T t, string format)
+{
+ return string.Format(format, t.Name, t.Value);
+}
+</pre>
+<p>
+But then we’d run into trouble, because there is no constraint
+on <code>T</code>, so the compiler will complain,
+“I don’t know how to get a <code>Name</code> or a
+<code>Value</code> from an <code>object</code>.”
+</p>
+<p>
+And since
+<code>Frog­Property</code>
+and
+<code>Toad­Property</code>
+do not have a common base class,
+you’re kind of stuck.
+</p>
+<p>
+One way out would be to use the new <code>dynamic</code> type:
+</p>
+<pre>
+public static string FormatNameValue&lt;T&gt;(this T t, string format)
+{
+ dynamic d = t;
+ return string.Format(format, d.Name, d.Value);
+}
+</pre>
+<p>
+But that won’t work in the <code>Name</code>-only case:
+</p>
+<pre>
+cat.FormatNameValue("{0}");
+</pre>
+<p>
+The <code>cat</code> object has a
+<code>Name</code> but no <code>Value</code>.
+The attempt to read the <code>Value</code> will raise an exception
+(even though it is never consumed by the format).
+</p>
+<p>
+Maybe we can turn to reflection.
+</p>
+<pre>
+public static string FormatNameValue&lt;T&gt;(this T t, string format)
+{
+ return string.Format(format,
+                      typeof(T).GetProperty("Name").GetValue(t, null),
+                      typeof(T).GetProperty("Value").GetValue(t, null));
+}
+</pre>
+<p>
+This still raises an exception if there is no <code>Value</code>,
+but we can detect the missing <code>Value</code> before we run into
+trouble with it.
+</p>
+<pre>
+static object GetPropertyOrNull&lt;T&gt;(this T t, string prop)
+{
+ var propInfo = typeof(T).GetProperty(prop);
+ return propInfo == null ? null : propInfo.GetValue(t, null);
+}
+public static string FormatNameValue&lt;T&gt;(this T t, string format)
+{
+ return string.Format(format,
+                      t.GetPropertyOrNull("Name"),
+                      t.GetPropertyOrNull("Value"));
+}
+</pre>
+<p>
+Okay, now we’re getting somewhere.
+</p>
+<p>
+But before getting to deep into this exercise, I should point
+out that another way to solve this problem is to turn it
+inside-out.
+Instead of making the munger understand all of the different
+objects,
+why not make each object understand munging?
+</p>
+<pre>
+class FrogProperty : IFormattable
+{
+ public string Name { get; private set; }
+ public string Value { get; private set; }
+ public override ToString(string format, IFormatProvider formatProvider)
+ {
+  switch (format) {
+  case "Munge":
+   return string.Format(formatProvider,"{0}: {1}", Name, Value);
+  default:
+   return ToString(); // use object.ToString();
+  }
+ }
+}
+class Cat : IFormattable
+{
+ public string Name { get; private set; }
+ public override ToString(string format, IFormatProvider formatProvider)
+ {
+  switch (format) {
+  case "Munge":
+   return string.Format(formatProvider,"{0}", Name);
+  default:
+   return ToString(); // use object.ToString();
+  }
+ }
+}
+</pre>
+<p>
+The generic helper function would then be
+</p>
+<pre>
+var stuff = new List&lt;string&gt;();
+foreach (var thing in thingCollection) {
+ stuff.Add(string.Format("{0:Munge}", thing);
+}
+stuff.Sort();
+Munge(stuff);
+</pre>
+<p>
+Okay, fine, rain on my little puzzle parade.
+</p>
+<p>
+Let’s ignore this very useful advice and proceed
+ahead with our puzzle,
+because <i>we’re determined to see how far we can go,
+even if it’s in the wrong direction</i>.
+</p>
+<p>
+Now that we have
+<code>Format­Name­Value</code>,
+we might say,
+“What about generalizing to cases where we want
+properties other than
+<code>Name</code> and <code>Value</code>?”
+One design would be to pass in a format string
+and list of properties you want to fill in:
+</p>
+<pre>
+thing.FormatProperties("{0}: {1} (modified by {2})",
+                       "Name", "Value", "ModifiedBy");
+</pre>
+<p>
+Our
+<code>Format­Name­Value</code>
+function would go something like this:
+</p>
+<pre>
+public static string FormatProperties&lt;T&gt;(
+    this T t, string format, params string[] props)
+{
+ object[] values = new object[props.Length];
+ for (var i = 0; i &lt; props.Length; i++) {
+  values[i] = typeof(T).GetProperty(props[i]).GetValue(t, null);
+ }
+ return string.Format(format, values);
+}
+</pre>
+<p>
+This suffers from a problem common to most formatters:
+Once you get more than a few insertions, it becomes
+hard to figure out which one matches up to what.
+So I’m going to try something radical:
+</p>
+<pre>
+static Regex identifier = new Regex(@"(?&lt;={)(.*?)(?=[:}])");
+// <a href="http://msdn.microsoft.com/en-us/library/aa664670%28v=VS.71%29.aspx">pedants</a> would use
+//identifier = new RegEx(@"[_\p{Lu}\p{Ll}\p{Lt}\p{Lm}\p{Lo}\p{Nl}]" +
+//       @"[_\p{Lu}\p{Ll}\p{Lt}\p{Lm}\p{Lo}\p{Nl}\d\p{Pc}\p{Mn}\p{Mc}]");
+public static string FormatProperties&lt;T&gt;(this T t, string format)
+{
+  var values = new ArrayList();
+  int count = 0;
+  format = identifier.Replace(format, (m) =&gt; {
+    values.Add(typeof(T).GetProperty(m.Value).GetValue(t, null));
+    return (count++).ToString();
+  });
+  return string.Format(format, values.ToArray());
+}
+</pre>
+<p>
+Instead of separating the properties from the format,
+I embed them in the format.
+</p>
+<pre>
+thing.FormatProperties("{Name}: {Value} (modified by {ModifiedBy})");
+</pre>
+<p>
+Note that I explicitly exclude colons from identifiers.
+That lets me do things like this:
+</p>
+<pre>
+var result =
+  (new System.IO.FileInfo(@"C:\Windows\Explorer.exe"))
+    .FormatProperties("Created on {CreationTime:F} " +
+                      "{Length} bytes in size");
+</pre>
+<p>
+The property names are extracted and replaced with corresponding
+numbers, but the format string remains,
+allowing it to be used to alter the final formatting of the property.
+</p>
+<p>
+Okay, at this point I figured I had gone far enough.
+The fun had run out,
+so I decided to stop.</p>
+
+
+</body>

@@ -1,0 +1,216 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Display a custom thumbnail for your application (and while you’re at it, a custom live preview)</h1>  <!-- .entry-meta -->
+
+<p><p>
+By default,
+when the taskbar or any other application wants to display
+a thumbnail for a window,
+the result is a copy of the window contents shrunk down to the
+requested size.
+Today we’re going to override that behavior
+and display a custom thumbnail.
+</p>
+<p>
+Take
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/02/18/10394684.aspx">
+the program from last week</a>
+and make these changes:
+</p>
+<pre>
+<font color="blue">#include &lt;dwmapi.h&gt;</font></pre></p>
+<p>BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  g_hicoAlert = LoadIcon(nullptr, IDI_EXCLAMATION);
+  g_wmTaskbarButtonCreated = RegisterWindowMessage(
+                              TEXT(“TaskbarButtonCreated”));
+  <font color="blue">BOOL fTrue = TRUE;
+  DwmSetWindowAttribute(hwnd, DWMWA_FORCE_ICONIC_REPRESENTATION,
+                        &amp;fTrue, sizeof(fTrue));
+  DwmSetWindowAttribute(hwnd, DWMWA_HAS_ICONIC_BITMAP,
+                        &amp;fTrue, sizeof(fTrue));</font>
+  return TRUE;
+}
+
+<p>
+We start by enabling custom thumbnails by setting the
+<code>DWMWA_HAS_ICONIC_BITMAP</code> attribute
+to <code>TRUE</code>.
+This overrides the default thumbnail generator and allows us to
+provide a custom one.
+</p>
+<p>
+Next is a helper function that I broke out from
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/05/20/10166505.aspx">
+this program</a> because it’s useful on its own.
+It simply creates a 32bpp bitmap of the desired size
+and optionally returns a pointer to the resulting bits.
+</p>
+<pre>
+<font color="blue">
+HBITMAP Create32bppBitmap(HDC hdc, int cx, int cy,
+                          RGBQUAD **pprgbBits = nullptr)
+{
+ BITMAPINFO bmi = { 0 };
+ bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
+ bmi.bmiHeader.biWidth = cx;
+ bmi.bmiHeader.biHeight = cy;
+ bmi.bmiHeader.biPlanes = 1;
+ bmi.bmiHeader.biBitCount = 32;
+ bmi.bmiHeader.biCompression = BI_RGB;
+ void *pvBits;
+ HBITMAP hbm = CreateDIBSection(hdc, &amp;bmi,
+           DIB_RGB_COLORS, &amp;pvBits, NULL, 0);
+ if (pprgbBits) *pprgbBits = static_cast&lt;RGBQUAD*&gt;(pvBits);
+ return hbm;
+}</font>
+</pre>
+<p>
+Next, we take our <code>Paint­Content</code> function and
+make it render into a DC instead:
+</p>
+<pre>
+void
+<font color="blue">RenderContent(HDC hdc, LPCRECT prc)</font>
+{
+ LOGFONTW lf = { 0 };
+ lf.lfHeight = <font color="blue">prc-&gt;</font>bottom – <font color="blue">prc-&gt;</font>top;
+ wcscpy_s(lf.lfFaceName, L”Verdana”);
+ HFONT hf = CreateFontIndirectW(&amp;lf);
+ HFONT hfPrev = SelectFont(<font color="blue">hdc</font>, hf);
+ wchar_t wszCount[80];
+ swprintf_s(wszCount, L”%d”, g_iCounter);
+ <font color="blue">FillRect(hdc, prc, GetStockBrush(WHITE_BRUSH));</font>
+ DrawTextW(<font color="blue">hdc</font>, wszCount, -1, const_cast&lt;LPRECT&gt;(prc),
+          DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+ SelectFont(<font color="blue">hdc</font>, hfPrev);
+ DeleteObject(hf);
+}
+</pre>
+<p>
+In our case, we will want to render into a bitmap:
+</p>
+<pre>
+<font color="blue">HBITMAP
+GenerateContentBitmap(HWND hwnd, int cx, int cy)
+{
+ HDC hdc = GetDC(hwnd);
+ HDC hdcMem = CreateCompatibleDC(hdc);
+ HBITMAP hbm = Create32bppBitmap(hdcMem, cx,cy);
+ HBITMAP hbmPrev = SelectBitmap(hdcMem, hbm);
+ RECT rc = { 0, 0, cx, cy };
+ RenderContent(hdcMem, &amp;rc);
+ SelectBitmap(hdcMem, hbmPrev);
+ DeleteDC(hdcMem);
+ ReleaseDC(hwnd, hdc);
+ return hbm;
+}</font>
+</pre>
+<p>
+<p>
+We can use this function when DWM asks us to generate a custom thumbnail
+or a custom live preview bitmap.
+</p>
+<pre>
+<font color="blue">void
+UpdateThumbnailBitmap(HWND hwnd, int cx, int cy)
+{
+ HBITMAP hbm = GenerateContentBitmap(hwnd, cx, cy);
+ DwmSetIconicThumbnail(hwnd, hbm, 0);
+ DeleteObject(hbm);
+}</font></pre></p>
+<p>void
+UpdateLivePreviewBitmap(HWND hwnd)
+{
+ RECT rc;
+ GetClientRect(hwnd, &amp;rc);
+ HBITMAP hbm = GenerateContentBitmap(hwnd, rc.right – rc.left,
+                                     rc.bottom – rc.top);
+ DwmSetIconicLivePreviewBitmap(hwnd, hbm, nullptr, 0);
+ DeleteObject(hbm);
+}</p>
+<p> // WndProc
+ <font color="blue">case WM_DWMSENDICONICTHUMBNAIL:
+  UpdateThumbnailBitmap(hwnd, HIWORD(lParam), LOWORD(lParam));
+  break;
+ case WM_DWMSENDICONICLIVEPREVIEWBITMAP:
+  UpdateLivePreviewBitmap(hwnd);
+  break;</font>
+
+<p>
+One of the quirks of the
+<code>WM_DWM­SEND­ICONIC­THUMB­NAIL</code>
+message is that it passes the x- and y-coordinates backwards.
+Most window messages put the x-coordinate in the low word and
+the y-coordinate in the high word, but
+<code>WM_DWM­SEND­ICONIC­THUMB­NAIL</code>
+does it the other way around.
+</p>
+<p>
+Since we’re generating a custom thumbnail and live preview bitmap,
+we need to let the window manager know that the custom rendering
+is out of date and needs to be re-rendered:
+Invalidate the custom bitmaps when the counter changes.
+</p>
+<pre>
+void OnCommand(HWND hwnd, int id, HWND hwndCtl, UINT codeNotify)
+{
+  switch (id) {
+  case IDC_INCREMENT:
+    ++g_iCounter;
+    InvalidateRect(hwnd, nullptr, TRUE);
+    <font color="blue">DwmInvalidateIconicBitmaps(hwnd);</font>
+    break;
+  }
+}
+</pre>
+<p>
+And finally,
+just to be interesting, we’ll also stop rendering content into
+our main window.
+</p>
+<pre>
+void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+    <font color="blue">// do nothing</font>
+}
+</pre>
+<p>
+Run this program and observe that the window comes up blank.
+Ah, but if you hover over the taskbar button, the custom thumbnail
+will appear, and that custom thumbnail has the number 0 in it.
+Click on the button in the thumbnail, and the number in the custom
+thumbnail increments.
+</p>
+<p>
+As a bonus, move the mouse over the thumbnail to trigger Aero Peek.
+The live preview bitmap contains the magic number!
+Move the mouse away, and the magic number vanishes.
+</p>
+<p>
+Now, this was an artificial example, so the effect is kind of weird.
+However, you can imagine using this in less artificial cases where
+the result is useful.
+You application might be a game,
+and instead of using the default thumbnail which shows a miniature
+copy of the game window,
+you can have your thumbnail be a tiny scoreboard or focus
+on a section of the board.
+For example, if you are a card game,
+the thumbnail might show just the cards in your hand.
+</p>
+<p>
+I can’t think of a useful case for showing a live preview bitmap
+different from the actual window.
+The intended use for a custom live preview bitmap is for applications
+like Web browsers which want to minimize a tab’s memory usage when it
+is not active.
+When a tab becomes inactive,
+the browser can destroy all graphics resources except for
+a bitmap containing the last-known-valid contents of the window,
+and use that bitmap for the thumbnail and live preview.
+</p></p>
+
+
+</p></body>

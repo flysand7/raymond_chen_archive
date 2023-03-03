@@ -1,0 +1,36 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can my C++/WinRT component pass a <code>std::vector</code> back to the caller?</h1>  <!-- .entry-meta -->
+
+<p>The ReceiveArray pattern is the Windows Runtime pattern for how a function can return a C-style conformant array to its caller. In C++/WinRT, the projected version of the function is</p>
+<pre>// [out] parameter
+void M(com_array&lt;T&gt;&amp; value);
+
+// return value
+com_array&lt;T&gt; M();
+</pre>
+<p>A customer had a method that generated the result into a <code>std::vector&lt;int&gt;</code>. How do you return this to the caller? “There is no move constructor for <code>com_array&lt;int&gt;</code> that takes a <code>std::vector&lt;int&gt;</code>.”</p>
+<p>That’s right, there is no constructor for <code>com_array&lt;int&gt;</code> that takes a <code>std::vector&lt;int&gt;&amp;&amp;</code>. If you think about it, there can’t possibly be one.</p>
+<p>The <code>com_array</code> is required to use the COM task allocator to allocate its memory, because the memory is going to be passed back to the calling component, and the calling component is responsible for freeing the memory. This means that the memory allocator must be something language-agnostic, since the caller could be written in C# or Visual Basic or JavaScript or Rust or whatever.</p>
+<p>On the other hand, <code>std::vector</code> uses the C++ free store to allocate memory.¹ This is an allocator specific to the C++ language. Actually, it’s even worse. It’s an allocator that is specific to a particular <i>implementation</i> of the C++ language. Code that uses one version of the compiler and runtime library cannot interoperate with code that uses a different version of the compiler and runtime library.</p>
+<p>The allocators don’t agree, so you won’t be able to transfer ownership: The memory was allocated from some version of the C++ free store, but putting it in a <code>com_array</code> will result in the memory being freed by <code>Co­Task­Mem­Free</code>.</p>
+<p>Okay, so you can’t move it into a <code>com_array</code>, but can you copy it?</p>
+<p>Yes, and the <code>com_array</code> even has a special constructor for copying from a <code>std::vector</code>.</p>
+<pre>
+std::vector&lt;int32_t&gt; m_indices;
+
+com_array&lt;int32_t&gt; GetIndices()
+{
+    return com_array&lt;int32_t&gt;(m_indices);
+}
+</pre>
+<p>Starting in C++/WinRT version 2.0.200601.2, there’s a deduction guide that that deduces <code>com_array&lt;T&gt;</code> if you construct from a <code>std::vector&lt;T&gt;</code>, so you need only write</p>
+<pre>com_array&lt;int32_t&gt; GetIndices()
+{
+    return com_array(m_indices);
+}
+</pre>
+<p>If you aren’t wedded to <code>std::vector</code>, you could generate the results directly into a <code>winrt::com_array</code> and return it, thereby avoiding a copy.</p>
+<p>¹ You can override this by providing a custom allocator, say, by a custom allocator that obtains memory via <code>Co­Task­Mem­Alloc</code>. However, library types with custom allocators are going to create interop friction with other code that expects library types with the standard allocator.</p>
+
+
+</body>

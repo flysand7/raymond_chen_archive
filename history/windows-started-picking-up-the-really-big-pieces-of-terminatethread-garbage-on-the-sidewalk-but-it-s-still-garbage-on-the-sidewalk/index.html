@@ -1,0 +1,73 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Windows started picking up the really big pieces of TerminateThread garbage on the sidewalk, but it’s still garbage on the sidewalk</h1>  <!-- .entry-meta -->
+
+<p>Ah, <code>Terminate­Thread</code>. There are still people who think that there are valid scenarios for calling <code>Terminate­Thread</code>. <span id="more-91811"></span></p>
+<blockquote class="q">
+<p>Can you explain how <code>Exit­Thread</code> works? </p>
+<p>We are interested because we have a class called <code>Thread­Class</code>. We call the <code>Start()</code> method , and then the <code>Stop()</code> method, and then the <code>Wait­Until­Stopped()</code> method, and then the process hangs with this call stack: </p>
+<pre>
+ntdll!ZwWaitForSingleObject
+ntdll!RtlpWaitOnCriticalSection
+ntdll!RtlEnterCriticalSection
+ntdll!LdrShutdownThread
+ntdll!RtlExitUserThread
+kernel32!BaseThreadInitThunk
+ntdll!RtlUserThreadStart
+</pre>
+<p>Can you help us figure out what’s going on? </p>
+</blockquote>
+<p>From the stack trace, it is clear that the thread is shutting down, and the loader (<code>Ldr</code>) is waiting on a critical section. The critical section the loader is most famous for needing is the so-called <i>loader lock</i> which is used for various things, most notably to make sure that all DLL thread notification are serialized. </p>
+<p>I guessed that the call to <code>Wait­Until­Stopped()</code> was happening inside <code>Dll­Main</code>, which created a deadlock because the thread cannot exit until it delivers its <code>Dll­Main</code> notifications, but it can’t do that until the calling thread exits <code>Dll­Main</code>. </p>
+<p>The customer did some more debugging: </p>
+<blockquote class="q">
+<p>The debugger reports the critical section as </p>
+<pre>
+CritSec ntdll!LdrpLoaderLock+0 at 77724300
+WaiterWoken        No
+LockCount          3
+RecursionCount     1
+OwningThread       a80
+EntryCount         0
+ContentionCount    3
+*** Locked
+</pre>
+<p>The critical section claims that it is owned by thread <code>0xa80</code>, but there is no such active thread in the process. In the kernel debugger, a search for that thread says </p>
+<pre>
+Looking for thread Cid = a80 ...
+THREAD 8579e1c0  Cid 0b58.0a80  Teb: 00000000 Win32Thread: 00000000 TERMINATED
+Not impersonating
+DeviceMap                 862f8a98
+Owning Process            0       Image:         &lt;Unknown&gt;
+Attached Process          84386d90       Image:         Contoso.exe
+Wait Start TickCount      12938474       Ticks: 114780 (0:00:29:50.579)
+Context Switch Count      8             
+UserTime                  00:00:00.000
+KernelTime                00:00:00.000
+Win32 Start Address 0x011167c0
+Stack Init 0 Current bae35be0 Base bae36000 Limit bae33000 Call 0
+Priority 10 BasePriority 8 PriorityDecrement 2 IoPriority 2 PagePriority 5
+</pre>
+<p><code>Contoso.exe</code> is our process. </p>
+</blockquote>
+<p>Okay, we’re getting somewhere now. The thread <code>0xa80</code> terminated while it held the loader lock. When you run the program under a debugger, do you see any exceptions that might suggest that the thread terminated abnormally? </p>
+<blockquote class="q">
+<p>We found the cause of the problem. We use <code>Terminate­Thread</code> in the other place. That causes the thread to continue to hold the loader lock after it has terminated. </p>
+</blockquote>
+<p>It’s not clear what the customer meant by “the other place”, but no matter. The cause of the problem was found: They were using <code>Terminate­Thread</code>. </p>
+<p>At this point, Larry Osterman was inspired to write a poem. </p>
+<blockquote class="m"><p>How many times does<br/>it have to be said: Never<br/>call TerminateThread. </p></blockquote>
+<p>In the ensuing discussion, somebody suggested, </p>
+<blockquote class="q"><p>One case where it is okay to use <code>Terminate­Thread</code> is if the thread was created suspended and has never been resumed. I believe it is perfectly legal to terminate it, at least in Windows Vista and later. </p></blockquote>
+<p>No, it is not “perfectly legal,” for certain values of “perfectly legal.” </p>
+<p>What happened is that Windows Vista added some code to try to limit the impact of a bad idea. Specifically, it added code to free the thread’s stack when the thread was terminated, so that each terminated thread didn’t leak a megabyte of memory. In the parlance of earlier discussion, I referred to this as <a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/03/11/9976571.aspx">stop throwing garbage on the sidewalk</a>. </p>
+<p>In this case, it’s like saying, “It’s okay to run this red light because the city added a delayed green to the cross traffic.” The city added a delayed green to the cross traffic because people were running the light and the city didn’t want people to die. That doesn’t mean that it’s okay to run the light now. </p>
+<p>Unfortunately, the guidance that says “Sometimes it’s okay to call <code>Terminate­Thread</code>” has seeped into our own Best Practices documents. The <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/dn633971(v=vs.85).aspx">Dynamic-Link Library Best Practices</a> under <i>Best Practices for Synchronization</i> describes a synchronization model which actually involves calling <code>Terminate­Thread</code>. </p>
+<p><i>Do not do this</i>. </p>
+<p>It’s particularly sad because <a href="https://view.officeapps.live.com/op/view.aspx?src=http%3A%2F%2Fdownload.microsoft.com%2Fdownload%2Fa%2Ff%2F7%2Faf7777e5-7dcd-4800-8a0a-b18336565f5b%2FDLL_bestprac.doc">the downloadable version of the document</a> references both Larry and me telling people to stop doing crazy things in <code>Dll­Main</code>, and terminating threads is definitely a crazy thing. </p>
+<p>(The solution to the problem described in the whitepaper is not to use <code>Terminate­Thread</code>. It’s to use <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/11/05/10463645.aspx">the <code>Free­Library­And­Exit­Thread</code> pattern</a>.) </p>
+<p>Now the history. </p>
+<p>Originally, there was no <code>Terminate­Thread</code> function. The original designers felt strongly that no such function should exist because there was no safe way to terminate a thread, and there’s no point having a function that cannot be called safely. But people screamed that they needed the <code>Terminate­Thread</code> function, even though it wasn’t safe, so the operating system designers caved and added the function because people demanded it. Of course, those people who insisted that they needed <code>Terminate­Thread</code> now regret having been given it. </p>
+<p>It’s one of those “Be careful what you wish for” things. </p>
+
+
+</body>

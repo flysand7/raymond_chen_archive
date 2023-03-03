@@ -1,0 +1,119 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why do some structures end with an array of size 1?</h1>  <!-- .entry-meta -->
+
+<p><p>
+Some Windows structures are variable-sized,
+beginning with a fixed header, followed by
+a variable-sized array.  When these structures
+are declared,
+they often declare an array of size 1 where the
+variable-sized array should be.
+For example:
+</p>
+<pre>
+typedef struct _TOKEN_GROUPS {
+    DWORD GroupCount;
+    SID_AND_ATTRIBUTES Groups[ANYSIZE_ARRAY];
+} TOKEN_GROUPS, *PTOKEN_GROUPS;
+</pre>
+<p>
+If you look in the header files, you’ll see that ANYSIZE_ARRAY is
+#define’d to 1, so this declares a structure with a trailing array
+of size one.
+</p>
+<p>
+With this declaration, you would allocate memory for one such
+variable-sized TOKEN_GROUPS structure like this:
+</p>
+<pre>
+PTOKEN_GROUPS TokenGroups =
+   malloc(FIELD_OFFSET(TOKEN_GROUPS, Groups[NumberOfGroups]));
+</pre>
+and you would initialize the structure like this:
+<pre>
+TokenGroups-&gt;GroupCount = NumberOfGroups;
+for (DWORD Index = 0; Index = NumberOfGroups; Index++) {
+  TokenGroups-&gt;Groups[Index] = …;
+}
+</pre>
+<p>
+Many people think it should have been declared like this:
+</p>
+<pre>
+<i>typedef struct _TOKEN_GROUPS {
+    DWORD GroupCount;
+} TOKEN_GROUPS, *PTOKEN_GROUPS;</i>
+</pre>
+<p>
+(In this article, code that is wrong or hypothetical
+will be italicized.)
+</p>
+<p>
+The code that does the allocation would then go like this:
+</p>
+<pre>
+<i>PTOKEN_GROUPS TokenGroups =
+   malloc(sizeof(TOKEN_GROUPS) +
+          NumberOfGroups * sizeof(SID_AND_ATTRIBUTES));</i>
+</pre>
+<p>
+This alternative has two disadvantages, one cosmetic and one fatal.
+</p>
+<p>
+First, the cosmetic disadvantage:
+It makes it harder to access the variable-sized data.
+Initializing the <i>TOKEN_GROUPS</i> just allocated would go like this:
+</p>
+<pre>
+<i>TokenGroups-&gt;GroupCount = NumberOfGroups;
+for (DWORD Index = 0; Index = NumberOfGroups; Index++) {
+  ((SID_AND_ATTRIBUTES *)(TokenGroups + 1))[Index] = …;
+}</i>
+</pre>
+<p>
+The real disadvantage is fatal.
+The above code <strong>crashes</strong> on 64-bit Windows.
+The SID_AND_ATTRIBUTES structure looks like this:
+</p>
+<pre>
+typedef struct _SID_AND_ATTRIBUTES {
+    PSID Sid;
+    DWORD Attributes;
+    } SID_AND_ATTRIBUTES, * PSID_AND_ATTRIBUTES;
+</pre>
+<p>
+Observe that the first member of this structure is a pointer,
+PSID.  The SID_AND_ATTRIBUTES structure requires pointer alignment,
+which on 64-bit Windows is 8-byte alignment.
+On the other hand, the proposed <i>TOKEN_GROUPS</i> structure
+consists of just a DWORD and therefore requires only 4-byte alignment.
+<i>sizeof(TOKEN_GROUPS)</i> is four.
+</p>
+<p>
+I hope you see where this is going.
+</p>
+<p>
+Under the proposed structure definition,
+the array of SID_AND_ATTRIBUTES
+structures will <strong>not</strong> be placed on an 8-byte
+boundary but only on a 4-byte boundary.
+The necessary padding between the GroupCount and the first
+SID_AND_ATTRIBUTES is missing.
+The attempt to access the elements of the array will crash with a
+STATUS_DATATYPE_MISALIGNMENT exception.
+</p>
+<p>
+Okay, you may say, then why not use a zero-length array instead
+of a 1-length array?
+</p>
+<p>
+Because time travel has yet to be perfected.
+</p>
+<p>
+Zero-length arrays did not become legal Standard C until 1999.
+Since Windows was around long before then, it could not take
+advantage of that functionality in the C language.
+</p></p>
+
+
+</body>

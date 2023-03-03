@@ -1,0 +1,92 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Inside C++/WinRT: Apartment switching: COM without COM</h1>  <!-- .entry-meta -->
+
+<p>One feature of the C++/WinRT library is that it can operate without the Component Object Model (COM) services. It still uses the COM application binary interface (ABI), but it doesn’t rely on the system COM services. If they aren’t available, it will just make do on its own.</p>
+<p>This pattern of using COM as an ABI without using any COM services is sometimes called nano-COM. Some other Windows components follow this pattern, such as DirectX and Media Foundation.</p>
+<p>In the case where COM is not active, C++/WinRT acts as if all threads are running in the multi-threaded apartment (MTA), and therefore all apartment-switching operations have no effect.</p>
+<p>We have to add fallback code to the places where we ask COM for information or ask it to do something for us.</p>
+<pre>inline std::pair&lt;int32_t, int32_t&gt; get_apartment_type() noexcept
+{
+    int32_t aptType;
+    int32_t aptTypeQualifier;
+    <span style="color: #08f;">if (0 ==</span> WINRT_IMPL_CoGetApartmentType(
+        &amp;aptType, &amp;aptTypeQualifier))
+    {
+        return { aptType, aptTypeQualifier };
+    }
+    <span style="color: #08f;">else
+    {
+        return { 1 /* APTTYPE_MTA */,
+                 1 /* APTTYPEQUALIFIER_IMPLICIT_MTA */ };
+    }</span>
+}
+</pre>
+<p>If we can’t get the apartment type, then we must be running in nano-COM, and we report that we are running in the implicit MTA.</p>
+<pre>struct resume_apartment_context
+{
+    resume_apartment_context() = default;
+    resume_apartment_context(std::nullptr_t) :
+        m_context(nullptr), <span style="color: #08f;">m_context_type(-1)</span> {}
+    <span style="color: #c65353;">resume_apartment_context(
+        resume_apartment_context const&amp;) = default;
+    resume_apartment_context(
+    resume_apartment_context&amp;&amp; other) noexcept :
+        m_context(std::move(other.m_context)),
+        <span style="color: #08f;">m_context_type(std::exchange(
+                        other.m_context_type, -1))</span> {}
+    resume_apartment_context&amp; operator=(
+        resume_apartment_context const&amp;) = default;
+    resume_apartment_context&amp; operator=(
+        resume_apartment_context&amp;&amp; other) noexcept
+    {
+        m_context = std::move(other.m_context);
+        <span style="color: #08f;">m_context_type =
+            std::exchange(other.m_context_type, -1);</span>
+        return *this;
+    }</span>
+
+    bool valid() const noexcept
+    {
+        return <span style="color: #08f;">m_context_type &gt;= 0</span>;
+    }
+
+    com_ptr&lt;IContextCallback&gt; m_context =
+        <span style="color: #08f;">try_capture</span>&lt;IContextCallback&gt;(
+            WINRT_IMPL_CoGetObjectContext);
+    int32_t m_context_type = get_apartment_type().first;
+};
+</pre>
+<p>If COM is not active, then <code>Co­Get­Object­Context</code> fails, and instead of throwing an exception, we just accept the failure, and <code>m_context</code> is a null pointer.</p>
+<p>Most of the nonsense in the <code>resume_<wbr/>apartment_<wbr/>context</code> is just making sure that the <code>m_context_<wbr/>type</code> resets to −1 when the <code>m_context</code> is moved out. It would be a lot simpler if we had access to the <a href="/code/making-c-primitive-types-meaningfully-movable-when-they-have-sentinel-values" title="Making"> <code>movable_primitive</code> template type</a> we put together some time ago.</p>
+<p>We also have to teach the <code>resume_<wbr/>apartment()</code> function to deal with the case where COM is not running.</p>
+<pre>inline auto resume_apartment(
+    resume_apartment_context const&amp; context,
+    coroutine_handle&lt;&gt; handle)
+{
+    WINRT_ASSERT(context.valid());
+    if (<span style="color: #08f;">(context.m_context == nullptr) ||</span>
+        (context.m_context ==
+            <span style="color: #08f;">try_capture</span>&lt;IContextCallback&gt;(
+                WINRT_IMPL_CoGetObjectContext)))
+    {
+        handle();
+    }
+    else if (context.m_context_type == 1 /* APTTYPE_MTA /)
+    {
+        resume_background(handle);
+    }
+    else if (is_sta_thread())
+    {
+        resume_apartment_on_threadpool(m_context, handle);
+    }
+    else
+    {
+        resume_apartment_sync(m_context, handle);
+    }
+}
+</pre>
+<p>If COM is not running, then every thread is the implicit MTA, and we can resume the coroutine anywhere.</p>
+<p>Next time, we’ll look at another hole in our framework: What happens when things go wrong?</p>
+
+
+</body>

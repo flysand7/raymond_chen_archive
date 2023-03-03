@@ -1,0 +1,20 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">After I made my DLL delay-load another DLL, my DLL has started crashing in its process detach code</h1>  <!-- .entry-meta -->
+
+<p>A customer had a DLL, let’s call it <code>CONTOSO.DLL</code>, and that DLL linked to another DLL, let’s call it <code>WIDGET.DLL</code>. To improve DLL load time, they made <code>WIDGET.DLL</code> a delay-loaded DLL via <a href="https://docs.microsoft.com/en-us/cpp/build/reference/delayload-delay-load-import"> the <code>/DELAYLOAD</code> linker option</a>. This worked out great, except that sometimes their DLL crashed when shutting down.</p>
+<p>When the <code>WIDGET.DLL</code> was a static dependency, the loader made a note to ensure that <code>WIDGET.DLL</code> was loaded and ready before calling <code>CONTOSO.DLL</code>‘s initialization function, and made sure that <code>WIDGET.DLL</code> remained valid until <code>CONTOSO.DLL</code> completed its uninitialization.</p>
+<p>Switching the <code>WIDGET.DLL</code> to a <code>/DELAYLOAD</code> DLL removes this static dependency, and the loader isn’t around to help any more.</p>
+<p>When the process shuts down, the loader uninitializes the DLLs in an order that tries¹ to preserve the static dependencies, so that a DLL waits until all its dependents are uninitialized before itself uninitializing. However, the loader does not have insight into dynamically-created dependencies, and the DLLs may <a href="https://devblogs.microsoft.com/oldnewthing/20050523-05/?p=35573"> unload out of order</a>.</p>
+<p>What happened is that <code>CONTOSO.DLL</code> initialized without <code>WIDGET.DLL</code>, and then later somebody needed a widget, so it loaded <code>WIDGET.DLL</code> and did some widget stuff, and then cached the widget so it wouldn’t have to go through all that nonsense again.</p>
+<p>In the <code>CONTOSO.DLL</code> module’s <code>DLL_<code></code>PROCESS_<code></code>DETACH</code> code, it checks² if there is a cached widget, and if so, destroys it.</p>
+<p>WIDGET.DLL was a dynamic dependency, the module loader doesn’t take it into account when calculating the order in which modules should be uninitlalized. The loader sees no static dependency between <code>CONTOSO.DLL</code> and <code>WIDGET.DLL</code>, so the order in which they uninitialize is arbitrary.</p>
+<p>And if the arbitrary decision ends up selecting <code>WIDGET.DLL</code> to uninitialize first, then you have a crash when <code>CONTOSO.DLL</code> tries to call into an already-uninitialized DLL.</p>
+<p>Note that this problem occurs only at process shutdown. If <code>CONTOSO.DLL</code> unloads via a runtime call to <code>Free­Library</code>, it will still be able to call into <code>WIDGET.DLL</code> because it hasn’t yet called <code>Free­Library</code> on <code>WIDGET.DLL</code>. But during process shutdown, the module loader needs to free all the things, and the outstanding <code>Load­Library</code> won’t prevent that from happening.</p>
+<p>The solution is to bypass widget cleanup if the <code>DLL_<code></code>PROCESS_<code></code>DETACH</code> handler realizes that the process is terminating. Just leak the widget. <a href="https://devblogs.microsoft.com/oldnewthing/20120105-00/?p=8683"> The building is being demolished. You don’t need to sweep the floors</a>.</p>
+<p>The DLL was able to start without the widget DLL. It should be able to finish without the widget DLL.</p>
+<p>¹ I say “tries” because circular dependencies make such an effort impossible to achieve, but the loader does the best it can.</p>
+<p>² It’s important to check for evidence of widgets before trying to clean up widget-related things. Otherwise, you may end up <a href="https://devblogs.microsoft.com/oldnewthing/20100115-00/?p=15253"> loading a DLL in your <code>DLL_<code></code>PROCESS_<code></code>DETACH</code> handler</a>, and that’s not good.</p>
+<p> </p>
+
+
+</body>

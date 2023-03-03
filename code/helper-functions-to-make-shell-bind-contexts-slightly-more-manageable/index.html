@@ -1,0 +1,245 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Helper functions to make shell bind contexts slightly more manageable</h1>  <!-- .entry-meta -->
+
+<p>Last time, we learned about <a href="http://blogs.msdn.com/b/oldnewthing/archive/2015/01/22/10587918.aspx">the wonderful world of shell bind context strings</a>, and I promised some helper functions to make this slightly more manageable. </p>
+<p>Here are some helper functions which supplement the <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/05/03/10415778.aspx"><code>Create­Bind­Ctx­With­Opts</code> function</a> we created some time ago. </p>
+<pre>
+#include &lt;propsys.h&gt;
+
+HRESULT EnsureBindCtxPropertyBag(
+    IBindCtx *pbc, REFIID riid, void **ppv)
+{
+ *ppv = nullptr;
+ CComPtr&lt;IUnknown&gt; spunk;
+ HRESULT hr = pbc-&gt;GetObjectParam(STR_PROPERTYBAG_PARAM, &amp;spunk);
+ if (FAILED(hr)) {
+  hr = PSCreateMemoryPropertyStore(IID_PPV_ARGS(&amp;spunk));
+  if (SUCCEEDED(hr)) {
+   hr = pbc-&gt;RegisterObjectParam(STR_PROPERTYBAG_PARAM, spunk);
+  }
+ }
+ if (SUCCEEDED(hr)) {
+  hr = spunk-&gt;QueryInterface(riid, ppv);
+ }
+  return hr;
+}
+
+HRESULT AddBindCtxDWORD(
+    IBindCtx *pbc, LPCWSTR pszName, DWORD dwValue)
+{
+ CComPtr&lt;IPropertyBag&gt; sppb;
+ HRESULT hr = EnsureBindCtxPropertyBag(pbc, IID_PPV_ARGS(&amp;sppb));
+ if (SUCCEEDED(hr)) {
+  hr = PSPropertyBag_WriteDWORD(sppb, pszName, dwValue);
+ }
+ return hr;
+}
+
+HRESULT AddBindCtxString(
+    IBindCtx *pbc, LPCWSTR pszName, LPCWSTR pszValue)
+{
+ CComPtr&lt;IPropertyBag&gt; sppb;
+ HRESULT hr = EnsureBindCtxPropertyBag(pbc, IID_PPV_ARGS(&amp;sppb));
+ if (SUCCEEDED(hr)) {
+  hr = PSPropertyBag_WriteStr(sppb, pszName, pszValue);
+ }
+ return hr;
+}
+
+HRESULT CreateDwordBindCtx(
+    LPCWSTR pszName, DWORD dwValue, IBindCtx **ppbc)
+{
+ CComPtr&lt;IBindCtx&gt; spbc;
+ HRESULT hr = CreateBindCtx(0, &amp;spbc);
+ if (SUCCEEDED(hr)) {
+  hr = AddBindCtxDWORD(spbc, pszName, dwValue);
+ }
+ *ppbc = SUCCEEDED(hr) ? spbc.Detach() : nullptr;
+ return hr;
+}
+
+HRESULT CreateStringBindCtx(
+    LPCWSTR pszName, LPCWSTR pszValue, IBindCtx **ppbc)
+{
+ CComPtr&lt;IBindCtx&gt; spbc;
+ HRESULT hr = CreateBindCtx(0, &amp;spbc);
+ if (SUCCEEDED(hr)) {
+  hr = AddBindCtxString(spbc, pszName, pszValue);
+ }
+ *ppbc = SUCCEEDED(hr) ? spbc.Detach() : nullptr;
+ return hr;
+}
+</pre>
+<p>The <code>Ensure­Bind­Ctx­Property­Bag</code> function puts a property bag in the bind context if there isn’t one already. </p>
+<p>The <code>Add­Bind­Ctx­DWORD</code> function adds a <code>DWORD</code> to that associated property bag. If you wanted to add multiple <code>DWORD</code>s to a bind context, you would call this function multiple times. You can also use the <code>Add­Bind­Ctx­String</code> if the thing you want to add is a string. </p>
+<p>The <code>Create­Dword­Bind­Ctx</code> function handles the simple case where you want to create a bind context that contains a single <code>DWORD</code>. Similarly, <code>Create­String­Bind­Ctx</code>. </p>
+<p>But now things are starting to get kind of unwieldy. What if you want a bind context with a string and a <code>DWORD</code>? Let’s go for something a bit more fluent. </p>
+<p>But first, some scaffolding. </p>
+<pre>
+class CStaticUnknown : public IUnknown
+{
+public:
+ // *** IUnknown ***
+ IFACEMETHODIMP QueryInterface(
+  _In_ REFIID riid, _Outptr_ void **ppv)
+ {
+  *ppv = nullptr;
+  HRESULT hr = E_NOINTERFACE;
+  if (riid == IID_IUnknown) {
+   *ppv = static_cast&lt;IUnknown *&gt;(this);
+   AddRef();
+   hr = S_OK;
+  }
+  return hr;
+ }
+
+ IFACEMETHODIMP_(ULONG) AddRef()
+ {
+  return 2;
+ }
+
+ IFACEMETHODIMP_(ULONG) Release()
+ {
+  return 1;
+ }
+
+};
+
+CStaticUnknown s_unkStatic;
+</pre>
+<p>This static implementation of <code>IUnknown</code> is one we’ll use for the bind context strings whose mere presence indicates that a flag is set. </p>
+<pre>
+class CBindCtxBuilder
+{
+public:
+ CBindCtxBuilder()
+ {
+  m_hrCumulative = CreateBindCtx(0, &amp;m_spbc);
+ }
+
+ CBindCtxBuilder&amp; SetMode(DWORD grfMode);
+ CBindCtxBuilder&amp; SetFindData(const WIN32_FIND_DATA *pfd);
+ CBindCtxBuilder&amp; SetFlag(PCWSTR pszName);
+ CBindCtxBuilder&amp; SetVariantDword(PCWSTR pszName, DWORD dwValue);
+ CBindCtxBuilder&amp; SetVariantString(PCWSTR pszName, PCWSTR pszValue);
+
+ HRESULT Result() const { return m_hrCumulative; }
+
+ IBindCtx *GetBindCtx() const
+ { return SUCCEEDED(m_hrCumulative) ? m_spbc : nullptr; }
+private:
+ HRESULT EnsurePropertyBag();
+
+private:
+ CComPtr&lt;IBindCtx&gt; m_spbc;
+ CComPtr&lt;IPropertyBag&gt; m_sppb;
+ HRESULT m_hrCumulative;
+};
+</pre>
+<p>The bind context builder class is a helper class that creates a bind context, and then fills it with stuff. For now, we let you set the following: </p>
+<ul>
+<li>The mode to use for opening the target of the bind.     <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/ms686636(v=vs.85).aspx">    The default is <code>STGM_READ­WRITE</code></a>. 
+<li>The find data to use, if     <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/05/03/10415778.aspx">    creating a simple pidl</a>. 
+<li>An arbitrary flag, associated with a dummy <code>IUnknown</code>. 
+<li>A <code>DWORD</code> in the property bag. 
+<li>A string in the property bag. </li></li></li></li></li></ul>
+<p>After you build up the bind context, you can check the <code>Result()</code> to see if it was built successfully, and use <code>Get­Bind­Ctx</code> to extract the result. </p>
+<p>Here’s the implementation. It’s really not that exciting. We accumulate any error in <code>m_hrCumulative</code>, and once an error occurs, all future methods do nothing aside from preserving the error. To make the object fluent, the methods return a reference to themselves. </p>
+<p>There is a special bind context method for setting the mode: </p>
+<pre>
+CBindCtxBuilder&amp;
+CBindCtxBuilder::SetMode(DWORD grfMode)
+{
+ if (SUCCEEDED(m_hrCumulative)) {
+  BIND_OPTS bo = { sizeof(bo), 0, grfMode, 0 };
+  m_hrCumulative = m_spbc-&gt;SetBindOptions(&amp;bo);
+ }
+ return *this;
+}
+</pre>
+<p>Find data is set as a direct object on the bind context, <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/05/03/10415778.aspx">as we saw some time ago</a>:</p>
+<pre>
+CBindCtxBuilder&amp;
+CBindCtxBuilder::SetFindData(const WIN32_FIND_DATA *pfd)
+{
+ if (SUCCEEDED(m_hrCumulative)) {
+  m_hrCumulative = <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/05/03/10415778.aspx">AddFileSysBindCtx</a>(m_spbc, pfd);
+ }
+ return *this;
+}
+</pre>
+<p>Flags are set by there mere presence, so we associate them with a dummy <code>IUnknown</code> that does nothing: </p>
+<pre>
+CBindCtxBuilder&amp;
+CBindCtxBuilder::SetFlag(PCWSTR pszName)
+{
+ if (SUCCEEDED(m_hrCumulative)) {
+  m_hrCumulative = m_spbc-&gt;RegisterObjectParam(
+    const_cast&lt;PWSTR&gt;(pszName), &amp;s_unkStatic);
+ }
+ return *this;
+}
+</pre>
+<p>If a property is set in the property bag, we need to proceed in two steps. First, we create the property bag if we don’t have one already. Second, we put the value into the property bag: </p>
+<pre>
+CBindCtxBuilder&amp;
+CBindCtxBuilder::SetVariantDword(
+    PCWSTR pszName, DWORD dwValue)
+{
+ if (SUCCEEDED(m_hrCumulative)) {
+  m_hrCumulative = EnsurePropertyBag();
+ }
+ if (SUCCEEDED(m_hrCumulative)) {
+  m_hrCumulative =  PSPropertyBag_WriteDWORD(
+    m_sppb, pszName, dwValue);
+ }
+ return *this;
+}
+
+CBindCtxBuilder&amp;
+CBindCtxBuilder::SetVariantString(
+    PCWSTR pszName, PCWSTR pszValue)
+{
+ if (SUCCEEDED(m_hrCumulative)) {
+  m_hrCumulative = EnsurePropertyBag();
+ }
+ if (SUCCEEDED(m_hrCumulative)) {
+  m_hrCumulative =  PSPropertyBag_WriteStr(
+    m_sppb, pszName, pszValue);
+ }
+ return *this;
+}
+</pre>
+<p>And finally, the helper function that creates a property bag if we don’t have one already. </p>
+<pre>
+HRESULT CBindCtxBuilder::EnsurePropertyBag()
+{
+ HRESULT hr = S_OK;
+ if (!m_sppb) {
+  hr = PSCreateMemoryPropertyStore(
+    IID_PPV_ARGS(&amp;m_sppb));
+  if (SUCCEEDED(hr)) {
+   hr = m_spbc-&gt;RegisterObjectParam(
+    STR_PROPERTYBAG_PARAM, m_sppb);
+  }
+ }
+ return hr;
+}
+</pre>
+<p>The idea here is that the class is used like this: </p>
+<pre>
+CBindCtxBuilder builder;
+builder.SetMode(STGM_CREATE)
+       .SetFindData(&amp;wfd)
+       .SetFlag(STR_FILE_SYS_BIND_DATA_WIN7_FORMAT)
+       .SetFlag(STR_BIND_FOLDERS_READ_ONLY);
+hr = builder.Result();
+if (SUCCEEDED(hr)) {
+ hr = psf-&gt;ParseDisplayName(hwnd, builder.GetBindCtx(),
+   pszName, &amp;cchEaten, &amp;pidl, &amp;dwAttributes);
+}
+</pre>
+<p>You create the bind context builder, then use the various <code>Set­Xxx</code> methods to fill the bind context with goodies, and then you check if it all worked okay. If so, then you use <code>Get­Bind­Ctx</code> to get the resulting bind context and proceed on your way. </p>
+
+
+</body>

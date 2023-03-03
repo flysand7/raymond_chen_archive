@@ -1,0 +1,96 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Class template argument deduction may be the new hotness, but we’ll always have maker functions</h1>  <!-- .entry-meta -->
+
+<p>C++17 introduced <a href="https://devblogs.microsoft.com/cppblog/how-to-use-class-template-argument-deduction/" title="How to Use Class Template Argument Deduction"> class template argument deduction</a>, commonly known as CTAD. This is a core language feature that lets you omit class template arguments and let the compiler deduce them. For example:</p>
+<pre>// Old and busted
+std::pair&lt;int, int&gt; p(1, 2);
+auto p = std::pair&lt;int, int&gt;(1, 2);
+
+// New hotness: compiler deduces &lt;int, int&gt;
+std::pair p(1, 2);
+auto p = std::pair(1, 2);
+</pre>
+<p>The catch with CTAD is that it’s all-or-nothing. You either provide all of the template arguments, or you provide none of them. There is no going halfway.</p>
+<pre>// Doesn't work
+std::pair&lt;int&gt; p(1, 2);
+</pre>
+<p>To be fair, CTAD is kind of forced into the all-or-nothing pattern because of the existence of template default arguments and variadic templates.</p>
+<pre>S&lt;int&gt; t(1, 2, 3);
+</pre>
+<p>Is that trying to construct a <code>S&lt;int&gt;</code> with three constructor parameters? Or is it trying to construct a <code>S&lt;...&gt;</code> where the first template argument is <code>int</code> and the compiler should try to deduce the others?¹</p>
+<p>This becomes a problem when you have a class where you’d like to deduce some but not all of the template arguments:</p>
+<pre>template&lt;typename T, typename... Args&gt;
+struct S
+{
+    S(Args... args) { /* save the args somewhere */ }
+    T get();
+};
+
+// Error: No matching constructor for S&lt;double&gt;
+S&lt;double&gt; s(1, std::string("hi"));
+</pre>
+<p>We wished that line declared and constructed a <code>S&lt;double, int, std::string&gt;</code>, but it doesn’t. What it declares is a <code>S&lt;double&gt;</code> and then tries to construct it with <code>(1, std::string("hi"))</code> as constructor parameters, which doesn’t work.</p>
+<p>But you know what <i>does</i> allow explicit specification of some template parameters with deduction of the others?</p>
+<p>Functions, that’s what.</p>
+<p>Back in the old days, before CTAD, you had to use functions to do the things that CTAD does. That’s why we have a bunch of maker functions like <code>std::make_pair</code>. Templated functions allow you to explicitly specify some template parameters, while allowing others to be deduced.</p>
+<pre>template&lt;typename T, typename... Args&gt;
+auto make_s(Args... args)
+{
+    return S&lt;T, Args...&gt;(args...);
+}
+
+// Hooray, this creates a S&lt;double, int, std::string&gt;
+auto s = make_s&lt;double&gt;(1, std::string("hi"));
+</pre>
+<p>Now that we have the basic idea, we can refine it. For one thing, our version above passes everything by value, which means that the string gets copied a lot. If we used <span style="text-decoration: line-through;">universal</span> forwarding references, that would avoid the extra copies. Here’s our first attempt:</p>
+<pre>template&lt;typename T, typename... Args&gt;
+auto make_s(Args<span style="color: blue;">&amp;&amp;</span>... args)
+{            // ^^
+    return S&lt;T, Args...&gt;(args...);
+}
+</pre>
+<p>This seems to work, but then you get use-after-free bugs when you try this:</p>
+<pre>auto make_s_double_int(int value)
+{
+    return make_s&lt;double&gt;(value);
+}
+</pre>
+<p>Recall that forwarding references deduce a type parameter as an lvalue if the actual argument is an lvalue, and as a non-reference if the actual argument is an rvalue. In the case where you pass an lvalue as a parameter to <code>make_s</code>, the corresponding <code>Args</code> type is an lvalue reference.</p>
+<p>In our case, it is an <code>int&amp;</code>. That means that what we actually created was a <code>S&lt;double, int&amp;&gt;</code>. And we passed a reference to a variable that is about to be destroyed as it goes out of scope.</p>
+<p>What we need to do is remove the reference from the possibly-lvalue <code>Args</code> so that we create an <code>S&lt;double, int&gt;</code>, and then forward the arguments to the constructor.</p>
+<pre>template&lt;typename T, typename... Args&gt;
+auto make_s(Args&amp;&amp;... args)
+{
+    return S&lt;T, <span style="color: blue;">std::remove_reference_t&lt;Args&gt;</span>...&gt;
+        (<span style="color: blue;">std::forward&lt;Args&gt;(args)</span>...);
+}
+</pre>
+<p>Okay, so that gets rid of one copy.</p>
+<p>But there’s another copy: The <code>S</code> constructor receives its parameters as values, not references, which means that the constructor will have to copy (or at least move) them into some local storage.² We could try to keep the parameters as references until the last moment.</p>
+<pre>template&lt;typename T, typename... Args&gt;
+struct S
+{
+    <span style="color: blue;">template&lt;typename... Actuals&gt;</span>
+    S(<span style="color: blue;">Actuals&amp;&amp;... actuals</span>) { /* save the args somewhere */ }
+    T get();
+};
+</pre>
+<p>But wait, we’re not done yet. What if the parameter is a <code>const</code> lvalue?</p>
+<pre>const int x = 42;
+auto s = make_s&lt;double&gt;(x);
+</pre>
+<p>We remove the reference, but we didn’t remove the <code>const</code>, so this created a <code>S&lt;double, int const&gt;</code>. What we really want is the result you would get as if by assignment from the actual argument. And the name for that is <code>std::decay</code>.</p>
+<pre>template&lt;typename T, typename... Args&gt;
+auto make_s(Args&amp;&amp;... args)
+{
+    return S&lt;T, <span style="color: blue;">std::decay_t</span>&lt;Args&gt;...&gt;
+        (std::forward&lt;Args&gt;(args)...);
+}
+</pre>
+<p>All this will come in handy next time.</p>
+<p><b>Bonus reading</b>: <a href="/code/structured-binding-may-be-the-new-hotness-but-we-ll-always-have-std-tie" title="Structured binding may be the new hotness, but we'll always have std::tie"> Structured binding may be the new hotness, but we’ll always have <code>std::tie</code></a>.</p>
+<p>¹ I guess you could try to invent some new syntax to resolve the ambiguity, like <code>S&lt;int, auto...&gt;</code>, but you’d have to reconcile this against other uses of <code>auto</code> as a template argument, and actually just forget I even mentioned this.</p>
+<p>² Return value optimization does not apply here because these aren’t return values.</p>
+
+
+</body>

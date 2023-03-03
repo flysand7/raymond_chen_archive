@@ -1,0 +1,63 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you are going to call Marshal.GetLastWin32Error, the function whose error you’re retrieving had better be the one called most recently</h1>  <!-- .entry-meta -->
+
+<p>Even if you <!-- backref: If you are going to call Marshal.GetLastWin32Error, the function whose error you're retrieving had better have SetLastError=true -->remember to set <code>Set­Last­Error=true</code> in your p/invoke signature, you still have to be careful with <code>Marshal.Get­Last­Win32­Error</code> because there is only one last-error code, and it gets overwritten each time. <span id="more-91781"></span></p>
+<p>So let’s try this program: </p>
+<pre>
+using System;
+using System.Runtime.InteropServices;
+
+class Program
+{
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool OpenIcon(IntPtr hwnd);
+
+  public static void Main()
+  {
+    // Intentionally pass an invalid parameter.
+    var result = OpenIcon(IntPtr.Zero);
+    Console.WriteLine("result: {0}", result);
+    Console.WriteLine("last error = {0}",
+                      Marshal.GetLastWin32Error());
+  }
+}
+</pre>
+<p>The expectation is that the call to <code>Open­Icon</code> will fail, and the error code will be some form of invalid parameter. </p>
+<p>But when you run the program, it prints this: </p>
+<pre>
+result: False
+last error = 0
+</pre>
+<p>Zero? </p>
+<p>Zero means “No error”. But the function failed. Where’s our error code? We printed the result immediately after calling <code>Open­Icon</code>. We didn’t call any other p/invoke functions. The last-error code should still be there. </p>
+<p>Oh wait, printing the result to the screen involves a function call. </p>
+<p>That function call might itself do a p/invoke! </p>
+<p>We have to call <code>Marshal.Get­Last­Win32­Error</code> immediately after calling <code>Open­Icon</code>. Nothing else can sneak in between. </p>
+<pre>
+using System;
+using System.Runtime.InteropServices;
+
+class Program
+{
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool OpenIcon(IntPtr hwnd);
+
+  public static void Main()
+  {
+    // Intentionally pass an invalid parameter.
+    var result = OpenIcon(IntPtr.Zero);
+    <font color="blue">var lastError = Marshal.GetLastWin32Error();</font>
+    Console.WriteLine("result: {0}", result);
+    Console.WriteLine("last error = {0}",
+                      <font color="blue">lstError</font>);
+  }
+}
+</pre>
+<p>Okay, now the program reports the error code as 1400: “Invalid window handle.” </p>
+<p>This one was pretty straightforward, because the function call that modified the last-error code was right there in front of us. But there are other ways that code can run which are more subtle. </p>
+<ul>
+<li>If you retrieve a property,     the property retrieval may involve a p/invoke. 
+<li>If you access a class that has a static constructor,     the static constructor will secretly run     if this is the first time the class is used. </li></li></ul>
+
+
+</body>

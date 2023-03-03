@@ -1,0 +1,356 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using fibers to simplify enumerators, part 3: Having it both ways</h1>  <!-- .entry-meta -->
+
+<p>As we discovered in the <a href="/oldnewthing/archive/2004/12/29/343664.aspx"> previous two entries</a> [<a href="/oldnewthing/archive/2004/12/30/344281.aspx">second</a>], the problem with enumeration is that somebody always loses.</p>
+<p>Now we will use fibers to fight back. Before you decide to use fibers in your programs, make sure to read the <strong>dire warnings</strong> at the end of this article. My goal here is to show one use of fibers, not to say that fibers are the answer to all your problems. Fibers can create more problems than they solve. We’ll come back to all the dire warnings later.</p>
+<p>As with most clever ideas, it has a simple kernel: Use a fiber to run both the caller and the enumerator each on their own stack.</p>
+<pre>#include &lt;windows.h&gt;
+#include &lt;shlwapi.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;strsafe.h&gt;
+
+enum FEFOUND {
+ FEF_FILE,          // found a file
+ FEF_DIR,           // found a directory
+ FEF_LEAVEDIR,      // leaving a directory
+ FEF_DONE,          // finished
+};
+
+enum FERESULT {
+ FER_CONTINUE,      // continue enumerating
+                    // (if directory: recurse into it)
+ FER_SKIP,          // skip directory (do not recurse)
+};
+
+class __declspec(novtable) FiberEnumerator {
+public:
+ FiberEnumerator();
+ ~FiberEnumerator();
+
+ FEFOUND Next();
+ void SetResult(FERESULT fer) { m_fer = fer; }
+ void Skip() { SetResult(FER_SKIP); }
+
+ virtual LPCTSTR GetCurDir() = 0;
+ virtual LPCTSTR GetCurPath() = 0;
+ virtual const WIN32_FIND_DATA* GetCurFindData() = 0;
+
+protected:
+ virtual void FiberProc() = 0;
+
+ static void DECLSPEC_NORETURN WINAPI
+    s_FiberProc(void* pvContext);
+
+ FERESULT Produce(FEFOUND fef);
+
+protected:
+ void* m_hfibCaller;
+ void* m_hfibEnumerator;
+ FEFOUND  m_fef;
+ FERESULT m_fer;
+};
+
+FiberEnumerator::FiberEnumerator()
+ : m_fer(FER_CONTINUE)
+{
+ m_hfibEnumerator = CreateFiber(0, s_FiberProc, this);
+}
+
+FiberEnumerator::~FiberEnumerator()
+{
+ DeleteFiber(m_hfibEnumerator);
+}
+
+void DECLSPEC_NORETURN FiberEnumerator::
+    s_FiberProc(void *pvContext)
+{
+ FiberEnumerator* self =
+    reinterpret_cast&lt;FiberEnumerator*&gt;(pvContext);
+ self-&gt;FiberProc();
+
+ // Theoretically, we need only produce Done once,
+ // but keep looping in case a consumer gets
+ // confused and asks for the Next() item even
+ // though we're Done.
+ for (;;) self-&gt;Produce(FEF_DONE);
+}
+</pre>
+<p>This helper class does the basic bookkeeping of fiber-based enumeration. At construction, it remembers the fiber that is consuming the enumeration, as well as creating a fiber that will produce the enumeration. At destruction, it cleans up the fiber. The derived class is expected to implement the <code>FiberProc</code> method and call <code>Produce()</code> every so often.</p>
+<p>The real magic happens in the (somewhat anticlimactic) <code>Produce()</code> and <code>Next()</code> methods:</p>
+<pre>FERESULT FiberEnumerator::Produce(FEFOUND fef)
+{
+ m_fef = fef; // for Next() to retrieve
+ m_fer = FER_CONTINUE; // default
+ SwitchToFiber(m_hfibCaller);
+ return m_fer;
+}
+
+FEFOUND FiberEnumerator::Next()
+{
+ m_hfibCaller = GetCurrentFiber();
+ SwitchToFiber(m_hfibEnumerator);
+ return m_fef;
+}
+</pre>
+<p>To <code>Produce()</code> something, we remember the production code, pre-set the enumeration result to its default of <code>FER_CONTINUE</code>, and switch to the consumer fiber. When the consumer fiber comes back with an answer, we return it from <code>Produce()</code>.</p>
+<p>To get the next item, we remember the identity of the calling fiber, then switch to the enumerator fiber. This runs the enumerator until it decides to <code>Produce()</code> something, at which point we take the production code and return it.</p>
+<p>That’s all there is to it. The <code>m_fef</code> and <code>m_fer</code> members are for passing the parameters and results back and forth across the fiber boundary.</p>
+<p>Okay, with that groundwork out of the way, writing the producer itself is rather anticlimactic.</p>
+<p>Since we want to make things easy for the consumer, we use <a href="/oldnewthing/archive/2004/12/30/344281.aspx"> the interface the consumer would have designed</a>, with some assistance from the helper class.</p>
+<pre>class DirectoryTreeEnumerator : public FiberEnumerator {
+public:
+ DirectoryTreeEnumerator(LPCTSTR pszDir);
+ ~DirectoryTreeEnumerator();
+
+ LPCTSTR GetCurDir() { return m_pseCur-&gt;m_szDir; }
+ LPCTSTR GetCurPath() { return m_szPath; }
+ const WIN32_FIND_DATA* GetCurFindData()
+    { return &amp;m_pseCur-&gt;m_wfd; }
+
+private:
+ void FiberProc();
+ void Enum();
+
+ struct StackEntry {
+   StackEntry* m_pseNext;
+   HANDLE m_hfind;
+   WIN32_FIND_DATA m_wfd;
+   TCHAR m_szDir[MAX_PATH];
+ };
+ bool Push(StackEntry* pse);
+ void Pop();
+
+private:
+ StackEntry *m_pseCur;
+ TCHAR m_szPath[MAX_PATH];
+};
+
+DirectoryTreeEnumerator::
+ DirectoryTreeEnumerator(LPCTSTR pszDir)
+ : m_pseCur(NULL)
+{
+ StringCchCopy(m_szPath, MAX_PATH, pszDir);
+}
+
+DirectoryTreeEnumerator::~DirectoryTreeEnumerator()
+{
+ while (m_pseCur) {
+   Pop();
+ }
+}
+
+bool DirectoryTreeEnumerator::
+      Push(StackEntry* pse)
+{
+ pse-&gt;m_pseNext = m_pseCur;
+ m_pseCur = pse;
+ return
+  SUCCEEDED(StringCchCopy(pse-&gt;m_szDir,
+                 MAX_PATH, m_szPath)) &amp;&amp;
+  PathCombine(m_szPath, pse-&gt;m_szDir, TEXT("*.*")) &amp;&amp;
+  (pse-&gt;m_hfind = FindFirstFile(m_szPath,
+       &amp;pse-&gt;m_wfd)) != INVALID_HANDLE_VALUE;
+}
+
+void DirectoryTreeEnumerator::Pop()
+{
+ StackEntry* pse = m_pseCur;
+ if (pse-&gt;m_hfind != INVALID_HANDLE_VALUE) {
+  FindClose(pse-&gt;m_hfind);
+ }
+ m_pseCur = pse-&gt;m_pseNext;
+}
+
+void DirectoryTreeEnumerator::FiberProc()
+{
+ Enum();
+}
+
+void DirectoryTreeEnumerator::Enum()
+{
+ StackEntry se;
+ if (Push(&amp;se)) {
+  do {
+   if (lstrcmp(se.m_wfd.cFileName, TEXT(".")) != 0 &amp;&amp;
+       lstrcmp(se.m_wfd.cFileName, TEXT("..")) != 0 &amp;&amp;
+       PathCombine(m_szPath, se.m_szDir, se.m_wfd.cFileName)) {
+    FEFOUND fef = (se.m_wfd.dwFileAttributes &amp;
+                    FILE_ATTRIBUTE_DIRECTORY) ?
+                    FEF_DIR : FEF_FILE;
+    if (Produce(fef) == FER_CONTINUE &amp;&amp; fef == FEF_DIR) {
+     Enum(); // recurse into the subdirectory we just produced
+    }
+   }
+  } while (FindNextFile(se.m_hfind, &amp;se.m_wfd));
+ }
+ Produce(FEF_LEAVEDIR);
+ Pop();
+}
+</pre>
+<p>As you can see, this class is a mix of the two previous classes. Like the consumer-based class, information about the item being enumerated is obtained by calling methods on the enumerator object. But like the callback-based version, the loop that generates the objects themselves is a very simple recursive function, with a call to <code>Produce</code> in place of a callback.</p>
+<p>In fact, it’s even simpler than the callback-based version, since we don’t have to worry about the FER_STOP code. If the consumer wants to stop enumeration, the consumer simply stops calling <code>Next()</code>.</p>
+<p>Most of the complexity in the class is just bookkeeping to permit abandoning the enumeration prematurely.</p>
+<p>Okay, let’s take this fiber out for a spin. You can use the same <code>TestWalk</code> function as last time, but for added generality, change the first parameter from <code>DirectoryTreeEnumerator*</code> to <code>FiberEnumerator*</code>. (The significance of this will become apparent next time.)</p>
+<p>A little tweak needs to be made to the main function, though.</p>
+<pre>int __cdecl main(int argc, char **argv)
+{
+ <span style="color: blue;">ConvertThreadToFiber(NULL);</span>
+ DirectoryTreeEnumerator e(TEXT("."));
+ TestWalk(&amp;e);
+ <span style="color: blue;">ConvertFiberToThread();</span>
+ return 0;
+}
+</pre>
+<p>Since the enumerator is going to switch between fibers, we’d better convert the thread to a fiber so it’ll have something to switch back to!</p>
+<p>Here’s a schematic of what happens when you run this fiber-based enumerator:</p>
+<table cellpadding="3" cellspacing="0">
+<tbody>
+<tr>
+<td><code>ConvertThreadToFiber</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<th style="border: solid .75pt black; border-bottom: none;">Main fiber</th>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;">construct <code>DirectoryTreeEnumerator</code></td>
+<td> </td>
+<th>Enumerator fiber</th>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>CreateFiber</code></td>
+<td> </td>
+<td style="border: solid .75pt black; border-bottom: none;">(not running)</td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;">initialize variables</td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"> </td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>Next(CONTINUE)</code></td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"> </td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>SwitchToFiber()</code></td>
+<td>→</td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;">starts running</td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"> </td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>FindFirstFile</code> etc</td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"> </td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>Produce(FILE)</code></td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>Next(CONTINUE)</code> “returns” FILE</td>
+<td>←</td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>SwitchToFiber()</code></td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;">use the result</td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"> </td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>Next(CONTINUE)</code></td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"> </td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>SwitchToFiber()</code></td>
+<td>→</td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>Produce(FILE)</code> “returns” CONTINUE</td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"> </td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>FindNextFile</code> etc</td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"> </td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>Produce(DIR)</code></td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>Next(CONTINUE)</code> “returns” DIR</td>
+<td>←</td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>SwitchToFiber()</code></td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;">use the result</td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"> </td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>Next(CONTINUE)</code></td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"> </td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>SwitchToFiber()</code></td>
+<td>→</td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>Produce(DIR)</code> “returns” CONTINUE</td>
+</tr>
+<tr>
+<td align="center" colspan="3">and so on… until…</td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"> </td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>Produce(DONE)</code></td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>Next(CONTINUE)</code> “returns” DONE</td>
+<td>←</td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>SwitchToFiber()</code></td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;">cleanup</td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"> </td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none; border-bottom: none;"><code>DeleteFiber</code></td>
+<td> </td>
+<td style="border: solid .75pt black; border-top: none;"> </td>
+</tr>
+<tr>
+<td style="border: solid .75pt black; border-top: none;">destruct <code>DirectoryTreeEnumerator</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td><code>ConvertFiberToThread</code></td>
+<td> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>Observe that from each fiber’s point of view, the other fiber is just a subroutine!</p>
+<p>Coding subtlety: Why do we capture the caller’s fiber each time the <code>Next()</code> method is called? Why not capture it when the <code>FiberEnumerator</code> is constructed?</p>
+<p>Next time, we’ll see how this fiber-based enumerator easily admits higher-order operations such as filtering and composition.</p>
+<p><strong>Dire warnings about fibers</strong></p>
+<p>Fibers are like dynamite. Mishandle them and your process explodes.</p>
+<p>The first dire warning is that fibers are expensive in terms of address space, since each one gets its own stack (typically a megabyte).</p>
+<p>And since each fiber has its own stack, it also has its own exception chain. This means that if a fiber throws an exception, only that fiber can catch it. (Same as threads.) That’s a strong argument against using an STL std::stack object to maintain our state: STL is based on an exception-throwing model, but you can’t catch exceptions raised by another fiber. (You also can’t throw exceptions past a COM boundary, which severely limits how much you can use STL in a COM object.)</p>
+<p>One of the big problems with fibers is that everybody has to be in cahoots. You need to decide on one person who will call <a href="http://msdn.microsoft.com/library/en-us/dllproc/base/convertthreadtofiber.asp"> the <code>ConvertThreadToFiber</code> function</a> since fiber/thread conversion is not reference-counted. If two people call ConvertThreadToFiber on the same thread, the first will convert it, and so will the second! This results in two fibers for the same thread, and things can only get worse from there.</p>
+<p>You might think, “Well, wouldn’t <a href="http://msdn.microsoft.com/library/en-us/dllproc/base/getcurrentfiber.asp"> the <code>GetCurrentFiber</code> function</a> return NULL if the thread hasn’t been converted to a fiber?” Try it: It returns garbage. (It’s amazing how many people ask questions without taking even the slightest steps towards figuring out the answer themselves. <a href="/oldnewthing/archive/2004/07/27/198410.aspx#198429"> Try writing</a> <a href="/oldnewthing/archive/2004/07/20/188696.aspx#188816"> a test program</a>.)</p>
+<p>But even if GetCurrentFiber told you whether or not the thread had been converted to a fiber, that still won’t help. Suppose two people want to do fibrous activity on the thread. The first converts, the second notices that the thread is already a fiber (somehow) and skips the conversion. Now the first operation completes and calls <a href="http://msdn.microsoft.com/library/en-us/dllproc/base/convertfibertothread.asp"> the <code>ConvertFiberToThread</code> function</a>. Oh great, now the second operation is stranded doing fibrous activity without a fiber!</p>
+<p>Therefore, you can use fibers safely only if you control the thread and can get all your code to agree on who controls the fiber/thread conversion.</p>
+<p>An important consequence of the “in cahoots” rule is that you have to make sure all the code you use on a fiber is “fiber-safe” – a level of safety even beyond thread-safety. The C runtime library keeps information in per-thread state: There’s <a href="http://msdn.microsoft.com/library/en-us/vccore98/html/_crt__doserrno.2c_.errno.2c_._sys_errlist.2c_.and__sys_nerr.asp"> errno</a>, all sorts of bonus bookkeeping when you <a href="http://msdn.microsoft.com/library/en-us/vclib/html/_crt__beginthread.2c_._beginthreadex.asp"> create a thread</a>, or call various functions that maintain state in per-thread data (such as <a href="http://msdn.microsoft.com/library/en-us/vccore98/html/_crt_strerror.2c_._strerror.asp">strerror</a>, <a href="http://msdn.microsoft.com/library/en-us/vccore98/html/_crt__fcvt.asp"> _fcvt</a>, and <a href="http://msdn.microsoft.com/library/en-us/vccore98/html/_crt_strtok.2c_.wcstok.2c_._mbstok.asp"> strtok</a>).</p>
+<p>In particular, <strong>C++ exception handling is managed by the runtime</strong>, and the runtime tracks this data in per-thread state (rather than per-fiber state). Therefore, if you throw a C++ exception from a fiber, <strong>strange things happen</strong>.</p>
+<p>(Note: Things may have changed in the C runtime lately; I’m operating from information that’s a few years old.)</p>
+<p>Even if you carefully avoid the C runtime library, you still have to worry about any other libraries you use that use per-thread data. None of them will work with fibers. If you see a call to <a href="http://msdn.microsoft.com/library/en-us/dllproc/base/tlsalloc.asp"> the <code>TlsAlloc</code> function</a>, then there’s a good chance that the library is not fiber-safe. (The fiber-safe version is <a href="http://msdn.microsoft.com/library/en-us/dllproc/base/flsalloc.asp"> the <code>FlsAlloc</code> function</a>.)</p>
+<p>Another category of things that are not fiber-safe are windows. Windows have thread affinity, not fiber affinity.</p>
+
+
+</body>

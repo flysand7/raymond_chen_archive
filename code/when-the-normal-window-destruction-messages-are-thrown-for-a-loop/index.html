@@ -1,0 +1,171 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When the normal window destruction messages are thrown for a loop</h1>  <!-- .entry-meta -->
+
+<p><p>
+Last time,
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/07/26/443384.aspx">
+I alluded to weirdness that can result in
+the normal cycle of destruction messages being thrown out of kilter</a>.
+</p>
+<p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/07/26/443384.aspx#443414">
+Commenter Adrian noted that the <code>WM_GETMINMAXINFO</code> message
+arrives before <code>WM_NCCREATE</code> for top-level windows</a>.
+This is indeed unfortunate but (mistake or not)
+it’s been that way for over a decade and changing it now
+would introduce serious compatibility risk.
+</p>
+<p>
+But that’s not the weirdness I had in mind.
+</p>
+<p>
+Some time ago I was helping to debug a problem with
+a program that was using
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/commctls/listview/listview.asp">
+the ListView control</a>,
+and the problem was traced to the program subclassing the
+ListView control and, through a complicated chain of
+C++ objects, ending up attempting to destroy the ListView
+control while it was already in the process of being destroyed.
+</p>
+<p>
+Let’s take
+<a>
+our new scratch program</a>
+and illustrate what happens in a more obvious manner.
+</p>
+<pre>
+class RootWindow : public Window
+{
+public:
+ <font color="blue">RootWindow() : m_cRecurse(0) { }</font>
+ …
+private:
+ <font color="blue">void CheckWindow(LPCTSTR pszMessage) {
+  OutputDebugString(pszMessage);
+  if (IsWindow(m_hwnd)) {
+   OutputDebugString(TEXT(” – window still exists\r\n”));
+  } else {
+   OutputDebugString(TEXT(” – window no longer exists\r\n”));
+  }
+ }</font>
+private:
+ HWND m_hwndChild;
+ <font color="blue">UINT m_cRecurse;</font>
+ …
+};</pre></p>
+<p>LRESULT RootWindow::HandleMessage(
+                          UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+ …
+  case WM_NCDESTROY:
+   <font color="blue">CheckWindow(TEXT(“WM_NCDESTROY received”));
+   if (m_cRecurse &lt; 2) {
+    m_cRecurse++;
+    CheckWindow(TEXT(“WM_NCDESTROY recursing”));
+    DestroyWindow(m_hwnd);
+    CheckWindow(TEXT(“WM_NCDESTROY recursion returned”));
+   }</font>
+   PostQuitMessage(0);
+   break;</p>
+<p> <font color="blue">case WM_DESTROY:
+   CheckWindow(TEXT(“WM_DESTROY received”));
+   if (m_cRecurse &lt; 1) {
+    m_cRecurse++;
+    CheckWindow(TEXT(“WM_DESTROY recursing”));
+    DestroyWindow(m_hwnd);
+    CheckWindow(TEXT(“WM_DESTROY recursion returned”));
+   }
+   break;</font>
+  …
+}
+
+<p>
+We add some debug traces to make it easier to see what is going on.
+Run the program, then close it, and watch what happens.
+</p>
+<pre>
+WM_DESTROY received – window still exists
+WM_DESTROY recursing – window still exists
+WM_DESTROY received – window still exists
+WM_NCDESTROY received – window still exists
+WM_NCDESTROY recursing – window still exists
+WM_DESTROY received – window still exists
+WM_NCDESTROY received – window still exists
+WM_NCDESTROY recursion returned – window no longer exists
+Access violation – code c0000005
+eax=00267160 ebx=00000000 ecx=00263f40 edx=7c90eb94 esi=00263f40 edi=00000000
+eip=0003008f esp=0006f72c ebp=0006f73c iopl=0         nv up ei ng nz na pe cy
+cs=001b  ss=0023  ds=0023  es=0023  fs=003b  gs=0000             efl=00000283
+0003008f ??               ???
+</pre>
+<p>
+Yikes!  What happened?
+</p>
+<p>
+When you clicked the “X” button, this started the window destruction
+process.
+As is to be expected,
+the window received a <code>WM_DESTROY</code> message,
+but the program responds to this by attempting to destroy the window
+<strong>again</strong>.
+Notice that <code>IsWindow</code> reported that the window still
+exists at this point.
+This is true: The window does still exist,
+although it happens to be in the process of being destroyed.
+In the original scenario, the code that destroyed the window went
+something like
+</p>
+<pre>
+if (IsWindow(hwndToDestroy)) {
+ DestroyWindow(hwndToDestroy);
+}
+</pre>
+<p>
+At any rate, the recursive call to <code>DestroyWindow</code>
+caused a <strong>new</strong> window destruction cycle to begin,
+nested inside the first one.
+This generates a new <code>WM_DESTROY</code> message,
+followed by a <code>WM_NCDESTROY</code> message.
+(Notice that this window has now received
+<strong>two</strong> <code>WM_DESTROY</code> messages!)
+Our bizarro code then makes yet another
+recursive call to <code>DestroyWindow</code>,
+which starts a <strong>third</strong> window destruction cycle.
+The window gets its third <code>WM_DESTROY</code> message,
+then its second <code>WM_NCDESTROY</code> message, at which point
+the second recursive call to <code>DestroyWindow</code> returns.
+At this point, the window no longer exists:
+<code>DestroyWindow</code> has destroyed the window.
+</p>
+<p>
+And that’s why we crash.
+The base <code>Window</code> class
+handles the <code>WM_NCDESTROY</code> message by destroying the
+instance variables associated with the window.
+Therefore, when the innermost <code>DestroyWindow</code>
+returns, the instance variables have been thrown away.
+Execution then resumes with the base class’s
+<code>WM_NCDESTROY</code> handler, which tries to access
+the instance variables and gets heap garbage,
+and then makes the even worse no-no of freeing memory that
+is already freed, thereby corrupting the heap.
+It is here that we crash, attempting to call the virtual
+destructor on an already-destructed object.
+</p>
+<p>
+I intentionally chose to use the new scratch program
+(which uses C++ objects) instead of the classic scratch program
+(which uses global variables) to highlight the fact that
+after the recursive <code>DestroyWindow</code> call,
+all the instance variables are gone and you are operating on
+freed memory.
+</p>
+<p>
+Moral of the story:
+Understand your window lifetimes
+and don’t destroy a window that you know already to be
+in the process of destruction.</p>
+
+
+</p></body>

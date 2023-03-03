@@ -1,0 +1,16 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What are these strange cmp [ecx], ecx instructions doing in my C# code?</h1>  <!-- .entry-meta -->
+
+<p>When you debug through some managed code at the assembly level, you’ll find a whole lot of seemingly pointless instructions that perform a comparison but ignore the result. What’s the point of comparing two values if you don’t care what the result is?
+ In C++, invoking an instance method on a <code>NULL</code> pointer results in undefined behavior. In other words, if you do it, the compiler is allowed to do anything it wants. And what most compilers do is, um, nothing. They don’t take any special steps if the <code>this</code> pointer is <code>NULL</code>; they just generate code on the assumption that it isn’t. In practice, this often means that everything seems to run just fine until you access a member variables or call a virtual functions, and then you crash.
+ The C# language, by comparison, is <a href="http://msdn.microsoft.com/library/en-us/csspec/html/vclrfcsharpspec_7_4_3.asp"> quite explicit about what happens if you invoke an instance method on a <code>null</code> object reference</a>:</p>
+<blockquote class="q"><p> The value of <code>E</code> is checked to be valid. If the value of <code>E</code> is null, a <code>System.NullReferenceException</code> is thrown and no further steps are executed.  </p></blockquote>
+<p> The null reference exception must be thrown before the method can be called. That’s what the strange <code>cmp [ecx], ecx</code> comparison is for.¹ The compiler doesn’t actually care what the result of the comparison is; it just wants to raise an exception if <code>ecx</code> is null. If <code>ecx</code> is null, the attempt to dereference it (in order to perform the comparison) will raise an access violation, which the runtime inspects and turns into a <code>NullReferenceException</code>.
+ The test is usually against the <code>ecx</code> register since the CLR happens to use² the <code>fastcall</code> calling convention, which for instance methods passes the <code>this</code> pointer in the <code>ecx</code> register. The pointer the compiler wants to test is going to wind up in the <code>ecx</code> register sooner or later,³ so it’s not surprising that the test, when it happens, is made against the <code>ecx</code> register.
+ <b>Nitpicker’s Corner</b>
+ ¹Although this statement is written as if it were a fact, it is actually my interpretation based on observation and thinking about how language features are implemented. It is <a href="http://blogs.msdn.com/oldnewthing/archive/2007/08/10/4315707.aspx#4327521"> not an official position</a> of the CLR team nor Microsoft Corporation, and that interpretation may ultimately prove incorrect.
+ ²”Happens to use” means that this is an implementation detail, not a contractual guarantee.¹</p>
+<p> ³Unless the call is optimized. For example, the function might be inlined. </p>
+
+
+</body>

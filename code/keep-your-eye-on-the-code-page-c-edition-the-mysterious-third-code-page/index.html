@@ -1,0 +1,103 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Keep your eye on the code page: C# edition (the mysterious third code page)</h1>  <!-- .entry-meta -->
+
+<p>
+A customer was having trouble manipulating the console from a C#
+program:
+</p>
+<blockquote class="q">
+<p>
+We found that C# can read only ASCII data from the console.
+If we try to read non-ASCII data, we get garbage.
+</p>
+<pre>
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+class Program
+{
+  [StructLayout(LayoutKind.Sequential)]
+  struct COORD
+  {
+    public short X;
+    public short Y;
+  }
+  [DllImport("kernel32.dll", SetLastError=true)]
+  static extern IntPtr GetStdHandle(int nStdHandle);
+  const int STD_OUTPUT_HANDLE = -11;
+  [DllImport("kernel32.dll", SetLastError=true)]
+  static extern bool ReadConsoleOutputCharacter(
+    IntPtr hConsoleOutput,
+    [Out] StringBuilder lpCharacter,
+    uint nLength,
+    COORD dwReadCoord,
+    out uint lpNumberOfCharsRead);
+  public static void Main()
+  {
+    // Write a string to a fixed position
+    System.Console.Clear();
+    System.Console.WriteLine("\u00C5ngstr\u00f6m");
+    // Read it back
+    COORD coord  = new COORD { X = 0, Y = 0 };
+    StringBuilder sb = new StringBuilder(8);
+    uint nRead = 0;
+    ReadConsoleOutputCharacter(GetStdHandle(STD_OUTPUT_HANDLE),
+                               sb, (uint)sb.Capacity, coord, out nRead);
+    // Trim off any unused excess.
+    sb.Remove((int)nRead, sb.Length - (int)nRead);
+    // Show what we read
+    System.Console.WriteLine(sb);
+  }
+}
+</pre>
+<p>
+Observe that this program is unable to read the
+Å and ö characters.
+They come back as garbage.
+</p>
+</blockquote>
+<p>
+Although there are three code pages that have special treatment in Windows,
+<a href="http://msdn.microsoft.com/library/7b93s42f.aspx">
+the CLR gives access to only two of them via <code>Dll­Import</code></a>.
+</p>
+<ul>
+<li>CharSet.Ansi = CP_ACP
+<li>CharSet.Unicode = Unicode (which in Windows means UTF16-LE
+    unless otherwise indicated).
+</li></li></ul>
+<p>
+Unfortunately,
+the console traditionally uses the OEM code page.
+</p>
+<p>
+Since the <code>Dll­Import</code> did not specify a character set,
+the CLR defaults
+(<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/08/12/10549258.aspx">unfortunately</a>)
+to <code>Char­Set.Ansi</code>.
+Result:
+The
+<code>Read­Console­Output­Character</code> function stores
+its results in <code>CP_OEM</code>,
+the CLR treats the buffer as if it were <code>CP_ACP</code>,
+and the result is confusion.
+</p>
+<p>
+The narrow-minded fix is to try to fix the
+<a href="http://en.wikipedia.org/wiki/Mojibake">
+mojibake</a>
+by taking the misconverted Unicode string,
+converting it to bytes via the ANSI code page,
+then converting the bytes to Unicode via the OEM code page.
+</p>
+<p>
+The better fix is simply to avoid the 8-bit code page issues entirely
+and say you want to use Unicode.
+</p>
+<pre>
+  [DllImport("kernel32.dll", SetLastError=true, <font color="blue">CharSet=CharSet.Unicode</font>)]
+  static extern bool ReadConsoleOutputCharacter(...);
+</pre>
+
+
+</body>

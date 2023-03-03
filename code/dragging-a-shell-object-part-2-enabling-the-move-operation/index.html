@@ -1,0 +1,130 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Dragging a shell object, part 2: Enabling the Move operation</h1>  <!-- .entry-meta -->
+
+<p><p>
+Let’s say that we did want to support Move in our
+drag/drop program, for whatever reason.
+Let’s do it with some scratch file instead
+of <code>clock.avi</code>, though.  Create a file somewhere
+that you don’t mind losing; let’s say it’s <code>C:\throwaway.txt</code>.
+Change the function <code>OnLButtonDown</code> as follows:
+</p>
+<pre>
+void OnLButtonDown(HWND hwnd, BOOL fDoubleClick,
+                   int x, int y, UINT keyFlags)
+{
+  IDataObject *pdto;
+  if (SUCCEEDED(GetUIObjectOfFile(hwnd,
+                    <font color="blue">L”C:\\throwaway.txt”</font>,
+                    IID_IDataObject, (void**)&amp;pdto))) {
+    IDropSource *pds = new CDropSource();
+    if (pds) {
+      DWORD dwEffect;
+      <font color="blue">if (DoDragDrop(pdto, pds,
+                 DROPEFFECT_COPY | DROPEFFECT_LINK | DROPEFFECT_MOVE,
+                 &amp;dwEffect) == DRAGDROP_S_DROP) {
+        if (dwEffect &amp; DROPEFFECT_MOVE) {
+          DeleteFile(TEXT(“C:\\throwaway.txt”));
+        }
+      }</font>
+      pds-&gt;Release();
+    }
+    pdto-&gt;Release();
+  }
+}
+</pre>
+<p>
+Oh wait, there are people out there who think I’m advocating hard-coded
+paths, so let me change the program to operate on a path passed on the
+command line.
+This is code that is purely a distraction from the point of this
+article, which is why I avoided it originally.
+Personally I dislike it when somebody hands me a sample program
+that is 90% unrelated to the technology the program is trying to demonstrate.
+I have to go
+digging through the code hunting for the 10% of stuff that matters.
+</p>
+<pre>
+<font color="blue">#include &lt;shellapi.h&gt;</font></pre></p>
+<p>LPWSTR *g_argv;
+LPCWSTR g_pszTarget;</p>
+<p>void OnLButtonDown(HWND hwnd, BOOL fDoubleClick,
+                   int x, int y, UINT keyFlags)
+{
+  IDataObject *pdto;
+  if (SUCCEEDED(GetUIObjectOfFile(hwnd,
+                    <font color="blue">g_pszTarget</font>,
+                    IID_IDataObject, (void**)&amp;pdto))) {
+  …
+          DeleteFile<font color="blue">W(g_pszTarget</font>);
+  …
+}</p>
+<p>BOOL
+InitApp(void)
+{
+  <font color="blue">int argc;
+  g_argv = CommandLineToArgvW(GetCommandLineW(), &amp;argc);
+  if (!g_argv || argc != 2) return FALSE;
+  g_pszTarget = g_argv[1];
+  if (PathIsRelative(g_pszTarget)) return FALSE;</font>
+  …
+}
+
+<p>
+Woo-hoo, eight distracting lines of code that have nothing to do
+with the subject of dragging shell objects around.  I hope you’re
+happy.
+</p>
+<p>
+Where was I?  Oh right, explaining the first batch of blue code
+that by now has scrolled off your screen thanks to the intervening
+meaningless drivel.
+</p>
+<p>
+Now that we allow move, we need to check whether the resulting effect
+was <code>DROPEFFECT_MOVE</code>, which tells us,
+“The drop target wanted to perform a move operation, but it only
+got as far as copying the object; please finish the move operation
+by deleting the original.”
+</p>
+<p>
+Notice that <code>DROPEFFECT_MOVE</code> does <strong>not</strong>
+mean, “The drop target performed a move.”
+Rather, it tells you that the drop target wants you to delete
+the original.
+If the drop target was able to delete the original (or move it
+directly), then you will not get
+<code>DROPEFFECT_MOVE</code> back.
+</p>
+<p>
+(One case where <code>DROPEFFECT_MOVE</code> doesn’t even mean
+that a Move operation occurred at all is if the user dragged
+the object to an “Incinerator” icon, the purpose of which is
+to destroy whatever is dropped onto it.  In this case the
+Incinerator would return <code>DROPEFFECT_MOVE</code> without
+even making a copy. Result: The object is deleted.
+A better name for <code>DROPEFFECT_MOVE</code> would have been
+<code>DROPEFFECT_DELETEORIGINAL</code>.)
+</p>
+<p>
+If the data object represents a file, then the shell is pretty
+good at figuring out how to move the file to the destination
+instead of copying it and asking you to delete the original.
+You will typically get <code>DROPEFFECT_MOVE</code> back only
+if the data object represents a non-file, since in that case
+the shell doesn’t know how to delete the original.
+</p>
+<p>
+But what if you want to know whether the operation was a move,
+regardless of whether the operation was optimized by the drop
+target?
+We’ll look at that next time.
+</p>
+<p>
+(By the way, if you execute a Move of the throwaway file,
+don’t forget to move it back so you can run the scratch
+program again!)
+</p></p>
+
+
+</body>

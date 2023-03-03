@@ -1,0 +1,52 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++/WinRT implementation extension points: <code>abi_guard</code>, <code>abi_enter</code>, <code>abi_exit</code>, and <code>final_release</code></h1>  <!-- .entry-meta -->
+
+<p>C++/WinRT provides a few extension points for implementations to customize default behavior of inspectable objects.</p>
+<p>When the last reference to an object is released, the object is destroyed. However, you may need to do some special cleanup while the object is still alive. The classic example of this is COM objects suffering <a href="https://devblogs.microsoft.com/oldnewthing/20050927-00/?p=34023"> double-destruction due to a temporary refcount</a>, and the standard solution is to <a href="https://devblogs.microsoft.com/oldnewthing/20050928-00/?p=34013"> artificially bump the reference count during destruction</a>.</p>
+<p>The C++/WinRT library takes the standard solution and goes a step further: An implementation class can optionally implement a <code>final_release</code> method. If you provide such a method, then instead of destructing the object immediately upon the release of the final client reference, the C++/WinRT library calls your <code>final_release</code> method with the last remaining reference to the object, in the form of a <code>unique_ptr</code>. The object is still alive (it has not started destructing), so you can do normal things with it, like pass it to another method that may temporarily bump its reference count. You can even <code>co_await</code> in your <code>final_release</code> if you need to do some asynchronous work before letting the object finally disappear.</p>
+<p>Normally, the object will destruct when the <code>unique_ptr</code> destructs, but you can hasten its death by calling <code>unique_ptr.reset()</code>, or you can postpone the inevitable by saving the <code>unique_ptr</code> somewhere. You can read <a href="https://kennykerr.ca/2019/06/03/cppwinrt-deferred-destruction/"> Kenny Kerr’s discussion of <code>final_release</code></a> for more details.</p>
+<p>The less commonly-used extension point is the <code>abi_guard</code> and its close friends <code>abi_enter</code> and <code>abi_exit</code>.</p>
+<p>If your implementation defines a method named <code>abi_enter</code>, then it will be called at the entry to every projected interface method (not counting the methods of <code>IInspectable</code>). Similarly, if you define a method named <code>abi_exit</code>, it will be called at the exit from every such method, but will not be called if <code>abi_enter</code> throws an exception. (It will be called if an exception is thrown by the method itself.)</p>
+<p>The calls to <code>abi_enter</code> and <code>abi_exit</code> are made with no parameters, and the return value is discarded.</p>
+<p>You might use <code>abi_enter</code> to, say, throw an <code>invalid_<code></code>state_<code></code>error</code> exception if a client tries to use an object after it has been put into an unusable state, say, after a <code>Shut­Down</code> or <code>Disconnect</code> method. The C++/WinRT iterator classes use this feature to throw a <code>invalid_<code></code>state_<code></code>error</code> exception in the <code>abi_enter</code> method if the underlying collection has changed.</p>
+<p>If the simple <code>abi_enter</code> and <code>abi_exit</code> methods aren’t fancy enough for you, you can define a nested class named <code>abi_guard</code>, in which case an instance of the <code>abi_guard</code> will be created on entry to each non-<code>IInspectable</code> projected interface method with a reference to the object as its constructor parameter. The <code>abi_guard</code> is destructed on exit from the method. You can put whatever extra state you like into the <code>abi_guard</code> class.</p>
+<p>Basically, the deal is that the default <code>abi_guard</code> calls <code>abi_enter</code> at construction and calls <code>abi_exit</code> at destruction. And the default <code>abi_enter</code> methods do nothing. You can therefore plug in either at the <code>abi_enter</code>/<code>abi_exit</code> level, or at the <code>abi_guard</code> level.</p>
+<p>Note that these guards are used only if you invoke the methods via the projected interface. If you invoke the methods directly on the implementation object, then those calls go straight to the implementation without any guards.</p>
+<pre>struct Thing : ThingT&lt;Thing, IClosable&gt;
+{
+  void abi_enter();
+  void abi_exit();
+
+  void Close();
+};
+
+void example1()
+{
+  auto thing = make&lt;Thing&gt;();
+  thing.Close(); // calls abi_enter and abi_exit
+}
+
+void example2()
+{
+  auto thing = make_self&lt;Thing&gt;();
+  thing-&gt;Close(); // does not call abi_enter or abi_exit
+}
+</pre>
+<p>Note also that the guards are used only for the duration of the method call. If the method is a coroutine, the guard applies only until the <code>IAsyncXxx</code> is returned, not until the coroutine completes.</p>
+<pre>IAsyncAction CloseAsync()
+{
+  // guard is active here
+  DoSomething();
+
+  // guard becomes inactive once co_await starts,
+  // at which point CloseAsync returns an IAsyncAction.
+  co_await DoSomethingElseAsync();
+
+  // guard is not active here
+}
+</pre>
+<p>Guards are useful for specific cases like the “object that is no longer usable”, but their applicability in general is somewhat limited because they don’t know what method is being invoked. So you can’t do things like “If the object is not connected, then reject all method calls except for <code>Connect</code>.”</p>
+<p> </p>
+
+
+</body>

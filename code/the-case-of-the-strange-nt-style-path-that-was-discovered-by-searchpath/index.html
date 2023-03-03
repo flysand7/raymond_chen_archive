@@ -1,0 +1,35 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the strange NT-style path that was discovered by SearchPath</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that the <code>Search­Path</code> function was returning an NT-style path, which is not something their program (an IIS CGI handler) could deal with. Why are they getting an NT-style path?</p>
+<p>The problem was not reproducible when run under a debugger, so we had to resort to tracing and logging.</p>
+<p>One theory was that IIS was putting an NT-style path in the <code>PATH</code>, and that’s where it was coming from. But logging the value of the <code>PATH</code> environment variable showed no weird <code>\\?\</code> directories.</p>
+<p>I recalled that when you have eliminated the impossible, <a href="https://en.wikipedia.org/wiki/The_Sign_of_the_Four"> whatever remains, however improbable, must be the truth</a>. The <code>SearchPath</code> function looks in the directories specified in the <code>PATH</code> environment variable, and if the item can’t be found in any of those directories, then it looks in the current directory.</p>
+<p>We have ruled out the <code>PATH</code> environment variable.</p>
+<p>Therefore, the current directory must be the one with the NT-style path.</p>
+<p>It turns out that, for security reasons, IIS runs CGI programs via their NT path, and also uses an NT path as the current directory. It so happened that the file was found in the current directory, so that’s what <code>Search­Path</code> returned.</p>
+<p>We can even run a test program to check the theory.</p>
+<pre>#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+
+int __cdecl main()
+{
+  SetCurrentDirectoryW(L"\\\\?\\C:\\Users");
+
+  wchar_t buffer[256];
+  wchar_t* file;
+  if (SearchPath(nullptr, L"Public", nullptr,
+     256, buffer, &amp;file)) {
+     printf("%ls\n", buffer);
+  }
+}
+</pre>
+<p>Run this program and it prints</p>
+<pre>\\?\C:\Users\Public
+</pre>
+<p>Okay, that explains the problem. But how do they fix it?</p>
+<p>You could try to convert the NT path to a Win32-style path before processing it. But really, since this is a CGI program, you probably shouldn’t be grabbing files from the current directory in the first place. You aren’t really in control of your current directory, and the fact that you’re looking up things in the current directory means that an attacker might be able to pass paths like <code>..\..\wwwroot\config\jackpot.xml</code>, and steal files from anywhere on your system.</p>
+<p>So the real issue is that their program is somehow reliant upon the current directory, and they should fix it to remove that dependency.</p>
+
+
+</body>

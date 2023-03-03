@@ -1,0 +1,173 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why can't I declare a type that derives from a generic type parameter?</h1>  <!-- .entry-meta -->
+
+<p>
+A lot of questions about C# generics come from the starting point
+that they are just a cutesy C# name for C++ templates.
+But while the two may look similar in the source code,
+they are actually quite different.
+</p>
+<p>
+C++ templates are macros on steroids.
+No code gets generated when a template is “compiled”;
+the compiler merely hangs onto the source code,
+and when you finally instantiate it,
+the actual type is inserted and code generation takes place.
+</p>
+<pre>
+// C++ template
+template&lt;class T&gt;
+class Abel
+{
+public:
+ int DoBloober(T t, int i) { return t.Bloober(i); }
+};
+</pre>
+<p>
+This is a perfectly legal (if strange) C++ template class.
+But when the compiler encounters this template,
+there are a whole bunch of things left unknown.
+What is the return type of <code>T::Bloober</code>?
+Can it be converted to an <code>int</code>?
+Is <code>T::Bloober</code> a static method?
+An instance method?
+A virtual instance method?
+A method on a virtual base class?
+What is the calling convention?
+Does <code>T::Bloober</code> take an <code>int</code> argument?
+Or maybe it’s a <code>double</code>?
+Even stranger, it might accept a <code>Canoe</code> which
+gets converted from an <code>int</code> by a
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/05/24/605974.aspx">
+converting constructor</a>.
+Or maybe it’s a function that takes two parameters,
+but the second parameter has a default value.
+</p>
+<p>
+Nobody knows the answers to these questions, not even the compiler.
+It’s only when you decide to instantiate the template
+</p>
+<pre>
+Abel&lt;Baker&gt; abel;
+</pre>
+<p>
+that these burning questions can be answered,
+overloaded operators can be resolved,
+conversion operators can be hunted down,
+parameters can get pushed on the stack in the correct order,
+and the correct type of <code>call</code> instruction can be
+generated.
+</p>
+<p>
+In fact, the compiler doesn’t even care whether or not <code>Baker</code>
+has a <code>Bloober</code> method, as long as you never call
+<code>Abel&lt;Baker&gt;::DoBloober</code>!
+</p>
+<pre>
+void f()
+{
+ Abel&lt;int&gt; a; // no error!
+}
+void g()
+{
+ Abel&lt;int&gt; a;
+ a.DoBloober(0, 1); // error here
+}
+</pre>
+<p>Only if you actually call the method does the compiler start looking for
+how it can generate code for the <code>DoBloober</code> method.</p>
+<p>
+C# generics aren’t like that.
+</p>
+<p>
+Unlike C++, where a non-instantiated template exists only
+in the imaginary world of potential code that could exist but doesn’t,
+a C# generic results in code being generated,
+but with placeholders where the type parameter should be inserted.
+</p>
+<p>
+This is why you can use generics implemented in another assembly,
+even without the source code to that generic.
+This is why a generic can be recompiled without having to recompile
+all the assemblies that use that generic.
+The code for the generic is generated <i>when the generic is compiled</i>.
+By comparison no code is generated for C++ templates
+until the template is instantiated.
+</p>
+<p>
+What this means for C# generics is that if you want to do something
+with your type parameter, it has to be something that the compiler
+can figure out how to do <i>without knowing what <code>T</code> is</i>.
+Let’s look at the example that generated today’s question.
+</p>
+<pre>
+class Foo&lt;T&gt;
+{
+ class Bar : T
+ { ... }
+}
+</pre>
+<p>
+This is flagged as an error by the compiler:
+</p>
+<pre>
+error CS0689: Cannot derive from 'T' because it is a type parameter
+</pre>
+<p>
+Deriving from a generic type parameter is explicitly forbidden by
+25.1.1 of the C# language specification.
+Consider:
+</p>
+<pre>
+class Foo&lt;T&gt;
+{
+ class Bar : T
+ {
+   public void FlubberMe()
+   {
+     Flubber(0);
+   }
+ }
+}
+</pre>
+<p>
+The compiler doesn’t have enough information to generate the IL for
+the <code>FlubberMe</code> method.
+One possibility is
+</p>
+<pre>
+ldarg.0        // "this"
+ldc.i4.0    // integer 0 - is this right?
+call T.Flubber // is this the right type of call?
+</pre>
+<p>
+The line <code>ldc.i4.0</code> is a guess.
+If the method <code>T.Flubber</code> were actually
+<code>void Flubber(long l)</code>,
+then the line would have to be <code>ldc.i4.0; conv.i8</code>
+to load an 8-byte integer onto the stack instead of a 4-byte integer.
+Or perhaps it’s
+<code>void Flubber(object o)</code>,
+in which case the zero needs to be boxed.
+</p>
+<p>
+And what about that call instruction?
+Should it be a <code>call</code> or <code>callvirt</code>?
+</p>
+<p>
+And what if the method returned a value, say,
+<code>string Flubber(int i)</code>?
+Now the compiler also has to generate code to discard the
+return value from the top of the stack.
+</p>
+<p>
+Since the source code for a generic is not included in the assembly,
+all these questions have to be answered at the time the generic is
+compiled.
+Besides, you can
+write a generic in Managed C++ and use it from VB.NET.
+Even saving the source code won’t be much help if the generic
+was implemented in a language you don’t have the compiler for!</p>
+
+
+</body>

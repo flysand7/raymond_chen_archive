@@ -1,0 +1,527 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does the Internet Explorer animated logo arrange its frame vertically?</h1>  <!-- .entry-meta -->
+
+<p><p>
+If you ever tried to build a custom animated logo for Internet Explorer,
+you cetainly noticed that the frames of the animation are arranged
+vertically rather than horizontally.  Why is that?
+</p>
+<p>
+Because it’s much more efficient.
+</p>
+<p>
+Recall that bitmaps are stored as a series of rows of pixels.
+In other words, if you number the pixels of a bitmap like this:
+</p>
+<pre>
+123
+456
+789
+</pre>
+<p>
+then the pixels are stored in memory in the order 123456789.
+(Note: I’m assuming a top-down bitmap, but the same principle
+applies to bottom-up bitmaps.)
+Now observe what happens if you store your animation strip
+horizontally:
+</p>
+<table border="1" cellspacing="0" style="border-collapse: collapse;font-family: monospace">
+<tr>
+<td>12<br/>AB</td>
+<td>34<br/>CD</td>
+<td>56<br/>EF</td>
+<td>78<br/>GH</td>
+</tr>
+</table>
+<p>
+These pixels are stored in memory in the order 12345678ABCDEFGH.
+To draw the first frame requires pixels 1, 2, A and B.
+The second frame takes 3, 4, C, and D.
+And so on.
+Observe that the pixels required for each frame are not contiguous
+in memory.  This means that they occupy different cache lines at least,
+and for a bitmap of any significant size, they also span multiple
+memory pages.
+</p>
+<p>
+Now consider a vertically-arranged animation strip:
+</p>
+<table border="1" cellspacing="0" style="border-collapse: collapse;font-family: monospace">
+<tr><td>12<br/>34</td></tr>
+<tr><td>56<br/>78</td></tr>
+<tr><td>AB<br/>CD</td></tr>
+<tr><td>EF<br/>GH</td></tr>
+</table>
+<p>
+Again, the pixels are stored in memory in the order 12345678ABCDEFGH,
+[typo fixed, 15 Aug]
+but this time, the pixels of the first frame are 1, 2, 3 and 4;
+the second frame consists of 5, 6, 7, and 8; and so on.
+This time, all the pixels for a single frame are adjacent in memory.
+This means that they can be packed into a small number of cache
+lines, and reading the pixels for a single image
+will not force you to jump across multiple pages.
+</p>
+<p>
+Let’s illustrate with some pictures:
+Let’s say that the large animation is a series of twelve
+38×38 frames, for a total bitmap dimension of 38×456.  Let’s assume
+further, for the sake of example,
+that it’s a 32bpp bitmap and that the page size is 4KB.
+</p>
+<p>
+If the bitmap were stored as a horizontal strip (456×38), then
+the memory layout would look like this,
+where I’ve color-coded each memory page.
+</p>
+<table border="1" cellpadding="0" cellspacing="1" style="border: none">
+<col span="12" style="height: 38px" valign="top"/>
+<tr>
+<td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td>
+<td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td>
+<td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#0033FF" width="36"></td>
+<td bgcolor="#00CC99" width="2"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" width="28"></td>
+<td bgcolor="#999933" width="10"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" width="20"></td>
+<td bgcolor="#CCCC00" width="18"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" width="12"></td>
+<td bgcolor="#99FF33" width="26"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td>
+<td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td>
+<td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td>
+<td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" width="34"></td>
+<td bgcolor="#FF0000" width="4"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" width="26"></td>
+<td bgcolor="#FFFFFF" width="12"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" width="18"></td>
+<td bgcolor="#FFFF00" width="20"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" width="10"></td>
+<td bgcolor="#FF33CC" width="28"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td>
+<td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td>
+<td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td>
+<td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" width="32"></td>
+<td bgcolor="#990099" width="6"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" width="24"></td>
+<td bgcolor="#333366" width="14"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" width="16"></td>
+<td bgcolor="#663333" width="22"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" width="8"></td>
+<td bgcolor="#330066" width="30"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td>
+<td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td>
+<td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td>
+<td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" width="30"></td>
+<td bgcolor="#66FFFF" width="8"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" width="22"></td>
+<td bgcolor="#66FF66" width="16"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" width="14"></td>
+<td bgcolor="#FFCC00" width="24"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" width="6"></td>
+<td bgcolor="#CC0033" width="32"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td>
+</tr></table>
+<p>
+Observe that no matter which frame you draw, you will have to touch
+every single page since each frame containes a few bytes from each page.
+</p>
+<p>
+Storing the bitmap vertically, on the other hand, arranges the pixels
+like so:
+</p>
+<table border="1" cellpadding="0" cellspacing="1" style="border: none">
+<tr><td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#0033FF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#0033FF" width="36"></td>
+<td bgcolor="#00CC99" width="2"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+</table>
+</td></tr>
+<tr><td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#00CC99" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#00CC99" width="34"></td>
+<td bgcolor="#FF0000" width="4"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+</table>
+</td></tr>
+<tr><td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FF0000" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF0000" width="32"></td>
+<td bgcolor="#990099" width="6"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#990099" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#990099" width="30"></td>
+<td bgcolor="#66FFFF" width="8"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+</table>
+</td></tr>
+<tr><td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#66FFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FFFF" width="28"></td>
+<td bgcolor="#999933" width="10"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+</table>
+</td></tr>
+<tr><td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#999933" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#999933" width="26"></td>
+<td bgcolor="#FFFFFF" width="12"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FFFFFF" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFFFF" width="24"></td>
+<td bgcolor="#333366" width="14"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+</table>
+</td></tr>
+<tr><td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#333366" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#333366" width="22"></td>
+<td bgcolor="#66FF66" width="16"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+</table>
+</td></tr>
+<tr><td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#66FF66" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#66FF66" width="20"></td>
+<td bgcolor="#CCCC00" width="18"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+</table>
+</td></tr>
+<tr><td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#CCCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#CCCC00" width="18"></td>
+<td bgcolor="#FFFF00" width="20"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FFFF00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFFF00" width="16"></td>
+<td bgcolor="#663333" width="22"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+</table>
+</td></tr>
+<tr><td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#663333" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#663333" width="14"></td>
+<td bgcolor="#FFCC00" width="24"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+</table>
+</td></tr>
+<tr><td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FFCC00" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FFCC00" width="12"></td>
+<td bgcolor="#99FF33" width="26"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#99FF33" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#99FF33" width="10"></td>
+<td bgcolor="#FF33CC" width="28"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+</table>
+</td></tr>
+<tr><td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#FF33CC" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#FF33CC" width="8"></td>
+<td bgcolor="#330066" width="30"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+</table>
+</td></tr>
+<tr><td height="38">
+<table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#330066" colspan="2" width="38"></td></tr>
+<tr><td bgcolor="#330066" width="6"></td>
+<td bgcolor="#CC0033" width="32"></td></tr>
+</table><table cellpadding="0" cellspacing="0">
+<tr><td bgcolor="#CC0033" colspan="2" width="38"></td></tr>
+</table>
+</td></tr>
+</table>
+<p>
+Notice that with the vertical strip,
+each frame touches only two or three pages;
+compare the horizontal strip, where each frame touches seventeen pages.
+This is quite a savings especially when you realize that
+most of the time, the only frame being drawn is the first one.
+The other frames are used only during animation.
+In other words, this simple change trimmed
+60KB out of the normal working set.
+</p></p>
+
+
+</body>

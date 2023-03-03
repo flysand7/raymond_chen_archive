@@ -1,0 +1,82 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Tree view check boxes: The extended check box states</h1>  <!-- .entry-meta -->
+
+<p>Version 6 of the common controls in Windows Vista introduced some new check-box-related extended styles for the tree view controls. Unfortunately, <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/bb759981(v=vs.85).aspx">the documentation for them</a> is kind of spare. </p>
+<blockquote class="q">
+<dl>
+<dt> <code>TVS_</code><code>EX_</code><code>PARTIAL­CHECK­BOXES</code> </dt>
+<dd>    Include partial checkbox state if the control has the     <code>TVS_</code><code>CHECK­BOXES</code> style. </dd>
+<dt> <code>TVS_</code><code>EX_</code><code>DIMMED­CHECK­BOXES</code> </dt>
+<dd>    Include dimmed checkbox state if the control has the     <code>TVS_</code><code>CHECK­BOXES</code> style. </dd>
+<dt> <code>TVS_</code><code>EX_</code><code>EXCLUSION­CHECK­BOXES</code> </dt>
+<dd>    Include exclusion checkbox state if the control has the     <code>TVS_</code><code>CHECK­BOXES</code> style. </dd>
+</dl>
+</blockquote>
+<p>Yeah, that doesn’t really explain anything. </p>
+<p>Fortunately, more information about what these check box states are for can be found in <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/dd378458(v=vs.85).aspx">the documentation for the <code>NSTCSTYLE</code> enumeration</a>. </p>
+<blockquote class="q">
+<dl>
+<dt> <code>NSTCS_</code><code>PARTIAL­CHECK­BOXES</code> </dt>
+<dd>    Adds a checkbox icon on the leftmost side of a given item     with a square in the center,     that indicates that the node is partially selected.     Maps to the     <code>TVS_</code><code>EX_</code><code>PARTIAL­CHECK­BOXES</code>     tree view control style. </dd>
+<dt> <code>NSTCS_</code><code>DIMMED­CHECK­BOXES</code> </dt>
+<dd>    Adds a checkbox icon on the leftmost side of a given item     that contains an icon of a dimmed check mark,     that indicates that a node is selected because its parent     is selected.     Maps to the     <code>TVS_</code><code>EX_</code><code>DIMMED­CHECK­BOXES</code>     tree view control style. </dd>
+<dt> <code>NSTCS_</code><code>EXCLUSION­CHECK­BOXES</code> </dt>
+<dd>    Adds a checkbox icon on the leftmost side of a given item     that contains a red <b>X</b>,     which indicates that the item is excluded from the current     selection.     Without this exclusion icon, selection of a parent item     includes selection of its child items.     Maps to the     <code>TVS_</code><code>EX_</code><code>EXCLUSION­CHECK­BOXES</code>     tree view control style. </dd>
+</dl>
+</blockquote>
+<p>Okay, so that explains what the intended purposes of these new styles are. </p>
+<p>Of course, when you use those state images, you can use them to mean whatever you like. Though for consistency with the rest of Windows, you probably want to use them to mean what Windows uses them to mean, just like you should probably use the checked state to mean, y’know, that the thing is selected. </p>
+<p>Don’t forget that these are tree view extended styles, not window manager extended styles, so you set them by using the <code>TVM_</code><code>SET­EXTENDED­STYLE</code> message or the corresponding <code>Tree­View_</code><code>Set­Extended­Style</code> macro. </p>
+<p>The documentation for these extended styles says that they must be combined with <code>TVS_</code><code>CHECK­BOXES</code>, but that is not true; these extended styles imply <code>TVS_</code><code>CHECK­BOXES</code>; you don’t need to set <code>TVS_</code><code>CHECK­BOXES</code>. In fact, it’s worse than that. If you set <code>TVS_</code><code>CHECK­BOXES</code> first, and then set the extended styles second, you won’t get the extended styles at all. That’s because of the rules we spelled out last time: </p>
+<blockquote class="q">
+<ul>
+<li>    Turn on the check boxes,     either by setting the     <code>TVS_</code><code>CHECK­BOXES</code> style     (if all you want is unchecked and checked)     or setting one or more of     the <code>TVS_</code><code>EX_</code><code>XXX­CHECK­BOXES</code>     styles     (if you want other states, too). </li>
+<li>    Do not touch any of the checkbox-related styles any more.     You get one chance, and that’s it. </li>
+</ul>
+</blockquote>
+<p>Okay, so that’s really a documentation error, not a quirk. </p>
+<p>Anyway, let’s take these new extended styles for a spin. Save the scratch program we’ve been using up until now, because we’re going to be reusing functions from it. Grab a new <a href="https://blogs.msdn.microsoft.com/oldnewthing/20030723-00/?p=43073">scratch program</a> and make these changes: </p>
+<pre>
+<font color="blue">#pragma comment(linker,"\"/manifestdependency:type='win32' \
+name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
+processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")</font>
+
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  <font color="darkgreen">// Copy this from the old program.
+    g_hwndChild = CreateWindow(WC_TREEVIEW,
+    nullptr,
+    TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT |
+    WS_CHILD | WS_VISIBLE,
+    CW_USEDEFAULT, CW_USEDEFAULT,
+    CW_USEDEFAULT, CW_USEDEFAULT,
+    hwnd, nullptr, g_hinst, 0);</font>
+
+  <font color="blue">// New code
+  DWORD desiredStyles = TVS_EX_PARTIALCHECKBOXES |
+                        TVS_EX_DIMMEDCHECKBOXES  |
+                        TVS_EX_EXCLUSIONCHECKBOXES;
+
+  TreeView_SetExtendedStyle(g_hwndChild,
+        desiredStyles, desiredStyles);</font>
+
+  <font color="darkgreen">// Copy this from the old program
+  PopulateTreeView(g_hwndChild);</font>
+
+  return TRUE;
+}
+
+void
+OnDestroy(HWND hwnd)
+{
+  <font color="darkgreen">// Copy this from the old program
+  ImageList_Destroy(TreeView_SetImageList(
+    g_hwndChild, nullptr, TVSIL_STATE));</font>
+  PostQuitMessage(0);
+}
+</pre>
+<p>The new image list states are added in the order above: Partial, then dimmed, then exclusion. If you omit one of the states, then the others move up to close the gap. For example, if you ask for partial and exclusion (but not dimmed), then the images are unchecked (1), checked (2), partial (3), and exclusion (4). </p>
+
+
+</body>

@@ -1,0 +1,114 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">My, those threads start up really fast nowadays</h1>  <!-- .entry-meta -->
+
+<p>
+Here’s a little puzzle
+inspired by an actual bug:
+</p>
+<pre>
+// global variable
+DWORD g_WorkerThreadId;
+bool IsRunningOnWorkerThread()
+{
+  return GetCurrentThreadId() == g_WorkerThreadId;
+}
+bool LaunchWorkerThread()
+{
+ HANDLE hThread = CreateThread(nullptr, 0,
+                               WorkerThread,
+                               nullptr, 0,
+                               &amp;g_WorkerThreadId);
+ if (hThread != nullptr) {
+   CloseHandle(hThread);
+   return true;
+ }
+ return false;
+}
+DWORD CALLBACK WorkerThread(void *Proc)
+{
+  // Can this assertion ever fire?
+  assert(IsRunningOnWorkerThread());
+  return 0;
+}
+</pre>
+<p>
+Can the assertion at the start of <code>WorkerThread</code>
+ever fire?
+</p>
+<p>
+Naturally, the answer is <i>Yes</i>,
+otherwise it wouldn’t be a very interesting article.
+</p>
+<p>
+The assertion can fire if the worker thread starts running
+<i>before the call the <code>Create­Thread</code> returns</i>.
+In that case, the caller hasn’t yet received the
+handle or ID of the newly-started thread.
+The new thread calls
+<code>Is­Running­On­Worker­Thread</code>,
+which returns <code>false</code> since
+<code>g_Worker­Thread­Id</code> hasn’t been initialized yet.
+</p>
+<p>
+The actual bug was something along the lines of this:
+</p>
+<pre>
+void DoSomething()
+{
+  if (IsRunningOnWorkerThread()) {
+     .. do it one way ..
+  } else {
+     .. do it the other way ..
+  }
+}
+void DoManyThings()
+{
+  DoSomething();
+  DoSomethingElse();
+  DoYetAnotherThing();
+}
+DWORD CALLBACK WorkerThread(void *Proc)
+{
+  ...
+  DoManyThings();
+  ...
+  return 0;
+}
+</pre>
+<p>
+If the new thread started up so quickly that the original thread
+doesn’t get a chance to receive the new thread ID and put
+it into
+<code>g_Worker­Thread­ID</code>,
+then the <code>Do­Something</code> function
+called from the worker thread will accidentally do things
+the not-on-the-worker-thread way,
+and then things start go go awry.
+</p>
+<p>
+One way to address is is to add suspenders to your belt:
+</p>
+<pre>
+DWORD CALLBACK WorkerThread(void *Proc)
+{
+  g_WorkerThreadId = GetCurrentThreadId();
+  ...
+</pre>
+<p>
+By having both the original thread and the created thread
+set the <code>g_WorkerThreadId</code> variable,
+you cover both cases of the race.
+If the original thread runs faster, then the
+<code>CreateThread</code> function will set the
+<code>g_WorkerThreadId</code> variable to the ID of the worker
+thread,
+and the first line of <code>Worker­Thread</code>
+will be redundant.
+On the other hand, if the worker thread runs faster,
+then the assignment at the beginning of
+<code>Worker­Thread</code> sets the thread ID,
+and the assignment performed by
+the <code>CreateThread</code> function will be redundant.</p>
+
+
+</body>

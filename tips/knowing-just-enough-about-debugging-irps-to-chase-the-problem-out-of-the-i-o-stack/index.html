@@ -1,0 +1,54 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Knowing just enough about debugging IRPs to chase the problem out of the I/O stack</h1>  <!-- .entry-meta -->
+
+<p>One of my colleagues was running a tool that wound up stuck on <code>Flush­File­Buffers</code>. Since this was a hang in the I/O stack, a kernel dump is more useful. </p>
+<p>I used the <code>!irp</code> debugger command to look at the I/O request that got stuck: </p>
+<pre>
+0: kd&gt; !irp 0xffffab0c`fced9340 1
+
+Irp is active with 2 stacks 2 is current (= 0xffffab0cfced9458)
+ No Mdl: No System Buffer: Thread ffffab0d15731080:  Irp stack trace.
+     cmd  flg cl Device   File     Completion-Context
+ [N/A(0), N/A(0)]
+            0  0 00000000 00000000 00000000-00000000
+
+                        Args: 00000000 00000000 00000000 00000000
+&gt;[IRP_<a href="https://en.wikipedia.org/wiki/MJ#People">MJ</a>_FLUSH_BUFFERS(9), N/A(0)]
+            0  1 ffffab0cdf855060 ffffab0ce2c6eef0 00000000-00000000    pending
+               \FileSystem\Npfs
+                        Args: 00000000 00000000 00000000 00000000
+</pre>
+<p>I don’t know what any of this means, but somebody else did. </p>
+<p>The file system is <code>Npfs</code>, which is the “named pipe” file system. This means that the code is trying to flush a named pipe, and the process on the other end of the pipe is not responding. </p>
+<p>With the help of <a href="https://docs.microsoft.com/en-us/windows-hardware/drivers/debugger/-fileobj">debugger documentation</a> I dumped the file object: </p>
+<pre>
+0: kd&gt; !fileobj ffffab0ce2c6eef0
+
+\contoso44268
+
+Device Object: 0xffffab0cdf855060   \FileSystem\Npfs
+Vpb is NULL
+
+Flags:  0x40082
+        Synchronous IO
+        Named Pipe
+        Handle Created
+
+File Object is currently busy and has 1 waiters.
+
+FsContext: 0xffffe30b60eefe70   FsContext2: 0xffffe30b23b593d3
+Private Cache Map: 0x00000001
+CurrentByteOffset: 0
+</pre>
+<p>I don’t know what any of this means either, but the name of the named pipe is apparently <code>contoso44268</code>. </p>
+<p>We provided this information to the owner of the tool, and they recognized it as a named pipe they use to communicate between the tool and a helper process, and the helper process in turn satisfies the pipe request by contacting a Web service. </p>
+<p>The owner of the tool requested some diagnostic logs to figure out why the named pipe got stuck. But that’s not the point of the story today. The point here is just being able to chase the stuck I/O out of kernel mode back into an application so the forward progress can be made. </p>
+<p><b>Bonus reading</b>: More on debugging the I/O system: </p>
+<ul>
+<li> <a href="https://blogs.msdn.microsoft.com/ntdebugging/2009/04/13/search-to-the-rescue/">    !Search to the Rescue!</a> </li>
+<li> <a href="https://blogs.msdn.microsoft.com/ntdebugging/2012/10/29/breaking-down-the-cl-in-irp/">    Breaking down the “CI” in !irp</a> </li>
+<li> <a href="https://blogs.msdn.microsoft.com/ntdebugging/tag/io/">    All I/O-tagged topics on the NT debugging blog</a> </li>
+</ul>
+
+
+</body>

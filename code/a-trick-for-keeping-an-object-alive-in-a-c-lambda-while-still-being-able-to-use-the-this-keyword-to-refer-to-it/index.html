@@ -1,0 +1,75 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A trick for keeping an object alive in a C++ lambda while still being able to use the <code>this</code> keyword to refer to it</h1>  <!-- .entry-meta -->
+
+<p>You may want to capture your <code>this</code> pointer into a C++ lambda, but that captures the raw pointer. If you need to extend the object’s lifetime, you will need to capture a strong reference. For plain C++ code, this would be a <code>std::shared_</code><code>ptr</code>. For COM objects, this is usually some sort of smart pointer class like <code>ATL::</code><code>CComPtr</code>, <code>Microsoft::</code><code>WRL::</code><code>ComPtr</code>, or <code>winrt::</code><code>com_ptr</code>. </p>
+<pre>
+  // std::shared_ptr
+  auto callback = [self = shared_from_this()]() {
+    self-&gt;DoSomething(self-&gt;m_value);
+    self-&gt;DoSomethingElse();
+   };
+
+  // WRL::ComPtr
+  auto callback = [self =
+                   Microsoft::WRL::ComPtr&lt;ThisClass&gt;(this)]() {
+    self-&gt;DoSomething(self-&gt;m_value);
+    self-&gt;DoSomethingElse();
+  };
+
+  // ATL::CComPtr
+  auto callback = [self =
+                   ATL::CComPtr&lt;ThisClass&gt;(this)]() {
+    self-&gt;DoSomething(self-&gt;m_value);
+    self-&gt;DoSomethingElse();
+  };
+
+  // winrt::com_ptr
+  template&lt;typename T&gt;
+  auto to_com_ptr(T* p) noexcept
+  {
+    winrt::com_ptr&lt;T&gt; ptr;
+    ptr.copy_from(p);
+    return ptr;
+  }
+
+  auto callback = [self = to_com_ptr(this)] {
+    self-&gt;DoSomething(self-&gt;m_value);
+    self-&gt;DoSomethingElse();
+  };
+</pre>
+<p>A common pattern for the “capture a strong reference to yourself” is to capture both a strong reference and a raw <code>this</code>. The strong reference keeps the <code>this</code> alive, and you use the <code>this</code> for convenient access to members. </p>
+<pre>
+  // std::shared_ptr
+  auto callback = [<font color="blue">lifetime</font> = std::shared_from_this(this),
+                   <font color="blue">this</font>]() {
+    DoSomething(m_value);  <font color="blue">// was self-&gt;DoSomething(self-&gt;m_value);</font>
+    DoSomethingElse();     <font color="blue">// was self-&gt;DoSomethingElse();</font>
+   };
+
+  // WRL::ComPtr
+  auto callback = [<font color="blue">lifetime</font> =
+                   Microsoft::WRL::ComPtr&lt;ThisClass&gt;(this),
+                   <font color="blue">this</font>]() {
+    DoSomething(m_value);  <font color="blue">// was self-&gt;DoSomething(self-&gt;m_value);</font>
+    DoSomethingElse();     <font color="blue">// was self-&gt;DoSomethingElse();</font>
+  };
+
+  // ATL::CComPtr
+  auto callback = [<font color="blue">lifetime</font> =
+                   ATL::CComPtr&lt;ThisClass&gt;(this),
+                   <font color="blue">this</font>]() {
+    DoSomething(m_value);  <font color="blue">// was self-&gt;DoSomething(self-&gt;m_value);</font>
+    DoSomethingElse();     <font color="blue">// was self-&gt;DoSomethingElse();</font>
+  };
+
+  // winrt::com_ptr
+  auto callback = [<font color="blue">lifetime</font> = to_com_ptr(this),
+                   <font color="blue">this</font>]() {
+    DoSomething(m_value);  <font color="blue">// was self-&gt;DoSomething(self-&gt;m_value);</font>
+    DoSomethingElse();     <font color="blue">// was self-&gt;DoSomethingElse();</font>
+  };
+</pre>
+<p>I like to give the captured strong reference a name like <code>lifetime</code> to emphasize that its purpose is to extend the lifetime of the <code>this</code> pointer. Otherwise, somebody might be tempted to “optimize” out the seemingly-unused variable. </p>
+
+
+</body>

@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I parse URL query string in the Windows Runtime?</h1>  <!-- .entry-meta -->
+
+<p>In C#, you can use the <code>HttpUtility.<wbr/>ParseQueryString</code> method to parse URL query strings. For C++/WinRT, you can use the Windows Runtime <code>Windows.<wbr/>Foundation.<wbr/>WwwFormUrlDecoder</code> class.</p>
+<pre>Uri uri{ L"https://www.youtube.com/watch?v=%64Qw4w9WgXcQ&amp;t=43s" };
+auto decoder = uri.QueryParsed();
+
+// or you can parse a query string directly
+WwwFormUrlDecoder decoder(L"v=%64Qw4w9WgXcQ&amp;t=43s");
+</pre>
+<p>Once it’s parsed, you can pull out the pieces.</p>
+<pre>auto id = decoder.GetFirstValueByName(L"v");
+</pre>
+<p>The <code>Www­Form­Url­Decoder</code> is a bit difficult to work with, however, because the <code>GetFirstValueByName</code> method throws an exception if the key is not present at all. Since you are usually parsing query strings from potentially-untrusted sources, you can’t be certain that the value you want is present.</p>
+<p>What you can do is convert the parsed query into some other format that is easier to work with, say, a <code>std::multimap</code>:</p>
+<pre>auto to_multimap(
+    winrt::Windows::Foundation::WwwFormUrlDecoder const&amp; decoder)
+{
+    std::multimap&lt;winrt::hstring, winrt::hstring&gt; parsed;
+    for (auto&amp;&amp; entry : decoder) {
+        parsed.emplace(entry.Name(), entry.Value());
+    }
+    return parsed;
+}
+</pre>
+<p>Now you can pull out the values from the query in a way you are more comfortable with. And you can even use the usual multimap methods to extract multiple-valued keys, if that’s something you care about.</p>
+<pre>auto parsed = to_multimap(uri.QueryParsed());
+
+// Does a "v=" key exist?
+if (!parsed.contains(L"v"))
+{
+    error();
+}
+
+// Process all the "v=" keys.
+auto values = parsed.equal_range(L"v");
+for (auto it = values.first; it != values.second; ++it)
+{
+    process_value(it-&gt;second);
+}
+
+// Process the first "v=" key, if any.
+auto it = parsed.lower_bound(L"v");
+if (it != parsed.end() &amp;&amp; it-&gt;first == L"v") {
+    process_value(it-&gt;second);
+}
+</pre>
+
+
+</body>

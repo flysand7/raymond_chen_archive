@@ -1,0 +1,80 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I switch a window between normal and fullscreen?</h1>  <!-- .entry-meta -->
+
+<p>
+Frederic Delhoume wants to know
+if there is
+<a href="http://blogs.msdn.com/oldnewthing/pages/407234.aspx#1237990">
+a simple example of code that switches an application
+from windowed to fullscreen</a>.
+He then included a code fragment that did some crazy things with
+parent windows and hiding and showing.
+</p>
+<p>
+You’re making it way, way harder than it needs to be.
+Let’s start with our
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a> and make these changes:
+</p>
+<pre>
+WINDOWPLACEMENT g_wpPrev = { sizeof(g_wpPrev) };
+void OnLButtonUp(HWND hwnd, int x, int y, UINT keyFlags)
+{
+  DWORD dwStyle = GetWindowLong(hwnd, GWL_STYLE);
+  if (dwStyle &amp; WS_OVERLAPPEDWINDOW) {
+    MONITORINFO mi = { sizeof(mi) };
+    if (GetWindowPlacement(hwnd, &amp;g_wpPrev) &amp;&amp;
+        GetMonitorInfo(MonitorFromWindow(hwnd,
+                       MONITOR_DEFAULTTOPRIMARY), &amp;mi)) {
+      SetWindowLong(hwnd, GWL_STYLE,
+                    dwStyle &amp; ~WS_OVERLAPPEDWINDOW);
+      SetWindowPos(hwnd, HWND_TOP,
+                   mi.rcMonitor.left, mi.rcMonitor.top,
+                   mi.rcMonitor.right - mi.rcMonitor.left,
+                   mi.rcMonitor.bottom - mi.rcMonitor.top,
+                   SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+  } else {
+    SetWindowLong(hwnd, GWL_STYLE,
+                  dwStyle | WS_OVERLAPPEDWINDOW);
+    SetWindowPlacement(hwnd, &amp;g_wpPrev);
+    SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                 SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+  }
+}
+// add to WndProc
+    HANDLE_MSG(hwnd, WM_LBUTTONUP, OnLButtonUp);
+</pre>
+<p>
+To avoid getting into the intricacies of hotkeys and accelerators,
+I opted to toggle to fullscreen on a click.
+When the
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/12/16/1305524.aspx">
+button goes up</a>,
+we check
+whether we are currently in normal mode or fullscreen mode
+by sniffing at our window styles.
+If we are in normal mode, we save the current window placement
+and get the dimensions of the current monitor.
+And then the magic happens:
+We remove the caption and other decorations from our window style
+and reposition the window so it covers the entire monitor.
+An important flag to pass here is <code>SWP_FRAME­CHANGED</code>,
+which tells the window manager to recalculate the window decorations
+(which we need it to do because we just changed them).
+</p>
+<p>
+When returning from fullscreen, we just undo what we had done
+when we went fullscreen:
+We restore the caption and other decorations to our window
+and restore the original window state.
+</p>
+<p>
+And that’s all there is to it.
+You don’t have to do anything special to get the taskbar
+to “get out of the way”; the taskbar recognizes when applications
+have gone fullscreen and automatically gets out of the way.</p>
+
+
+</body>

@@ -1,0 +1,201 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to host an IContextMenu, part 1 – Initial foray</h1>  <!-- .entry-meta -->
+
+<p><p>
+Most documentation describes how to plug into the shell
+context menu structure and be a context menu provider.  If you
+<a href="/oldnewthing/archive/2003/12/26/45979.aspx">
+read the documentation from the other side</a>,
+then you also see how to <strong>host</strong> the context menu.
+(This is the first of an eleven-part series with three digressions.
+Yes, eleven parts—sorry for all you folks who are in it just
+for the history articles. I’ll try to toss in an occasional
+amusing diversion.)
+</p>
+<p>
+The usage pattern for an IContextMenu is as follows:
+</p>
+<ul>
+<li>Creation.
+<li>
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/icontextmenu/QueryContextMenu.asp">
+IContextMenu::QueryContextMenu</a>.
+This initializes the context menu.
+During this call,
+the context menu decides which items appear in it,
+based on the flags you pass.
+<li>
+Display the menu or otherwise select a command to execute,
+using
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/icontextmenu/GetCommandString.asp">
+IContextMenu::GetCommandString</a>,
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/icontextmenu2/handlemenumsg.asp">
+IContextMenu2::HandleMenuMsg</a> and
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/icontextmenu3/handlemenumsg2.asp">
+IContextMenu3::HandleMenuMsg2</a> to faciliate the user interaction.
+<li>
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/icontextmenu/InvokeCommand.asp">
+IContextMenu::InvokeCommand</a>.
+This executes the command.
+</li></li></li></li></ul>
+<p>
+The details of this are explained in
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/programmersguide/shell_int/shell_int_extending/extensionhandlers/contextmenuhandlers.asp">
+Creating Context MenuHandlers</a> from the point of view of
+the IContextMenu implementor.
+</p>
+<blockquote class="q">
+The Shell first calls IContextMenu::QueryContextMenu.
+It passes in an HMENU handle that the method
+can use to add items to the context menu.
+If the user selects one of the commands,
+IContextMenu::GetCommandString
+is called to retrieve the Help string
+that will be displayed on the Microsoft Windows Explorer status bar.
+If the user clicks one of the handler’s items,
+the Shell calls IContextMenu::InvokeCommand.
+The handler can then execute the appropriate command.
+</blockquote>
+<p>
+<a href="/oldnewthing/archive/2003/12/26/45979.aspx">
+Read it from the other side</a> to see what it says you need to
+do as the IContextMenu host:
+</p>
+<blockquote class="m">
+The <i>IContextMenu host</i> first calls IContextMenu::QueryContextMenu.
+It passes in an HMENU handle that the method
+can use to add items to the context menu.
+If the user selects one of the commands,
+IContextMenu::GetCommandString
+is called to retrieve the Help string
+that will be displayed on <i>the host’s</i> status bar.
+If the user clicks one of the handler’s items,
+the <i>IContextMenu host</i> calls IContextMenu::InvokeCommand.
+The handler can then execute the appropriate command.
+</blockquote>
+<p>
+Exploring the consequences of this new interpretation of the
+context menu documentation will be our focus for the next few weeks.
+</p>
+<p>
+Okay, let’s get started.
+We begin, as always, with
+<a href="/oldnewthing/archive/2003/07/23/54576.aspx">
+our scratch program</a>.
+I’m going to assume you’re already familiar with the shell namespace
+and pidls so I can focus on the context menu part of the issue.
+</p>
+<pre>
+<font color="blue">#include &lt;shlobj.h&gt;</font></pre></p>
+<p>HRESULT GetUIObjectOfFile(HWND hwnd, LPCWSTR pszPath, REFIID riid, void **ppv)
+{
+  *ppv = NULL;
+  HRESULT hr;
+  LPITEMIDLIST pidl;
+  SFGAOF sfgao;
+  if (SUCCEEDED(hr = SHParseDisplayName(pszPath, NULL, &amp;pidl, 0, &amp;sfgao))) {
+    IShellFolder *psf;
+    LPCITEMIDLIST pidlChild;
+    if (SUCCEEDED(hr = SHBindToParent(pidl, IID_IShellFolder,
+                                      (void**)&amp;psf, &amp;pidlChild))) {
+      hr = psf-&gt;GetUIObjectOf(hwnd, 1, &amp;pidlChild, riid, NULL, ppv);
+      psf-&gt;Release();
+    }
+    CoTaskMemFree(pidl);
+  }
+  return hr;
+}
+
+<p>
+This simple function takes a path and gets a shell UI object from it.
+We convert the path to a pidl with
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/functions/shparsedisplayname.asp">
+SHParseDisplayName</a>,
+then bind to the pidl’s parent with
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/functions/shbindtoparent.asp">
+SHBindToParent</a>, then ask the parent
+for the UI object of the child with
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ishellfolder/getuiobjectof.asp">
+IShellFolder::GetUIObjectOf</a>.
+I’m assuming you’ve had enough experience with the namespace that
+this is ho-hum.
+</p>
+<p>
+(The helper functions SHParseDisplayName and SHBindToParent don’t
+do anything you couldn’t have done yourself.  They just save you
+some typing.  Once you start using the shell namespace
+for any nontrivial amount of time, you build up a library of little
+functions like these.)
+</p>
+<p>
+For our first pass, all we’re going to do is invoke the “Play” verb
+on the file when the user right-clicks.  (Why right-click?
+Because a future version of this program will display a context menu.)
+</p>
+<pre>
+<font color="blue">#define SCRATCH_QCM_FIRST 1
+#define SCRATCH_QCM_LAST  0x7FFF</font></pre></p>
+<p>void OnContextMenu(HWND hwnd, HWND hwndContext, UINT xPos, UINT yPos)
+{
+  IContextMenu *pcm;
+  if (SUCCEEDED(GetUIObjectOfFile(hwnd, L”C:\\Windows\\clock.avi”,
+                   IID_IContextMenu, (void**)&amp;pcm))) {
+    HMENU hmenu = CreatePopupMenu();
+    if (hmenu) {
+      if (SUCCEEDED(pcm-&gt;QueryContextMenu(hmenu, 0,
+                             SCRATCH_QCM_FIRST, SCRATCH_QCM_LAST,
+                             CMF_NORMAL))) {
+        CMINVOKECOMMANDINFO info = { 0 };
+        info.cbSize = sizeof(info);
+        info.hwnd = hwnd;
+        info.lpVerb = “play”;
+        pcm-&gt;InvokeCommand(&amp;info);
+      }
+      DestroyMenu(hmenu);
+    }
+    pcm-&gt;Release();
+  }
+}</p>
+<p>    HANDLE_MSG(hwnd, WM_CONTEXTMENU, OnContextMenu);
+
+<p>
+As noted in the checklist above, first we create the IContextMenu,
+then initialize it by calling IContextMenu::QueryContextMenu.
+Notice that even though we don’t intend to display the menu,
+we still have to create a popup menu because
+IContextMenu::QueryContextMenu requires on.
+We don’t actually display the resulting menu, however;
+instead of asking the user to pick an item from the menu,
+we make the choice for the user and select “Play”,
+filling in
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/structures/cminvokecommandinfo.asp">
+the CMINVOKECOMMANDINFO structure</a> and
+invoking it.
+</p>
+<p>
+But how did we know that the correct verb was “Play”?
+In this case, we knew because we hard-coded the file
+to “clock.avi” and we knew that AVI files have a “Play” verb.
+But of course that doesn’t work in general.
+Before getting to invoking the default verb, let’s
+first take the easier step of asking the user what
+verb to invoke.  That exercise will actually distract us
+for a while, but we’ll come back to the issue of the
+default verb afterwards.
+</p>
+<p>
+If the code above is all you really wanted (invoking a fixed
+verb on a file), then you didn’t need to go through all the
+context menu stuff.
+The code above is equivalent to calling
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/functions/shellexecuteex.asp">
+the ShellExecuteEx function</a>,
+passing the SEE_MASK_INVOKEIDLIST flag to indicate that you
+want the invoke to go through the IContextMenu.
+</p>
+<p>
+[Typo fixed 25 September.]
+</p></p>
+
+
+</body>

@@ -1,0 +1,28 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does CreateFile take a long time on a volume handle?</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that on Windows XP, a call to <code>Create­File</code> was taking a really, really long time if it was performed immediately after a large file copy. They were kind enough to include a demonstration program: </p>
+<pre>
+#include &lt;windows.h&gt;
+
+int main(int argc, char **argv)
+{
+ HANDLE h = CreateFile("\\\\.\\D:",
+                       GENERIC_READ | GENERIC_WRITE,
+                       FILE_SHARE_WRITE | FILE_SHARE_READ,
+                       NULL,
+                       OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL,
+                       NULL);
+ Sleep(5000);
+ return 0;
+}
+</pre>
+<p>If this program is run on its own, the <code>Create­File</code> completes quickly. But if you copy 1.7GB of data immediately before running the program, then <code>Create­File</code> takes longer. The customer would like to know the reason for this issue and whether there is a way to avoid it. </p>
+<p>The reason is that you just copied a lot of data, so there is a lot of dirty data in the disk cache that is waiting to get flushed out. And when you create the volume handle, Windows needs to flush out all that data so that the volume handle sees a consistent view of the volume. Flushing out 1.7GB of data can take a while. </p>
+<p>There is no way to avoid this problem because the speed of data transfer to the drive is limited by the drive hardware. It will take <var>N</var> seconds to transfer 1.7GB of data, so the time between the start of the file copy operation and the successful opening of the volume handle will be <var>N</var> seconds. If you want the <code>Create­File</code> to go faster, you could do a <code>Flush­File­Buffers</code> on the file being copied so that the cost of writing the data gets charged to the copy operation rather than the <code>Create­File</code>, but that’s just creative accounting. You didn’t actually make any money; you just moved it around. </p>
+<p>Now, a lot of programs open a volume handle but don’t actually read from it or write to it, such as the sample program above. Therefore, newer versions of Windows (I don’t know exactly whether it was Windows Vista or Windows 7) defer the flush until somebody actually tries to use the handle for reading or writing. So at least for the sample program above, the <code>Create­File</code> will complete quickly. However, the first read or write operation will be slow. </p>
+<p>Again, the total time doesn’t change. All that changes is where the cost of the flush is incurred. </p>
+
+
+</body>

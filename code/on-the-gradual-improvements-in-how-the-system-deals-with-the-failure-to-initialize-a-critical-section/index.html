@@ -1,0 +1,29 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On the gradual improvements in how the system deals with the failure to initialize a critical section</h1>  <!-- .entry-meta -->
+
+<p>The <a href="https://msdn.microsoft.com/library/windows/desktop/ms683472(v=vs.85).aspx">documentation for the <code>Initialize­Critical­Section</code> function</a> says </p>
+<blockquote class="q">
+<p style="font-size: 120%">Return value </p>
+<p>This function does not return a value. </p>
+<p><b>Windows Server 2003 and Windows XP</b>: In low memory situations, <b>Initialize­Critical­Section</b> can raise a <code>STATUS_</code><code>NO_</code><code>MEMORY</code> exception. This exception was eliminated starting with Windows Vista. </p>
+</blockquote>
+<p>In earlier versions of Windows, the <code>Initialize­Critical­Section</code> function could fail in low memory conditions, in which case it raised a <code>STATUS_</code><code>NO_</code><code>MEMORY</code> exception. </p>
+<p>Wait, let’s go back even further. </p>
+<p>In very old versions of Windows, the <code>Initialize­Critical­Section</code> function could fail in low memory conditions, in which case it raised a <code>STATUS_</code><code>NO_</code><code>MEMORY</code> exception. However, the code wasn’t particularly careful about exactly when it raised the exception, and it turns out that it didn’t bother to completely unwind the partial-initialization-so-far before raising the exception. This means that if a program tried to recover from a failed <code>Initialize­Critical­Section</code> by catching the <code>STATUS_</code><code>NO_</code><code>MEMORY</code> exception, it still experienced a memory leak. </p>
+<p>Yes, it’s rather ironic that if the kernel couldn’t initialize the critical section due to low resources, it leaked memory, which made the low resource situation <i>even worse</i>. </p>
+<p>There was a similar sad story with <code>Enter­Critical­Section</code> and even <code>Leave­Critical­Section</code>: Under low resource conditions, those functions could fail and raise a <code>STATUS_</code><code>NO_</code><code>MEMORY</code> exception. Those are even worse because by the time you get the exception, it’s probably too late to back out of whatever you were doing. I mean, maybe if you’re really clever, you can recover from a failed <code>Enter­Critical­Section</code> by abandoning the operation (and undoing all the work done so far), but I can’t think of any case where a program could do anything reasonable if <code>Leave­Critical­Section</code> fails. </p>
+<p>And <a href="https://devblogs.microsoft.com/oldnewthing/#comment-1150233">as Michael Grier noted</a>, if <code>Leave­Critical­Section</code> raised an exception, not only wasn’t there anything you could reasonably do about it, but it also left the critical section in a corrupted state! </p>
+<p>The only thing you can do is to just crash the process before things get any worse. </p>
+<p>I think it was in Windows XP that the kernel folks fixed the code so that it cleaned up the partially-initialized critical section before raising the <code>STATUS_</code><code>NO_</code><code>MEMORY</code> exception, so that a program could safely catch the exception and not leak memory. I believe they also fixed it so that the <code>Enter­Critical­Section</code> and <code>Leave­Critical­Section</code> functions would not raise exceptions. If called properly, then they always succeeded. So at least those weird cases of “raising an exception and leaving the critical section fatally corrupted” went away. </p>
+<p>And then in Windows Vista, the kernel folks decided to get rid of the problem once and for all and remove all the failure cases from all the critical section functions. The <code>Initialize­Critical­Section</code> and <code>Initialize­Critical­Section­And­Spin­Count</code> functions always succeeded. The <code>Enter­Critical­Section</code> and <code>Leave­Critical­Section</code> functions would not raise exceptions when used properly. </p>
+<p>So for over a decade now, the <code>Initialize­Critical­Section</code> and <code>Initialize­Critical­Section­And­Spin­Count</code> functions never fail. This means that (assuming they are called properly), <code>Initialize­Critical­Section</code> never raises a <code>STATUS_</code><code>NO_</code><code>MEMORY</code> exception. The <code>Initialize­Critical­Section­And­Spin­Count</code> function a return value that says whether it succeeded, but it always succeeds and returns a nonzero value. The return value is now superfluous. </p>
+<p><b>Bonus chatter</b>: The <a href="https://msdn.microsoft.com/library/windows/desktop/ms683476(v=vs.85).aspx">documentation for the <code>Initialize­Critical­Section­And­Spin­Count</code> function</a> says </p>
+<blockquote class="q">
+<p style="font-size: 120%">Return value </p>
+<p>This function always returns a nonzero value. </p>
+<p><b>Windows Server 2003 and Windows XP</b>: If the function succeeds, the return value is nonzero. If the function fails, the return value is zero (0). To get extended error information, call <b>Get­Last­Error</b>. This behavior was changed starting with Windows Vista. </p>
+</blockquote>
+<p>I’m told that some people come away from the documentation still worried about the possibility that the <code>Initialize­Critical­Section­And­Spin­Count</code> might fail on Windows Vista and later. They see that on Windows Server 2003 and Windows XP, the function tells you whether or not it succeeded, but on Windows Vista it always reports success. “That means that if the function fails, Windows Vista will lie to me and report success even though it failed!” No, that’s not what it’s saying. It’s saying that starting in Windows Vista, the function <i>never fails</i>. </p>
+
+
+</body>

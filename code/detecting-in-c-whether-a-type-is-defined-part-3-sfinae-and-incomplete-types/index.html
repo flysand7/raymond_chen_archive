@@ -1,0 +1,97 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Detecting in C++ whether a type is defined, part 3: SFINAE and incomplete types</h1>  <!-- .entry-meta -->
+
+<p><b>Warning to those who got here via a search engine</b>: This is part of a series. Keep reading to the end.</p>
+<p>For the past few articles, I’ve been playing with the <a href="https://en.cppreference.com/w/cpp/language/unqualified_lookup"> unqualified name lookup</a> search order in order to detect whether a type exists in a particular namespace. I did this by defining the type in another namespace that has lower priority than the namespace that I’m probing, and then seeing which type comes out when I access the type with an unqualified name.</p>
+<p>There are many problems with this technique. One is that it requires you to set up a <code>detect</code> namespace that contains a shadow version of every type you want to check. Another is that you need to inject a <code>detect</code> sub-namespace into every namespace you want to do detection in.</p>
+<p>But it turns out there’s another way, as long as you’re willing to change one of the requirements. Instead of checking whether the type exists, check whether the type is <i>defined</i>, which in C++ language standard jargon means that you want the type to be <a href="https://en.cppreference.com/w/cpp/language/type#incomplete_type"> complete</a>.</p>
+<pre>template&lt;typename, typename = void&gt;
+constexpr bool is_type_complete_v = false;
+
+template&lt;typename T&gt;
+constexpr bool is_type_complete_v
+    &lt;T, std::void_t&lt;decltype(sizeof(T))&gt;&gt; = true;
+</pre>
+<p>A type must be complete in order to have the <code>sizeof</code> operator applied to it, so we use <a href="https://en.cppreference.com/w/cpp/language/sfinae"> SFINAE</a> to define <code>is_</code><code>type_</code><code>complete_v</code> as <code>true</code> provided the <code>sizeof</code> operator can be applied.¹</p>
+<p>I’m not sure if this is technically legal, but all the compilers I tried seemed to be okay with it. It does lead to weird effects like this:</p>
+<pre>struct s; // incomplete type
+bool val1 = is_type_complete_v&lt;s&gt;; // false
+struct s {}; // now it's complete
+bool val2 = is_type_complete_v&lt;s&gt;; // true
+</pre>
+<p>The second phase of the trick takes advantage of the fact that you are permitted to refer to a class with the <code>struct</code> or <code>class</code> prefix. This prefix is usually redundant, <a href="https://devblogs.microsoft.com/oldnewthing/20190419-00/?p=102431"> but not always</a>. It’s also how you declare a forward reference.</p>
+<p>The result is that you can say</p>
+<pre>is_type_complete_v&lt;struct special&gt;
+</pre>
+<p>to determine whether <code>struct special</code> has been defined.</p>
+<ol>
+<li>If it has been defined, then the type exists and is complete.</li>
+<li>If it has been declared but not defined, then the type exists and is incomplete.</li>
+<li>If it has been neither declared nor defined, the act of writing <code>struct special</code> serves as a declaration! This puts us back into case 2 above, and the type exists and is incomplete.</li>
+</ol>
+<p>So now our helper can be simplified to</p>
+<pre>template&lt;typename T, typename TLambda&gt;
+void call_if_defined(TLambda&amp;&amp; lambda)
+{
+  if constexpr (is_complete_type_v&lt;T&gt;) {
+    lambda(static_cast&lt;T*&gt;(nullptr));
+  }
+}
+</pre>
+<p>and you would use it like this:</p>
+<pre>void foo(Source source)
+{
+  call_if_defined&lt;struct special&gt;([&amp;](auto* p)
+  {
+    using special = std::decay_t&lt;decltype(*p)&gt;;
+    special::static_method();
+    auto s = source.try_get&lt;special&gt;();
+    if (s) s-&gt;something();
+  });
+}
+</pre>
+<p>We are using the same tricks that we introduced last time: Using a generic lambda to defer resolving the type until the lambda is invoked, using <code>if constexpr</code> to avoid invoking the lambda if the type is not defined, and reintroducing the name of the type by deriving it from the dummy parameter.</p>
+<p>There is a catch here: If you are probing for a type that is defined in a namespace that you imported via a <code>using</code> directive, and the type does not actually exist, then the <code>struct special</code> will declare an incomplete <code>struct special</code> in the <i>current</i> namespace.</p>
+<pre>// awesome.h
+namespace awesome
+{
+  // might or might not contain
+  struct special { ... };
+}
+
+// your code
+namespace app
+{
+  using namespace awesome;
+
+  void foo()
+  {
+    call_if_defined&lt;struct special&gt;([&amp;](auto* p)
+    {
+       ...
+    });
+  }
+}
+</pre>
+<p>If <code>special</code> is not defined, then the <code>struct special</code> in the <code>call_</code><code>if_</code><code>defined</code> will introduce an incomplete type called <code>app::</code><code>special</code>.</p>
+<p>Even more frustrating is that you cannot do this:</p>
+<pre>namespace app
+{
+  void foo()
+  {
+    call_if_defined&lt;struct <span style="color: red;">awesome::special</span>&gt;([&amp;](auto* p)
+    {
+       ...
+    });
+  }
+}
+</pre>
+<p>You cannot forward-declare a type into a non-current namespace. (For one thing, the result is ambiguous: Is this trying to forward-declare <code>::awesome</code><code>::special</code>, or is it trying to forward-declare <code>::app</code><code>::awesome</code><code>::special</code>?)</p>
+<p>And of course there’s the annoyance of having to type the word <code>struct</code>.</p>
+<p>We can trade three annoyances for one. We’ll continue the investigation next time.</p>
+<p>¹ The <code>std::</code><code>void_t</code> template type is <code>void</code> regardless of its template parameters. The template type exists specifically for SFINAE, so that the overload is removed from consideration if the template parameter ends up being invalid. In this case, what it means is that if <code>sizeof(T)</code> is invalid (which is the case if <code>T</code> is an incomplete type), then the <code>std::</code><code>void_t</code> fails substitution, and the rule disappears.</p>
+<p>You can think of it as <code>std::</code><code>void_</code><code>if_</code><code>valid_t</code>.</p>
+<p> </p>
+
+
+</body>

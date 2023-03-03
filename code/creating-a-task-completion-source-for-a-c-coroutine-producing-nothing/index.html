@@ -1,0 +1,98 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a task completion source for a C++ coroutine: Producing nothing</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/creating-a-task-completion-source-for-a-c-coroutine-producing-a-result-with-references" title="Creating a task completion source for a C++ coroutine: Producing a result with references"> created a <code>result_holder</code> that can hold a reference</a>, and we solved it by using a wrapper. But there’s another type that we can’t put in a <code>result_holder</code>, not even with the help of a wrapper. That type is <code>void</code>.</p>
+<pre>    struct wrapper
+    {
+        void value; // not allowed
+    };
+</pre>
+<p>This doesn’t work because you cannot have an object of type <code>void</code>. You might nevertheless want to have a <code>result_<wbr/>holder</code> that “holds” a <code>void</code>, because that is basically an event: The result is the fact that something happened.</p>
+<p>There are a few ways to work around this problem. One is to redirect <code>void</code> to some other type like <code>bool</code>, and just ignore the <code>bool</code> value. This is the approach that is often used in C# code: A task completion event of <code>void</code> is just a task completion event of <code>bool</code> where the <code>bool</code> is ignored.</p>
+<p>But in C++, we have partial specialization, so we can get all fancy-like.</p>
+<pre>    template&lt;typename T&gt;
+    struct wrapper
+    {
+        T value;
+        T get_value() { return static_cast&lt;T&gt;(value); }
+    };
+
+    template&lt;&gt;
+    struct wrapper&lt;void&gt;
+    {
+        void get_value() { }
+    };
+</pre>
+<p>In the case of <code>void</code>, we use an empty class. This avoids the trouble of having to initialize a dummy <code>bool</code> member, and it opens the door to empty base class optimization, although we won’t take advantage of EBO here. We then add <code>get_<wbr/>value</code> methods to extract the value in a uniform way:</p>
+<ul>
+<li>For <code>void</code> it returns nothing.</li>
+<li>For references, it returns the reference.</li>
+<li>For values, it returns a copy of the object.</li>
+</ul>
+<p>(Recall that this is intended for an object that can be awaited multiple times, so the underlying object needs to be copyable so that each client that does a <code>co_await</code> gets its own copy.)</p>
+<p>Now we can revise our code that sets the result so it knows the special way of setting nothing.</p>
+<pre>    <span style="color: blue;">template&lt;typename Dummy = void&gt;
+    std::enable_if_t&lt;std::is_same_v&lt;T, void&gt;, Dummy&gt;
+        set_result(node_list&amp; list)
+    {
+        if (!ready.load(std::memory_order_relaxed)) {
+            new (std::addressof(result.wrap)) wrapper{ };
+            ready.store(true, std::memory_order_release);
+            this-&gt;resume_all(list);
+        }
+    }
+    template&lt;typename Dummy = void&gt;
+    std::enable_if_t&lt;!std::is_same_v&lt;T, void&gt;, Dummy&gt;</span>
+        set_result(node_list&amp; list, T v)
+    {
+        if (!ready.load(std::memory_order_relaxed)) {
+            new (std::addressof(result.wrap))
+                wrapper{ std::forward&lt;T&gt;(v) };
+            ready.store(true, std::memory_order_release);
+            this-&gt;resume_all(list);
+        }
+    }
+    ...
+};
+
+template&lt;typename T&gt;
+struct result_holder
+    : async_helpers::awaitable_sync_object&lt;
+        result_holder_state&lt;T&gt;&gt;
+{
+    ...
+
+    <span style="color: blue;">template&lt;typename Dummy = void&gt;
+    std::enable_if_t&lt;std::is_same_v&lt;T, void&gt;, Dummy&gt;
+        set_result() const noexcept
+    {
+        this-&gt;action_impl(&amp;state::set_result);
+    }
+    template&lt;typename Dummy = void&gt;
+    std::enable_if_t&lt;!std::is_same_v&lt;T, void&gt;, Dummy&gt;</span>
+        set_result(T result) const noexcept
+    {
+        this-&gt;action_impl(&amp;state::set_result,
+            std::forward&lt;T&gt;(result));
+    }
+};
+</pre>
+<p>Getting the value back out is simpler thanks to our <code>get_value</code> helper.</p>
+<pre>    T get_result()
+    {
+        return result.wrap.<span style="color: blue;">get_value()</span>;
+    }
+};
+</pre>
+<p>Okay, so now we know how to deal with a result of nothing. But how do you report the failure to produce a result at all? We’ll look at that <a href="https://devblogs.microsoft.com/oldnewthing/20210326-00/?p=105009" title="Creating a task completion source for a C++ coroutine: Failing to produce a result"> next time</a>.</p>
+<p><b>Bonus chatter</b>: While we’re at it, we may as well put <code>[[no_unique_address]]</code> on the <code>T value</code>, in case <code>T</code> is an empty class.</p>
+<pre>    template&lt;typename T&gt;
+    struct wrapper
+    {
+        <span style="color: blue;">[[no_unique_address]]</span> T value;
+        T get_value() { return static_cast&lt;T&gt;(value); }
+    };
+</pre>
+
+
+</body>

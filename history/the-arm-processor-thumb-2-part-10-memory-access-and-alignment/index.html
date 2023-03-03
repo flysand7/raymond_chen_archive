@@ -1,0 +1,149 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ARM processor (Thumb-2), part 10: Memory access and alignment</h1>  <!-- .entry-meta -->
+
+<p>Accessing memory is done primarily through load and store instructions.</p>
+<pre>    LDR     Rd, [...]       ; load word
+    STR     Rd, [...]       ; store word
+
+    LDRD    Rd, Rd2, [...]  ; load doubleword into Rd and Rd2
+    LDRH    Rd, [...]       ; load halfword, zero-extended
+    LDRSH   Rd, [...]       ; load halfword, sign-extended
+    LDRB    Rd, [...]       ; load byte, zero-extended
+    LDRSB   Rd, [...]       ; load byte, sign-extended
+
+    STRD    Rd, Rd2, [...]  ; store doubleword from Rd and Rd2
+    STRH    Rd, [...]       ; store halfword
+    STRB    Rd, [...]       ; store byte
+</pre>
+<p>You cannot have multiple updates to a register, and you cannot modify the register being stored.</p>
+<pre>    LDR     r0, [r0, #8]!   ; illegal: modifies r0 twice
+    STR     r0, [r0, #8]!   ; illegal: modifies r0 while it is being stored
+    LDRD    r0, r0, [r1]    ; illegal: modifies r0 twice
+</pre>
+<p>The doubleword load and store instructions require doubleword alignment of the effective address and do not support register-plus-register addressing modes.¹</p>
+<p>Misaligned memory accesses normally generate an alignment exception that traps into the kernel, which typically emulates the memory operation before returning back to user mode. Of course, trapping into kernel mode is going to be a lot slower than dealing with the misalignment in the code, so the trap is really just a backstop and shouldn’t be your primary means of dealing with misaligned data.</p>
+<p>The ARM architecture permits the operating system to put alignment enforcement into a relaxed mode, which Windows does. When alignment enforcement is relaxed, then misaligned reads and writes of a single word or halfword are fixed up automatically in the processor without generating an exception. Note, however, that the fixed-up memory operation is not atomic: You can get torn reads or writes if the memory is being accessed by another device at the same time.</p>
+<p>I noted above that relaxed enforcement of alignment kicks in only for single words or halfwords. One source of multi-word memory access is the <code>LDRD</code> and <code>STRD</code> instructions which store a pair of registers. There are also instructions specifically designed for reading and writing multiple registers:</p>
+<pre>    ; load multiple registers starting at Rn
+    ldm     Rn,  { registers }
+
+    ; load multiple registers starting at Rn
+    ; and update Rn
+    ldm     Rn!, { registers }
+
+    ; store multiple registers ending at Rn
+    stm     Rn,  { registers }
+
+    ; store multiple registers ending at Rn
+    ; and update Rn
+    stm     Rn!, { registers }
+</pre>
+<p>The load/store multiple instructions let you load or store multiple registers to a block of memory starting at <var>Rn</var>. The registers are stored with the lowest-numbered register at the lowest address, and subsequent registers in adjacent memory locations.</p>
+<p>When loading, you can load any register except <var>sp</var>. When storing, you cannot store <var>pc</var> or <var>sp</var>.</p>
+<p>The updating versions allow you to treat <var>Rn</var> as a stack pointer: When storing, the registers are stored <i>below</i> the address in the base register, and then the base register is decremented past the written-to bytes. When loading, the registers are loaded <i>from</i> the address in the base register, and then the base register is incremented past the read-from bytes.² In the updating versions, the base register may not be among the registers being loaded or stored.</p>
+<p>The list of registers must have at least two entries. There’s no point to loading or storing zero registers, and if you wanted only one register, you could have used a regular load or store instruction. (For the updating versions, you can use a pre-indexed store and a post-indexed load.) As a courtesy, the assembler accepts <code>LDM</code> and <code>STM</code> with a single register and automatically converts it into the corresponding <code>LDR</code> or <code>STR</code> instruction for you.</p>
+<p>There are dedicated <code>PUSH</code> and <code>POP</code> instructions for the common case where <var>sp</var> is the base register.</p>
+<pre>    ; push multiple registers
+    push    { registers }       ; stm sp!, { registers }
+
+    ; pop multiple registers
+    pop     { registers }       ; ldm sp!, { registers }
+</pre>
+<p>For some reason, there is a separate 32-bit encoding for the case of pushing or popping a single register, even though it could have been done with a pre-indexed store (push single register) or post-indexed load (pop single register). I’m guessing that this is a case of offloading work to the compiler: Having a dedicated instruction for a common special case makes it easier to recognize in the CPU.</p>
+<p>The CPU itself provides a compact 16-bit encoding for the case where all of the registers being pushed or popped are low.</p>
+<p>You cannot pop the <var>sp</var> register, because that would create two writes to the <var>sp</var> register in a single instruction, one from the pop and one from incrementing the <var>sp</var> register. (Technically, the processor lets you do it, but the resulting value in <var>sp</var> is architecturally unpredictable.)</p>
+<p>I noted some time ago that <a href="/none/anybody-who-writes-pragma-pack-1-may-as-well-just-wear-a-sign-on-their-forehead-that-says-i-hate-risc"> anybody who writes <code>#pragma pack(1)</code> may as well just wear a sign on their forehead that says “I hate RISC”</a>. You can see this happening on ARM when it wants to perform block copies.</p>
+<pre>struct S
+{
+    int a, b, c, d;
+};
+
+// aligned copy
+S* p = ...; // assume in register r0
+S* q = ...; // assume in register r1
+*p = *q;
+
+    ; copy four words using multi-register load/store
+    ldm     r1, {r2-r5}
+    stm     r0, {r2-r5}
+</pre>
+<p>Since the structure is 4-byte aligned, the memory can be copied in two instructions by using the multi-word load and store instructions.</p>
+<pre>// unaligned copy
+__unaligned S* p = ...; // assume in register r0
+__unaligned S* q = ...; // assume in register r1
+*p = *q;
+
+    ; copy four words one at a time
+    ldr     r2, [r1]
+    str     r2, [r0]
+    ldr     r2, [r1, #4]
+    str     r2, [r0, #4]
+    ldr     r2, [r1, #8]
+    str     r2, [r0, #8]
+    ldr     r2, [r1, #12]
+    str     r2, [r0, #12]
+</pre>
+<p>If the structure is unaligned, then the compiler cannot use the multi-word load and store instructions, because they will trap if the pointers are misaligned. Instead, the values have to be copied one word at a time.</p>
+<p>So those are the regular load/store instructions. Next time, we’ll look at the instructions for atomic memory access.</p>
+<p>¹ In classic ARM, <var>Rd</var> must be even, and <var>Rd2</var> must be one greater than <var>Rd</var>. Thumb-2 removes this restriction and lets you target any pair of registers. (Well, <i>almost</i> any pair. Some registers are disallowed, like <var>sp</var> and <var>pc</var>.)</p>
+<p>² In classic ARM, there are eight versions of the updating multi-word instructions:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td><code>LD</code></td>
+<td rowspan="2"><code>M</code></td>
+<td><code>I</code></td>
+<td><code>B</code></td>
+</tr>
+<tr>
+<td><code>ST</code></td>
+<td><code>D</code></td>
+<td><code>A</code></td>
+</tr>
+</tbody>
+</table>
+<p>You can choose to load (<code>LD</code>) or store (<code>ST</code>), you can choose whether the base register is incremented (<code>I</code>) or decremented (<code>D</code>), and you can choose whether the effective address adjustment occurs before (<code>B</code>) or after (<code>A</code>) the memory is accessed.</p>
+<p>Classic ARM also provides alternate mnemonics for these operations based not on what the instruction literally does, but rather describing the usage pattern.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Opcode</th>
+<th>Meaning</th>
+<th>Equivalent to</th>
+</tr>
+<tr>
+<td><code>STMFD</code><br/>
+<code>LDMFD</code></td>
+<td>Full Descending</td>
+<td><code>STMDB</code><br/>
+<code>LDMIA</code></td>
+</tr>
+<tr>
+<td><code>STMED</code><br/>
+<code>LDMED</code></td>
+<td>Empty Descending</td>
+<td><code>STMDA</code><br/>
+<code>LDMIB</code></td>
+</tr>
+<tr>
+<td><code>STMFA</code><br/>
+<code>LDMFA</code></td>
+<td>Full Ascending</td>
+<td><code>STMIB</code><br/>
+<code>LDMDA</code></td>
+</tr>
+<tr>
+<td><code>STMEA</code><br/>
+<code>LDMEA</code></td>
+<td>Empty Ascending</td>
+<td><code>STMIA</code><br/>
+<code>LDMDB</code></td>
+</tr>
+</tbody>
+</table>
+<p>The “Descending” version is for managing a stack that grows downward, and the “Ascending” version grows upward.</p>
+<p>The “Full” version has the register pointing to the item most recently stored on the stack, and the “Empty” version has the register pointing to the place where the next item would go.</p>
+<p>In practice, nearly everyone uses Full Descending (<code>STMDB</code> and <code>LDMIA</code>), and Thumb-2 abandoned the other variations. Note that the underlying semantics are still available for single-register loads and stores in Thumb-2. You just lose the ability to do multi-register operations.</p>
+
+
+</body>

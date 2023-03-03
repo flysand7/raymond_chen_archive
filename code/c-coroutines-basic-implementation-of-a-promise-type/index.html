@@ -1,0 +1,139 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Basic implementation of a promise type</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/c-coroutines-the-mental-model-for-coroutine-promises" title="C++ coroutines: The mental model for coroutine promises "> diagrammed out how the pieces of a coroutine fit together</a>. Today we’ll fill in the diagram with code.</p>
+<p>Fortunately, most of the hard work has already been done for us by the <code>result_<wbr/>holder</code> class we already wrote. We just need to adapt it to the format required by the coroutine specification.</p>
+<pre>namespace std::experimental
+{
+    template &lt;typename T, typename... Args&gt;
+    struct coroutine_traits&lt;result_holder&lt;T&gt;, Args...&gt;
+    {
+        struct promise_type
+        {
+            result_holder&lt;T&gt; holder;
+
+            result_holder&lt;T&gt; get_return_object() const noexcept
+            {
+                return holder;
+            }
+
+            void return_value(T const&amp; v) const
+            {
+                holder.set_result(v);
+            }
+
+            void unhandled_exception() const noexcept
+            {
+                holder.set_exception(std::current_exception());
+            }
+
+            suspend_never initial_suspend() const noexcept
+            {
+                return{};
+            }
+
+            suspend_never final_suspend() const noexcept
+            {
+                return{};
+            }
+        };
+    };
+}
+</pre>
+<p>When the compiler encounters a function which contains a <code>co_await</code> or <code>co_return</code>, it realizes that it’s dealing with a coroutine. It collects the following:</p>
+<ul>
+<li>The return type of the function.</li>
+<li>The type of <code>*this</code>, if it’s defined as an instance member function.</li>
+<li>The types of the parameters, if any.</li>
+</ul>
+<p>It takes all of these types and looks for a <code>coroutine_<wbr/>traits</code> specialization that matches it. For example, given</p>
+<pre>ReturnType FreeFunction(ArgType1&amp; arg1, ArgType2 arg2);
+</pre>
+<p>the compiler looks for the type</p>
+<pre>std::experimental::coroutine_traits&lt;
+    ReturnType, ArgType1&amp;, ArgType2&gt;
+</pre>
+<p>For an instance method</p>
+<pre>ReturnType <span style="border: solid 1px black;">SomeClass</span>::Member(ArgType1&amp; arg1, ArgType2 arg2) <span style="border: solid 1px black;">const</span>;
+</pre>
+<p>the compiler looks for</p>
+<pre>std::experimental::coroutine_traits&lt;
+    ReturnType, <span style="border: solid 1px black;">SomeClass</span> <span style="border: solid 1px black;">const</span>&amp;, ArgType1&amp;, ArgType2&gt;
+</pre>
+<p>In practice, few coroutines care about anything other than the return type, so you will generally see the second and subsequent template type parameters declared but ignored.¹</p>
+<p>The specialized <code>coroutine_<wbr/>traits</code> must have a nested type called <code>promise_<wbr/>type</code>. This could be defined inline or it could be an alias (via <code>typedef</code> or <code>using</code>) for another type define elsewhere.</p>
+<p>The <code>promise_<wbr/>type</code> is the promise object that is stored inside the coroutine state. The <code>get_<wbr/>return_<wbr/>object()</code> method is called to create the thing that is returned to the caller of the coroutine. In our case, we want to return a copy of our <code>result_<wbr/>holder</code>: The <code>result_<wbr/>holder</code> state becomes the way that the coroutine and the caller communicate with each other:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<th>Coroutine state</th>
+<td> </td>
+<td> </td>
+<td> </td>
+<th>Caller</th>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td>promise</td>
+<td style="margin-right: 1ex;">
+
+</td>
+<td style="border: solid 1px black; border-top: none;"><code>holder</code></td>
+<td>→</td>
+<td style="border: solid 1px black;"><code>result_<wbr/>holder</code> state</td>
+<td>←</td>
+<td style="border: solid 1px black;"><code>holder</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">stack frame</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>When the coroutine reaches its <code>co_return</code>, the compiler calls <code>p.return_value()</code> with the returned value, which we pass onward to the holder by calling <code>set_value</code>. (If there is no returned value, then the compiler uses <code>p.return_void()</code>.)² That will in turn update the state, and the state will release any waiting coroutines, which resumes the caller.</p>
+<p>On the other hand, if an exception escapes the coroutine, then the compiler will call <code>p.unhandled_<wbr/>exception()</code>, and we deal with the exception by stowing it in the <code>holder</code>. Again, this will update the state, and the state will release any waiting coroutines, which resumes the caller. And when the caller performs an <code>await_result</code> to obtain the result of the <code>co_await</code>, our <code>state</code> object rethrows the exception.</p>
+<p>So that’s the magic of how the result of the coroutine (either a return value or an exception) gets transferred from the coroutine back to the awaiter.</p>
+<p>Wait, what are these last two method <code>initial_<wbr/>suspend</code> and <code>final_<wbr/>suspend</code>? We’ll look at those next time.</p>
+<p>¹ You could create fancy coroutines that change their implementation depending on what the parameters are. For example, you might define a marker type like</p>
+<pre>struct with_sugar_t {};
+inline constexpr with_sugar_t with_sugar{};
+</pre>
+<p>and then have a special version of the <code>result_<wbr/>holder</code> coroutine promise that is used if the coroutine function is declared as</p>
+<pre>result_holder&lt;int&gt; Nicely(with_sugar_t);
+</pre>
+<p>Okay, so I don’t have a really good motivation for this feature, but it does exist.</p>
+<p>² It is illegal to have both <code>return_<wbr/>value</code> and <code>return_<wbr/>void</code> in a promise type, even if one of them is removed by SFINAE:</p>
+<pre>            template&lt;typename Dummy = void&gt;
+            std::enable_if_t&lt;std::is_same_v&lt;T, void&gt;, Dummy&gt;
+                return_void() const
+            {
+                holder.set_result(); 
+            }
+
+            template&lt;typename Dummy = void&gt;
+            std::enable_if_t&lt;!std::is_same_v&lt;T, void&gt;, Dummy&gt;
+                return_value(T const&amp; value) const
+            {
+                holder.set_result(value); 
+            }
+</pre>
+<p>The reason is that in order for the compiler to perform substitution in order to determine which methods are callable, it needs to know what was passed to all of the <code>co_return</code> statements, so it can try substituting them into <code>return_<wbr/>value</code>‘s parameter and see which ones succeed. But it hasn’t started compiling the coroutine function body yet, so it doesn’t know what to try to substitute for <code>value</code>.</p>
+<p>This is a frustrating limitation because it prevents you from writing a single promise that covers both <code>void</code>-completing coroutines and value-completing coroutines. You always have to make two types, one for <code>return_<wbr/>void</code> and another for <code>return_<wbr/>value</code>.</p>
+
+
+</body>

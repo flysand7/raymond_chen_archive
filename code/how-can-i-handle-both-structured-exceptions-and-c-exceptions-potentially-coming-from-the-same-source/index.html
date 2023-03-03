@@ -1,0 +1,143 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I handle both structured exceptions and C++ exceptions potentially coming from the same source?</h1>  <!-- .entry-meta -->
+
+<p>A customer had a plug-in model where the plug-in could respond to a request in three ways.</p>
+<ol>
+<li>Return an <code>HRESULT</code>.</li>
+<li>Throw a C++ exception.</li>
+<li>Raise a Win32 structured exception.</li>
+</ol>
+<p>The customer acknowledges that this design <a href="http://hitchhikers.wikia.com/wiki/The_Creation_of_the_Universe"> has made a lot of people very angry and been widely regarded as a bad move</a>.¹ But they don’t have a time machine, so they have to live with their mistakes.</p>
+<p>The customer wanted to know whether it was appropriate to use <code>_set_se_translator</code> to convert the Win32 structured exception to a C++ exception:</p>
+<pre>class win32_exception { /* ... */ };
+
+void translate_to_custom_exception(unsigned int code,
+                                   PEXCEPTION_POINTERS pointers)
+{
+   throw win32_exception(code, get_stack_trace(pointers));
+}
+
+void InvokeCallback(CALLBACK_FUNCTION fn, /* other arguments */)
+{
+  auto previousTranslator =
+    _set_se_translator(translate_to_custom_exception);
+
+  try
+  {
+    HRESULT hr = fn(/* other arguments */);
+    /* ... handle various return codes ... */
+  }
+  catch (const win32_exception&amp; ewin32)
+  {
+    /* ... handle structured exception ... */
+  }
+  catch (const std::bad_alloc&amp;)
+  {
+    /* ... handle low memory ... */
+  }
+  catch (const foo_exception&amp; efoo)
+  {
+    /* ... handle foo exception ... */
+  }
+  /* and so on */
+
+  _set_se_translator(previousTranslator);
+}
+</pre>
+<p>The customer wanted to know whether it was okay to mix C++ and structured exceptions in this way.</p>
+<p>Yes, <a href="https://blogs.msdn.microsoft.com/jaredpar/2008/01/11/mixing-seh-and-c-exceptions/"> it’s legal</a>. to mix C++ exceptions and structured exceptions this way. In fact, it’s the stated purpose of the <code>_set_se_translator</code> function. It lets you replace the default “convert a structured exception into a C++ exception” translator with a custom one.</p>
+<p>It may appear at first glance that you are applying a global solution to a local problem, because the <code>_set_se_translator</code> looks like it is going to change the translator for the entire process, which can result in confusing multithreading problems. But no fear, the structured exception translator is maintained on a per-thread basis. (Assuming you’re using the multithreading version of the runtime library, which you’d better be using if you’re multithreaded.)</p>
+<p>However, there is still a little bit of the global/local problem, because the custom translator is in effect during the error handling phase of the function, after the plug-in has returned. The custom translator should be scoped tightly around the call to the plug-in. That way, you don’t accidentally activate it if a structured exception is raised in one of the <code>catch</code> clauses, or any of the other code that isn’t the call to the plug-in.</p>
+<p>Furthermore, there’s a problem if the plug-in throws an exception that wasn’t explicitly caught. In that case, this code never restores the original translator. We can solve this problem by using an RAII type, so that the exception unwinder will restore the translator.</p>
+<pre><span style="color: blue;">struct translator_guard
+{
+ translator_guard(_se_translator_function translator) :
+    previous_translator(_set_se_translator(translator)) { }
+ ~translator_guard() { _set_se_translator(previous_translator); }
+
+ // Rule of three
+ translator_guard(const translator_guard&amp;) = delete;
+ translator_guard&amp; operator=(const translator_guard&amp;) = delete;
+private:
+ _se_translator_function previous_translator;
+};</span>
+
+void InvokeCallback(CALLBACK_FUNCTION fn, /* other arguments */)
+{
+  try
+  {
+    <span style="color: blue;">HRESULT hr;
+    {
+      translator_guard guard(translate_to_custom_exception);
+      hr = fn(/* other arguments */);
+    }</span>
+    /* ... handle various return codes ... */
+  }
+  catch (const win32_exception&amp; ewin32)
+  {
+    /* ... handle structured exception ... */
+  }
+  catch (const std::bad_alloc&amp;)
+  {
+    /* ... handle low memory ... */
+  }
+  catch (const foo_exception&amp; efoo)
+  {
+    /* ... handle foo exception ... */
+  }
+  /* and so on */
+}
+</pre>
+<p>Using an RAII type ensures that the translator is reset even if an exception is raised.</p>
+<p>To avoid the bare nested scope, we could factor the the scary bits into a separate function.</p>
+<pre><span style="color: blue;">HRESULT InvokeWithCustomExceptionTranslation(
+    CALLBACK_FUNCTION fn, /* other arguments */)
+{
+  translator_guard guard(translate_to_custom_exception);
+  return fn(/* other arguments */);
+}</span>
+
+void InvokeCallback(CALLBACK_FUNCTION fn, /* other arguments */)
+{
+  try
+  {
+    <span style="color: blue;">HRESULT hr = InvokeWithCustomExceptionTranslation(
+                   fn, /* other arguments */);</span>
+    /* ... handle various return codes ... */
+  }
+  catch (const win32_exception&amp; ewin32)
+  {
+    /* ... handle structured exception ... */
+  }
+  catch (const std::bad_alloc&amp;)
+  {
+    /* ... handle low memory ... */
+  }
+  catch (const foo_exception&amp; efoo)
+  {
+    /* ... handle foo exception ... */
+  }
+  /* and so on */
+}
+</pre>
+<p>The customer further noted that <code>_set_se_translator</code> requires <code>/EHa</code>, and they dutifully compiled their entire program with <code>/EHa</code>, but they were wondering if that was actually necessary. Is there an alternate design that avoids the need for <code>/EHa</code>? (<a href="https://blogs.msdn.microsoft.com/oldnewthing/20170728-00/?p=96706">Related</a>.)</p>
+<p>We’ll take up the follow-up question next time.</p>
+<p><b>Bonus chatter</b>: I could have written</p>
+<pre>template&lt;typename TLambda&gt;
+auto WithCustomExceptionTranslation(
+    TLambda&amp;&amp; lambda)
+{
+  translator_guard guard(translate_to_custom_exception);
+  return lambda();
+}
+</pre>
+<p>and call it from <code>Invoke­Callback</code> like this:</p>
+<pre>    HRESULT hr = WithCustomExceptionTranslation(
+                 [&amp;] { return fn(/* other arguments */); });
+</pre>
+<p>Is this a good thing or a bad thing?</p>
+<p>¹ I suspect that this was not the original design for the plug-in model, but people abused the plug-in model so much that they ended up forced to support it, for compatibility reasons.</p>
+<p> </p>
+
+
+</body>

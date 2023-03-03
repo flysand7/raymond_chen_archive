@@ -1,0 +1,203 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The dialog manager, part 5: Converting a non-modal dialog box to modal</h1>  <!-- .entry-meta -->
+
+<p>
+Let’s apply
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/04/01/404531.aspx">
+what we learned from last time</a>
+and convert a modeless dialog box into a modal one.
+As always,
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+start with the scratch program</a>
+and make the following additions:
+</p>
+<pre>
+INT_PTR CALLBACK DlgProc(
+    HWND hdlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+ switch (uMsg) {
+ case WM_INITDIALOG:
+  SetWindowLongPtr(hdlg, DWLP_USER, lParam);
+  return TRUE;
+ case WM_COMMAND:
+  switch (GET_WM_COMMAND_ID(wParam, lParam)) {
+  case IDOK:
+   EndDialog(hdlg, 2005);
+   break;
+  case IDCANCEL:
+   EndDialog(hdlg, 1776);
+   break;
+  }
+ }
+ return FALSE;
+}
+int DoModal(HWND hwnd)
+{
+ return DialogBox(g_hinst, MAKEINTRESOURCE(1), hwnd, DlgProc);
+}
+void OnChar(HWND hwnd, TCHAR ch, int cRepeat)
+{
+ switch (ch) {
+ case ' ': DoModal(hwnd); break;
+ }
+}
+// Add to WndProc
+   HANDLE_MSG(hwnd, WM_CHAR, OnChar);
+// Resource file
+1 DIALOGEX DISCARDABLE  32, 32, 200, 40
+STYLE DS_MODALFRAME | DS_SHELLFONT | WS_POPUP |
+      WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Sample"
+FONT 8, "MS Shell Dlg"
+BEGIN
+ DEFPUSHBUTTON "OK",IDOK,20,20,50,14
+ PUSHBUTTON "Cancel",IDCANCEL,74,20,50,14
+END
+</pre>
+<p>
+Not a very exciting program, I grant you that.
+It just displays a dialog box and returns a value
+that depends on which button you pressed.
+The <code>DoModal</code> function
+uses
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/dialogboxes/dialogboxreference/dialogboxfunctions/dialogbox.asp">
+the <code>DialogBox</code> function</a>
+to do the real work.
+</p>
+<p>
+Now let’s convert the <code>DoModal</code>
+function so it implements the modal loop directly.
+Why?  Just to see how it’s done.
+In real life, of course, there would normally be no reason to
+undertake this exercise;
+the dialog box manager does a fine job.
+</p>
+<p>
+First, we need to figure out where we’re going to
+keep track of the flag we called &lt;dialog still active&gt;
+last time.  We’ll keep it in a structure that we hang off
+the dialog box’s <code>DWLP_USER</code> window bytes.
+(I sort of planned ahead for this by having the <code>DlgProc</code>
+function stash the <code>lParam</code> into the
+<code>DWLP_USER</code> extra bytes when the dialog is initialized.)
+</p>
+<pre>
+// fEnded tells us if the dialog has been ended.
+// When ended, iResult contains the result code.
+typedef struct DIALOGSTATE {
+ BOOL fEnded;
+ int iResult;
+} DIALOGSTATE;
+void EndManualModalDialog(HWND hdlg, int iResult)
+{
+ DIALOGSTATE *pds = reinterpret_cast&lt;DIALOGSTATE*&gt;
+     (GetWindowLongPtr(hdlg, DWLP_USER));
+ if (pds) {
+  pds-&gt;iResult = iResult;
+  pds-&gt;fEnded = TRUE;
+ }
+}
+</pre>
+<p>
+The <code>EndManualModalDialog</code>
+takes the place of
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/dialogboxes/dialogboxreference/dialogboxfunctions/enddialog.asp">
+the <code>EndDialog</code> function</a>:
+Instead of updating the dialog manager’s internal
+“is the dialog finished?” flag, we update ours.
+</p>
+<p>
+All we have to do to convert our <code>DlgProc</code>
+from one using the dialog manager’s modal loop to our custom
+modal loop, then,
+is to change the calls to
+<code>EndDialog</code> to call our function instead.
+</p>
+<pre>
+INT_PTR CALLBACK DlgProc(
+    HWND hdlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+ switch (uMsg) {
+ case WM_INITDIALOG:
+  SetWindowLongPtr(hdlg, DWLP_USER, lParam);
+  return TRUE;
+ case WM_COMMAND:
+  switch (GET_WM_COMMAND_ID(wParam, lParam)) {
+  case IDOK:
+   <font color="blue">EndManualModeDialog</font>(hdlg, 2005);
+   break;
+  case IDCANCEL:
+   <font color="blue">EndManualModeDialog</font>(hdlg, 1776);
+   break;
+  }
+ }
+ return FALSE;
+}
+</pre>
+<p>
+All that’s left is to write the custom dialog message loop.
+</p>
+<pre>
+int DoModal(HWND hwnd)
+{
+ DIALOGSTATE ds = { 0 };
+ HWND hdlg = CreateDialogParam(g_hinst, MAKEINTRESOURCE(1),
+             hwnd, DlgProc, reinterpret_cast&lt;LPARAM&gt;(&amp;ds));
+ if (!hdlg) {
+  return -1;
+ }
+ EnableWindow(hwnd, FALSE);
+ MSG msg;
+ msg.message = WM_NULL; // anything that isn't WM_QUIT
+ while (!ds.fEnded &amp;&amp; GetMessage(&amp;msg, NULL, 0, 0)) {
+  if (!IsDialogMessage(hdlg, &amp;msg)) {
+   TranslateMessage(&amp;msg);
+   DispatchMessage(&amp;msg);
+  }
+ }
+ if (msg.message == WM_QUIT) {
+  PostQuitMessage((int)msg.wParam);
+ }
+ EnableWindow(hwnd, TRUE);
+ DestroyWindow(hdlg);
+ return ds.iResult;
+}
+</pre>
+<p>
+Most of this should make sense given what we’ve learned
+over the past few days.
+</p>
+<p>
+We start by creating the dialog modelessly, passing
+a pointer to our dialog state as the creation parameter,
+which as we noted earlier, our dialog procedure squirrels
+away in the <code>DWLP_USER</code> window bytes for
+<code>EndManualModalDialog</code> to use.
+</p>
+<p>
+Next we disable the owner window; this is done after creating
+the modeless dialog,
+observing
+<a href="http://weblogs.asp.net/oldnewthing/archive/2004/02/27/81155.aspx">
+the rules for enabling and disabling windows</a>.
+We then fall into our message loop, which looks exactly
+like what we said it should look.
+All we did was substitute <code>!ds.fEnded</code>
+for the pseudocode
+&lt;dialog still active&gt;.
+After the modal loop is done, we continue with the standard
+bookkeeping: Re-posting any quit message, re-enabling the
+owner before destroying the dialog, then returning the result.
+</p>
+<p>
+As you can see, the basics of modal dialogs are really not that
+exciting.  But now that you have this basic framework,
+you can start tinkering with it.
+</p>
+<p>
+First, however, your homework is to find a bug in the above
+code.  It’s rather subtle.  Hint: Look closely at the interaction
+between <code>EndManualModalDialog</code> and the modal message loop.</p>
+
+
+</body>

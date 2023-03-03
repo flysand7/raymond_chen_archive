@@ -1,0 +1,101 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I forward an exported function to an ordinal in another DLL?</h1>  <!-- .entry-meta -->
+
+<p>
+The syntax for specifying that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/02/04/7439592.aspx">
+requests to import a function from your
+DLL should be forwarded to another DLL</a>
+is
+</p>
+<pre>
+; A.DEF
+EXPORTS
+ Dial = B.Call
+</pre>
+<p>
+This says that if somebody tries to call <code>Dial()</code> from
+<code>A.DLL</code>,
+they are really calling <code>Call()</code> in <code>B.DLL</code>.
+This forwarding is done in the loader.
+Normally,
+when a client links to the function
+<code>A!Dial</code>,
+the loader says,
+“Okay, let me get the address of the <code>Dial</code> function
+in <code>A.DLL</code> and
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2006/07/21/673830.aspx">
+store it into the
+<code>__imp__Dial</code> variable</a>.”
+It’s the logical equivalent of
+</p>
+<pre>
+client::__imp__Dial = GetProcAddress(hinstA, "Dial");
+</pre>
+<p>
+When you use a forwarder,
+the loader sees the forwarder entry and says,
+“Whoa, I’m not actually supposed to get the function from <code>A.DLL</code>
+at all!
+I’m supposed to get the function <code>Call</code> from <code>B.DLL</code>!”
+So it loads <code>B.DLL</code> and gets the function
+<code>Call</code> from it.
+</p>
+<pre>
+hinstB = LoadLibrary("B.DLL");
+client::__imp__Dial = GetProcAddress(B, "Call");
+</pre>
+<p>
+(Of course, the loader doesn’t actually do it this way,
+but this is a good way of thinking about it.)
+</p>
+<p>
+But what if the function <code>Call</code> was exported by ordinal?
+How do you tell the linker,
+“Please create a forwarder entry for <code>Dial</code> that forwards
+to function 42 in <code>B.DLL</code>?”
+</p>
+<p>
+I didn’t know, but I was able to guess.
+</p>
+<p>
+Back in the days of 16-bit Windows, there were two ways to obtain
+the address of a function exported by ordinal.
+The first way is the way most people are familiar with:
+</p>
+<pre>
+FARPROC fp = GetProcAddress(hinst, MAKEINTRESOURCE(42));
+</pre>
+<p>
+The second way uses an alternate formulation,
+passing the desired ordinal as a string prefixed with the number-sign:
+</p>
+<pre>
+FARPROC fp = GetProcAddress(hinst, "#42");
+</pre>
+<p>
+You can hide a number inside a string by using
+<code>MAKEINTRESOURCE</code>,
+and you can hide a string inside a number by using the ‘#’ character.
+</p>
+<p>
+Given that the number sign has been used in the past to hide
+a number inside a string,
+I figured it was worth a shot to see if the loader carried this
+convention forward.
+(No pun intended.)
+</p>
+<pre>
+; A.DEF
+EXPORTS
+ Dial = B.#1
+</pre>
+<p>
+Hey, check it out. It works.
+</p>
+<p>
+Sometimes a little knowledge of history actually helps you solve
+problems in the present day.</p>
+
+
+</body>

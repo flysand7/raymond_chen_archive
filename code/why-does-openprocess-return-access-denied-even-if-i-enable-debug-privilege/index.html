@@ -1,0 +1,43 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does OpenProcess return access denied, even if I enable debug privilege?</h1>  <!-- .entry-meta -->
+
+<p>Many customers ask something like this: </p>
+<blockquote class="q">
+<p>We want to get the creation time of a process, but our call to <code>Open­Process</code> fails with <code>ERROR_ACCESS_DENIED</code>. </p>
+<pre>
+struct KernelHandleDeleter
+{
+ void operator()(HANDLE *h)
+ {
+  if (h != nullptr) CloseHandle(h);
+ }
+};
+
+bool GetCreationTimeOfProcess(DWORD pid, FILETIME *creationTime)
+{
+ std::unique_ptr&lt;HANDLE, KernelHandleDeleter&gt;
+    process(OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid));
+ if (!process) {
+  // GetLastError() returns ERROR_ACCESS_DENIED
+  return false;
+ }
+ FILETIME exitTime, kernelTime, userTime;
+ return GetProcessTimes(process, creationTime,
+                 &amp;exitTime, &amp;kernelTime, &amp;userTime) != FALSE;
+}
+</pre>
+<p>It works if the program is running as administrator, but not if the program is running as a standard user. We even <a href="http://msdn.microsoft.com/en-us/library/windows/hardware/ff541528%28v=vs.85%29.aspx">enabled debug privilege</a>, but that didn’t help. </p>
+</blockquote>
+<p>You don’t have access because you don’t have <code>PROCESS_ALL_ACCESS</code> permission on the process. <code>PROCESS_ALL_ACCESS</code> is a huge set of permissions, including <code>WRITE_DAC</code> (permission to change permissions), and if all you are doing is getting the process creation time, it’s totally overkill. It’s like getting power of attorney in order to be able to check their cell phone bill. All you need in order to check someone’s cell phone bill is to be listed as an <i>authorized person</i> on their account. You don’t need permission to make like-and-death decisions on their behalf. </p>
+<p>Getting the creation time for a process <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/ms683223%28v=vs.85%29.aspx">requires <code>PROCESS_QUERY_INFORMATION</code> or <code>PROCESS_QUERY_LIMITED_INFORMATION</code> access</a>. So just ask for the minimum required to accomplish <!-- backref: When you open a securable object, make sure you pass the security mask you actually want (no more, no less) -->what you need. then you are <a href="http://en.wikipedia.org/wiki/You_Can%27t_Always_Get_What_You_Want">more likely to get it</a>. </p>
+<pre>
+bool GetCreationTimeOfProcess(DWORD pid, FILETIME *creationTime)
+{
+ std::unique_ptr&lt;HANDLE, KernelHandleDeleter&gt;
+    process(OpenProcess(<font color="blue">PROCESS_QUERY_LIMITED_INFORMATION</font>, FALSE, pid));
+ ...
+}
+</pre>
+
+
+</body>

@@ -1,0 +1,475 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Anybody who writes <code>#pragma pack(1)</code> may as well just wear a sign on their forehead that says “I hate RISC”</h1>  <!-- .entry-meta -->
+
+<p>When you use <code>#pragma pack(1)</code>, this changes the default structure packing to byte packing, removing all padding bytes normally inserted to preserve alignment.</p>
+<p>Consider these two structures:</p>
+<pre>// no #pragma pack in effect.
+struct S
+{
+    int32_t total;
+    int32_t a, b;
+};
+
+#pragma pack(1)
+
+struct P
+{
+    int32_t total;
+    int32_t a, b;
+};
+</pre>
+<p>Both structures have identical layouts because the members are already at their natural alignment, Therefore, you would expect these two structures to be equivalent.</p>
+<p>But they’re not.</p>
+<p>Changing the default structure packing has another consequence: It changes the alignment of the structure itself. In this case, the <code>#pragma pack(1)</code> declares that the structure <code>P</code> can itself be placed at any byte boundary, instead of requiring it to be placed on a 4-byte boundary.</p>
+<pre>struct ExtraS
+{
+    char c;
+    S s;
+    char d;
+};
+
+struct ExtraP
+{
+    char c;
+    P p;
+    char d;
+};
+</pre>
+<p>Even though the structures <code>S</code> and <code>P</code> have the same layout, the difference in alignment means that the structures <code>ExtraS</code> and <code>ExtraP</code> end up quite different.</p>
+<p>The <code>ExtraS</code> structure starts with a <code>char</code>, then adds three bytes of padding, followed by the <code>S</code> structure, then another <code>char</code>, and three more bytes of padding to bring the entire structure back up to 4-byte alignment. This ensures that an array of <code>ExtraS</code> structures will properly align all of the embedded <code>S</code> objects.</p>
+<p>By comparison, the <code>ExtraP</code> structure starts out the same way, with a single <code>char</code>, but this time, there is no padding before the <code>P</code> because the <code>P</code> is byte-aligned. Similarly, there is no trail padding at the end of the structure because the <code>P</code> is byte-aligned and therefore does not need to be kept at a particular alignment in the case of an array of <code>ExtraP</code> objects.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr style="border-bottom: solid 2px black;">
+<td style="border-right: solid 2px black;"> </td>
+<td><tt>00</tt></td>
+<td><tt>01</tt></td>
+<td><tt>02</tt></td>
+<td><tt>03</tt></td>
+<td><tt>04</tt></td>
+<td><tt>05</tt></td>
+<td><tt>06</tt></td>
+<td><tt>07</tt></td>
+<td><tt>08</tt></td>
+<td><tt>09</tt></td>
+<td><tt>0A</tt></td>
+<td><tt>0B</tt></td>
+<td><tt>0C</tt></td>
+<td><tt>0D</tt></td>
+<td><tt>0E</tt></td>
+<td><tt>0F</tt></td>
+<td><tt>10</tt></td>
+<td><tt>11</tt></td>
+<td><tt>12</tt></td>
+<td><tt>13</tt></td>
+</tr>
+<tr style="border-bottom: solid 2px black;">
+<th style="border-right: solid 2px black;">ExtraS</th>
+<td colspan="1"><code>c</code></td>
+<td colspan="3">padding</td>
+<td colspan="4"><code>s.total</code></td>
+<td colspan="4"><code>s.a</code></td>
+<td colspan="4"><code>s.b</code></td>
+<td colspan="1"><code>d</code></td>
+<td colspan="3" style="border-right: solid 2px black;">padding</td>
+</tr>
+<tr style="border-bottom: solid 2px black;">
+<th style="border-right: solid 2px black;">ExtraP</th>
+<td colspan="1"><code>c</code></td>
+<td colspan="4"><code>p.total</code></td>
+<td colspan="4"><code>p.a</code></td>
+<td colspan="4"><code>p.b</code></td>
+<td colspan="1" style="border-right: solid 2px black;"><code>d</code></td>
+</tr>
+</tbody>
+</table>
+<p>The effect is more noticeable if you have an array of these objects.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr style="border-bottom: solid 2px black;">
+<td style="border-right: solid 2px black;"> </td>
+<td><tt>00</tt></td>
+<td><tt>01</tt></td>
+<td><tt>02</tt></td>
+<td><tt>03</tt></td>
+<td><tt>04</tt></td>
+<td><tt>05</tt></td>
+<td><tt>06</tt></td>
+<td><tt>07</tt></td>
+<td><tt>08</tt></td>
+<td><tt>09</tt></td>
+<td><tt>0A</tt></td>
+<td><tt>0B</tt></td>
+<td><tt>0C</tt></td>
+<td><tt>0D</tt></td>
+<td><tt>0E</tt></td>
+<td><tt>0F</tt></td>
+<td><tt>10</tt></td>
+<td><tt>11</tt></td>
+<td><tt>12</tt></td>
+<td><tt>13</tt></td>
+<td><tt>14</tt></td>
+<td><tt>15</tt></td>
+<td><tt>16</tt></td>
+<td><tt>17</tt></td>
+<td><tt>18</tt></td>
+<td><tt>19</tt></td>
+<td><tt>1A</tt></td>
+<td><tt>1B</tt></td>
+<td><tt>1C</tt></td>
+<td><tt>1D</tt></td>
+<td><tt>1E</tt></td>
+<td><tt>1F</tt></td>
+<td><tt>20</tt></td>
+<td><tt>21</tt></td>
+<td><tt>22</tt></td>
+<td><tt>23</tt></td>
+<td><tt>24</tt></td>
+<td><tt>25</tt></td>
+<td><tt>26</tt></td>
+<td><tt>27</tt></td>
+</tr>
+<tr style="border-bottom: solid 2px black;">
+<th style="border-right: solid 2px black;">ExtraS</th>
+<td colspan="1"><code>c</code></td>
+<td colspan="3">padding</td>
+<td colspan="4"><code>s.total</code></td>
+<td colspan="4"><code>s.a</code></td>
+<td colspan="4"><code>s.b</code></td>
+<td colspan="1"><code>d</code></td>
+<td colspan="3" style="border-right: solid 2px black;">padding</td>
+<td colspan="1"><code>c</code></td>
+<td colspan="3">padding</td>
+<td colspan="4"><code>s.total</code></td>
+<td colspan="4"><code>s.a</code></td>
+<td colspan="4"><code>s.b</code></td>
+<td colspan="1"><code>d</code></td>
+<td colspan="3" style="border-right: solid 2px black;">padding</td>
+</tr>
+<tr style="border-bottom: solid 2px black;">
+<th style="border-right: solid 2px black;">ExtraP</th>
+<td colspan="1"><code>c</code></td>
+<td colspan="4"><code>p.total</code></td>
+<td colspan="4"><code>p.a</code></td>
+<td colspan="4"><code>p.b</code></td>
+<td colspan="1" style="border-right: solid 2px black;"><code>d</code></td>
+<td colspan="1"><code>c</code></td>
+<td colspan="4"><code>p.total</code></td>
+<td colspan="4"><code>p.a</code></td>
+<td colspan="4"><code>p.b</code></td>
+<td colspan="1" style="border-right: solid 2px black;"><code>d</code></td>
+</tr>
+</tbody>
+</table>
+<p>Observe that in the array of <code>ExtraS</code> objects, the <code>s.total</code>, <code>s.a</code>, and <code>s.b</code> are always four-byte aligned. But in the array of <code>ExtraP</code> objects, there is no consistent alignment for the members of <code>p</code>.</p>
+<p>The possibility that any <code>P</code> structure could be misaligned has significant consequences for code generation, because all accesses to members must handle the case that the address is not properly aligned.</p>
+<pre>void UpdateS(S* s)
+{
+ s-&gt;total = s-&gt;a + s-&gt;b;
+}
+
+void UpdateP(P* p)
+{
+ p-&gt;total = p-&gt;a + p-&gt;b;
+}
+</pre>
+<p>Despite the structures <code>S</code> and <code>P</code> having exactly the same layout, the code generation is different because of the alignment.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>UpdateS</th>
+<th>UpdateP</th>
+</tr>
+<tr>
+<th align="center" colspan="2">Intel Itanium</th>
+</tr>
+<tr>
+<td valign="top">
+<pre>adds  r31 = r32, 4
+adds  r30 = r32  8 ;;
+ld4   r31 = [r31]
+ld4   r30 = [r30] ;;
+
+
+
+
+
+
+
+
+
+
+
+
+add   r31 = r30, r31 ;;
+st4   [r32] = r31
+
+
+
+
+
+
+
+
+br.ret.sptk.many rp
+</pre>
+</td>
+<td valign="top">
+<pre>adds  r31 = r32, 4
+adds  r30 = r32  8 ;;
+ld1   r29 = [r31], 1
+ld1   r28 = [r30], 1 ;;
+ld1   r27 = [r31], 1
+ld1   r26 = [r30], 1 ;;
+dep   r29 = r27, r29, 8, 8
+dep   r28 = r26, r28, 8, 8
+ld1   r25 = [r31], 1
+ld1   r24 = [r30], 1 ;;
+dep   r29 = r25, r29, 16, 8
+dep   r28 = r24, r28, 16, 8
+ld1   r27 = [r31]
+ld1   r26 = [r30] ;;
+dep   r29 = r27, r29, 24, 8
+dep   r28 = r26, r28, 24, 8 ;;
+add   r31 = r28, r29 ;;
+st1   [r32] = r31
+adds  r30 = r32, 1
+adds  r29 = r32, 2 
+extr  r28 = r31, 8, 8
+extr  r27 = r31, 16, 8 ;;
+st1   [r30] = r28
+st1   [r29] = r27, 1
+extr  r26 = r31, 24, 8 ;;
+st1   [r29] = r26
+br.ret.sptk.many.rp
+</pre>
+</td>
+</tr>
+<tr>
+<th align="center" colspan="2">Alpha AXP</th>
+</tr>
+<tr>
+<td valign="top">
+<pre>ldl   t1, 4(a0)
+
+
+
+
+ldl   t2, 8(a0)
+
+
+
+
+addl  t1, t1, t2
+stl   t1, (a0)
+
+
+
+
+
+
+
+
+
+ret   zero, (ra), 1
+</pre>
+</td>
+<td valign="top">
+<pre>ldq_u t1, 4(a0)
+ldq_u t3, 7(a0)
+extll t1, a0, t1
+extlh t3, a0, t3
+bis   t1, t3, t1
+ldq_u t2, 8(a0)
+ldq_u t3, 11(a0)
+extll t2, a0, t2
+extlh t3, a0, t3
+bis   t2, t3, t2
+addl  t1, t1, t2
+ldq_u t2, 3(a0)
+ldq_u t5, (a0)
+inslh t1, a0, t4
+insll t1, a0, t3
+msklh t2, a0, t2
+mskll t5, a0, t5
+bis   t2, t4, t2
+bis   t5, t3, t5
+stq_u t2, 3(a0)
+stq_u t5, (a0)
+ret   zero, (ra), 1
+</pre>
+</td>
+</tr>
+<tr>
+<th align="center" colspan="2">MIPS R4000</th>
+</tr>
+<tr>
+<td valign="top">
+<pre>lw    t0, 4(a0)
+
+lw    t1, 8(a0)
+
+addu  t0, t0, t1
+
+jr    ra
+sw    t0, (a0)
+</pre>
+</td>
+<td valign="top">
+<pre>lwl   t0, 7(a0)
+lwr   t0, 4(a0)
+lwl   t1, 11(a0)
+lwr   t1, 8(a0)
+addu  t0, t0, t1
+swl   t0, 3(a0)
+jr    ra
+swr   t0, (a0)
+</pre>
+</td>
+</tr>
+<tr>
+<th align="center" colspan="2">PowerPC 600</th>
+</tr>
+<tr>
+<td valign="top">
+<pre>lwz    r4, 4(r3)
+
+
+
+
+
+
+lwz    r5, 8(r3)
+
+
+
+
+
+
+addu   r4, r4, r5
+stw    r4, (r3)
+
+
+
+
+
+
+blr
+</pre>
+</td>
+<td valign="top">
+<pre>lbz    r4, 4(r3)
+lbz    r9, 5(r3)
+rlwimi r4, r9, 8, 16, 23
+lbz    r9, 6(r3)
+rlwimi r4, r9, 16, 8, 15
+lbz    r9, 7(r3)
+rlwimi r4, r9, 24, 0, 7
+lbz    r5, 8(r3)
+lbz    r9, 9(r3)
+rlwimi r5, r9, 8, 16, 23
+lbz    r9, 10(r3)
+rlwimi r5, r9, 16, 8, 15
+lbz    r9, 11(r3)
+rlwimi r5, r9, 24, 0, 7
+addu   r4, r4, r5
+stb    r4, (r3)
+rlwimi r9, r4, 24, 0, 31
+stb    r9, 1(r3)
+rlwimi r9, r4, 16, 0, 31
+stb    r9, 2(r3)
+rlwimi r9, r4, 8, 0, 31
+stb    r9, 3(r3)
+blr
+</pre>
+</td>
+</tr>
+<tr>
+<th align="center" colspan="2">SuperH-3</th>
+</tr>
+<tr>
+<td valign="top">
+<pre>mov.l @(4, r4), r2
+
+
+
+
+
+
+
+
+
+
+
+
+mov.l @(8, r4), r3
+
+
+
+
+
+
+
+
+
+
+
+
+add   r3, r2
+
+
+
+
+
+
+rts
+mov.l r2, @r4
+</pre>
+</td>
+<td valign="top">
+<pre>mov.b  @(7, r4), r1
+shll8  r1
+mov.b  @(6, r4), r2
+extu.b r2, r2
+or     r2, r1
+shll8  r1
+mov.b  @(5, r4), r2
+extu.b r2, r2
+or     r2, r1
+shll8  r1
+mov.b  @r4, r2
+extu.b r2, r2
+or     r1, r2
+mov.b  @(7, r4), r1
+shll8  r1
+mov.b  @(6, r4), r3
+extu.b r3, r3
+or     r3, r1
+shll8  r1
+mov.b  @(5, r4), r3
+extu.b r3, r3
+or     r3, r1
+shll8  r1
+mov.b  @r4, r3
+extu.b r3, r3
+or     r1, r3
+add    r3, r2
+mov.b  r2, @r4
+shlr8  r2
+mov.b  r2, @(1, r4)
+shlr8  r2
+mov.b  r2, @(2, r4)
+shlr8  r2
+rts
+mov.b  r2, @(3, r4)
+</pre>
+</td>
+</tr>
+</tbody>
+</table>
+<p>Observe that for some RISC processors, the code size explosion is quite significant. This may in turn affect inlining decisions.</p>
+<p>Moral of the story: Don’t apply <code>#pragma pack(1)</code> to structures unless absolutely necessary. It bloats your code and inhibits optimizations.</p>
+<p><b>Bonus chatter</b>: Once you make this mistake, you can’t go back. You allowed the structure to be byte-aligned, and if you remove the spurious <code>#pragma pack(1)</code>, you are making the structure more strictly aligned, which will be a breaking change for any clients which used the byte-packed version.</p>
+
+
+</body>

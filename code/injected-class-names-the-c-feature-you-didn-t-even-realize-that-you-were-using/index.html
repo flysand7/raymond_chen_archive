@@ -1,0 +1,64 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Injected class names: The C++ feature you didn’t even realize that you were using</h1>  <!-- .entry-meta -->
+
+<p>C++ has a feature called <a href="https://en.cppreference.com/w/cpp/language/injected-class-name"> injected class names</a>, which lets you refer to the class being defined by its plain name without needing to fully qualify it with namespaces and template parameters.</p>
+<p>You have probably been taking advantage of this feature without even realizing it:</p>
+<pre>template&lt;typename T&gt;
+struct Wrapper
+{
+    Wrapper() { /* constructor */ }
+};
+</pre>
+<p>That <code>Wrapper()</code> is using the injected class name. The full name of the constructor is</p>
+<pre>    Wrapper&lt;T&gt;() { /* constructor */ }
+</pre>
+<p>but C++ secretly injects the simple name of the class into the class itself, as if you had written</p>
+<pre>    using Wrapper = Wrapper&lt;T&gt;;
+</pre>
+<p>Injected class names are public and therefore can be inherited:</p>
+<pre>namespace details {
+    struct Base
+    {
+        Base(int) { /* constructor */ }
+    };
+}
+
+struct Derived : details::Base
+{
+    Derived() : Base(42) { /* constructor */ }
+};
+</pre>
+<p>The construction of the base class from the derived class can be done by writing just <code>Base(42)</code> instead of the full name <code>details::Base(42)</code>. The injection goes like this:</p>
+<pre>namespace details {
+    struct Base
+    {
+        <span style="color: blue;">using Base = ::details::Base; // injected</span>
+        Base(int) { /* constructor */ }
+    };
+}
+
+struct Derived : details::Base
+{
+    Derived() : Base(42) { /* constructor */ }
+}
+</pre>
+<p>When you write <code>Base</code> inside the definition of <code>Derived</code>, you are using the name <code>Base</code> that was defined way over there in the <code>Base</code> class.</p>
+<p>Note that making base classes private prevents their types from being inherited:</p>
+<pre>namespace details {
+    struct Base { };
+    struct Middle : <span style="color: blue;">private</span> Base { };
+}
+
+struct Derived : details::Middle
+{
+    void blah()
+    {
+        Middle m; // "Middle" accessible from details::Middle
+        Base b; // "Base" not accessible because it was privately inherited
+        details::Base b; // Need to use the full name
+    }
+};
+</pre>
+
+
+</body>

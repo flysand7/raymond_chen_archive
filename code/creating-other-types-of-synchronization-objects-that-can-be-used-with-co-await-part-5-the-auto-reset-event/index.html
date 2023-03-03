@@ -1,0 +1,149 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating other types of synchronization objects that can be used with co_await, part 5: The auto-reset event</h1>  <!-- .entry-meta -->
+
+<p>Our next stop in <a href="/code/creating-other-types-of-synchronization-objects-that-can-be-used-with-co-await-part-3-parallel-resumption" title="Creating other types of synchronization objects that can be used with co_await, part 3: Parallel resumption"> showing off our library for building awaitable synchronization objects</a> is the auto-reset event.</p>
+<p>The auto-reset event is trickier because claiming a token also mutates the object’s state. Many of our synchronization objects are of this ilk, so let’s add a helper method to our template:</p>
+<pre>    template&lt;typename State&gt;
+    class awaitable_state
+    {
+    ...
+    public:
+        template&lt;bool fast, typename T,
+            typename...Args, typename...Params&gt;
+        bool calc_claim(
+            std::atomic&lt;T&gt;&amp; value,
+            bool (*transition)(T, T&amp;, Params&amp;&amp;...),
+            T initial,
+            Args&amp;&amp;... args)
+        {
+            constexpr auto order = fast
+                ? std::memory_order_acquire
+                : std::memory_order_relaxed;
+            for (;;) {
+                T future;
+                if (!transition(initial, future,
+                    std::forward&lt;Args&gt;(args)...)) {
+                    return false;
+                }
+                auto success = value.compare_exchange_weak(
+                    initial, future, order,
+                    std::memory_order_relaxed);
+                if constexpr (fast) return success;
+                else if (success) return success;
+            }
+        }
+</pre>
+<p>This helper function <code>calc_<wbr/>claim</code> implements a common state transition pattern: See if the object is in a claimable state, and if so, try to transition it to a claimed state. We do this by starting with an optimistic guess at the value, calculate the new state (by a <code>transition</code> method the CRTP derived class is expected to implement), and then try to transition atomatically to that state.</p>
+<p>The transition function can return <code>false</code> to mean that the transition is not allowed, and we should suspend.</p>
+<p>The <code>fast</code> version is performed outside the lock: It uses acquire semantics on the compare-exchange to ensure that the data protected by the synchronization object is not access prior to acquisition. The fast version also uses a weak compare-exchange and doesn’t bother retrying on compare-exchange failure: In other words, it simply gives up after one try if the answer was “maybe”. I figure that if I can’t transition immediately, I may as well spend my memory barrier money on entering the lock for real.</p>
+<p>The slow version runs inside the lock. Acquiring the lock already set up a memory barrier, so we already established the acquire barrier and don’t need to set up another one. The slow version retries until gets a definite yes or no answer.</p>
+<p>You might be tempted to use a simple <code>value.store()</code> to update the state under the lock, but that would be wrong because it could race against another thread that changed the state using the no-lock fast path.</p>
+<p>The odd phrasing of the <code>return success;</code> code path is necessary to avoid “conditional expression is constant” warnings when written the somewhat less awkward way:</p>
+<pre>    if (fast || success) return success;
+</pre>
+<p>The parameter after the transition function is an optimistic guess as to the initial value. In the case of an auto-reset event, we know that the only chance of a successful fast claim is if the current state is <code>true</code>, so we can just assume that it is and let the compare-exchange tell us if we were wrong.</p>
+<p>Any additional parameters after the initial value are forwarded to the transition function as extra parameters.</p>
+<pre>        template&lt;bool fast, typename T,
+            typename...Args&gt;
+        bool calc_claim(
+            std::atomic&lt;T&gt;&amp; value,
+            T initial,
+            Args&amp;&amp;... args)
+        {
+            return calc_claim&lt;fast&gt;(value,
+                &amp;State::transition,
+                initial,
+                std::forward&lt;Args&gt;(args)...);
+        }
+
+        template&lt;bool fast, typename T,
+            typename...Args, typename...Params&gt;
+        bool calc_claim(
+            std::atomic&lt;T&gt;&amp; value,
+            bool (*transition)(T, T&amp;, Params&amp;&amp;...),
+            Args&amp;&amp;... args)
+        {
+            return calc_claim&lt;fast&gt;(value,
+                transition,
+                value.load(std::memory_order_relaxed),
+                std::forward&lt;Args&gt;(args)...);
+        }
+
+        template&lt;bool fast, typename T&gt;
+        bool calc_claim(
+            std::atomic&lt;T&gt;&amp; value)
+        {
+            return calc_claim&lt;fast&gt;(value,
+                &amp;State::transition,
+                value.load(std::memory_order_relaxed));
+        }
+</pre>
+<p>Other types of synchronization objects may not have a clear single optimistic guess, so you can omit the initial value and it will just start with the atomic variable’s current value. You can also omit the name of the transition function, and we’ll look for a static method named <code>transition</code>.</p>
+<p>Okay, now that we have those helpers, let’s look at the auto reset event handle.</p>
+<pre>struct awaitable_auto_reset_event_state :
+    async_helpers::awaitable_state&lt;awaitable_auto_reset_event_state&gt;
+{
+    awaitable_auto_reset_event_state(bool initial)
+    : signaled(initial) {}
+
+    std::atomic&lt;bool&gt; signaled;
+
+    static bool transition(bool current, bool&amp; future) noexcept
+    {
+        if (!current) return false;
+        future = false;
+        return true;
+    }
+
+    bool fast_claim(extra_await_data const&amp;) noexcept
+    {
+        return calc_claim&lt;true&gt;(signaled, true);
+    }
+
+    bool claim(extra_await_data const&amp;) noexcept
+    {
+        return calc_claim&lt;false&gt;(signaled);
+    }
+
+    void set(node_list&amp; list) noexcept
+    {
+        if (!resume_one(list)) {
+            signaled.store(true, std::memory_order_relaxed);
+        }
+    }
+};
+
+struct awaitable_auto_reset_event
+    : async_helpers::awaitable_sync_object&lt;awaitable_auto_reset_event_state&gt;
+{
+    awaitable_auto_reset_event(bool initial = false) :
+        awaitable_sync_object(initial) { }
+
+    void set() noexcept
+    {
+        action_impl(&amp;state::set);
+    }
+
+    void reset() noexcept
+    {
+        get_state().signaled.store(false,
+            std::memory_order_release);
+    }
+};
+</pre>
+<p>In the case of an auto-reset event, the only case where the claim will succeeed is if the signal state is <code>true</code>, so we pass that as the optimistic initial value for the fast-claim case.</p>
+<p>The other difference between the manual reset event and the auto-reset event is the behavior when there is a waiter: The auto-reset event releases at most one waiter, and if that happens, then the event remains unset. Only if there is nobody waiting on the event does it transition to the signaled state, ready to be consumed by the next awaiter.</p>
+<p>That was trickier that I thought. Next time, we’ll look at something that is basically an extended version of the auto-reset event: The semaphore.</p>
+<p><b>Exercise</b>: What is wrong with this version of <code>set</code>:</p>
+<pre>    void set(node_list&amp; list) noexcept
+    {
+        signaled.store(true, std::memory_order_relaxed);
+        if (resume_one(list)) {
+            signaled.store(false, std::memory_order_relaxed);
+        }
+    }
+</pre>
+<p>¹ I could have addressed this by creating a marker type called <code>start_<wbr/>with_<wbr/>current_<wbr/>value_t</code> or something like that, but I had no use for it right now, so I skipped it. You can add it yourself if it turns out you need it.</p>
+
+
+</body>

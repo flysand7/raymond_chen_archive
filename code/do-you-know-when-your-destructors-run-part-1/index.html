@@ -1,0 +1,119 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Do you know when your destructors run? Part 1.</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="http://blogs.msdn.com/LarryOsterman/archive/2004/04/22/118240.aspx">
+Larry Osterman discussed the importance of knowing when your
+global destructors run</a>, but this problem is not exclusive
+to global objects.  You need to take care even with local
+objects.  Consider:
+</p>
+<pre>
+void Sample()
+{
+  if (SUCCEEDED(CoInitialize(NULL))) {
+    CComPtr&lt;IXMLDOMDocument&gt; p;
+    if (SUCCEEDED(p.CoCreateInstance(CLSID_IXMLDOMDocument))) {
+     ...
+    }
+    CoUninitialize();
+  }
+}
+</pre>
+<p>
+Easy as pie.  And there’s a bug here.
+</p>
+<p>
+When does the destructor for that smart-pointer run?
+</p>
+<p>
+Answer: When the object goes out of scope,
+which is at the closing brace of the outer <code>if</code> statement,
+<strong>after</strong> the <code>CoUninitialize</code> call.
+</p>
+<p>
+So you shut down COM, and then try to access a pointer to a COM object.
+This is not good.
+(Or as Larry describes it, “Blam!”)
+</p>
+<p>
+To fix this problem, you have to release all your COM pointers
+before the <code>CoUninitialize</code>.  One way would be to insert a
+<code>p.Release()</code> at the end of the inner <code>if</code>.
+(But of course, if you’re going to do that, then why bother using
+a smart pointer?)
+</p>
+<p>
+Another fix would be to introduce a seemingly unnecessary scope:
+</p>
+<pre>
+void Sample()
+{
+  if (SUCCEEDED(CoInitialize(NULL))) {
+    {
+      CComPtr&lt;IXMLDOMDocument&gt; p;
+      if (SUCCEEDED(p.CoCreateInstance(CLSID_IXMLDOMDocument))) {
+       ...
+      }
+    } <font color="blue">// ensure p is destructed before the CoUninit</font>
+    CoUninitialize();
+  }
+}
+</pre>
+<p>
+Make sure you leave that comment there or the next person to come
+across this code is going to “clean it up” by removing the
+“redundant” braces.
+</p>
+<p>
+Of course, this is still too subtle.  Here’s another solution:
+Put the CoUninitialize inside a destructor of its own!
+</p>
+<pre>
+class CCoInitialize {
+public:
+ CCoInitialize() : m_hr(CoInitialize(NULL)) { }
+ ~CCoInitialize() { if (SUCCEEDED(m_hr)) CoUninitialize(); }
+ operator HRESULT() const { return m_hr; }
+ HRESULT m_hr;
+};
+void Sample()
+{
+  CCoInitialize init;
+  if (SUCCEEDED(init)) {
+    CComPtr&lt;IXMLDOMDocument&gt; p;
+    if (SUCCEEDED(p.CoCreateInstance(CLSID_IXMLDOMDocument))) {
+     ...
+    }
+  }
+} <font color="blue">// CoUninitialize happens here</font>
+</pre>
+<p>
+This works even if you put the smart pointer at the same scope,
+as long as you put it <strong>after the CCoInitialize object</strong>:</p>
+<pre>
+void Sample()
+{
+  CCoInitialize init;
+  CComPtr&lt;IXMLDOMDocument&gt; p;
+  if (SUCCEEDED(init) &amp;&amp;
+      SUCCEEDED(p.CoCreateInstance(CLSID_IXMLDOMDocument))) {
+   ...
+  }
+}
+</pre>
+<p>
+This works because objects with automatic storage duration
+are destructed in reverse order of declaration, so the
+object <code>p</code> wil be destructed first, then the
+object <code>init</code>.
+</p>
+<p>
+Mind you, this is basically subtle no matter now you slice it.
+Nobody said programming was easy.
+</p>
+<p>
+Tomorrow, part 2.</p>
+
+
+</body>

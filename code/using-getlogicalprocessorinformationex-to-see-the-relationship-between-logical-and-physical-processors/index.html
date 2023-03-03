@@ -1,0 +1,161 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using GetLogicalProcessorInformationEx to see the relationship between logical and physical processors</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s Little Program uses the
+<code>Get­Logical­Processor­Information­Ex</code>
+function to print the mapping of logical processors to
+physical processors,
+as well as the mapping of logical processors to packages.
+(A dual-core processor is a single package with two cores.
+If those cores are themselves dual-hyperthreaded, then you have
+four logical processors total.)
+</p>
+<pre>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+template&lt;typename T&gt;
+T *AdvanceBytes(T *p, SIZE_T cb)
+{
+ return reinterpret_cast&lt;T*&gt;(reinterpret_cast&lt;BYTE *&gt;(p) + cb);
+}
+</pre>
+<p>
+The <code>Advance­Bytes</code> helper function takes
+a typed pointer and adds a byte offset to it.
+This is just a typing-saver function.
+</p>
+<p><pre>
+class EnumLogicalProcessorInformation
+{
+public:
+ EnumLogicalProcessorInformation(LOGICAL_PROCESSOR_RELATIONSHIP Relationship)
+  : m_pinfoBase(nullptr), m_pinfoCurrent(nullptr), m_cbRemaining(0)
+ {
+  DWORD cb = 0;
+  if (GetLogicalProcessorInformationEx(Relationship,
+                                       nullptr, &amp;cb)) return;
+  if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return;
+  m_pinfoBase =
+   reinterpret_cast&lt;SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *&gt;
+                                     (LocalAlloc(LMEM_FIXED, cb));
+  if (!m_pinfoBase) return;
+  if (!GetLogicalProcessorInformationEx(Relationship,
+                                        m_pinfoBase, &amp;cb)) return;
+  m_pinfoCurrent = m_pinfoBase;
+  m_cbRemaining = cb;
+ }
+ ~EnumLogicalProcessorInformation() { LocalFree(m_pinfoBase); }
+ void MoveNext()
+ {
+  if (m_pinfoCurrent) {
+   m_cbRemaining -= m_pinfoCurrent-&gt;Size;
+   if (m_cbRemaining) {
+    m_pinfoCurrent = AdvanceBytes(m_pinfoCurrent,
+                                  m_pinfoCurrent-&gt;Size);
+   } else {
+    m_pinfoCurrent = nullptr;
+   }
+  }
+ }
+ SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *Current()
+                                         { return m_pinfoCurrent; }
+private:
+ SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *m_pinfoBase;
+ SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *m_pinfoCurrent;
+ DWORD m_cbRemaining;
+};
+</pre>
+<p>
+Enumerating logical processor information is complicated due
+to the variable-size structures, so I wrap it inside this helper
+enumerator class.
+</p>
+<p>
+Construct it with the relationship you are interested in,
+then use <code>Current()</code> to see the current item
+and <code>Move­Next()</code> to move to the next item.
+When there are no more items,
+<code>Current()</code> returns <code>nullptr</code>.
+</p>
+<p>
+The constructor does the standard two-step query we’ve seen
+before:
+Ask for the required buffer size, then allocate a buffer,
+then ask for the buffer to be filled in.
+There is a TOCTTOU race condition if
+<a href="http://msdn.microsoft.com/en-us/library/ff562404(v=VS.85).aspx">
+a processor is added dynamically</a>,
+but I’m going to ignore that case
+because this is a Little Program.
+</p>
+<p>
+Since the
+<code>SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX</code>
+structure is variable-sized,
+walking the packed array is not a simple array indexing operation.
+Instead, you have to bump the pointer by the <code>Size</code> of the
+current element to find the next element.
+</p>
+<p>
+Next comes a helper function to print processor affinity bitmasks.
+</p>
+<pre>
+void PrintMask(KAFFINITY Mask)
+{
+ printf(" [");
+ for (int i = 0; i &lt; sizeof(Mask) * 8; i++) {
+  if (Mask &amp; (static_cast&lt;KAFFINITY&gt;(1) &lt;&lt; i)) {
+   printf(" %d", i);
+  }
+ }
+ printf(" ]");
+}
+</pre>
+<p>
+Nothing exciting there.
+</p>
+<p>
+Finally, we wrap it up inside a sample program that enumerates
+the cores and then, just for fun, enumerates the packages.
+</p>
+<pre>
+int __cdecl main(int argc, char **argv)
+{
+ for (EnumLogicalProcessorInformation enumInfo(RelationProcessorCore);
+      auto pinfo = enumInfo.Current(); enumInfo.MoveNext()) {
+   PrintMask(pinfo-&gt;Processor.GroupMask[0].Mask);
+   printf("\n");
+ }
+ for (EnumLogicalProcessorInformation enumInfo(RelationProcessorPackage);
+      auto pinfo = enumInfo.Current(); enumInfo.MoveNext()) {
+   printf("[");
+   for (UINT GroupIndex = 0; GroupIndex &lt; pinfo-&gt;Processor.GroupCount; GroupIndex++) {
+    PrintMask(pinfo-&gt;Processor.GroupMask[GroupIndex].Mask);
+   }
+   printf(" ]\n");
+ }
+ return 0;
+}
+</pre>
+<p>
+Enumerating processor cores produces a bunch of
+<code>PROCESSOR_RELATIONSHIP</code> structures,
+each with a single group that describes the logical processors
+assigned to the core.
+</p>
+<p>
+Enumerating processor packages produces a bunch of
+<code>PROCESSOR_RELATIONSHIP</code> structures,
+and each one contains as many groups as there are cores in the package.
+</p>
+<p>
+<b>Bonus chatter</b>:
+The
+<a href="http://technet.microsoft.com/en-us/sysinternals/cc835722.aspx">
+CoreInfo</a> utility from Sysinternals
+is a command-line tool that is a fancier version of this Little Program.</p>
+
+
+</p></body>

@@ -1,0 +1,22 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Is it okay to acquire an SRWLOCK recursively? (And why not?)</h1>  <!-- .entry-meta -->
+
+<p>A customer was using an <a href="https://msdn.microsoft.com/library/windows/desktop/aa904937(v=vs.85).aspx"><code>SRWLOCK</code></a> to protect access to an object. All functions that use the object acquire the <code>SRWLOCK</code> in shared mode, and the function that destroys the object acquires the <code>SRWLOCK</code> in exclusive mode. </p>
+<blockquote class="q">
+<p>This seems correct to us, but we found that when running under the <a href="https://msdn.microsoft.com/library/windows/desktop/dd371695(v=vs.85).aspx">Application Verifier</a>, we receive many errors complaining that our code is recursively acquiring the <code>SRWLOCK</code>. This happens, for example, when a function acquires the <code>SRWLOCK</code> in shared mode, and then calls another function which also acquires the <code>SRWLOCK</code> in shared mode. We completely understand why Application Verifier might warn of recursive <i>exclusive</i> lock acquisition, but why does it also complain about recursive <i>shared</i> lock acquisition? </p>
+<p>Before we dig in and try to fix this, can you confirm that is a real problem? Or is this an oversight in Application Verifier? </p>
+</blockquote>
+<p>Application Verifier is correct to complain. <a href="https://msdn.microsoft.com/library/windows/desktop/aa904937(v=vs.85).aspx">As noted in the documentation</a>, <code>SRWLOCK</code> objects cannot be acquire recursively. This applies both to shared and exclusive acquisition. </p>
+<p>The technical reason is that the <code>SRWLOCK</code> was designed to be fast and require no dynamic memory allocation. In order to accomplish this, many potential features had to be sacrificed, among them, recursive acquisition and lock promotion from shared to exclusive. </p>
+<p>If you want a synchronization object that supports recursive acquisition, you might want to try a <code>CRITICAL_SECTION</code>, or build your own data structure around <code>SRWLOCK</code> that also keeps track of each thread’s recursive acquisition count. </p>
+<p>The customer replied, </p>
+<blockquote class="q">
+<p>Okay, so it’s clear that we need to fix this. Our next question, then, is how urgent do we need to deploy this fix? Is this an actual broken scenario, or is it merely a theoretical possibility? In other words, do we need to issue a patch for it right now, or can we wait until our next major version? </p>
+</blockquote>
+<p>Two of my colleagues shared their experiences: </p>
+<blockquote class="m"><p>We encountered this issue in our own product. The conclusion of the investigation was that this is a critical error if recursive acquisition is indeed occurring. </p></blockquote>
+<blockquote class="m"><p>We hit a deadlock in production due to erroneous recursive acquisition. It is fiendishly difficult to debug. I would put it in the “immediate fix” category. </p></blockquote>
+<p>The customer thanks us for the information and began working on a fix. </p>
+
+
+</body>

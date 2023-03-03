@@ -1,0 +1,65 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How were DLL functions imported in 16-bit Windows?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/history/how-were-dll-functions-exported-in-16-bit-windows"> the way functions were exported from 16-bit DLLs</a>. Today, we’ll look at how they were imported.</p>
+<p>When each segment is loaded into memory, the raw contents are loaded from disk, and then relocation fixups are applied. A fixup for an imported function consists of the name of the target DLL, the target function (either a name or ordinal), and the position of the first location in the segment where the fixup needs to be applied. All imported addresses are far addresses since they reside in another segment. (If they were in the same segment, then they would be in the same DLL, so you wouldn’t be importing it!) On 16-bit Windows, a far address is four bytes (a two-byte selector and a two-byte offset), and since the target address is not known when the DLL is generated, those four bytes are just placeholders, waiting to be filled in with the actual target address when the import is resolved. And it is those placeholder bytes that serve double duty.</p>
+<p>All the calls within a segment that import the same function are chained in a linked list, where the relocation record points to the first entry. The items in the linked list? The four-byte placeholders. And the “next” pointer in the linked list? The placeholder itself! For example, suppose we have a segment that requires two fixups for the function <code>GetPrivateProfileInt</code>, which happens to be kernel function 127. The relocation table entry would say “This segment needs function 127 from KERNEL; start at offset 01D1”. The on-disk copy of the segment might go something like this:</p>
+<table>
+<tbody>
+<tr>
+<td>…</td>
+</tr>
+<tr>
+<td><tt>01D0</tt></td>
+<td><tt>9A</tt></td>
+</tr>
+<tr>
+<td><tt>01D1</tt></td>
+<td><tt>FE</tt></td>
+</tr>
+<tr>
+<td><tt>01D2</tt></td>
+<td><tt>01</tt></td>
+</tr>
+<tr>
+<td><tt>01D3</tt></td>
+<td><tt>00</tt></td>
+</tr>
+<tr>
+<td><tt>01D0</tt></td>
+<td><tt>00</tt></td>
+</tr>
+<tr>
+<td>…</td>
+</tr>
+<tr>
+<td><tt>01FD</tt></td>
+<td><tt>9A</tt></td>
+</tr>
+<tr>
+<td><tt>01FE</tt></td>
+<td><tt>FF</tt></td>
+</tr>
+<tr>
+<td><tt>01FF</tt></td>
+<td><tt>FF</tt></td>
+</tr>
+<tr>
+<td><tt>0200</tt></td>
+<td><tt>00</tt></td>
+</tr>
+<tr>
+<td><tt>0201</tt></td>
+<td><tt>00</tt></td>
+</tr>
+<tr>
+<td>…</td>
+</tr>
+</tbody>
+</table>
+<p>To apply the fixup, we first call <code>GetProcAddress</code> to get the address of kernel function 127. Then we go to the first fixup location (<code>0x01D1</code>), write the address there, then look at the value we overwrote. That value was <code>0x01FE</code>, so we now go to offset <code>0x01FE</code> and write the address there, too. The value we overwrote was <code>0xFFFF</code>, which marks the end of the fixup chain.</p>
+<p>But what if the call to <code>GetProcAddress</code> fails? (Say, there is no such function 127 in <code>KERNEL</code>.) Then instead of writing the address of the target function, the loader wrote the address of a function that displayed the “Call to Undefined Dynalink” fatal error dialog.</p>
+<p>Okay, that’s a quick introduction to how functions are imported and exported on 16-bit Windows. Next time, we’ll look at the transition to 32-bit Windows and the design decisions that went into the new model.</p>
+
+
+</body>

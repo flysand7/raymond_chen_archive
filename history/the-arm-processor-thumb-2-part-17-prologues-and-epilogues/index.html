@@ -1,0 +1,290 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ARM processor (Thumb-2), part 17: Prologues and epilogues</h1>  <!-- .entry-meta -->
+
+<p><a href="/history/the-arm-processor-thumb-2-part-16-the-calling-convention"> The calling convention and ABI for ARM on Windows</a> dictates a lot of the structure of function prologues and epilogues.</p>
+<p>Here’s a typical function prologue:</p>
+<pre>    push    {r4-r7,r11,lr}      ; save a bunch of registers
+    add     r11, sp, #0x10      ; link into frame pointer chain
+    sub     sp, sp, #0x20       ; allocate space for locals
+                                ; and outbound stack parameters
+</pre>
+<p>This is probably easier to explain with pictures.</p>
+<p>On entry, the stack looks like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;" title="top of stack (pointed to by sp) is the stack parameter, higher up the stack is the previous r11 (pointed to by r11, the frame chain), followed by the return address.">
+<tbody>
+<tr>
+<td style="border: solid 1px black; border-top: none; text-align: center;"> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center;">return address</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center;">previous <var>r11</var></td>
+<td>← <var>r11</var> (frame chain)</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center;">⋮</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center;">stack param</td>
+<td>← <var>sp</var></td>
+</tr>
+</tbody>
+</table>
+<p>On entry to the function, <var>lr</var> contains the return address. After pushing the <var>r4</var> through <var>r7</var>, <var>r11</var>, and <var>lr</var> registers, we have</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;" title="Pushed onto the previous stack are the return address, the previous r11, previous r7, previous r6, previous r5, and previous r4. sp points to the last-pushed value (previous r4)">
+<tbody>
+<tr>
+<td style="border: solid 1px black; border-top: none; text-align: center;"> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center;">return address</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center;">previous <var>r11</var></td>
+<td>← <var>r11</var> (frame chain)</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center;">⋮</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center;">stack param</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center; background-color: #b0e0e6;">return address</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center; background-color: #b0e0e6;">previous <var>r11</var></td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center; background-color: #b0e0e6;">previous <var>r7</var></td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center; background-color: #b0e0e6;">previous <var>r6</var></td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center; background-color: #b0e0e6;">previous <var>r5</var></td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center; background-color: #b0e0e6;">previous <var>r4</var></td>
+<td>← <var>sp</var></td>
+</tr>
+</tbody>
+</table>
+<p>The incoming <var>lr</var> is saved on the stack, so we know where to return to when we’re done. The incoming <var>r11</var> is the head of the linked list of stack frames, and we push it onto the stack so we can create a new node on the linked list. And we also push four saved registers so that they are available for us to use in the function.</p>
+<p>It is not a coincidence that the convention is to use <var>r11</var> as the frame pointer. This puts it on the stack right next to the <var>lr</var> register, so that the return address is right next to the frame pointer.¹</p>
+<p>The next instruction calculates <var>r11</var> as <var>sp</var> + <code>0x10</code>, which makes it point to where we saved <var>r11</var> onto the stack. This links a new node onto the stack frame chain.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;" title="r11 (frame chain) now points to the previous r11 on the stack (which in turn points to the previous previous r11)">
+<tbody>
+<tr>
+<td rowspan="13"> </td>
+<p><!-- keep Chrome happy --></p>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; text-align: center;"> </td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">return address</td>
+<td> </td>
+</tr>
+<tr>
+<td style="line-height: 50%;"> </td>
+<td rowspan="2">▷</td>
+<td rowspan="2" style="border: solid 1px black; text-align: center;">previous <var>r11</var></td>
+<td rowspan="2"> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: solid none none solid; line-height: 50%;"> </td>
+</tr>
+<tr>
+<td style="border-left: solid 1px black;"> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">⋮</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-left: solid 1px black;"> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">stack param</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-left: solid 1px black;"> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">return address</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none none solid solid; line-height: 50%;"> </td>
+<td rowspan="2"> </td>
+<td rowspan="2" style="border: solid 1px black; text-align: center;">previous <var>r11</var></td>
+<td rowspan="2">← <var>r11</var> (frame chain)</td>
+</tr>
+<tr>
+<td style="line-height: 50%;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">previous <var>r7</var></td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">previous <var>r6</var></td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">previous <var>r5</var></td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">previous <var>r4</var></td>
+<td>← <var>sp</var></td>
+</tr>
+</tbody>
+</table>
+<p>And the last step in the prologue is allocating additional space for local variables and outbound parameters.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;" title="additional space for locals have been allocated on the stack, with space for outbound parameters allocated on top of it. The stack pointer (sp) points to the outbound parameters">
+<tbody>
+<tr>
+<td rowspan="15"> </td>
+<p><!-- keep Chrome happy --></p>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; text-align: center;"> </td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">return address</td>
+<td> </td>
+</tr>
+<tr>
+<td style="line-height: 50%;"> </td>
+<td rowspan="2">▷</td>
+<td rowspan="2" style="border: solid 1px black; text-align: center;">previous <var>r11</var></td>
+<td rowspan="2"> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: solid none none solid; line-height: 50%;"> </td>
+</tr>
+<tr>
+<td style="border-left: solid 1px black;"> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">⋮</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-left: solid 1px black;"> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">stack param</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-left: solid 1px black;"> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">return address</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none none solid solid; line-height: 50%;"> </td>
+<td rowspan="2"> </td>
+<td rowspan="2" style="border: solid 1px black; text-align: center;">previous <var>r11</var></td>
+<td rowspan="2">← <var>r11</var> (frame chain)</td>
+</tr>
+<tr>
+<td style="line-height: 50%;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">previous <var>r7</var></td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">previous <var>r6</var></td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">previous <var>r5</var></td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">previous <var>r4</var></td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center; height: 4em; background-color: #b0e0e6;">locals</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center; height: 2em; background-color: #b0e0e6;">outbound<br/>
+parameters</td>
+<td valign="bottom">← <var>sp</var></td>
+</tr>
+</tbody>
+</table>
+<p>Windows does not require that the <var>r11</var> register be the head of a linked list of stack frames,² but all Windows system components are compiled with frame pointers enabled: It makes debugging a lot easier (since the <code>k</code> command always produces a stack trace), and it permits automated stack tracing, such as those created by <code>xperf</code>. In the stack frame chain, the return address is stored immediately adjacent to the <var>r11</var> pointer.</p>
+<p>To return from the function, we run things in reverse:</p>
+<pre>    add     sp, sp, #0x20       ; free locals and outbound stack parameters
+    pop     {r4-r7,r11,pc}      ; restore registers and return
+</pre>
+<p>The <code>pop</code> instruction is magic.</p>
+<p>The obvious part of the <code>pop</code> instruction is restoring registers <var>r4</var> through <var>r7</var>.</p>
+<p>The less obvious part is that we pop the original <var>r11</var> back into <var>r11</var>, which has the effect of deleting the frame from the linked list of stack frames.</p>
+<p>The totally magic part is that we pop the return address (which was originally passed in <var>lr</var>) directly into the <var>pc</var> register. Writing to the <var>pc</var> register acts like a jump instruction, so this jumps to the return address after the work of this instruction is complete.³</p>
+<p>The last thing the <code>pop</code> instruction does is update the stack pointer, which puts it back at the location it had when control originally entered the function. And then execution resumes at the return address.</p>
+<p>The standard prologue looks like this:</p>
+<pre>    push    {...,r11,lr}        ; save registers, frame pointer, return address
+    add     r11, sp, #nn        ; re-establish frame chain
+                                ; can be "mov r11, sp" if only r11 and lr were pushed
+    vpush   {d8,...}            ; save floating point registers
+    sub     sp, sp, #nnn        ; create local frame
+</pre>
+<p>I call this the standard prologue because the function unwind metadata is optimized for prologues that take this form.</p>
+<p>Next time, we’ll look at some tweaks and optimizations to this general pattern.</p>
+<p>¹ Now, there are two other registers in between <var>r11</var> and <var>lr</var>: We have the intraprocedure call scratch register <var>r12</var>, and we have the stack pointer <var>sp</var> (also known as <var>r13</var>). Fortunately, we can avoid having to push either of these two registers. The intraprocedure call scratch register is a volatile register that is not expected to be preserved, and the stack pointer is preserved either by keeping track of its value through the function (subtracting a frame on entry and adding it back on exit), or recovering it from the frame pointer. You aren’t ever tempted to push the stack pointer because you cannot reliably pop it back anyway.</p>
+<p>² The documentation is a bit unclear on this. In the discussion of the integer registers, it says</p>
+<blockquote class="q"><p>Windows uses r11 for fast-walking of the stack frame. For more information, see the Stack Walking section. Because of this requirement, r11 must point to the topmost link in the chain at all times. Do not use r11 for general purposes—your code will not generate correct stack walks during analysis.</p></blockquote>
+<p>The use of the words <i>requirement</i>, <i>must</i> and <i>do not</i> imply that using <var>r11</var> as the frame pointer is mandatory.</p>
+<p>But then when you get to the Stack Walking section, it says</p>
+<blockquote class="q"><p>Generally, the r11 register points to the next link in the chain, which is an {r11, lr} pair that specifies the pointer to the previous frame on the stack and the return address. We recommend that your code also enable frame pointers for improved profiling and tracing.</p></blockquote>
+<p>This time, the use of the words <i>generally</i> and <i>recommend</i> imply that using <var>r11</var> as the frame pointer is merely a suggestion, albeit a strong suggestion.</p>
+<p>I’m not sure who is right, but I’m going to assume that the use of <var>r11</var> as a frame pointer is <i>strongly recommended</i> rather than <i>required</i>. I’m interpreting the first paragraph by adding the underlined clarifying words:</p>
+<blockquote class="q"><p>Windows uses r11 for fast-walking of the stack frame. For more information, see the Stack Walking section. Because of this requirement <u>in order for fast-walking to work</u>, r11 must point to the topmost link in the chain at all times <u>if you want fast-walking to work</u>. <u>If you know what’s good for you</u>, do not use r11 for general purposes—<u>if you ignore this advice, then</u> your code will not generate correct stack walks during analysis.</p></blockquote>
+<p>³ It is totally not a coincidence that <var>lr</var> and <var>pc</var> are adjacent registers. This allows you to push a set of registers including <var>lr</var>, and then pop the same set of registers, but substituting <var>pc</var> for <var>lr</var>.</p>
+
+
+</body>

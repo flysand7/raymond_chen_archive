@@ -1,0 +1,229 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Accidentally creating a choke point for what was supposed to hand work off quickly to a background task, part 2</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/accidentally-creating-a-choke-point-for-what-was-supposed-to-hand-work-off-quickly-to-a-background-task-part-1"> Last time</a>, we were looking at a function that wanted to kick work off to a background thread but inadvertently ended up blocking the main threads for about as long as the background tasks were running.</p>
+<p>We had previously diagnosed one problem: The code used a lock around an increment operation but kept the lock active for too long, causing the creating of the background task to be serialized inadvertently.</p>
+<p>But that by itself should not have caused the main threads to block for about as long as the background tasks were running. Sure, the queueing of the background tasks is serialized, but <code>Queue­User­Work­Item</code> is relatively quick because it merely schedules the work to run. However, the observation was that the code was actually waiting for the tasks to run. What’s going on?</p>
+<p>The culprit for the bigger problem is the code that waits for the task to start running before releasing the main thread. The purpose of this wait was to ensure that the MTA was not prematurely torn down. But it had a side effect of making the code that queues task inadvertently end up waiting for them.</p>
+<p><a href="https://devblogs.microsoft.com/oldnewthing/"> The thread pool is designed to maximize throughput, not to minimize latency</a>. If you throw a lot of tasks at the thread pool, it will methodically retire them a few at a time, rather than spinning up a ton of threads and having them all running tasks at the same time, because having a ton of threads all doing CPU-intensive work causes them all to contend with each other and gives you a worse total throughput than just creating one thread per processor and running the tasks one at a time on each thread.</p>
+<p>Let’s see what happens when a thread tries to create twenty background tasks on a 4-processor system. For simplicity, let’s assume that the thread pool has already reached its ideal state of having four threads.</p>
+<p>The first task is queued, and it starts running immediately. The task releases the main thread, so the main thread returns quickly.</p>
+<p>The second through fourth tasks also start running immediately, so the main thread resumes quickly in those cases as well.</p>
+<p>The fifth task is different, though. All of the thread pool threads are busy, so the fifth task doesn’t start right away. It’s waiting for a thread to become available. Eventually, the first task (say) completes, and the fifth task can now start. Only after the fifth task starts does the main thread become released.</p>
+<p>The process repeats with the subsequent tasks. Instead of queuing quickly and returning, the main thread sits and waits for its task to to start before it can return. As a result, the main thread spends most of its time waiting for earlier tasks to complete, which defeats the purpose of queueing them to the background thread!</p>
+<p>Here’s what the code was hoping to accomplish:</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Main thread</th>
+<th>Thread pool<br/>
+thread 1</th>
+<th>Thread pool<br/>
+thread 2</th>
+<th>Thread pool<br/>
+thread 3</th>
+<th>Thread pool<br/>
+thread 4</th>
+</tr>
+<tr>
+<td style="height: 1em;">Queue tasks 1–20</td>
+<td>Task 1</td>
+<td rowspan="4">Task 2</td>
+<td rowspan="3">Task 3</td>
+<td rowspan="2">Task 4</td>
+</tr>
+<tr>
+<td rowspan="19">Available to<br/>
+do other stuff</td>
+<td style="border-bottom: none;">Task 5</td>
+</tr>
+<tr>
+<td rowspan="5" style="border-top: none;"> </td>
+<td style="border-bottom: none;">Task 6</td>
+</tr>
+<tr>
+<td style="border-bottom: none;">Task 7</td>
+<td rowspan="3" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td style="border-bottom: none;">Task 8</td>
+<td rowspan="6" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td rowspan="3" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td style="border-bottom: none;">Task 9</td>
+</tr>
+<tr>
+<td style="border-bottom: none;">Task 10</td>
+<td rowspan="2" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td rowspan="4" style="border-top: none;"> </td>
+<td style="border-bottom: none;">Task 11</td>
+</tr>
+<tr>
+<td rowspan="2" style="border-top: none;"> </td>
+<td style="border-bottom: none;">Task 12</td>
+</tr>
+<tr>
+<td style="border-bottom: none;">Task 13</td>
+<td rowspan="4" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td style="border-bottom: none;">Task 14</td>
+<td rowspan="2" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td style="border-bottom: none;">Task 15</td>
+<td rowspan="4" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td rowspan="4" style="border-top: none;"> </td>
+<td style="border-bottom: none;">Task 16</td>
+</tr>
+<tr>
+<td rowspan="1" style="border-top: none;"> </td>
+<td style="border-bottom: none;">Task 17</td>
+</tr>
+<tr>
+<td style="border-bottom: none;">Task 18</td>
+<td rowspan="2" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td style="border-bottom: none;">Task 19</td>
+<td rowspan="4" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td style="border-bottom: none;">Task 20</td>
+<td rowspan="2" style="border-top: none;"> </td>
+<td rowspan="3" valign="top">Idle</td>
+</tr>
+<tr>
+<td rowspan="2" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td rowspan="1">Idle</td>
+</tr>
+</tbody>
+</table>
+<p>But since the code in the main thread waits for the task to start, it means that the main thread doesn’t get to do other stuff right away. It has to wait for the task it requested to start running on a thread. This means that what you actually get is this:</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Main thread</th>
+<th>Thread pool<br/>
+thread 1</th>
+<th>Thread pool<br/>
+thread 2</th>
+<th>Thread pool<br/>
+thread 3</th>
+<th>Thread pool<br/>
+thread 4</th>
+</tr>
+<tr>
+<td style="height: 1em;">Queue tasks 1–4</td>
+<td>Task 1</td>
+<td rowspan="4">Task 2</td>
+<td rowspan="3">Task 3</td>
+<td rowspan="2">Task 4</td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 5</td>
+<td style="border-bottom: none;">Task 5</td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 6</td>
+<td rowspan="5" style="border-top: none;"> </td>
+<td style="border-bottom: none;">Task 6</td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 7</td>
+<td style="border-bottom: none;">Task 7</td>
+<td rowspan="3" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 8</td>
+<td style="border-bottom: none;">Task 8</td>
+<td rowspan="6" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td style="border-bottom: none;">Queue task 9</td>
+<td rowspan="3" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td style="border-top: none;"> </td>
+<td style="border-bottom: none;">Task 9</td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 10</td>
+<td style="border-bottom: none;">Task 10</td>
+<td rowspan="2" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 11</td>
+<td rowspan="4" style="border-top: none;"> </td>
+<td style="border-bottom: none;">Task 11</td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 12</td>
+<td rowspan="2" style="border-top: none;"> </td>
+<td style="border-bottom: none;">Task 12</td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 13</td>
+<td style="border-bottom: none;">Task 13</td>
+<td rowspan="4" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 14</td>
+<td style="border-bottom: none;">Task 14</td>
+<td rowspan="2" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 15</td>
+<td style="border-bottom: none;">Task 15</td>
+<td rowspan="4" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 16</td>
+<td rowspan="4" style="border-top: none;"> </td>
+<td style="border-bottom: none;">Task 16</td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 17</td>
+<td rowspan="1" style="border-top: none;"> </td>
+<td style="border-bottom: none;">Task 17</td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 18</td>
+<td style="border-bottom: none;">Task 18</td>
+<td rowspan="2" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 19</td>
+<td style="border-bottom: none;">Task 19</td>
+<td rowspan="4" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td rowspan="1">Queue task 20</td>
+<td style="border-bottom: none;">Task 20</td>
+<td rowspan="2" style="border-top: none;"> </td>
+<td rowspan="3" valign="top">Idle</td>
+</tr>
+<tr>
+<td rowspan="2">Available to<br/>
+do other stuff</td>
+<td rowspan="2" style="border-top: none;"> </td>
+</tr>
+<tr>
+<td rowspan="1">Idle</td>
+</tr>
+</tbody>
+</table>
+<p>The tasks cannot queue instantly. Instead, each attempt to queue a task stalls until the task starts running somewhere. If the thread pool happens to be very busy at the moment, then you’ll have to wait a long time. In practice, what happens is that the main thread waits around until all but the last three tasks have completed.</p>
+<p>Okay, now that we understand what the true bottleneck is, we’ll try to address it <a href="https://devblogs.microsoft.com/oldnewthing/20190215-00/?p=101054"> next time</a>.</p>
+
+
+</body>

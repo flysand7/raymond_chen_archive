@@ -1,0 +1,30 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does the Alpha AXP predict a coroutine transfer the way it does?</h1>  <!-- .entry-meta -->
+
+<p>I noted some time ago that <a href="/other/the-alpha-axp-part-5-conditional-operations-and-control-flow"> the Alpha AXP has a dedicated <i>branch to coroutine</i> instruction</a>. The behavior of this instruction is to branch to the address held in the specified register, but the interesting part is how the instruction is predicted: The processor predicts a branch to the address at the top of the return address predictor stack, and the value at the top of the return address predictor stack is replaced by the address of the instruction that follows the <code>JSR_CO</code>.</p>
+<p>Why does the processor use this algorithm? Why doesn’t it just push the address of the following instruction onto the return address predictor stack?</p>
+<p>Let’s illustrate with an example. Note that the entire issue of <code>JSR_CO</code> applies only to stackful coroutines. Stackless coroutines use normal <code>JSR</code> subroutine calls.</p>
+<p>Consider two coroutines that call each other. On entry to the first coroutine, the return address predictor stack contains the return address predictions for the code that will run once the first coroutine returns.</p>
+<p>… <span style="border: solid 1px black; padding: 1ex;">X2</span> <span style="border: solid 1px black; padding: 1ex;">X1</span></p>
+<p>The first coroutine does some stuff and then calls the second coroutine. The processor incorrectly predicts a transfer to <code>X1</code>. This initial misprediction is unavoidable because there was no opportunity to put it on the predictor stack in the first place. The processor then puts the first coroutine’s resumption address onto the top of the predictor stack, replacing <code>X1</code>.</p>
+<p>… <span style="border: solid 1px black; padding: 1ex;">X2</span> <span style="border: solid 1px black; padding: 1ex;">C1</span></p>
+<p>The second coroutine runs for a while, and then transfers control back to the first coroutine. This time, the processor correctly predicts a transfer to <code>C1</code>. It then puts the second coroutine’s resumption address onto the return address predictor stack, replacing <code>C1</code>.</p>
+<p>… <span style="border: solid 1px black; padding: 1ex;">X2</span> <span style="border: solid 1px black; padding: 1ex;">C2</span></p>
+<p>The first coroutine does some stuff, say it calls a helper function that returns. The call is a normal <code>JSR</code>, so it pushes <code>C1b</code> onto the return address predictor stack, and the helper function returns with a normal <code>RET</code>, which pops the correctly-predicted address off the stack. In general, normal non-coroutine calls are predicted in the usual way, and when control is in the first coroutine, the pushes and pops on the predictor stack cancel out, and the return address predictor stack still looks like this:</p>
+<p>… <span style="border: solid 1px black; padding: 1ex;">X2</span> <span style="border: solid 1px black; padding: 1ex;">C2</span></p>
+<p>The first coroutine now calls back into the second coroutine, which resumes where it left off, namely at <code>C2</code>, which also matches the predicted return address. The resumption location in the first coroutine replaces <code>C2</code>, leaving</p>
+<p>… <span style="border: solid 1px black; padding: 1ex;">X2</span> <span style="border: solid 1px black; padding: 1ex;">C1c</span></p>
+<p>And so on. Control transfers back and forth between the two coroutines, and their resumption locations take turns at the top of the predictor stack. Let’s say that the second coroutine is now finished, so it transfers control to the first coroutine for the last time.</p>
+<p>… <span style="border: solid 1px black; padding: 1ex;">X2</span> <span style="border: solid 1px black; padding: 1ex;">C2z</span></p>
+<p>Here, <code>C2z</code> is a resumption address for the second coroutine, but it will never be used since the coroutine is finished. (The processor doesn’t know that, so it puts it onto the return address predictor stack anyway.)</p>
+<p>The first coroutine now returns to its caller, which was <code>X1</code>, but that return address was lost to the predictor stack ages ago. The return is mispredicted.</p>
+<p>… <span style="border: solid 1px black; padding: 1ex;">X2</span></p>
+<p>But the bad state lasts for only one frame. When the caller returns to its own caller, the return address <code>X2</code> will be right there at the top of the return address predictor stack, and things are back to normal.</p>
+<p>Now, since these are stackful coroutines, there’s no requirement that the transfer back to the first coroutine happen at the top level of the second coroutine. In the case where the second coroutine transferred back to the first coroutine from a subroutine, the return address predictor will not only mispredict the transfer back to the first coroutine, but it’ll also have the other return addresses, too, corresponding to activation frames still active in the second coroutine.</p>
+<p>… <span style="border: solid 1px black; padding: 1ex;">X2</span> <span style="border: solid 1px black; padding: 1ex;">C2c</span> <span style="border: solid 1px black; padding: 1ex;">C3</span> <span style="border: solid 1px black; padding: 1ex;">C4</span></p>
+<p>This prediction stack will pay off if the first coroutine transfers back to the second coroutine, since it will resume with a stack whose <code>C2</code> through <code>C4</code> entries exactly match the activation frames.</p>
+<p>In general, the algorithm for managing the return address predictor stack works well if a coroutine transfers out of its stack at the same frame that it transferred in. If it transfers out in a nested call, then the predictor won’t work, but there wasn’t much you could have done about them anyway.</p>
+<p>You’re also out of luck if control cycles among three or more coroutines. Again, there wasn’t much you could have done about this either.</p>
+
+
+</body>

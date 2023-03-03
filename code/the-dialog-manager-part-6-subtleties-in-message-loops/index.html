@@ -1,0 +1,65 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The dialog manager, part 6: Subtleties in message loops</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/04/04/405207.aspx">
+Last time, I left you with a homework exercise</a>:
+Find the subtle bug in the interaction between
+<code>EndManualModalDialog</code> and the modal message loop.
+</p>
+<p>
+The subtlety is that <code>EndManualModalDialog</code>
+sets some flags but does nothing to force the message loop
+to notice that the flag was actually set.  Recall that
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/MessagesandMessageQueues/MessagesandMessageQueuesReference/MessagesandMessageQueuesFunctions/GetMessage.asp">
+the <code>GetMessage</code> function</a>
+does not return until a posted message arrives in the queue.
+If incoming sent messages arrive, they are delivered to
+the corresponding window procedure, but the <code>GetMessage</code>
+function doesn’t return.  It just keeps delivering incoming
+sent messages until a posted message finally arrives.
+</p>
+<p>
+The bug, therefore, is that when you call
+<code>EndManualModalDialog</code>,
+it sets the flag that tells the modal message loop to stop
+running, but doesn’t do anything to ensure that the modal
+message loop will wake up to notice.  Nothing happens until
+a posted message arrives, which causes <code>GetMessage</code>
+to return. The posted message is dispatched
+and the <code>while</code> loop restarted,
+at which point the code finally notices that the <code>fEnded</code>
+flag is set and breaks out of the modal message loop.
+</p>
+<p>
+There are a few ways of fixing this problem.
+The quick solution is to post a meaningless message.
+</p>
+<pre>
+void EndManualModalDialog(HWND hdlg, int iResult)
+{
+ DIALOGSTATE *pds = reinterpret_cast&lt;DIALOGSTATE*&gt;
+     (GetWindowLongPtr(hdlg, DWLP_USER));
+ if (pds) {
+  pds-&gt;iResult = iResult;
+  pds-&gt;fEnded = TRUE;
+  <font color="blue">PostMessage(hdlg, WM_NULL, 0, 0);</font>
+ }
+}
+</pre>
+<p>
+This will force the <code>GetMessage</code> to return,
+since we made sure there is at least one posted message
+in the queue waiting to be processed.
+We chose
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/Windows/WindowReference/WindowMessages/WM_NULL.asp">
+the <code>WM_NULL</code> message</a>
+because it doesn’t do anything.
+We aren’t interested in what the message does,
+just the fact that there is a message at all.
+</p>
+<p>
+Next time, a different solution to the same problem.</p>
+
+
+</body>

@@ -1,0 +1,248 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The relationship between module resources and resource-derived objects in 32-bit Windows</h1>  <!-- .entry-meta -->
+
+<p><a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/10/02/10453564.aspx"> Last time</a>, we saw how 16-bit Windows converted resources attached to an EXE or DLL file (which I called <i>module resources</i> for lack of a better term) to user interface resources. As a refresher:</p>
+<table border="1" style="border-collapse: collapse">
+<caption> <b>16-bit Resources</b> </caption>
+<tr>
+<th>Resource type</th>
+<th>Operation</th>
+<th>Result</th>
+</tr>
+<tr>
+<td>Icon</td>
+<td><code>Load­Icon</code>, etc.</td>
+<td>Reference</td>
+</tr>
+<tr>
+<td>Cursor</td>
+<td><code>Load­Cursor</code>, etc.</td>
+<td>Reference</td>
+</tr>
+<tr>
+<td>Accelerator</td>
+<td><code>Load­Accelerator</code>, etc.</td>
+<td>Reference</td>
+</tr>
+<tr>
+<td>Dialog</td>
+<td><code>Create­Dialog</code>, etc.</td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>Menu</td>
+<td><code>Load­Menu</code>, etc.</td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>Bitmap</td>
+<td><code>Load­Bitmap</code>, etc.</td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>String</td>
+<td><code>Load­String</code></td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>String</td>
+<td><code>Find­Resource</code></td>
+<td>Reference</td>
+</tr>
+</table>
+<p> During the conversion from 16-bit Windows to 32-bit Windows, some of these rules changed. Specifically, icons, cursors, and accelerator tables are no longer references to the resource. Instead, the resource is treated as a template from which the actual user interface resource is constructed.</p>
+<table border="1" style="border-collapse: collapse">
+<caption> <b>32-bit Resources</b> </caption>
+<tr>
+<th>Resource type</th>
+<th>Operation</th>
+<th>Result</th>
+</tr>
+<tr>
+<td>Icon</td>
+<td><code>Load­Icon</code>, etc.</td>
+<td>Copy*</td>
+</tr>
+<tr>
+<td>Cursor</td>
+<td><code>Load­Cursor</code>, etc.</td>
+<td>Copy*</td>
+</tr>
+<tr>
+<td>Accelerator</td>
+<td><code>Load­Accelerator</code>, etc.</td>
+<td>Copy*</td>
+</tr>
+<tr>
+<td>Dialog</td>
+<td><code>Create­Dialog</code>, etc.</td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>Menu</td>
+<td><code>Load­Menu</code>, etc.</td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>Bitmap</td>
+<td><code>Load­Bitmap</code>, etc.</td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>String</td>
+<td><code>Load­String</code></td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>String</td>
+<td><code>Find­Resource</code></td>
+<td>Reference</td>
+</tr>
+</table>
+<p> Uh-oh, what’s up with those asterisks?
+ Let’s start with accelerator tables. In order to simulate the reference semantics of 16-bit accelerator tables, the copy is cached with a reference count, so that if you ask for the same accelerator table 1000 times, the first request creates a new accelerator table, and the other 999 requests just increment the reference count and return the same handle back. The result is that the window manager emulates reference semantics, but with an initial copy. When the reference count on an accelerator table drops to zero, then the resource is freed.
+ Icons and cursors are the same, only weirder.
+ If you pass the <code>LR_SHARED</code> flag, then the window manager simulates reference semantics by creating a copy of the icon or cursor the first time it is requested, and all subsequent requests with the <code>LR_SHARED</code> flag return the same handle back again.¹ The <code>Load­Cursor</code> and <code>Load­Icon</code> functions are just wrappers around <code>Load­Image</code> that pass <code>LR_SHARED</code>, so applications written to the old 16-bit API still work the 16-bit way. (Even today, a lot of applications rely on the old 16-bit behavior.)
+ If you don’t pass the <code>LR_SHARED</code> flag, then you get a brand new copy of the icon or cursor. Since the only way to get this behavior is to call the new-for-Win32 function <code>Load­Image</code>, there is no compatibility issue.
+ Based on the above discussion, we can flesh out the table a bit more:</p>
+<table border="1" style="border-collapse: collapse">
+<caption> <b>32-bit Resources</b> </caption>
+<tr>
+<th>Resource type</th>
+<th>Operation</th>
+<th>Result</th>
+</tr>
+<tr>
+<td rowspan="2">Icon</td>
+<td><code>Load­Icon</code><br/> <code>Load­Image</code> with <code>LR_SHARED</code></td>
+<td>Cached copy</td>
+</tr>
+<tr>
+<td><code>Load­Image</code> without <code>LR_SHARED</code></td>
+<td>Copy</td>
+</tr>
+<tr>
+<td rowspan="2">Cursor</td>
+<td><code>Load­Cursor</code><br/> <code>Load­Image</code> with <code>LR_SHARED</code></td>
+<td>Cached copy</td>
+</tr>
+<tr>
+<td><code>Load­Image</code> without <code>LR_SHARED</code></td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>Accelerator</td>
+<td><code>Load­Accelerator</code>, etc.</td>
+<td>Cached copy</td>
+</tr>
+<tr>
+<td>Dialog</td>
+<td><code>Create­Dialog</code>, etc.</td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>Menu</td>
+<td><code>Load­Menu</code>, etc.</td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>Bitmap</td>
+<td><code>Load­Bitmap</code>, etc.</td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>String</td>
+<td><code>Load­String</code></td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>String</td>
+<td><code>Find­Resource</code></td>
+<td>Reference</td>
+</tr>
+</table>
+<p> Another way of looking at the above table is to break it into two tables, one for operations that had a 16-bit equivalent, and one for operations that are unique to Win32:</p>
+<table border="1" style="border-collapse: collapse">
+<caption> <b>32-bit Resource Creation Operations with 16-bit Equivalents</b> </caption>
+<tr>
+<th>Resource type</th>
+<th>Operation</th>
+<th>Result</th>
+</tr>
+<tr>
+<td>Icon</td>
+<td><code>Load­Icon</code></td>
+<td>Simulated reference</td>
+</tr>
+<tr>
+<td>Cursor</td>
+<td><code>Load­Cursor</code></td>
+<td>Simulated reference</td>
+</tr>
+<tr>
+<td>Accelerator</td>
+<td><code>Load­Accelerator</code>, etc.</td>
+<td>Simulated reference</td>
+</tr>
+<tr>
+<td>Dialog</td>
+<td><code>Create­Dialog</code>, etc.</td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>Menu</td>
+<td><code>Load­Menu</code>, etc.</td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>Bitmap</td>
+<td><code>Load­Bitmap</code>, etc.</td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>String</td>
+<td><code>Load­String</code></td>
+<td>Copy</td>
+</tr>
+<tr>
+<td>String</td>
+<td><code>Find­Resource</code></td>
+<td>Reference</td>
+</tr>
+</table>
+<table border="1" style="border-collapse: collapse">
+<caption> <b>32-bit Resource Creation Operations Without 16-bit Equivalents</b> </caption>
+<tr>
+<th>Resource type</th>
+<th>Operation</th>
+<th>Result</th>
+</tr>
+<tr>
+<td rowspan="2">Icon</td>
+<td><code>Load­Image</code> with <code>LR_SHARED</code></td>
+<td>Simulated reference</td>
+</tr>
+<tr>
+<td><code>Load­Image</code> without <code>LR_SHARED</code></td>
+<td>Copy</td>
+</tr>
+<tr>
+<td rowspan="2">Cursor</td>
+<td><code>Load­Image</code> with <code>LR_SHARED</code></td>
+<td>Simulated reference</td>
+</tr>
+<tr>
+<td><code>Load­Image</code> without <code>LR_SHARED</code></td>
+<td>Copy</td>
+</tr>
+</table>
+<p> Now we can answer an old question: “<a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/02/15/10267976.aspx#10268281">Do icons created from resources depend on the underlying resource?</a>”
+ The answer is no, at least not in 32-bit Windows. The bits are extracted from the module resource data and converted into a icon object, and if you passed the <code>LR_SHARED</code> flag, it is added to the cache of previously-created icons.
+ ¹ <b>Update</b>: If you read carefully, you’ll realize that <code>LR_SHARED</code> stores the results in a cache <i>and pays no attention to the size</i>. The cache is keyed only by the resource module and ID; the size is ignored. This is why MSDN says “Do not use <code>LR_SHARED</code> for images that have nonstandard sizes.”
+ Suppose you load a resource with <code>LR_SHARED</code> and a nonstandard size. If you are the first person to load that resource, then the nonstandard size gets loaded and put into the cache. The next person to ask for that resource and who asks for a <code>LR_SHARED</code> copy will get the nonstandard-sized resource from the cache <i>regardless of what size they actually wanted</i>.
+ Conversely, suppose a standard-size resource is already in the cache. You pass <code>LR_SHARED</code> and a nonstandard size. The cache returns you the original standard-size resource, ignoring the size you requested.
+ To avoid this craziness, the rule is that any request for cached resources must use the standard size.</p>
+<p> This requirement wasn’t a problem in 16-bit Windows because 16-bit Windows had no way of requesting a resource at a nonstandard size. And since <code>LR_SHARED</code> is a new flag introduced in 32-bit Windows, all code which uses it can be expected to understand the Win32 rules. </p>
+
+
+</body>

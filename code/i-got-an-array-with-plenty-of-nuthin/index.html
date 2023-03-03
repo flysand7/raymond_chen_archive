@@ -1,0 +1,124 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">I got an array with plenty of nuthin'</h1>  <!-- .entry-meta -->
+
+<p>
+A customer reported a memory leak in the function
+<code>PropVariantClear</code>:
+</p>
+<blockquote class="q">
+<p>
+We found the following memory leak in the function
+<code>PropVariantClear</code>.
+Please fix it immediately because it causes our program to
+run out of memory.
+</p>
+<p>
+If the <code>PROPVARIANT</code>‘s type is <code>VT_ARRAY</code>,
+then the corresponding <code>SAFEARRAY</code> is leaked and not
+cleaned up.
+</p>
+<pre>
+SAFEARRAY* psa = SafeArrayCreateVector(VT_UNKNOWN, 0, 1);
+PROPVARIANT v;
+v.vt = VT_ARRAY;
+v.parray = psa;
+PropVariantClear(&amp;v);
+// The psa is leaked
+</pre>
+<p>
+Right now, we are temporarily working around this in our program
+by inserting code before all calls to
+<code>PropVariantClear</code> to free the <code>SAFEARRAY</code>,
+but this is clearly an unsatisfactory solution
+because it will merely result in double-free bugs once you fix
+the bug.
+Please give this defect your highest priority as it is holding up
+deployment of our system.
+</p>
+</blockquote>
+<p>
+The <code>VT_ARRAY</code> value is not a variant type in and of itself;
+it is a type <i>modifier</i>.
+There are other type modifiers, such as
+<code>VT_VECTOR</code>
+and <code>VT_BYREF</code>.
+The thing about modifiers is that they need to <i>modify something</i>.
+</p>
+<blockquote class="m"><p>
+The line
+<code>v.vt = VT_ARRAY</code> is incorrect.
+You have to say what you have a safe array <i>of</i>.
+In this case, you want <code>v.vt = VT_ARRAY | VT_UNKNOWN</code>.
+Once you change that, you’ll find the memory leak is fixed.
+</p></blockquote>
+<p>
+The customer didn’t believe this explanation.
+</p>
+<blockquote class="q">
+<p>
+I find this doubtful for several reasons.
+</p>
+<ol>
+<li>While this would explain why the
+    <code>IUnknown</code>s in the <code>SAFEARRAY</code>
+    are not released,
+    it doesn’t explain why the <code>SAFEARRAY</code> itself is leaked.
+<li>The <code>SAFEARRAY</code> already contains this information,
+    so it should already know that destroying it entails releasing
+    the <code>IUnknown</code> pointers.
+<li>If I manually call <code>SafeArrayDestroy</code>,
+    then the <code>IUnknown</code>s are correctly
+    released, confirming point 2.
+<li>The function <code>SafeArrayDestroy</code> is never called;
+    that is the root cause of the problem.
+</li></li></li></li></ol>
+</blockquote>
+<p>
+The customer’s mental model of <code>PropVariantDestroy</code>
+appeared to be that it should go something like this:
+</p>
+<pre>
+if (pvt-&gt;vt &amp; VT_ARRAY) {
+ switch (pvt-&gt;vt &amp; VT_TYPEMASK) {
+ ...
+ case VT_UNKNOWN:
+  ... release the IUnknowns in the SAFEARRAY...
+  break;
+ ...
+ }
+ InternalFree(pvt-&gt;psa-&gt;pvData);
+ InternalFree(pvt-&gt;psa);
+ return S_OK;
+}
+</pre>
+<p>
+In fact what’s really going on is that the value of
+<code>VT_ARRAY</code> is interpreted as
+<code>VT_ARRAY | VT_EMPTY</code>,
+because (1) <code>VT_ARRAY</code> is a modifier,
+so it has to modify something, and (2) the
+numeric value of zero happens to be equal to <code>VT_EMPTY</code>.
+In other words, you told OLE automation that your <code>PROPVARIANT</code>
+holds a <code>SAFEARRAY</code> filled with <code>VT_EMPTY</code>.
+</p>
+<p>
+It also happens that a <code>SAFEARRAY</code> of <code>VT_EMPTY</code>
+is illegal.
+Only certain types can be placed in a <code>SAFEARRAY</code>,
+and <code>VT_EMPTY</code> is not one of them.
+</p>
+<p>
+The call to <code>PropVariantClear</code> was returning the
+error
+<code>DISP_E_BADVARTYPE</code>.
+It was performing parameter validation and rejecting the property
+variant as invalid,
+because you can’t have an array of nothing.
+The customer’s response to this explanation was very terse.
+</p>
+<blockquote class="q"><p>
+Tx. Interesting.
+</p></blockquote>
+
+
+</body>

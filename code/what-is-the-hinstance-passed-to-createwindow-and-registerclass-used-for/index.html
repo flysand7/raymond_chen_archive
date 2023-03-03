@@ -1,0 +1,131 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is the HINSTANCE passed to CreateWindow and RegisterClass used for?</h1>  <!-- .entry-meta -->
+
+<p>
+One of the less-understood parameters to
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/windows/windowreference/windowfunctions/createwindow.asp">
+the <code>CreateWindow</code> function</a>
+and
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/windowclasses/windowclassreference/windowclassfunctions/registerclass.asp">
+the <code>RegisterClass</code> function</a>
+is the <code>HINSTANCE</code> (either passed as a parameter
+or as part of
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/windowclasses/windowclassreference/windowclassstructures/wndclass.asp">
+the <code>WNDCLASS</code> structure</a>).
+</p>
+<p>
+The window class name is not sufficient to identify the class uniquely.
+Each process has its own window class list,
+and each entry in the window class list consists of an instance handle
+and a class name.
+For example, here’s what the window class list might look like if a
+program has two DLLs, both of which register a class name “MyClass”,
+passing the DLL’s handle as the <code>HINSTANCE</code>.
+</p>
+<table>
+<tr>
+<th></th>
+<th>HINSTANCE</th>
+<th>Class name</th>
+</tr>
+<tr>
+<td>1.</td>
+<td>USER32.DLL</td>
+<td>Static</td>
+</tr>
+<tr>
+<td>2.</td>
+<td>USER32.DLL</td>
+<td>Button</td>
+</tr>
+<tr>
+<td>3.</td>
+<td>USER32.DLL</td>
+<td>Listbox</td>
+</tr>
+<tr>
+<td>4.</td>
+<td>USER32.DLL</td>
+<td>Combobox</td>
+</tr>
+<tr>
+<td>5.</td>
+<td>USER32.DLL</td>
+<td>Edit</td>
+</tr>
+<tr>
+<td>6.</td>
+<td>A.DLL</td>
+<td>MyClass</td>
+</tr>
+<tr>
+<td>7.</td>
+<td>B.DLL</td>
+<td>MyClass</td>
+</tr>
+</table>
+<p>
+When it comes time to create a window, each module then passes
+its own <code>HINSTANCE</code> when creating the window,
+and the window manager uses the combination of the instance handle
+and the class name to look up the class.
+</p>
+<pre>
+CreateWindow("MyClass", ..., hinstA, ...); // creates class 6
+CreateWindow("MyClass", ..., hinstB, ...); // creates class 7
+CreateWindow("MyClass", ..., hinstC, ...); // fails
+</pre>
+<p>
+This is why it is okay if multiple DLLs all register a class
+called “MyClass”; the instance handle is used to tell them apart.
+</p>
+<p>
+There is an exception to the above rule, however.
+If you pass the <code>CS_GLOBALCLASS</code> flag when registering
+the class, then the window manager will ignore the instance handle
+when looking for your class.  All of the USER32 classes are registered
+as global.  Consequently, all of the following calls create the
+USER32 edit control:
+</p>
+<pre>
+CreateWindow("edit", ..., hinstA, ...);
+CreateWindow("edit", ..., hinstB, ...);
+CreateWindow("edit", ..., hinstC, ...);
+</pre>
+<p>
+If you are registering a class for other modules to use in
+dialog boxes, you need to register as <code>CS_GLOBALCLASS</code>,
+because as we saw earlier
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/03/30/403711.aspx">
+the internal <code>CreateWindow</code> call performed during dialog
+box creation to create the controls</a>
+passes the dialog’s <code>HINSTANCE</code> as the
+<code>HINSTANCE</code> parameter.
+Since the dialog instance handle is typically the DLL that is
+creating the dialog
+(since
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/03/29/403298.aspx">
+that same <code>HINSTANCE</code> is used to look up the template</a>),
+failing to register with the <code>CS_GLOBALCLASS</code> flag
+means that the window class lookup will not find the class
+since it’s registered under the instance handle of the DLL that
+provided the class, not the one that is using it.
+</p>
+<p>
+In 16-bit Windows, the instance handle did other things, too,
+but they are no longer relevant to Win32.
+</p>
+<p>
+<a href="http://www.experts-exchange.com/Programming/Programming_Platforms/Win_Prog/Q_20331499.html">
+A common mistake</a> is to pass the
+<code>HINSTANCE</code> of some other module
+(typically, the primary executable)
+when registering a window class.
+Now that you understand what the
+<code>HINSTANCE</code> is used for,
+you should be able to
+explain the consequences of registering a class with the wrong
+<code>HINSTANCE</code>.</p>
+
+
+</body>

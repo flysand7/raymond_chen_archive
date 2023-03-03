@@ -1,0 +1,66 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A common mistake when you try to create a C++ class that wraps a window procedure: Saving the window handle too late</h1>  <!-- .entry-meta -->
+
+<p>A common mistake when you try to create a C++ class that wraps a window procedure is saving the window handle too late.</p>
+<pre>// Code in italics is wrong.
+class MyWindowClass
+{
+private:
+ HWND m_hwnd = nullptr;
+
+ static LRESULT CALLBACK StaticWndProc(
+    HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+ {
+  MyWindowClass *self;
+  if (uMsg == WM_NCCREATE) {
+   LPCREATESTRUCT lpcs = reinterpret_cast&lt;LPCREATESTRUCT&gt;(lParam);
+   self = static_cast&lt;MyWindowClass*&gt;(lpcs-&gt;lpCreateParams);
+   SetWindowLongPtr(hwnd, GWLP_USERDATA,
+                    reinterpret_cast&lt;LONG_PTR&gt;(self));
+  } else {
+   self = reinterpret_cast&lt;MyWindowClass*&gt;(
+               GetWindowLongPtr(hwnd, GWLP_USERDATA));
+  }
+  if (self) {
+   return self-&gt;WndProc(uMsg, wParam, lParam);
+  }
+  return DefWindowProc(hwnd, uMsg, wParam, lParam);
+ }
+
+ LRESULT WndProc(UINT uMsg, WPARAM wParam, LPARAM lParam)
+ {
+   switch (uMsg) {
+   ...
+   default:
+    return DefWindowProc(m_hwnd, uMsg, wParam, lParam);
+   }
+ }
+
+public:
+ void CreateTheWindow()
+ {
+   ... RegisterClass() ...
+   <i>m_hwnd = CreateWindowEx(..., this);</i>
+ }
+};
+</pre>
+<p>This code follows the usual pattern for a window procedure wrapper: The <code>this</code> pointer is passed as the creation parameter, and the <code>WM_</code><code>NC­CREATE</code> message handler stashes the creation parameter in the window extra bytes, thereby allowing the <code>this</code> pointer to be recovered from the window handle when handling future messages.</p>
+<p>However, there’s a problem with the above code. Can you spot it?</p>
+<p>The problem is that it sets the <code>m_hwnd</code> member variable too late.</p>
+<p>As written, the code doesn’t set the <code>m_hwnd</code> member variable until the <code>Create­Window­Ex</code> function returns. But creating a window involves sending many messages.</p>
+<p>For every message received during window creation, The <code>WndProc</code> member function runs with a null <code>m_hwnd</code>. This means that when it calls <code>Def­Window­Proc(m_hwnd, ...)</code>, it’s passing an invalid parameter.</p>
+<p>Many of the messages sent during window creation are kind of important to pass through to <code>Def­Window­Proc</code>. For example, if you neglect to pass <code>WM_</code><code>NC­CREATE</code> to <code>Def­Window­Proc</code>, your window will not be properly initialized.</p>
+<p>The solution is to set <code>m_hwnd</code> as soon as you learn what the window handle is.</p>
+<pre>  if (uMsg == WM_NCCREATE) {
+   LPCREATESTRUCT lpcs = reinterpret_cast&lt;LPCREATESTRUCT&gt;(lParam);
+   self = static_cast&lt;MyWindowClass*&gt;(lpcs-&gt;lpCreateParams);
+   <span style="color: blue;">self-&gt;m_hwnd = hwnd; // save the window handle too!</span>
+   SetWindowLongPtr(hwnd, GWLP_USERDATA,
+                    reinterpret_cast&lt;LONG_PTR&gt;(self));
+  } 
+</pre>
+<p>Don’t wait for <code>Create­Window­Ex</code> to return. By then, it’s too late.</p>
+<p> </p>
+
+
+</body>

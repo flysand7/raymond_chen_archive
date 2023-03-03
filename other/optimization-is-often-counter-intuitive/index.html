@@ -1,0 +1,167 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Optimization is often counter-intuitive</h1>  <!-- .entry-meta -->
+
+<p>Anybody who’s done intensive optimization knows that optimization is often counter-intuitive. Things you think would be faster often aren’t.</p>
+<p>Consider, for example, the exercise of obtaining the current instruction pointer. There’s the naïve solution:</p>
+<pre>__declspec(noinline)
+void *GetCurrentAddress()
+{
+  return _ReturnAddress();
+}
+
+...
+void *currentInstruction = GetCurrentAddress();
+</pre>
+<p>If you look at the disassembly, you’ll get something like this:</p>
+<pre>GetCurrentAddress:
+    mov eax, [esp]
+    ret
+
+...
+    call GetCurrentAddress
+    mov [currentInstruction], eax
+</pre>
+<p>“Pah,” you say to yourself, “look at how inefficient that is. I can reduce that to two instructions. Watch:</p>
+<pre>void *currentInstruction;
+__asm {
+call L1
+L1: pop currentInstruction
+}
+</pre>
+<p>That’s half the instruction count of your bloated <a href="http://snltranscripts.jt.org/88/88ghansfranz.phtml"> girly-code</a>.”</p>
+<p>But if you sit down and race the two code sequences, you’ll find that the function-call version is faster by a factor of two! How can that be?</p>
+<p>The reason is the “hidden variables” inside the processor. All modern processors contain much more state than you can see from the instruction sequence. There are TLBs, L1 and L2 caches, all sorts of stuff that you can’t see. The hidden variable that is important here is the return address predictor.</p>
+<p>The more recent Pentium (and I believe also Athlon) processors maintain an internal stack that is updated by each <code>CALL</code> and <code>RET</code> instruction. When a <code>CALL</code> is executed, the return address is pushed both onto the real stack (the one that the <code>ESP</code> register points to) as well as to the internal return address predictor stack; a <code>RET</code> instruction pops the top address of the return address predictor stack as well as the real stack.</p>
+<p>The return address predictor stack is used when the processor decodes a <code>RET</code> instruction. It looks at the top of the return address predictor stack and says, “I bet that <code>RET</code> instruction is going to return to that address.” It then speculatively executes the instructions at that address. Since programs rarely fiddle with return addresses on the stack, these predictions tend to be highly accurate.</p>
+<p>That’s why the “optimization” turns out to be slower. Let’s say that at the point of the <code>CALL L1</code> instruction, the return address predictor stack looks like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3">
+<tbody>
+<tr>
+<th valign="BOTTOM">Return address<br/>
+predictor stack:</th>
+<td valign="BOTTOM"> </td>
+<td valign="BOTTOM">caller1</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller2</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller3</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">⋯</td>
+</tr>
+<tr>
+<th valign="BOTTOM">Actual stack:</th>
+<td valign="BOTTOM"> </td>
+<td valign="BOTTOM">caller1</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller2</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller3</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">⋯</td>
+</tr>
+</tbody>
+</table>
+<p>Here, <code>caller1</code> is the function’s caller, <code>caller1</code> is the function’s caller’s caller, and so on. So far, the return address predictor stack is right on target. (I’ve drawn the actual stack below the return address predictor stack so you can see that they match.)</p>
+<p>Now you execute the <code>CALL</code> instruction. The return address predictor stack and the actual stack now look like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3">
+<tbody>
+<tr>
+<th valign="BOTTOM">Return address<br/>
+predictor stack:</th>
+<td valign="BOTTOM"> </td>
+<td valign="BOTTOM">L1</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller1</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller2</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller3</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">⋯</td>
+</tr>
+<tr>
+<th valign="BOTTOM">Actual stack:</th>
+<td valign="BOTTOM"> </td>
+<td valign="BOTTOM">L1</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller1</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller2</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller3</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">⋯</td>
+</tr>
+</tbody>
+</table>
+<p>But instead of executing a <code>RET</code> instruction, you pop off the return address. This removes it from the actual stack, but doesn’t remove it from the return address predictor stack.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3">
+<tbody>
+<tr>
+<th valign="BOTTOM">Return address<br/>
+predictor stack:</th>
+<td valign="BOTTOM"> </td>
+<td valign="BOTTOM">L1</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller1</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller2</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller3</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">⋯</td>
+</tr>
+<tr>
+<th valign="BOTTOM">Actual stack:</th>
+<td valign="BOTTOM"> </td>
+<td valign="BOTTOM">caller1</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller2</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller3</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller4</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">⋯</td>
+</tr>
+</tbody>
+</table>
+<p>I think you can see where this is going.</p>
+<p>Eventually your function returns. The processor decodes your <code>RET</code> instruction and looks at the return address predictor stack and says, “My predictor stack says that this <code>RET</code> is going to return to <code>L1</code>. I will begin speculatively executing there.”</p>
+<p>But oh no, the value on the top of the real stack isn’t <code>L1</code> at all. It’s <code>caller1</code>. The processor’s return address predictor predicted incorrectly, and it ended up wasting its time studying the wrong code!</p>
+<p>The effects of this bad guess don’t end there. After the <code>RET</code> instruction, the return address predictor stack looks like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3">
+<tbody>
+<tr>
+<th valign="BOTTOM">Return address<br/>
+predictor stack:</th>
+<td valign="BOTTOM"> </td>
+<td valign="BOTTOM">caller1</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller2</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller3</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">⋯</td>
+</tr>
+<tr>
+<th valign="BOTTOM">Actual stack:</th>
+<td valign="BOTTOM"> </td>
+<td valign="BOTTOM">caller2</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller3</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">caller4</td>
+<td valign="BOTTOM">→</td>
+<td valign="BOTTOM">⋯</td>
+</tr>
+</tbody>
+</table>
+<p>Eventually your caller returns. Again, the processor consults its return address predictor stack and speculatively executes at <code>caller1</code>. But that’s not where you’re returning to. You’re really returning to <code>caller2</code>.</p>
+<p>And so on. By mismatching the <code>CALL</code> and <code>RET</code> instructions, you managed to cause every single return address prediction on the stack to be wrong. Notice in the diagram that, in the absence of somebody playing games with the return address predictor stack of the type that created the problem initially, <strong>not a single prediction on the return address predictor stack will be correct</strong>. None of the predicted return addresses match up with actual return addresses.</p>
+<p>Your peephole optimization has proven to be shortsighted.</p>
+<p>Some processors expose this predictor more explicitly. The Alpha AXP, for example, has several types of control flow instructions, all of which have the same logical effect, but which hint to the processor how it should maintain its internal predictor stack. For example, the <code>BR</code> instruction says, “Jump to this address, but do not push the old address onto the predictor stack.” On the other hand, the <code>JSR</code> instruction says, “Jump to this address, and push the old address onto the predictor stack.” There is also a <code>RET</code> instruction that says, “Jump to this address, and pop an address from the predictor stack.” (There’s also a fourth type that isn’t used much.)</p>
+<p>Moral of the story: Just because something looks better doesn’t mean that it necessarily <strong>is</strong> better.</p>
+
+
+</body>

@@ -1,0 +1,113 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Modality, part 8: A timed MessageBox, the better version</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/03/01/382380.aspx">
+A few days ago, we saw a simple version of a timed message box
+which had a limitation that it could be used from only one thread
+at a time</a>.
+Today we’ll work to remove that limitation.
+</p>
+<p>
+As you may recall, the reason why it could be used from only one thread
+at a time was that we kept the “Did the message box time out?” flag
+in a global.  To fix it, we will move the flag to a per-instance location,
+namely a helper window.
+</p>
+<p>
+Start with
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+the scratch program</a>,
+add the code for
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/03/02/383562.aspx">
+the scratch window class</a>,
+<i>change the name of the scratch window class</i> so it doesn’t
+conflict with the class name of the scratch program
+(<a href="http://blogs.msdn.com/oldnewthing/archive/2005/03/02/383562.aspx#385251">thanks to reader Adrian for pointing this out</a>),
+then add the following:
+</p>
+<pre>
+#define IDT_TOOLATE     1
+typedef struct TOOLATEINFO {
+ BOOL fTimedOut;
+ HWND hwndReenable;
+} TOOLATEINFO;
+void CALLBACK
+MsgBoxTooLateProc(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime)
+{
+  TOOLATEINFO *ptli = reinterpret_cast&lt;TOOLATEINFO*&gt;(
+    GetWindowLongPtr(hwnd, GWLP_USERDATA));
+  if (ptli) {
+    ptli-&gt;fTimedOut = TRUE;
+    if (ptli-&gt;hwndReenable) {
+       EnableWindow(ptli-&gt;hwndReenable, TRUE);
+    }
+    PostQuitMessage(42);
+  }
+}
+int TimedMessageBox(HWND hwndOwner, LPCTSTR ptszText,
+    LPCTSTR ptszCaption, UINT uType, DWORD dwTimeout)
+{
+  TOOLATEINFO tli;
+  tli.fTimedOut = FALSE;
+  BOOL fWasEnabled = hwndOwner &amp;&amp; IsWindowEnabled(hwndOwner);
+  tli.hwndReenable = fWasEnabled ? hwndOwner : NULL;
+  HWND hwndScratch = CreateScratchWindow(hwndOwner, DefWindowProc);
+  if (hwndScratch) {
+      SetWindowLongPtr(hwndScratch, GWLP_USERDATA,
+                       reinterpret_cast&lt;LPARAM&gt;(&amp;tli));
+      SetTimer(hwndScratch, IDT_TOOLATE, dwTimeout, MsgBoxTooLateProc);
+  }
+  int iResult = MessageBox(hwndOwner, ptszText, ptszCaption, uType);
+  if (hwndScratch) {
+    KillTimer(hwndScratch, IDT_TOOLATE);
+    if (tli.fTimedOut) { // We timed out
+      MSG msg;
+      // Eat the fake WM_QUIT message we generated
+      PeekMessage(&amp;msg, NULL, WM_QUIT, WM_QUIT, PM_REMOVE);
+      iResult = -1;
+    }
+    DestroyWindow(hwndScratch);
+  }
+  return iResult;
+}
+void OnChar(HWND hwnd, TCHAR ch, int cRepeat)
+{
+  switch (ch) {
+  case ' ':
+    TimedMessageBox(hwnd, TEXT("text"), TEXT("caption"),
+                    MB_OK, 2000);
+    break;
+  }
+}
+// add to WndProc
+    HANDLE_MSG(hwnd, WM_CHAR, OnChar);
+// add to InitApp
+    RegisterScratchWindowClass();
+</pre>
+<p>
+This is basically the same as the previous cheap version,
+just with slightly different bookkeeping.
+</p>
+<p>
+The state of the timed message box is kept in the structure
+<code>TOOLATEINFO</code>.  But how to pass this state to the
+timer callback?  You can’t pass any parameters to timer callbacks.
+</p>
+<p>
+Aha, but timer callbacks do get a window handle.
+But as we discovered a few days ago, we can’t just hang the callback
+off the <code>hwndOwner</code> window because we don’t know how
+to pick a timer ID that doesn’t conflict with an existing one.
+</p>
+<p>
+The solution: Hang it on a window of our own window creation.
+That way, we get a whole new space of timer IDs to play in,
+separate from the timer IDs that belong to <code>hwndOwner</code>.
+The scratch window is a convenient window to use.
+We don’t pass an interesting window procedure to
+<code>CreateScratchWindow</code> because there is no need;
+all we wanted was a window to own our timer.</p>
+
+
+</body>

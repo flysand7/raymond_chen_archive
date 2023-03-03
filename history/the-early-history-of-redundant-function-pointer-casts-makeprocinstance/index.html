@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The early history of redundant function pointer casts: MakeProcInstance</h1>  <!-- .entry-meta -->
+
+<p>If you <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/05/06/10161590.aspx#10161846">look through old code</a>, you see a lot of redundant function pointer casts. (If you’re writing new code, you should get rid of as many function pointer casts as possible, because <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/05/06/10161590.aspx#10161846">a function pointer cast is a bug waiting to happen</a>.) Why does old code have so many redundant function pointer casts? </p>
+<p>Because back in the old days, they weren’t redundant. </p>
+<p>In the days of 16-bit Windows, function prologues were required to take very specific forms in order to make <a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/06/29/10325295.aspx">stack walking</a> work, and stack walking was necessary in order to simulate an MMU on a CPU that didn’t have one. </p>
+<p>Another rule for prologues has to do with state management. The full prologue for a far function looks like this: </p>
+<pre>
+    mov     ax, ds
+    nop
+    inc     bp
+    push    bp
+    mov     bp, sp
+    push    ds
+    mov     ds, ax
+</pre>
+<p>Before we can dig into those instructions, we need to know a bit about how code segments worked in real-mode 16-bit Windows. In real-mode 16-bit Windows, there was a single address space for all applications because the CPU had no concept of per-process address spaces. The kernel simulated separate address spaces by managing <i>instances</i>. The instance (represented by an <i>instance handle</i>) specified the location of the data segment the code should operate on. If you have two copies of a program running, the code is shared, but each program has its own data. The instance handle tells you where that data is. </p>
+<p>And the instance handle is kept in the <code>ds</code> register. </p>
+<p>Therefore, it is essential that every function have its <code>ds</code> register set to the instance handle that describes where the code should find its data. You can think of it as a “global <code>this</code> pointer for the process.” </p>
+<p>Okay, so let’s look at the function prologue again. First, it copies <code>ds</code> to <code>ax</code> via a two-byte <code>mov ax, ds</code> instruction. Then there is a <code>nop</code>. This pads the prologue size to three bytes. </p>
+<p>The next four instructions build the stack frame: The <code>inc bp</code> <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/03/16/10141735.aspx">marks the stack frame as a far frame</a>. The <code>push bp</code> and <code>mov bp, sp</code> build the <code>bp</code> chain. And the <code>push ds</code> saves the original <code>ds</code> register, <a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/06/29/10325295.aspx">which also provides breathing room for return address patching</a>. </p>
+<p>And then we move <code>ax</code> back into <code>ds</code>. The instance handle just took a little tour of the <code>ax</code> register and then returned back home. What was the point of that? </p>
+<p>Recall that in 16-bit Windows, <a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/06/22/10322767.aspx">every far function called from another segment was listed in the module’s Entry Table</a>. </p>
+<p>When a far function is placed in the exported function table, the loader patches the first three bytes of the function to three <code>nop</code> instructions. Non-exported functions remain unchanged. This means that non-exported functions do the redundant <code>ds</code> rigamarole. It’s a little extra work, but it’s ultimately harmless. </p>
+<p>The effect of patching out the initial <code>mov ax, ds</code> is that the function ends up doing this: </p>
+<ul>
+<li>Build a far stack frame,     which includes saving the original <code>ds</code>. 
+<li>Set <code>ds</code> to whatever was passed in the <code>ax</code> register. </li></li></ul>
+<p>The second step means that the code, when it executes, operates on the data associated with the handle passed in the <code>ax</code> register. </p>
+<p>Okay, great, but this means that you can’t call an exported function directly, because it will set the <code>ds</code> register to whatever value is passed in the <code>ax</code> register. Since the <code>ax</code> register is not part of the calling convention, its value is garbage. </p>
+<p>But that’s okay. We made things worse so we can make them better. </p>
+<p><a href="https://blogs.msdn.microsoft.com/oldnewthing/20080207-00/?p=23533">The <code>Make­Proc­Instance</code> function</a> creates a stub function that loads the <code>ax</code> register with the instance handle you provide, and then jumps to the function you provide. Really. That’s all it did. (When you’re done, you call <code>Free­Proc­Instance</code> to free the memory back to the system.) </p>
+<p>This stub function was known as a <i>procedure instance thunk</i>, or a <i>proc instance</i> for short. Hence the name <code>Make­Proc­Instance</code>. </p>
+<p>Okay, finally the punch line. The <code>Make­Proc­Instance</code> function didn’t care what kind of function pointer you passed it. Whatever you passed in, it returned the same kind of pointer back out, because all the stub did was twiddle the <code>ax</code> register and then jump to the real function. The parameters on the stack didn’t change, the cleanup convention didn’t change, nothing else changed. </p>
+<p>The <code>Make­Proc­Instance</code> function was declared as returning a <code>FARPROC</code>, which is a typedef for a far function that takes no parameters and returns nothing. The parameters and return value are irrelevant; it just had to be <i>something</i>. </p>
+<p>But what this means is that when you take your function, like a window enumeration callback, and create a procedure instance for it, the thing you get back has been type-erased to a generic function pointer. To make it useful again, you need to cast it back to what it was originally. </p>
+<p>For example, if what you passed was a <code>WNDENUMPROC</code>, then you need to cast the procedure instance back to a <code>WNDENUMPROC</code>. If you passed a <code>TIMERPROC</code>, then you need to cast the procedure instance back to a <code>TIMERPROC</code>. You could anachronistically express this as </p>
+<pre>
+template&lt;typename R, typename ...Args&gt;
+auto MakeProcInstanceT(R (FAR *func)(Args...), HINSTANCE inst)
+{
+  return (decltype(func))MakeProcInstance((FARPROC)func, inst);
+}
+</pre>
+<p>Of course, you didn’t have this fancy template deduction in 1983-era C, so you had to cast the return value manually. </p>
+<p>And that brings us to today. Even though <code>Make­Proc­Instance</code> has been obsolete for decades, some people imprinted on the “gotta cast your function pointers to get them to compile” pattern, either because they wrote code when the cast was required and fell into the habit, or or (more likely) they learned from code that was written by someone who inherited this habit from somebody else. And yes, this inherited folk wisdom <a href="https://msdn.microsoft.com/ms644996">can even be found in MSDN</a>. </p>
+<p>The redundant function pointer cast is now a type of folklore, passed down from developer to developer, even though it’s no longer needed and in fact <a href="https://blogs.msdn.microsoft.com/oldnewthing/20110506-00/?p=10723">will mask problems caused by mismatched prototypes</a>. </p>
+
+
+</body>

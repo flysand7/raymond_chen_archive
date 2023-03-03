@@ -1,0 +1,124 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">In C++/CX, hat pointers are contextually convertible to <code>bool</code>, but you can’t always <code>static_cast</code> them to <code>bool</code></h1>  <!-- .entry-meta -->
+
+<p>C++/CX is a language extension intended to make consuming the Windows Runtime easier. It is, however, no longer the C++ projection of choice. That honor now belongs to C++/WinRT, which allows you to consume the Windows Runtime using standard-conforming C++, no language extensions required.</p>
+<p>For those of you stuck with C++/CX, here’s a little puzzle: What do these functions do?</p>
+<pre>bool Mystery1(Object^ o)
+{
+    if (o) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+bool Mystery2(Object^ o)
+{
+    return static_cast&lt;bool&gt;(o);
+}
+
+bool Mystery3(Object^ o)
+{
+    return bool(o);
+}
+
+bool Mystery4(Object^ o)
+{
+    return (bool)o;
+}
+</pre>
+<p>You’d think these would all be equivalent, but they’re not.</p>
+<p>In the first mystery function, the hat pointer <code>o</code> is contextually converted to <code>bool</code>, and that’s done by treating <code>nullptr</code> as falsy and anything else as truthy. In this respect, hat pointers are like star pointers.</p>
+<p>The remaining mystery functions take the object that <code>o</code> points to and attempt to unbox it to a <code>bool</code>, and they all behave the same way:</p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<th>If <code>o</code> is</th>
+<th>Then you get</th>
+</tr>
+<tr>
+<td><tt>(Object^)true</tt></td>
+<td><tt>true</tt></td>
+</tr>
+<tr>
+<td><tt>(Object^)false</tt></td>
+<td><tt>false</tt></td>
+</tr>
+<tr>
+<td><tt>nullptr</tt></td>
+<td><tt>NullReferenceException</tt> thrown</td>
+</tr>
+<tr>
+<td>anything else</td>
+<td><tt>InvalidCastException</tt> thrown</td>
+</tr>
+</tbody>
+</table>
+<p>If you just want to know what happens and don’t care to understand the deep metaphysical significance of those last two rows, I don’t blame you.</p>
+<p>But that’s probably not why you’re here. You want to understand the weird crazy world that led to the strange table above.</p>
+<p>What’s going on is that a <code>Object^</code> is really an <code>IInspectable*</code> under the hood. And cast operations on <code>IInspectable*</code> are performed by doing a <code>Query­Interface</code>. In this case, we are casting to <code>IBox&lt;bool&gt;*</code>.</p>
+<p>If you have a <code>nullptr</code>, then the attempt to call <code>Query­Interface</code> results in a null pointer dereference, hence the <code>Null­Reference­Exception</code>.</p>
+<p>If the object is not a boxed <code>bool</code>, then the <code>Query­Interface</code> fails with <code>E_NO­INTERFACE</code>, which is expressed in C++/CX as an <code>Invalid­Cast­Exception</code>.</p>
+<p>For me, the weird part is that there are two different categories of results: The contextual conversion is different from the other conversions.</p>
+<p>It means that you get weird puzzles like this:</p>
+<pre>Object^ p = false;
+Object^ q = false;
+
+if (p)                    std::cout &lt;&lt; 1;
+if ((bool)p)              std::cout &lt;&lt; 2;
+if (static_cast&lt;bool&gt;(p)) std::cout &lt;&lt; 3;
+if (p == q)               std::cout &lt;&lt; 4;
+if (p == false)           std::cout &lt;&lt; 5;
+if (!p)                   std::cout &lt;&lt; 6;
+if ((bool)p == (bool)q)   std::cout &lt;&lt; 7;
+</pre>
+<p>What does this fragment print?</p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Condition</th>
+<th>What’s happening</th>
+<th>Result</th>
+</tr>
+<tr>
+<td><tt>if (p)</tt></td>
+<td>Tests <tt>p</tt> against <tt>nullptr</tt>.</td>
+<td>prints <tt>1</tt></td>
+</tr>
+<tr>
+<td><tt>if ((bool)p)</tt></td>
+<td>Unboxes <tt>p</tt> to <tt>bool</tt>.</td>
+<td>does not print</td>
+</tr>
+<tr>
+<td><tt>if (static_cast&lt;bool&gt;(p))</tt></td>
+<td>Unboxes <tt>p</tt> to <tt>bool</tt>.</td>
+<td>does not print</td>
+</tr>
+<tr>
+<td><tt>if (p == q)</tt></td>
+<td>Compares two objects for identity.</td>
+<td>does not print</td>
+</tr>
+<tr>
+<td><tt>if (p == false)</tt></td>
+<td>Boxes <code>false</code> then compares two objects for identity.</td>
+<td>does not print</td>
+</tr>
+<tr>
+<td><tt>if (!p)</tt></td>
+<td>Tests <tt>p</tt> against <tt>nullptr</tt>.</td>
+<td>does not print</td>
+</tr>
+<tr>
+<td><tt>if ((bool)p == (bool)q)</tt></td>
+<td>Unboxes <tt>p</tt> and <tt>q</tt> and compares them.</td>
+<td>prints 7</td>
+</tr>
+</tbody>
+</table>
+<p>Converting hat pointers to <code>bool</code> is very strange. Be glad you don’t have to deal with it.</p>
+<p><a href="/code/in-c-winrt-what-happens-when-i-treat-an-iinspectable-as-or-convert-one-to-a-bool"> Next time</a>, we’ll look at C++/WinRT. It’ll be a lot less strange.</p>
+
+
+</body>

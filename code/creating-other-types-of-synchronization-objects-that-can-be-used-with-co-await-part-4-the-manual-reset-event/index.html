@@ -1,0 +1,54 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating other types of synchronization objects that can be used with co_await, part 4: The manual-reset event</h1>  <!-- .entry-meta -->
+
+<p>Now that we’ve finished <a href="/code/creating-other-types-of-synchronization-objects-that-can-be-used-with-co-await-part-3-parallel-resumption" title="Creating other types of synchronization objects that can be used with co_await, part 3: Parallel resumption"> our library for building awaitable synchronization objects</a>, let’s actually use it.</p>
+<p>The introduction to this part of the series began with a demonstrate of a one-shot event. So let’s take it a step further and make it a resettable event.</p>
+<pre>struct awaitable_manual_reset_event_state :
+    async_helpers::awaitable_state&lt;awaitable_manual_reset_event_state&gt;
+{
+    <span style="color: blue;">awaitable_manual_reset_event_state(bool initial)
+    : signaled(initial) {}</span>
+
+    std::atomic&lt;bool&gt; signaled;
+
+    bool fast_claim(extra_await_data const&amp;) const noexcept
+    {
+        return signaled.load(std::memory_order_acquire);
+    }
+
+    bool claim(extra_await_data const&amp;) const noexcept
+    {
+        return signaled.load(std::memory_order_relaxed);
+    }
+
+    void set(node_list&amp; list) noexcept
+    {
+        signaled.store(true, std::memory_order_relaxed);
+        resume_all(list);
+    }
+};
+
+struct awaitable_manual_reset_event
+    : async_helpers::awaitable_sync_object&lt;
+        awaitable_manual_reset_event_state&gt;
+{
+    <span style="color: blue;">awaitable_manual_reset_event(bool initial = false) :
+        awaitable_sync_object(initial) { }</span>
+
+    void set() noexcept
+    {
+        action_impl(&amp;state::set);
+    }
+
+    <span style="color: blue;">void reset() noexcept
+    {
+        get_state().signaled.store(false,
+            std::memory_order_release);
+    }</span>
+};
+</pre>
+<p>The manual reset event is basically the same as the one-shot event, except that you can also specify the initial signal state, and you can reset it as well as set it. The reset is done with release semantics, so that anything which was dependent upon the release will observe the changes that occurred prior to the release. (I’m not sure how you could actually rely on this, since the release doesn’t signal anything, and all awaits will block on an unsignaled event, but I’m doing it just in case.)</p>
+<p>Well, that was a bit anticlimactic. That’s okay, we’ll make up for it next time, when we look at auto-reset events.</p>
+
+
+</body>

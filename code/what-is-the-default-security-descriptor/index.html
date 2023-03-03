@@ -1,0 +1,95 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is the default security descriptor?</h1>  <!-- .entry-meta -->
+
+<p>
+All these functions have an optional LPSECURITY_ATTRIBUTES parameter,
+for which everybody just passes NULL, thereby obtaining the default
+security descriptor.
+But what <b>is</b> the default security descriptor?
+</p>
+<p>
+Of course, the place to start is MSDN, in the section titled
+<a href="http://msdn.microsoft.com/library/en-us/security/security/security_descriptors_for_new_objects.asp">
+Security Descriptors for New Objects</a>.
+</p>
+<p>
+It says that the default DACL comes from inheritable ACEs
+(if the object belongs to a hierarchy, like the filesystem
+or the registry); otherwise, the default DACL comes from the
+primary or impersonation token of the creator.
+</p>
+<p>
+But what is the default primary token?
+</p>
+<p>
+Gosh, I don’t know either. So let’s write a program to find out.
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;sddl.h&gt; // ConvertSecurityDescriptorToStringSecurityDescriptor
+int WINAPI
+WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
+{
+ HANDLE Token;
+ if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &amp;Token)) {
+ DWORD RequiredSize = 0;
+ GetTokenInformation(Token, TokenDefaultDacl, NULL, 0, &amp;RequiredSize);
+ TOKEN_DEFAULT_DACL* DefaultDacl =
+     reinterpret_cast&lt;TOKEN_DEFAULT_DACL*&gt;(LocalAlloc(LPTR, RequiredSize));
+ if (DefaultDacl) {
+  SECURITY_DESCRIPTOR Sd;
+  LPTSTR StringSd;
+  if (GetTokenInformation(Token, TokenDefaultDacl, DefaultDacl,
+                          RequiredSize, &amp;RequiredSize) &amp;&amp;
+      InitializeSecurityDescriptor(&amp;Sd, SECURITY_DESCRIPTOR_REVISION) &amp;&amp;
+      SetSecurityDescriptorDacl(&amp;Sd, TRUE,
+          DefaultDacl-&gt;DefaultDacl, FALSE) &amp;&amp;
+      ConvertSecurityDescriptorToStringSecurityDescriptor(&amp;Sd,
+          SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &amp;StringSd, NULL)) {
+   MessageBox(NULL, StringSd, TEXT("Result"), MB_OK);
+   LocalFree(StringSd);
+  }
+  LocalFree(DefaultDacl);
+ }
+ CloseHandle(Token);
+ }
+ return 0;
+}
+</pre>
+<p>
+Okay, I admit it, the whole purpose of this entry is just so I can call
+the function
+<a href="http://msdn.microsoft.com/library/en-us/security/security/convertsecuritydescriptortostringsecuritydescriptor.asp">
+ConvertSecurityDescriptorToStringSecurityDescriptor</a>,
+quite possibly the longest function name in the Win32 API.
+And just for fun, I used the NT variable naming convention instead
+of Hungarian.
+</p>
+<p>
+If you run this program you’ll get something like this:
+</p>
+<pre>
+D:(A;;GA;;;S-1-5-21-1935655697-839522115-854245398-1003)(A;;GA;;;SY)
+</pre>
+<p>
+Pull out our
+<a href="http://msdn.microsoft.com/library/en-us/security/security/security_descriptor_string_format.asp">
+handy reference to the Security Descriptor String Format</a> to decode this.
+</p>
+<ul>
+<li>
+“D:” – This introduces the DACL.
+<li>
+“(A;;GA;;;S-…)” – “Allow” “Generic All” access to “S-…”, which
+happens to be me.  Every user by default
+has full access to their own process.
+<li>
+“(A;;GA;;;SY)” – “Allow” “Generic All” access to “Local System”.
+</li></li></li></ul>
+<p>
+Next time, I’ll teach you
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/03/15/89753.aspx">
+how to decode that S-… thing</a>.</p>
+
+
+</body>

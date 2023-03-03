@@ -1,0 +1,16 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Does creating a thread from DllMain deadlock or doesn't it?</h1>  <!-- .entry-meta -->
+
+<p>Let me get this out of the way up front: Creating a thread from <code>DllMain</code> is <a href="http://www.microsoft.com/whdc/driver/kernel/DLL_bestprac.mspx"> not recommended</a>. The discussion here has to do with explaining the behavior you may observe if you violate this advice.
+ <a href="http://blogs.msdn.com/oldnewthing/pages/407234.aspx#430060"> Commenter Pete points out that “according to Usenet” creating a thread in <code>DllMain</code> is supposed to deadlock</a>, but that’s not what he saw. All he saw was that the thread entry procedure was not called.
+ I’m going to set aside what “according to Usenet” means.
+ Recall how a thread starts up. When you call <code>CreateThread</code>, a kernel thread object is created and scheduled. Once the thread gets a chance to run, the kernel calls all the <code>DllMain</code> functions with the <code>DLL_THREAD_ATTACH</code> code. Once that’s done, the thread’s entry point is called.
+ The issue with deadlocks is that all <code>DllMain</code> functions are serialized. At most one <code>DllMain</code> can be running at a time. Suppose a <code>DllMain</code> function is running and it creates a thread. As we noted above, a kernel thread object is created and scheduled, and the first thing the thread does is notify all the DLLs with <code>DLL_THREAD_ATTACH</code>. Since <code>DllMain</code> functions are serialized, the attempt to send out the <code>DLL_THREAD_ATTACH</code> notifications must wait until the current <code>DllMain</code> function returns.
+ That’s why you observe that the new thread’s entry point doesn’t get called until after you return from <code>DllMain</code>. The new thread hasn’t even made it that far; it’s still working on the <code>DLL_THREAD_ATTACH</code> notifications. On the other hand, there is no actual deadlock here. The new thread will get itself off the ground once everybody else has finished doing their <code>DllMain</code> work.
+ So what is this deadlock that Usenet talks about? If you’ve been following along, you should spot it easily enough.
+ If your <code>DllMain</code> function creates a thread and then waits for the thread to do something (e.g., waits for the thread to signal an event that says that it has finished initializing, then you’ve created a deadlock. The <code>DLL_PROCESS_ATTACH</code> notification handler inside <code>DllMain</code> is waiting for the new thread to run, but the new thread can’t run until the <code>DllMain</code> function returns so that it can send a new <code>DLL_THREAD_ATTACH</code> notification.
+ This deadlock is much more commonly seen in <code>DLL_PROCESS_DETACH</code>, where a DLL wants to shut down its worker threads and wait for them to clean up before it unloads itself. You can’t wait for a thread inside <code>DLL_PROCESS_DETACH</code> because that thread needs to send out the <code>DLL_THREAD_DETACH</code> notifications before it exits, which it can’t do until your <code>DLL_PROCESS_DETACH</code> handler returns.</p>
+<p> (It is for this thread cleanup case that the function <code>FreeLibraryAndExitThread</code> was created.) </p>
+
+
+</body>

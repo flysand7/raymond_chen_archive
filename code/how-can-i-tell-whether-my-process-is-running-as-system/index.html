@@ -1,0 +1,65 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I tell whether my process is running as SYSTEM?</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to know how to check whether the current process is running as the SYSTEM account. They proposed this algorithm:</p>
+<pre>// Code in italics is wrong
+<i>bool IsCurrentProcessRunningAsSystem()
+{
+ DWORD session_id;
+ return ProcessIdToSessionId(GetCurrentProcessId(), &amp;session_id) &amp;&amp;
+        session_id == 0;
+}</i>
+</pre>
+<p>This algorithm is flawed both for the possibility of false positives as well as false negatives.</p>
+<p>You can see this for yourself by opening Task Manager:</p>
+<table border="0" cellspacing="0" style="background-color: white; font-family: Segoe UI, Tahoma, Arial, sans-serif; font-size: 10pt; border: solid 1px black; border-collapse: separate;">
+<tbody>
+<tr style="background-coloir: #fcfcfc;">
+<td nowrap="nowrap" style="border: solid 1px #e1e1e1; padding-left: 2pt; padding-right: 1em;">Name</td>
+<td nowrap="nowrap" style="border: solid 1px #e1e1e1; padding-left: 2pt; padding-right: 1em; width: 10em;">User name</td>
+<td nowrap="nowrap" style="border: solid 1px #e1e1e1; padding-left: 2pt; padding-right: 1em;">Session ID</td>
+</tr>
+<tr>
+<td nowrap="nowrap" style="padding-left: 2pt; padding-right: 1em;">LogonUI.exe</td>
+<td nowrap="nowrap" style="padding-left: 2pt; padding-right: 1em;">SYSTEM</td>
+<td nowrap="nowrap" style="padding-left: 2pt; padding-right: 1em;">3</td>
+</tr>
+<tr>
+<td nowrap="nowrap" style="padding-left: 2pt; padding-right: 1em;">winlogon.exe</td>
+<td nowrap="nowrap" style="padding-left: 2pt; padding-right: 1em;">SYSTEM</td>
+<td nowrap="nowrap" style="padding-left: 2pt; padding-right: 1em;">3</td>
+</tr>
+<tr>
+<td nowrap="nowrap" style="padding-left: 2pt; padding-right: 1em;">fontdrvhost.exe</td>
+<td nowrap="nowrap" style="padding-left: 2pt; padding-right: 1em;">UMFD-0</td>
+<td nowrap="nowrap" style="padding-left: 2pt; padding-right: 1em;">0</td>
+</tr>
+</tbody>
+</table>
+<p>We have some processes running as SYSTEM which aren’t in session zero. And we have a process in session zero that is not running as SYSTEM.</p>
+<p>If you want to know whether you are running as SYSTEM, check your token to see whether it represents the SYSTEM user.</p>
+<p>I’m going to use <a href="https://github.com/Microsoft/wil"> wil</a> as my RAII library.</p>
+<pre>#include &lt;<a href="https://github.com/microsoft/wil/blob/master/include/wil/token_helpers.h">wil/token_helpers.h</a>&gt;
+
+bool DoesTokenRepresentSid(HANDLE token, WELL_KNOWN_SID_TYPE type)
+{
+ // maps to GetTokenInformation(token, TokenUser, ...);
+ auto user = wil::get_token_information&lt;TOKEN_USER&gt;(token);
+ return !!IsWellKnownSid(user-&gt;User.Sid, type);
+}
+
+bool IsCurrentProcessRunningAsSystem()
+{
+ return DoesTokenRepresentSid(GetCurrentProcessToken(),
+                              WinLocalSystemSid);
+}
+
+bool IsCurrentThreadRunningAsSystem()
+{
+ return DoesTokenRepresentSid(GetCurrentThreadEffectiveToken(),
+                              WinLocalSystemSid);
+}
+</pre>
+
+
+</body>

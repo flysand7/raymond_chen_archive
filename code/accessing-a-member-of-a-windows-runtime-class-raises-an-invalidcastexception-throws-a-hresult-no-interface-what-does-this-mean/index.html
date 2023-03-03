@@ -1,0 +1,90 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Accessing a member of a Windows Runtime class raises an <code>Invalid­Cast­Exception</code> / throws a <code>hresult_</code><code>no_</code><code>interface</code>, what does this mean?</h1>  <!-- .entry-meta -->
+
+<p>You’re minding your own business and you decide to call a method on some object. Everything compiles fine, but it crashes at runtime with <code>Invalid­Cast­Exception</code>:</p>
+<pre>// C#
+var options = new LauncherOptions();
+options.IgnoreAppUriHandlers = true; // System.InvalidCastException
+
+// C++/WinRT
+LauncherOptions options;
+options.IgnoreAppUriHandlers(true); // winrt::hresult_no_interface 
+
+// C++/CX
+auto options = ref new LauncherOptions();
+options-&gt;IgnoreAppUriHandlers = true; // Platform::InvalidCastException
+</pre>
+<p>Why am I getting an “invalid cast exception” when there is no casting going on at all?</p>
+<p>The clue is in the C++/WinRT example, which throws <code>winrt::</code><code>hresult_</code><code>no_</code><code>interface</code>.</p>
+<p>Under the covers, Windows Runtime objects are COM objects, and their members are methods on COM interfaces. When you use a member, what happens behind the scenes is that the language projection queries the object for the COM interface that implements the desired member, and then it calls the corresponding interface method.</p>
+<p>One of the rules of COM is that interfaces are immutable. Therefore, in order to add new members to the object, those new members need to be put on a new interface.</p>
+<p>For example, the members of the <code>Launcher­Options</code> runtime class were introduced as follows:</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>Windows 8<br/>
+<tt>ILauncher­Options</tt></td>
+<td><tt>Treat­As­Untrusted<tt><br/>
+<tt>Display­Application­Picker<tt><br/>
+<tt>UI<tt><br/>
+<tt>Preferred­Application­Package­Family­Name<tt><br/>
+<tt>Preferred­Application­Display­Name<tt><br/>
+<tt>Fallback­Uri<tt><br/>
+<tt>Content­Type<tt></tt></tt></tt></tt></tt></tt></tt></tt></tt></tt></tt></tt></tt></tt></td>
+</tr>
+<tr>
+<td>Windows 10 version 1507<br/>
+<tt>ILauncher­Options2<tt></tt></tt></td>
+<td><tt>Target­Application­Package­Family­Name<tt><br/>
+<tt>Neighboring­Files­Query<tt></tt></tt></tt></tt></td>
+</tr>
+<tr>
+<td>Windows 10 version 1607<br/>
+<tt>ILauncher­Options3<tt></tt></tt></td>
+<td><tt>Ignore­App­Uri­Handlers<tt></tt></tt></td>
+</tr>
+</tbody>
+</table>
+<p>Internally, a Windows Runtime object is represented by its “default interface”. Deciding upon a default interface is usually a no-brainer, because a freshly-introduced object typically implements only one interface anyway.¹ For example, in Windows 8, the only interface supported by <code>Launcher­Options</code> is <code>ILauncher­Options</code>, which makes <code>ILauncher­Options</code> the default interface, seeing as you have no choice.</p>
+<p>Using one of the Windows 8 properties goes like this:</p>
+<pre>// C#:        options.TreatAsUntrusted = true;
+// C++/CX:    options-&gt;TreatAsUntrusted = true;
+// C++/WinRT: options.TreatAsUntrusted(true);
+
+// options is already a ILauncherOptions.
+options-&gt;put_TreatAsUntrusted(true);
+</pre>
+<p>But using one of the properties added later takes a little more work:</p>
+<pre>// C#:        options.IgnoreAppUriHandlers = true;
+// C++/CX:    options-&gt;IgnoreAppUriHandlers = true;
+// C++/WinRT: options.IgnoreAppUriHandlers(true);
+
+ILauncherOptions3* options3;
+options-&gt;QueryInterface(IID_PPV_ARGS(&amp;options3));
+options3-&gt;put_IgnoreAppUriHandlers(true);
+options3-&gt;Release();
+</pre>
+<p>If you take a program that uses <code>Ignore­App­Uri­Handlers</code> and run it on on a version of Windows that doesn’t support the property, the <code>Query­Interface</code> call fails with <code>E_</code><code>NO­INTERFACE</code>. The language projection then converts this into a language-specific exception.</p>
+<ul>
+<li>C# <a href="https://docs.microsoft.com/en-us/dotnet/api/system.invalidcastexception?view=netframework-4.8"> converts it to a <code>System.</code><code>Invalid­Cast­Exception</code></a>.</li>
+<li>C++/CX <a href="https://docs.microsoft.com/en-us/cpp/cppcx/platform-comexception-class?view=vs-2019"> converts it to a <code>Platform.</code><code>Invalid­Cast­Exception</code></a>.</li>
+<li>C++/WinRT <a href="https://github.com/microsoft/cppwinrt/blob/61b62611484dc7dede489ee4d7dcc4306e924cc7/strings/base_error.h#L326"> converts it to a <code>winrt.</code><code>hresult_</code><code>no_</code><code>interface</code></a>.</li>
+</ul>
+<p>C# and C++/CX report this as an <code>Invalid­Cast­Exception</code>, because the common case for this is where you try to cast an object to an interface that it doesn’t support.</p>
+<p>Instead of adding new interfaces, you might be tempted to add new members to the existing interface, in violation of COM rules. But that would result in profound sadness if a program tried to use one of those new members when running on a system that doesn’t support it:</p>
+<pre>// C#:        options.IgnoreAppUriHandlers = true;
+// C++/CX:    options-&gt;IgnoreAppUriHandlers = true;
+// C++/WinRT: options.IgnoreAppUriHandlers(true);
+//
+// In hypothetical world where new members
+// are added to ILauncherOptions.
+
+options-&gt;put_IgnoreAppUriHandlers(true);
+</pre>
+<p>Since there is no <code>put_</code><code>Ignore­App­Uri­Handlers</code> method in the vtable on older versions of Windows, this results not only in reading past the end of the vtable, but taking the undefined value past the end of the vtable and treating it as a function pointer! If you’re lucky, this crashes unrecoverably. If you’re unlucky, this is a security vulnerability.</p>
+<p>Now that we understand the source of the invalid cast exception, we can look next time at what we can do about it.</p>
+<p>¹ The default interface may not be <code>IUnknown</code> or <code>IInspectable</code>.</p>
+<p> </p>
+
+
+</body>

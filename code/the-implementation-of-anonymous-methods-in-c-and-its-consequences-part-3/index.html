@@ -1,0 +1,175 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The implementation of anonymous methods in C# and its consequences (part 3)</h1>  <!-- .entry-meta -->
+
+<p>
+Last time we saw how the implementation details of anonymous
+methods can make themselves visible when you start taking a
+delegate apart by looking at its <code>Target</code>
+and <code>Method</code>.
+This time, we’ll see how an innocuous code change can result in
+disaster due to anonymous methods.
+</p>
+<p>
+Occasionally, I see people arguing over where local variables
+should be declared.
+The “decentralists” believe that variables should be declared
+as close to their point of first use as possible:
+</p>
+<pre>
+void MyFunc1()
+{
+ ...
+ for (int i = 0; i &lt; 10; i++) {
+  string s = i.ToString();
+  ...
+ }
+ ...
+}
+</pre>
+<p>
+On the other hand,
+the “consolidators” believe that local variables should be
+declared outside of loops.
+</p>
+<pre>
+void MyFunc2()
+{
+ ...
+ string s;
+ for (int i = 0; i &lt; 10; i++) {
+  s = i.ToString();
+  ...
+ }
+ ...
+}
+</pre>
+<p>
+The “consolidators” argue that hoisting the variable <code>s</code>
+means that the compiler only has to create the variable once,
+at function entry, rather than each time through the loop.
+</p>
+<p>
+As a result, you can find yourself caught in a struggle between
+the “decentralists” and the “consolidators” as members of
+each school touch a piece of code and “fix” the local
+variable declarations to suit their style.
+</p>
+<p>
+And then there are the “peacemakers” who step in and say,
+“Look, it doesn’t matter. Can’t we all just get along?”
+</p>
+<p>
+While I admire the desire to have everyone get along,
+the claim that it doesn’t matter is unfortunately not always true.
+Let’s stick some nasty code in where the dots are:
+</p>
+<pre>
+delegate void MyDelegate();
+void MyFunc1()
+{
+ <font color="blue">MyDelegate d = null;</font>
+ for (int i = 0; i &lt; 10; i++) {
+  string s = i.ToString();
+  <font color="blue">d += delegate() {
+   System.Console.WriteLine(s);
+  };</font>
+ }
+ <font color="blue">d();</font>
+}
+</pre>
+<p>
+Since the <code>s</code> variable is declared inside the loop,
+each iteration of the loop gets its own copy of <code>s</code>,
+which means that each delegate
+<strong>gets its own copy of <code>s</code></strong>.
+The first time through the loop, an <code>s</code> is created
+with the value <code>"0"</code> and that <code>s</code> is used
+by the first delegate.
+The second time through the loop, a new <code>s</code> is created
+with the value <code>"1"</code>, and that new <code>s</code> is used
+by the second delegate.
+The result of this code fragment is ten delegates, each of which
+prints a different number from 0 to 9.
+</p>
+<p>
+Now, a “consolidator” looks at this code and says,
+“How inefficient, creating a new <code>s</code> each time through
+the loop. I shall hoist it and bask in the accolades of my countrymen.”
+</p>
+<pre>
+delegate void MyDelegate();
+void MyFunc2()
+{
+ MyDelegate d = null;
+ <font color="blue">string s;</font>
+ for (int i = 0; i &lt; 10; i++) {
+  <font color="blue">s</font> = i.ToString();
+  d += delegate() {
+   System.Console.WriteLine(s);
+  };
+ }
+ d();
+}
+</pre>
+<p>
+If you run this fragment, you get different behavior.
+A single <code>s</code> variable is created for all the
+loop iterations to share.
+The first time through the loop, the value of <code>s</code> is
+<code>"0"</code>, and then the first delegate is created.
+The second loop iteration
+changes the value of <code>s</code> to <code>"1"</code>
+before creating the second delegate.
+Repeat for the remaining eight delegates, and at the end of
+the loop, the value of <code>s</code> is <code>"9"</code>,
+and ten delegates have been added to <code>d</code>.
+When <code>d</code> is invoked, all the delegates
+print the value of the <code>s</code>
+variable, which they are sharing and which has the value <code>"9"</code>.
+The result:
+<code>9</code> is printed ten times.
+</p>
+<p>
+Now, I happen to have constructed this scenario to make the
+“consolidators” look bad, but I could also have written it
+to make the “decentralists” look bad for pushing a variable
+declaration into a loop scope when it should have remained outside.
+(All you have to do is read the above scenario in reverse.)
+</p>
+<p>
+The point of this little exercise is that when
+a “consolidator” or a “decentralist”
+goes through an entire program “tuning up”
+the declarations of local variables,
+the result can be a broken program,
+even though the person making the change was convinced
+that their change
+“had no effect; I was just making the code prettier / more efficient”.
+</p>
+<p>
+What’s the conclusion here?
+</p>
+<p>
+Write what you mean and mean what you write.
+If the precise scope of a variable is important,
+make sure to comment it as such so that somebody won’t
+mess it up in a “clean-up” pass over your program.
+If there are two ways of writing the same thing,
+then write the one that is more maintainable.
+And if you feel that one method is superior from a performance point of view,
+then (1) make sure you’re right, and (2) make sure it matters.
+</p>
+<p>
+<b>Update</b>:
+In C# 5, the rules for the <code>foreach</code> statement
+<a href="https://ericlippert.com/2009/11/16/closing-over-the-loop-variable-considered-harmful-part-two/">
+changed in a way that affects lambda capture</a>:
+The control variable of the <code>foreach</code> is now scoped to the
+loop body,
+which means that capturing it in a lambda captures the current iteration,
+because each iteration gets a separate copy of th3e variable.
+That doesn’t affect our <code>for</code> loop above, but it is
+worth calling out.</p>
+
+
+</body>

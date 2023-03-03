@@ -1,0 +1,300 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Everybody thinks about CLR objects the wrong way (well not everybody)</h1>  <!-- .entry-meta -->
+
+<p>
+Many people responded to
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/08/09/10047586.aspx">
+Everybody thinks about garbage collection the wrong way</a>
+by proposing variations on auto-disposal based on scope:
+</p>
+<ul>
+<li>“Any local variable that is IDisposable should
+    <a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/08/09/10047586.aspx#10048023">
+    dispose itself when it goes out of scope</a>.”
+<li>“You should be able to attach an attribute to a class that says
+    <a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/08/09/10047586.aspx#10047975">
+    the destructor should be called immediately after leaving scope</a>.”
+<li>“It should have
+    <a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/08/09/10047586.aspx#10047964">
+    promised to call finalizers on scope exit</a>.”
+</li></li></li></ul>
+<p>
+What these people fail to recognize is that they are dealing
+with object <i>references</i>, not objects.
+(I’m restricting the discussion to reference types, naturally.)
+In C++, you can put an object in a local variable.
+In the CLR, you can only put an object <i>reference</i>
+in a local variable.
+</p>
+<p>
+For those who think in terms of C++, imagine if it were impossible to
+declare instances of C++ classes as local variables on the stack.
+Instead, you had to declare a local variable that was a pointer
+to your C++ class, and put the object in the pointer.
+</p>
+<table border="0" cellpadding="5">
+<tr>
+<th>C#</th>
+<th>C++</th>
+</tr>
+<tr>
+<td></td>
+<td valign="baseline">
+<pre>void Function(OtherClass o)
+{
+ // No longer possible to declare objects
+ // with automatic storage duration
+ <strike>Color c(0,0,0);</strike>
+ <strike>Brush b(c);</strike>
+ <strike>o.SetBackground(b);</strike>
+}</pre></td>
+</tr>
+<tr>
+<td valign="baseline"><pre>void Function(OtherClass o)
+{
+ Color c = new Color(0,0,0);
+ Brush b = new Brush(c);
+ o.SetBackground(b);
+}</pre>
+</td>
+<td valign="baseline">
+<pre>void Function(OtherClass* o)
+{
+ Color* c = new Color(0,0,0);
+ Brush* b = new Brush(c);
+ o-&gt;SetBackground(b);
+}</pre></td>
+</tr>
+</table>
+<p>
+This world where you can only use pointers to refer to objects
+is the world of the CLR.
+</p>
+<p>
+In the CLR,
+objects never go out of scope because objects don't have scope.¹
+Object <i>references</i> have scope.
+Objects are alive from the point of construction to the point
+that the last <i>reference</i> goes out of scope or is otherwise destroyed.
+</p>
+<p>
+If objects were auto-disposed when references went out of scope,
+you'd have all sorts of problems.
+I will use C++ notation instead of CLR notation to emphasize
+that we are working with references, not objects.
+(I can't use actual C++ references since you cannot change the referent
+of a C++ reference, something that is permitted by the CLR.)
+</p>
+<table border="0" cellpadding="5">
+<tr>
+<th>C#</th><th>C++</th>
+</tr>
+<tr>
+<td valign="baseline"><pre>void Function(OtherClass o)
+{
+ Color c = new Color(0,0,0);
+ Brush b = new Brush(c);
+ Brush b2 = b;
+ o.SetBackground(b2);
+}<pre></pre></pre></td>
+<td valign="baseline"><pre>void Function(OtherClass* o)
+{
+ Color* c = new Color(0,0,0);
+ Brush* b = new Brush(c);
+ Brush* b2 = b;
+ o-&gt;SetBackground(b2);
+ <font color="blue">// automatic disposal when variables go out of scope
+ dispose b2;
+ dispose b;
+ dispose c;
+ dispose o;</font>
+}</pre>
+</td>
+</tr></table>
+<p>
+Oops, we just double-disposed the <code>Brush</code> object
+and probably prematurely disposed the <code>OtherClass</code> object.
+Fortunately, disposal is idempotent, so the double-disposal is
+harmless (assuming you actually meant disposal and not destruction).
+The introduction of <code>b2</code> was artificial in this example,
+but you can imagine
+<code>b2</code> being, say, the leftover value in a variable
+at the end of a loop, in which case we just accidentally
+disposed the last object in an array.
+</p>
+<p>
+Let's say there's some attribute you can put on a local variable or
+parameter to say that you don't want it auto-disposed on scope exit.
+</p>
+<table border="0" cellpadding="5">
+<tr>
+<th>C#</th>
+<th>C++</th>
+</tr>
+<tr>
+<td valign="baseline">
+<pre>void Function([NoAutoDispose] OtherClass o)
+{
+ Color c = new Color(0,0,0);
+ Brush b = new Brush(c);
+ [NoAutoDispose] Brush b2 = b;
+ o.SetBackground(b2);
+}<pre></pre></pre></td>
+<td valign="baseline"><pre>void Function([NoAutoDispose] OtherClass* o)
+{
+ Color* c = new Color(0,0,0);
+ Brush* b = new Brush(c);
+ [NoAutoDispose] Brush* b2 = b;
+ o-&gt;SetBackground(b2);
+ <font color="blue">// automatic disposal when variables go out of scope
+ dispose b;
+ dispose c;</font>
+}</pre>
+</td>
+</tr></table>
+<p>
+Okay, that looks good. We disposed the <code>Brush</code> object
+exactly once and didn't prematurely dispose the <code>OtherClass</code>
+object that we received as a parameter.
+(Maybe we could make <code>[NoAutoDispose]</code> the default
+for parameters to save people a lot of typing.)
+We're good, right?
+</p>
+<p>
+Let's do some trivial code cleanup, like inlining the <code>Color</code>
+parameter.
+</p>
+<table border="0" cellpadding="5">
+<tr>
+<th>C#</th>
+<th>C++</th>
+</tr>
+<tr>
+<td valign="baseline">
+<pre>void Function([NoAutoDispose] OtherClass o)
+{
+ Brush b = new Brush(new Color(0,0,0));
+ [NoAutoDispose] Brush b2 = b;
+ o.SetBackground(b2);
+}<pre></pre></pre></td>
+<td valign="baseline"><pre>void Function([NoAutoDispose] OtherClass* o)
+{
+ Brush* b = new Brush(new Color(0,0,0));
+ [NoAutoDispose] Brush* b2 = b;
+ o-&gt;SetBackground(b2);
+ <font color="blue">// automatic disposal when variables go out of scope
+ dispose b;</font>
+}</pre>
+</td>
+</tr></table>
+<p>
+Whoa, we just introduced a semantic change by what seemed like a harmless
+transformation:
+The <code>Color</code> object is no longer auto-disposed.
+This is even more insidious than
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2006/08/04/688527.aspx">
+the scope of a variable affecting its treatment by anonymous closures</a>,
+for introduction of temporary variables to break up a complex expression
+(or removal of one-time temporary variables) are common transformations
+that people expect to be harmless,
+especially since many language transformations are expressed in terms
+of temporary variables.
+Now you have to remember to tag all of your temporary variables with
+<code>[NoAutoDospose]</code>.
+</p>
+<p>
+Wait, we're not done yet.
+What does <code>SetBackground</code> do?
+</p>
+<table border="0" cellpadding="5">
+<tr>
+<th>C#</th>
+<th>C++</th>
+</tr>
+<tr>
+<td valign="baseline">
+<pre>void OtherClass.SetBackground([NoAutoDispose] Brush b)
+{
+ this.background = b;
+}<pre></pre></pre></td>
+<td valign="baseline"><pre>void OtherClass::SetBackground([NoAutoDispose] Brush* b)
+{
+ this-&gt;background = b;
+}</pre>
+</td>
+</tr></table>
+<p>
+Oops, there is still a reference to that <code>Brush</code> in the
+<code>o.background</code> member.
+We disposed an object while there were still outstanding
+references to it.
+Now when the <code>OtherClass</code> object tries to use
+the reference, it will find itself operating on a
+disposed object.
+</p>
+<p>
+Working backward, this means that we should have put a
+<code>[NoAutoDispose]</code> attribute on the <code>b</code>
+variable.
+At this point, it's six of one, a half dozen of the other.
+Either you put <code>using</code> around all the things
+that you want auto-disposed or you put <code>[NoAutoDispose]</code>
+on all the things that you don't.²
+</p>
+<p>
+The C++ solution to this problem is to use something like
+<code>shared_ptr</code> and reference-counted objects,
+with the assistance of <code>weak_ptr</code> to avoid reference cycles,
+and being very selective about which objects are allocated
+with automatic storage duration.
+Sure, you could try to bring this model of programming to the CLR,
+but now you're just trying to
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2007/07/12/3821577.aspx">
+pick all the cheese off your cheeseburger</a>
+and intentionally going against the automatic memory management
+design principles of the CLR.
+</p>
+<p>
+I was sort of assuming that since you're here for CLR Week,
+you're one of those people who actively chose to use the CLR
+and want to use it in the manner in which it was intended,
+rather than somebody who wants it to work like C++.
+If you want C++, you know where to find it.
+</p>
+<p>
+<b>Footnote</b>
+</p>
+<p>
+¹ Or at least don't have scope in the sense we're discussing here.
+</p>
+<p>
+² As for an attribute for specific classes to have
+auto-dispose behavior,
+that works only if all references to auto-dispose objects are
+in the context of a create/dispose pattern.
+References to auto-dispose objects outside of the create/dispose pattern
+would need
+to be tagged with the <code>[NoAutoDispose]</code> attribute.
+</p>
+<pre>
+[AutoDispose] class Stream { ... };
+Stream MyClass.GetSaveStream()
+{
+ [NoAutoDispose] Stream stm;
+ if (saveToFile) {
+  stm = ...;
+ } else {
+  stm = ...;
+ }
+ return stm;
+}
+void MyClass Save()
+{
+ // NB! do not combine into one line
+ Stream stm = GetSaveStream();
+ SaveToStream(stm);
+}
+</pre>
+
+
+</body>

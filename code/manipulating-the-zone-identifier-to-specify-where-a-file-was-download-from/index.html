@@ -1,0 +1,179 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Manipulating the zone identifier to specify where a file was download from</h1>  <!-- .entry-meta -->
+
+<p>
+When you download a file via Internet Explorer,
+the file is tagged with a little bit of information known as
+a <i>zone identifier</i> which remembers where the file was
+downloaded from.
+This is what tells Explorer to put up the “Yo, did you really want
+to run this program?” prompt
+and which is taken into account by applications
+so that they can do things like disable scripting
+and macros when they open the document, just in case the file is
+malicious.
+</p>
+<p>
+Today’s Little Program is really three Little Programs:
+One to read the zone identifier, one to set the zone identifier,
+and one to clear it.
+</p>
+<pre>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;urlmon.h&gt;
+#include &lt;stdlib.h&gt;
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ if (argc &lt; 2) return 0;
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+ CComPtr&lt;IZoneIdentifier&gt; spzi;
+ spzi.CoCreateInstance(CLSID_PersistentZoneIdentifier);
+ DWORD dwZone;
+ if (SUCCEEDED(CComQIPtr&lt;IPersistFile&gt;(spzi)
+                   -&gt;Load(argv[1], STGM_READ)) &amp;&amp;
+     SUCCEEDED(spzi-&gt;GetId(&amp;dwZone))) {
+  printf("Zone identifier is %d\n", dwZone);
+ } else {
+  printf("Couldn't get zone identifier (perhaps there isn't one)\n");
+ }
+ return 0;
+}
+</pre>
+<p>
+The first program takes a file name on the command line
+(fully-qualified path, please)
+and prints the zone identifier associated with it.
+The numeric values for the most commonly-encountered zone identifiers are
+</p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tr>
+<th>Identifier</th>
+<th>Value</th>
+</tr>
+<tr>
+<td><code>URLZONE_LOCAL_MACHINE</code></td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td><code>URLZONE_INTRANET</code></td>
+<td align="right">1</td>
+</tr>
+<tr>
+<td><code>URLZONE_TRUSTED</code></td>
+<td align="right">2</td>
+</tr>
+<tr>
+<td><code>URLZONE_INTERNET</code></td>
+<td align="right">3</td>
+</tr>
+<tr>
+<td><code>URLZONE_UNTRUSTED</code></td>
+<td align="right">4</td>
+</tr>
+</table>
+<p>
+Note also that if you want your application to be sensitive
+to the file zone (so that you can disable features
+for untrusted documents),
+you should use the
+<code>IInternet­Security­Manager::Map­Url­To­Zone</code> function rather
+than using only the file zone identifier,
+because the effective zone of a file is a combination of the
+file’s declared zone as well as its physical location.
+(For example, a file in the Temporary Internet Files directory
+or on an untrusted server should not be given full trust
+regardless of what it claims.
+<a href="http://blogs.msdn.com/b/ieinternals/archive/2011/03/23/understanding-local-machine-zone-lockdown-restricted-this-webpage-from-running-scripts-or-activex-controls.aspx">
+Additional reading</a>.)
+</p>
+<p>
+Here’s a program that uses
+<code>IInternet­Security­Manager::Map­Url­To­Zone</code>
+to determine the effective security zone:
+</p>
+<pre>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;urlmon.h&gt;
+#include &lt;stdlib.h&gt;
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ if (argc &lt; 2) return 0;
+ CCoInitialize init;
+ CComPtr&lt;IInternetSecurityManager&gt; spism;
+ spzi.CoCreateInstance(CLSID_InternetSecurityManager);
+ DWORD dwZone;
+ if (SUCCEEDED(spism-&gt;MapUrlToZone(
+                   argv[1],
+                   &amp;dwZone,
+                   MUTZ_ISFILE | MUTZ_DONT_UNESCAPE))) {
+  printf("Zone is %d\n", dwZone);
+ } else {
+  printf("Couldn't get zone\n");
+ }
+ return 0;
+}
+</pre>
+<p>
+The <code>MUTZ_IS­FILE</code> flag
+saves you the hassle of having to prepend
+<code>file:</code> in front of the path,
+but you still have to pass a full path
+because the first parameter is a URL, not a path.
+</p>
+<p>
+Okay, that was a bit of a digression there.
+Let’s write another Little Program which changes the zone identifier.
+</p>
+<pre>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;urlmon.h&gt;
+#include &lt;stdlib.h&gt;
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ if (argc &lt; 3) return 0;
+ CCoInitialize init;
+ CComPtr&lt;IZoneIdentifier&gt; spzi;
+ spzi.CoCreateInstance(CLSID_PersistentZoneIdentifier);
+ spzi-&gt;SetId(_wtol(argv[2]));
+ CComQIPtr&lt;IPersistFile&gt;(spzi)-&gt;Save(argv[1], TRUE);
+ return 0;
+}
+</pre>
+<p>
+This program takes two parameters:
+A fully-qualified path and a zone (in integer form).
+It applies the zone to the file,
+overwriting the existing zone if any.
+</p>
+<p>
+Finally, here’s a Little Program to remove the zone information
+from the file entirely.
+This is the equivalent of clicking the
+<i>Unblock</i> button in the file property sheet.
+</p>
+<pre>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;urlmon.h&gt;
+#include &lt;stdlib.h&gt;
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ if (argc &lt; 2) return 0;
+ CCoInitialize init;
+ CComPtr&lt;IZoneIdentifier&gt; spzi;
+ spzi.CoCreateInstance(CLSID_PersistentZoneIdentifier);
+ spzi-&gt;Remove();
+ CComQIPtr&lt;IPersistFile&gt;(spzi)-&gt;Save(argv[1], TRUE);
+ return 0;
+}
+</pre>
+
+
+</body>

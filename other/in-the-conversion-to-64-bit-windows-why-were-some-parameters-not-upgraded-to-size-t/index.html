@@ -1,0 +1,193 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">In the conversion to 64-bit Windows, why were some parameters not upgraded to SIZE_T?</h1>  <!-- .entry-meta -->
+
+<p>
+James wonders
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/07/20/10040074.aspx#10042836">
+why many functions kept <code>DWORD</code> for parameter
+lengths instead of upgrading to <code>SIZE_T</code> or
+<code>DWORD_PTR</code></a>.
+</p>
+<p>
+When updating the interfaces for 64-bit Windows,
+there were a few guiding principles.
+Here are two of them.
+</p>
+<ul>
+<li>Don’t change an interface unless you really need to.
+<li>Do you really need to?
+</li></li></ul>
+<p>
+Changing an interface causes all sorts of problems when porting.
+For example, if you change the parameters to a COM interface,
+then you introduce a breaking change in everybody who implements it.
+Consider this hypothetical interface:
+</p>
+<pre>
+// namedobject.idl
+interface INamedObject : IUnknown
+{
+    HRESULT GetName([out, string, sizeof(cchBuf)] LPWSTR pszBuf,
+                    [in] DWORD cchBuf);
+};
+</pre>
+<p>
+And here’s a hypothetical implementation:
+</p>
+<pre>
+// contoso.cpp
+class CContosoBasicNamedObject : public INamedObject
+{
+    ...
+    HRESULT GetName(LPWSTR pszBuf, DWORD cchBuf)
+    {
+        return StringCchPrintfW(pszBuf, cchBuf, L"Contoso");
+    }
+    ...
+};
+</pre>
+<p>
+Okay, now it’s time to 64-bit-ize this puppy.
+So you do the natural thing: Grow the
+<code>DWORD</code> parameter
+to <code>DWORD_PTR</code>.
+Since
+<code>DWORD_PTR</code> maps to <code>DWORD</code>
+on 32-bit systems, this is a backward-compatible change.
+</p>
+<pre>
+// namedobject.idl
+interface INamedObject : IUnknown
+{
+    HRESULT GetName([out, string, sizeof(cchBuf)] LPWSTR pszBuf,
+                    [in] DWORD<font color="red">_PTR</font> cchBuf);
+};
+</pre>
+<p>
+Then you recompile the entire operating system and find that
+the compiler complains,
+“Cannot instantiate abstract class: CContosoBasicNamedObject.”
+Oh, right, that’s because the
+<code>INamed­Object::Get­Name</code> method
+in the implementation no longer matches the method in the
+base class,
+so the method in the base class is not overridden.
+Fortunately, you have access to the source code for
+<code>contoso.cpp</code>, and you can apply the appropriate fix:
+</p>
+<pre>
+// contoso.cpp
+class CBasicNamedObject : public INamedObject
+{
+    ...
+    HRESULT GetName(LPWSTR pszBuf, DWORD_<font color="red">PTR</font> cchBuf)
+    {
+        return StringCchPrintfW(pszBuf, cchBuf, L"Basic");
+    }
+    ...
+};
+</pre>
+<p>
+Yay, everything works again.
+A breaking change led to a compiler error, which led you
+to the fix.
+The only consequence (so far) is that the number of
+“things in code being ported from 32-bit Windows to 64-bit Windows
+needs to watch out for”
+has been incremented by one.
+Of course,
+too much of this incrementing, and the list of things becomes
+so long that developers are going to throw up their hands and say
+“Porting is too much work, screw it.”
+Don’t forget,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/09/13/10348876.aspx">
+the number of breaking API changes in the
+conversion from 16-bit to 32-bit Windows was only 117</a>.
+</p>
+<p>
+You think you fixed the problem, but you didn’t.
+Because there’s another class elsewhere in the Contoso project.
+</p>
+<pre>
+class CSecureNamedObject : public CBasicNamedObject
+{
+    ...
+    HRESULT GetName(LPWSTR pszBuf, DWORD cchBuf)
+    {
+        if (IsAccessAllowed())
+        {
+            return CBasicNamedObject::GetName(pszBuf, cchBuf);
+        }
+        else
+        {
+            return E_ACCESSDENIED:
+        }
+    }
+}
+</pre>
+<p>
+The compiler did not raise an error on
+<code>CSecure­Named­Object</code> because that
+class is not abstract.
+The
+<code>INamed­Object::Get­Name</code> method
+from the <code>INamed­Object</code> interface
+is implemented by <code>CBasic­Named­Object</code>.
+All abstract methods have been implemented,
+so no “instantiating abstract class” error.
+</p>
+<p>
+On the other hand, the <code>CSecure­Named­Object</code>
+method <i>wanted</i> to override the base method,
+but since its parameter list didn’t match,
+it ended up creating a separate method rather than an override.
+(The <code>override</code> pseudo-keyword not yet having been standardized.)
+As a result, when somebody calls the
+<code>INamed­Object::Get­Name</code> method
+on your
+<code>CSecure­Named­Object</code>,
+they don’t get the one with the security check,
+but rather the one from
+<code>CBasic­Named­Object</code>.
+Result: Security check bypassed.
+</p>
+<p>
+These are the worst types of breaking changes:
+The ones where the compiler doesn’t tell you that something is wrong.
+Your code compiles,
+it even basically runs,
+but it doesn’t run <i>correctly</i>.
+Now, sure, the example I gave would have been uncovered
+in security testing,
+but I chose that just for drama.
+Go ahead and substitute something much more subtle.
+Like say,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2006/10/24/868544.aspx">
+invalidating the entire desktop when you pass
+<code>NULL</code> to
+<code>Invalidate­Rect</code></a>.
+</p>
+<p>
+Okay, so let’s look back at those principles.
+Do we really need to change this interface?
+The only case where expanding to
+<code>SIZE_T</code> would make a difference is if
+an object had a name longer than 2 billion characters.
+Is that a realistic end-user scenario?
+Not really.
+Therefore, don’t change it.
+</p>
+<p>
+Remember,
+you want to make it <i>easier</i> for people to port
+their program to 64-bit Windows, not harder.
+The goal is <i>make customers happy</i>, not
+<i>create the world’s most architecturally
+pure operating system</i>.
+And customers aren’t happy when the operating system
+can’t run their programs
+(because every time the vendor try to port it, they keep stumbling
+over random subtle behavior changes that break their program).</p>
+
+
+</body>

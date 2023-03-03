@@ -1,0 +1,94 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Windows Runtime delegates and object lifetime in C++/CX</h1>  <!-- .entry-meta -->
+
+<p>In C++/CX, there are two ways to create event handlers: As an (object, method) pair, or as a lambda. And the lifetime rules are different depending on how you do it.</p>
+<p>When you create a delegate with an object and a method, the object is captured by weak reference. When the delegate is invoked, the runtime first attempts to resolve the weak reference back to a strong reference. If successful, then it calls the method. If not successful, it raises the <code>Platform::</code><code>Disconnected­Exception</code>, which we saw earlier is <a href="/code/the-secret-signal-that-tells-windows-runtime-events-that-the-event-recipient-no-longer-exists"> a signal to the event source that the delegate should be auto-unregistered because it will never succeed again</a>.</p>
+<p>When you create a delegate with a lambda, you capture objects into your lambda, and those objects remain alive for as long as the delegate exists. For event handlers, the delegate generally¹ continues to exist until the handler is unregistered. In C++/CX, hat pointers are strong references, so if you capture a hat pointer, you captured a strong reference to the object. In particular, in methods on ref classes, <code>this</code> is a hat pointer to the enclosing class, so capturing <code>this</code> captures a strong reference to the enclosing class. This is called out <a href="https://docs.microsoft.com/en-us/cpp/cppcx/delegates-c-cx?view=vs-2017"> in the documentation</a>:</p>
+<blockquote class="q"><p>A named function captures the “this” pointer by weak reference, but a lambda captures it by strong reference and creates a circular reference.</p></blockquote>
+<p>The documentation here is being a bit presumptive that the object captured in the lambda in turn contains a reference to the object that holds the delegate. If that’s not the case, then you don’t have an (immediate) circular reference.</p>
+<pre>using namespace Windows::Devices::Enumeration;
+
+ref class Circular
+{
+  DeviceWatcher^ watcher;
+
+public:
+  Circular()
+  {
+    watcher = DeviceInformation::CreateWatcher();
+    watcher.Added += ref new TypedEventHandler&lt;
+        DeviceWatcher^, DeviceInformation^&gt;(
+          [this](DeviceWatcher^ sender, DeviceInformation^ info)
+          {
+             ...
+          });
+  }
+};
+</pre>
+<p>The above example creates a C++/CX delegate with a lambda, and that lambda captured <code>this</code>. Since this is a ref class, a strong reference was captured into the lambda, and we have created a circular reference:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 5em;">delegate</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td>↗︎</td>
+<td> </td>
+<td>↘︎</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 5em;">DeviceWatcher</td>
+<td> </td>
+<td>←</td>
+<td> </td>
+<td style="border: solid 1px black; width: 5em;">Circular</td>
+</tr>
+</tbody>
+</table>
+<p>As with C#, you will have to break this circular reference manually. You can’t break the arrow from the delegate to the <code>Circular</code> object (since it’s captured inside the lambda), so your choices are to unregister the delegate from the event (breaking the arrow from the <code>Device­Watcher</code> to the delegate) or to null out the <code>Circular</code> object’s reference to the <code>Device­Watcher</code>.</p>
+<p>On the other hand, this version creates the delegate with an object and a method pointer:</p>
+<pre>ref class Circular
+{
+  DeviceWatcher^ watcher;
+
+public:
+  Circular()
+  {
+    watcher = DeviceInformation::CreateWatcher();
+    watcher.Added += ref new TypedEventHandler&lt;
+        DeviceWatcher^, DeviceInformation^&gt;(
+          this, &amp;Circular::OnDeviceAdded);
+  }
+
+private:
+  void OnDeviceAdded(DeviceWatcher^ sender, DeviceInformation^ info)
+  {
+     ...
+  }
+};
+</pre>
+<p>The object is captured by weak reference into the delegate, which means that there is no circular reference.</p>
+<p>Note that capturing the object by weak reference means that the delegate will not keep the object alive. If you want the object to remain alive, you’ll have to keep it alive yourself.</p>
+<p>A final note is that when an event handler is created via XAML markup, the resulting delegate is of the (object, method) variety.</p>
+<pre>&lt;!-- XAML --&gt;
+&lt;Page x:Name="AwesomePage" ...&gt;
+  ...
+  &lt;Button Click="Button_Click" &gt;
+  ...
+&lt;/Page&gt;
+</pre>
+<p>When you write the above XAML, the delegate is created as if you had written</p>
+<pre>thatButton.Click += ref new EventHandler&lt;RoutedEventArgs^&gt;
+    (this, &amp;AwesomePage::Button_Click);
+</pre>
+<p>So you don’t have to worry about circular references created by XAML markup event handlers.</p>
+<p>¹ Naturally, you can extend the lifetime of the delegate by keeping an explicit reference to the delegate after you create it. But people rarely do that, and if you do, you know what you signed up for.</p>
+
+
+</body>

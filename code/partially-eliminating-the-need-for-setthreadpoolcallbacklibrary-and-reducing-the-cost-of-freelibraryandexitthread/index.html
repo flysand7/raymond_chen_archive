@@ -1,0 +1,119 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Partially eliminating the need for SetThreadpoolCallbackLibrary and reducing the cost of FreeLibraryAndExitThread</h1>  <!-- .entry-meta -->
+
+<p>
+<b>Update</b>:
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/11/07/10464408.aspx#10464658">Daniel points out</a>
+that there is still a race condition here, so this trick won’t work. Rats.
+</p>
+<p>
+The documentation for the
+<code>Set­Threadpool­Callback­Library</code>
+says
+</p>
+<blockquote class="q">
+<p>
+This prevents a deadlock from occurring when one thread in
+DllMain is waiting for the callback to end,
+and another thread that is executing the callback
+attempts to acquire the loader lock.
+</p>
+<p>
+If the DLL containing the callback might be unloaded,
+the cleanup code in DllMain must cancel outstanding
+callbacks before releasing the object.
+</p>
+<p>
+Managing callbacks created with a
+<code>TP_CALLBACK_ENVIRON</code>
+that specifies a callback library is somewhat processor-intensive.
+You should consider other options for ensuring that the library
+is not unloaded while callbacks are executing,
+or to guarantee that callbacks which may be executing
+do not acquire the loader lock.
+</p>
+</blockquote>
+<p>
+I’m not going to help you with the DllMain cleanup issues.
+(My plan is to simply avoid the issue by preventing the DLL
+from unloading while a callback is still pending.
+That way, you never have to cancel the callback from DllMain.)
+But I am going to help with the
+“consider other options for ensuring that the library is not
+unloaded while callbacks are executing.”
+</p>
+<p>
+The first-pass solution is to use the same trick we use
+when creating worker threads:
+We
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/11/05/10463645.aspx">
+bump the DLL reference count when queueing the work item</a>
+and use
+<code>Free­Library­When­Callback­Returns</code>
+to decrement the reference count after the callback finishes.
+(We can’t use
+<code>Free­Library­And­Exit­Thread</code>,
+of course, since we’re running on a thread on loan to us
+from the thread pool.
+Exiting the thread from a thread pool callback is like
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/04/30/10004931.aspx">
+demolishing the house you’re renting</a>.)
+</p>
+<p>
+The second-pass solution is to
+manage the DLL reference count manually.
+(Don’t go down this route unless your profiling suggests that
+DLL reference count management is a performance bottleneck.)
+The rule is still that the DLL reference count is prevented
+from dropping to zero while a callback is pending,
+but instead of incrementing the reference count each time
+we scheduled a callback,
+we’ll increment it only when the number of callbacks goes
+from zero to nonzero.
+Conversely, we decrement the reference count only when the
+number of callbacks drops from nonzero to zero.
+</p>
+<p>
+You can think of this as proxying the reference count,
+similar to how COM creates proxies that collapse
+<code>Add­Ref</code> and <code>Release</code>
+calls and signal the remote object only when the reference
+count transitions from zero to nonzero or vice versa.
+</p>
+<p>
+This optimization works for
+<code>Free­Library­And­Exit­Thread</code>,
+too,
+so let’s fold that in while we’re there.
+</p>
+<pre>
+LONG g_lProxyRefCount = 0;
+BOOL ProxyAddRefThisDll()
+{
+ if (InterlockedIncrement(&amp;g_lProxyRefCount) == 1) {
+  HMODULE hmod;
+  return GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                           reinterpret_cast&lt;LPCTSTR&gt;(g_hinstSelf),
+                           &amp;hmod);
+ }
+ return TRUE;
+}
+DECLSPEC_NORETURN
+void ProxyFreeLibraryAndExitThread(DWORD dwExitCode)
+{
+ if (InterlockedDecrement(&amp;g_lProxyRefCount) == 0) {
+  FreeLibraryAndExitThread(g_hinstSelf, dwExitCode);
+ } else {
+  ExitThread(dwExitCode);
+ }
+}
+void ProxyFreeLibraryWhenCallbackReturns(PTP_CALLBACK_INSTANCE pci)
+{
+ if (InterlockedDecrement(&amp;g_lProxyRefCount) == 0) {
+  FreeLibraryWhenCallbackReturns(pci, g_hinstSelf);
+ }
+}
+</pre>
+
+
+</body>

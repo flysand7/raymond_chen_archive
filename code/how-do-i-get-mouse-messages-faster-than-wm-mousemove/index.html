@@ -1,0 +1,387 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I get mouse messages faster than WM_MOUSEMOVE?</h1>  <!-- .entry-meta -->
+
+<p>We saw some time ago that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/10/01/55108.aspx">
+the rate at which you receive
+<code>WM_MOUSE­MOVE</code> messages
+is entirely up to how fast your program calls
+<code>Get­Message</code></a>.
+But what if your program is calling
+<code>Get­Message</code> as fast as it can,
+and it’s still not fast enough?
+</p>
+<p>
+You can use
+<a href="http://msdn.microsoft.com/en-us/library/ms646259(VS.85).aspx">
+the <code>Get­Mouse­Move­Points­Ex</code> function</a>
+to ask the window manager,
+“Hey, can you tell me about the mouse messages I missed?”
+I can think of two cases where you might want to do this:
+</p>
+<ul>
+<li>You are a program like Paint, where the user is drawing with the
+    mouse and you want to capture every nuance of the mouse motion.
+<li>You are a program that supports something like mouse gestures,
+    so you want the full mouse curve information so you can do your
+    gesture recognition on it.
+</li></li></ul>
+<p>
+Here’s a program that I wrote for a relative of mine who is a radiologist.
+One part of his job consists of sitting in a dark room
+studying medical images.
+He has to use his years of medical training to identify the tumor
+(<a href="https://www.youtube.com/watch?v=OaTO8_KNcuo">if there is one</a>),
+and then determine what percentage of the organ is afflicted.
+To use this program, run it and position the circle so that
+it matches the location and size of the organ under study.
+Once you have the circle positioned properly,
+use the mouse to draw an outline of the tumor.
+When you let go of the mouse, the title bar will tell you the
+size of the tumor relative to the entire organ.
+</p>
+<p>
+(Oh great, now I’m telling people to practice medicine without
+a license.)
+</p>
+<p>
+First, we’ll do a version of the program that just calls
+<code>Get­Message</code> as fast as it can.
+Start with the
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/04/22/410773.aspx">
+new scratch program</a>
+and make the following changes:
+</p>
+<pre>
+class RootWindow : public Window
+{
+public:
+ virtual LPCTSTR ClassName() { return TEXT("Scratch"); }
+ static RootWindow *Create();
+protected:
+ LRESULT HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam);
+ <font color="blue">void PaintContent(PAINTSTRUCT *pps);
+ BOOL WinRegisterClass(WNDCLASS *pwc);
+private:
+ RootWindow();
+ ~RootWindow();
+ void OnCreate();
+ void UpdateTitle();
+ void OnSizeChanged(int cx, int cy);
+ void AlwaysAddPoint(POINT pt);
+ void AddPoint(POINT pt);
+ void OnMouseMove(LPARAM lParam);
+ void OnButtonDown(LPARAM lParam);
+ void OnButtonUp(LPARAM lParam);
+ // arbitrary limit (this is just a demo!)
+ static const int cptMax = 1000;
+private:
+ POINT  m_ptCenter;
+ int    m_radius;
+ BOOL   m_fDrawing;
+ HPEN   m_hpenInside;
+ HPEN   m_hpenDot;
+ POINT  m_ptLast;
+ int    m_cpt;
+ POINT  m_rgpt[cptMax];
+};
+RootWindow::RootWindow()
+ : m_fDrawing(FALSE)
+ , m_hpenInside(CreatePen(PS_INSIDEFRAME, 3,
+                                  GetSysColor(COLOR_WINDOWTEXT)))
+ , m_hpenDot(CreatePen(PS_DOT, 1, GetSysColor(COLOR_WINDOWTEXT)))
+{
+}
+RootWindow::~RootWindow()
+{
+ if (m_hpenInside) DeleteObject(m_hpenInside);
+ if (m_hpenDot) DeleteObject(m_hpenDot);
+}
+BOOL RootWindow::WinRegisterClass(WNDCLASS *pwc)
+{
+ pwc-&gt;style |= CS_VREDRAW | CS_HREDRAW;
+ return __super::WinRegisterClass(pwc);
+}
+void RootWindow::OnCreate()
+{
+ SetLayeredWindowAttributes(m_hwnd, 0, 0xA0, LWA_ALPHA);
+}
+void RootWindow::UpdateTitle()
+{
+ TCHAR szBuf[256];
+ // Compute the area of the circle using a surprisingly good
+ // rational approximation to <a href="http://www.piday.org/">pi</a>.
+ int circleArea = m_radius * m_radius * 355 / 113;
+ // Compute the area of the region, if we have one
+ if (m_cpt &gt; 0 &amp;&amp; !m_fDrawing) {
+  int polyArea = 0;
+  for (int i = 1; i &lt; m_cpt; i++) {
+   polyArea += m_rgpt[i-1].x * m_rgpt[i  ].y -
+               m_rgpt[i  ].x * m_rgpt[i-1].y;
+  }
+  if (polyArea &lt; 0) polyArea = -polyArea; // ignore orientation
+  polyArea /= 2;
+  wnsprintf(szBuf, 256,
+           TEXT("circle area is %d, poly area is %d = %d%%"),
+           circleArea, polyArea,
+           MulDiv(polyArea, 100, circleArea));
+ } else {
+  wnsprintf(szBuf, 256, TEXT("circle area is %d"), circleArea);
+ }
+ SetWindowText(m_hwnd, szBuf);
+}
+void RootWindow::OnSizeChanged(int cx, int cy)
+{
+ m_ptCenter.x = cx / 2;
+ m_ptCenter.y = cy / 2;
+ m_radius = min(m_ptCenter.x, m_ptCenter.y) - 6;
+ if (m_radius &lt; 0) m_radius = 0;
+ UpdateTitle();
+}
+void RootWindow::PaintContent(PAINTSTRUCT *pps)
+{
+ HBRUSH hbrPrev = SelectBrush(pps-&gt;hdc,
+                                    GetStockBrush(<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/01/26/62991.aspx">HOLLOW_BRUSH</a>));
+ HPEN hpenPrev = SelectPen(pps-&gt;hdc, m_hpenInside);
+ Ellipse(pps-&gt;hdc, m_ptCenter.x - m_radius,
+                   m_ptCenter.y - m_radius,
+                   m_ptCenter.x + m_radius,
+                   m_ptCenter.y + m_radius);
+ SelectPen(pps-&gt;hdc, m_hpenDot);
+ Polyline(pps-&gt;hdc, m_rgpt, m_cpt);
+ SelectPen(pps-&gt;hdc, hpenPrev);
+ SelectBrush(pps-&gt;hdc, hbrPrev);
+}
+void RootWindow::AddPoint(POINT pt)
+{
+ // Ignore duplicates
+ if (pt.x == m_ptLast.x &amp;&amp; pt.y == m_ptLast.y) return;
+ // Stop if no room for more
+ if (m_cpt &gt;= cptMax) return;
+ AlwaysAddPoint(pt);
+}
+void RootWindow::AlwaysAddPoint(POINT pt)
+{
+ // Overwrite the last point if we can't add a new one
+ if (m_cpt &gt;= cptMax) m_cpt = cptMax - 1;
+ // Invalidate the rectangle connecting this point
+ // to the last point
+ RECT rc = { pt.x, pt.y, pt.x+1, pt.y+1 };
+ if (m_cpt &gt; 0) {
+  RECT rcLast = { m_ptLast.x,   m_ptLast.y,
+                  m_ptLast.x+1, m_ptLast.y+1 };
+  UnionRect(&amp;rc, &amp;rc, &amp;rcLast);
+ }
+ InvalidateRect(m_hwnd, &amp;rc, FALSE);
+ // Add the point
+ m_rgpt[m_cpt++] = pt;
+ m_ptLast = pt;
+}
+void RootWindow::OnMouseMove(LPARAM lParam)
+{
+ if (m_fDrawing) {
+  POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+  AddPoint(pt);
+ }
+}
+void RootWindow::OnButtonDown(LPARAM lParam)
+{
+ // Erase any previous polygon
+ InvalidateRect(m_hwnd, NULL, TRUE);
+ m_cpt = 0;
+ POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+ AlwaysAddPoint(pt);
+ m_fDrawing = TRUE;
+}
+void RootWindow::OnButtonUp(LPARAM lParam)
+{
+ if (!m_fDrawing) return;
+ OnMouseMove(lParam);
+ // Close the loop, eating the last point if necessary
+ AlwaysAddPoint(m_rgpt[0]);
+ m_fDrawing = FALSE;
+ UpdateTitle();
+}</font>
+LRESULT RootWindow::HandleMessage(
+                          UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+ switch (uMsg) {
+  case WM_CREATE:
+   <font color="blue">OnCreate();
+   break;</font>
+  case WM_NCDESTROY:
+   // Death of the root window ends the thread
+   PostQuitMessage(0);
+   break;
+  case WM_SIZE:
+   <font color="blue">if (wParam == SIZE_MAXIMIZED || wParam == SIZE_RESTORED) {
+    OnSizeChanged(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+   }
+   break;
+  case WM_MOUSEMOVE:
+   OnMouseMove(lParam);
+   break;
+  case WM_LBUTTONDOWN:
+   OnButtonDown(lParam);
+   break;
+  case WM_LBUTTONUP:
+   OnButtonUp(lParam);
+   break;</font>
+ }
+ return __super::HandleMessage(uMsg, wParam, lParam);
+}
+RootWindow *RootWindow::Create()
+{
+ RootWindow *self = new(std::nothrow) RootWindow();
+ if (self &amp;&amp; self-&gt;WinCreateWindow(<font color="blue">WS_EX_LAYERED</font>,
+       TEXT("Scratch"), WS_OVERLAPPEDWINDOW,
+       CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+       NULL, NULL)) {
+      return self;
+  }
+ delete self;
+ return NULL;
+}
+</pre>
+<p>
+This program records every mouse movement while the button
+is down and replays them in the form of a dotted polygon.
+When the mouse button goes up, it calculates the area both
+in terms of pixels and in terms of a percentage of the circle.
+</p>
+<p>
+This program works well.
+My relative’s hand moves slowly enough (after all, it has
+to trace a tumor) that the <code>Get­Message</code> loop
+is plenty fast enough to keep up.
+But just for the sake of illustration, suppose it isn’t.
+To make the effect easier to see, let’s add some artificial
+delays:
+</p>
+<pre>
+void RootWindow::OnMouseMove(LPARAM lParam)
+{
+ if (m_fDrawing) {
+  POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+  AddPoint(pt);
+  <font color="blue">UpdateWindow(m_hwnd);
+  Sleep(100);</font>
+ }
+}
+</pre>
+<p>
+Now, if you try to draw with the mouse, you see all sorts of
+jagged edges because our program can’t keep up.
+(The <code>Update­Window</code> is just to make the most recent
+line visible while we are sleeping.)
+</p>
+<p>
+Enter
+<code>Get­Mouse­Move­Points­Ex</code>.
+This gives you all the mouse activity that led up to a specific
+point in time,
+allowing you to fill in the data that you missed because you weren’t
+pumping messages fast enough.
+Let’s teach our program how to take advantage of this:
+</p>
+<pre>
+class RootWindow : public Window
+{
+...
+ void AlwaysAddPoint(POINT pt);
+ <font color="blue">void AddMissingPoints(POINT pt, DWORD tm);</font>
+ void AddPoint(POINT pt);
+...
+ POINT m_ptLast;
+ <font color="blue">DWORD m_tmLast;</font>
+ int   m_cpt;
+};
+<font color="blue">void RootWindow::AddMissingPoints(POINT pt, DWORD tm)
+{
+ // See discussion for why this code is wrong
+ <i>ClientToScreen(m_hwnd, &amp;pt);</i>
+ MOUSEMOVEPOINT mmpt = { pt.x, pt.y, tm };
+ MOUSEMOVEPOINT rgmmpt[64];
+ int cmmpt = GetMouseMovePointsEx(sizeof(mmpt), &amp;mmpt,
+                            rgmmpt, 64, GMMP_USE_DISPLAY_POINTS);
+ POINT ptLastScreen = m_ptLast;
+ <i>ClientToScreen(m_hwnd, &amp;ptLastScreen);</i>
+ int i;
+ for (i = 0; i &lt; cmmpt; i++) {
+  if (rgmmpt[i].time &lt; m_tmLast) break;
+  if (rgmmpt[i].time == m_tmLast &amp;&amp;
+      rgmmpt[i].x == ptLastScreen.x &amp;&amp;
+      rgmmpt[i].y == ptLastScreen.y) break;
+ }
+ while (--i &gt;= 0) {
+   POINT ptClient = { rgmmpt[i].x, rgmmpt[i].y };
+   <i>ScreenToClient(m_hwnd, &amp;ptClient);</i>
+   AddPoint(ptClient);
+ }
+}</font>
+void RootWindow::AlwaysAddPoint(POINT pt)
+{
+...
+ // Add the point
+ m_rgpt[m_cpt++] = pt;
+ m_ptLast = pt;
+ <font color="blue">m_tmLast = GetMessageTime();</font>
+}
+void RootWindow::OnMouseMove(LPARAM lParam)
+{
+ if (m_fDrawing) {
+  POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+  <font color="blue">AddMissingPoints(pt, GetMessageTime());</font>
+  AddPoint(pt);
+  UpdateWindow(m_hwnd);
+  Sleep(100); // artificial delay to simulate unresponsive app
+ }
+}
+</pre>
+<p>
+Before updating the the current mouse position,
+we check to see if there were other mouse motions
+that occurred while we weren’t paying attention.
+We tell <code>Get­Mouse­Move­Points­Ex</code>,
+“Hey, here is a mouse message that I have right now.
+Please tell me about the stuff that I missed.”
+It fills in an array with recent mouse history,
+most recent events first.
+We go through that array looking for the previous point,
+and give up either when we find it, or when the timestamps
+on the events we received take us too far backward in time.
+Once we find all the points that we missed,
+we play them into the <code>Add­Point</code> function.
+</p>
+<p>
+<b>Notes to people who like to copy code without understanding it</b>:
+The code fragment above works only for
+single-monitor systems.
+To work correctly on multiple-monitor systems,
+you need to include the crazy coordinate-shifting
+code provided in the documentation for
+<code>Get­Mouse­Move­Points­Ex</code>.
+(I omitted that code because it would just be distracting.)
+Also, the management of <code>m_tmLast</code> is now
+rather confusing, but I did it this way to minimize the
+amount of change to the original program.
+It would probably be better to have added a
+<code>DWORD tm</code> parameter to <code>Add­Point</code>
+instead of trying to infer it from the current message time.
+</p>
+<p>
+The
+<code>Get­Mouse­Move­Points­Ex</code>
+technique is also
+handy if you need to refer back to the historical record.
+For example, if the user dragged the mouse out of your window
+and you want to calculate the velocity with which the mouse exited,
+you can use
+<code>Get­Mouse­Move­Points­Ex</code>
+to get the most
+recent mouse activity and calculate the velocity.
+This saves you from having to record all the mouse activity yourself
+on the off chance that the mouse might leave the window.</p>
+
+
+</body>

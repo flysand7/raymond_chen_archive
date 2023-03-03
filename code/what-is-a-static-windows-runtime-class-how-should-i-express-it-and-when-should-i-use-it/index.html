@@ -1,0 +1,118 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is a static Windows Runtime class, how should I express it, and when should I use it?</h1>  <!-- .entry-meta -->
+
+<p>The Windows Runtime has this thing called “static classes”. What are they?</p>
+<p>A static Windows Runtime class is a class that has no instances. An example of this is the <code>FileIO</code> class:</p>
+<pre>static runtimeclass FileIO
+{
+    static IAsyncOperation&lt;String&gt; ReadTextAsync(IStorageFile file);
+    static IAsyncAction WriteText(IStorageFile file, String contents);
+
+    static IAsyncOperation&lt;IVector&lt;String&gt;&gt; ReadLinesAsync(IStorageFile file);
+    static IAsyncAction WriteLines(IStorageFile file, IIterable&lt;String&gt; lines);
+
+    static IAsyncOperation&lt;IBuffer&gt; ReadBufferAsync(IStorageFile file);
+    static IAsyncAction WriteBuffer(IStorageFile file, IBuffer buffer);
+
+    /* etc */
+}
+</pre>
+<p>There is no <code>FileIO</code> object. You can’t say</p>
+<pre>// C#
+var fileIO = new FileIO(); // nope
+
+// C++/WinRT
+FileIO fileIO; // nope
+auto fileIO = FileIO(); // nope
+
+// C++/CX
+auto fileIO = ref new FileIO(); // nope
+
+// JavaScript
+let fileIO = new FileIO(); // nope
+</pre>
+<p>None of these work because <code>FileIO</code> is not an object. It’s just a way to gather related functions under a common umbrella, similar to a namespace.</p>
+<p>The term <code>static class</code> comes from the C# concept of the same name.</p>
+<p>The way to express a static class is to put the word <code>static</code> in front of the class declaration, like we did above with <code>FileIO</code>:</p>
+<pre><span style="color: blue;">static</span> runtimeclass FileIO
+{
+    ...
+}
+</pre>
+<p>If you leave out the <code>static</code> keyword (which is easily overlooked), then what you have is a class with no nonstatic members, also known as an <i>empty class</i>.</p>
+<p>Empty classes are also a thing. They represent objects that you can’t do anything with except pass to other methods. They are often used to capture some information into an opaque object which can then be passed around.</p>
+<pre>[default_interface]
+runtimeclass WidgetLocation
+{
+}
+
+runtimeclass Widget
+{
+    WidgetLocation Location;
+}
+
+// C#
+// Move widget1 to the same location as widget2.
+widget1.Location = widget2.Location;
+</pre>
+<p>The only thing you can do with a <code>Widget­Location</code> is pass it to something that wants a <code>Widget­Location</code>. You can’t inspect the <code>Widget­Location</code> to learn anything about it directly. You have to ask somebody else to interpret it for you.</p>
+<p>The <code>FileIO</code> class is not one of these empty classes. It’s not like you get an opaque <code>FileIO</code> object that represents some internal state. There simply isn’t any such thing as a <code>FileIO</code> object at all.</p>
+<p>And for that case, what you have is a static class.</p>
+<p><b>Bonus chatter</b>: The MIDL3 compiler leads you into a pit of failure here. There are five patterns for runtime classes:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th> </th>
+<th>No static members</th>
+<th>Has static members</th>
+</tr>
+<tr>
+<th>No instances</th>
+<td valign="top">N/A</td>
+<td valign="top"><code>static runtimeclass C<br/>
+        {<br/>
+         static void S();<br/>
+        }</code></td>
+</tr>
+<tr>
+<th>Has instances, empty</th>
+<td valign="top"><code>[default_interface]<br/>
+        runtimeclass C<br/>
+        {
+<p>        }</p></code></td>
+<td valign="top"><code>[default_interface]<br/>
+        runtimeclass C<br/>
+        {<br/>
+         static void S();<br/>
+        }</code></td>
+</tr>
+<tr>
+<th>Has instances, nonempty</th>
+<td valign="top"><code>runtimeclass C<br/>
+        {<br/>
+         void M();
+<p>        }</p></code></td>
+<td valign="top"><code>runtimeclass C<br/>
+        {<br/>
+         void M();<br/>
+         static void S();<br/>
+        }</code></td>
+</tr>
+</tbody>
+</table>
+<p>The top left corner is N/A because if a class has no static members and no instances, then there’s nothing there.</p>
+<p>If there are no instances, then you say that you are a <code>static runtimeclass</code>. That takes care of the first row.</p>
+<p>If you are an empty class, then you need to say <code>[default_interface]</code> to tell the MIDL3 compiler that you want it to generate an empty interface to represent the empty instances.</p>
+<p>If you are a nonempty class, then you don’t need to say <code>[default_interface]</code> (although it’s harmless to do so) because the MIDL3 compiler is already forced to generate an interface to represent the instance methods.</p>
+<p>Notice that this case</p>
+<pre>runtimeclass C
+{
+ static void S();
+}
+</pre>
+<p>is not even on the list of legal declarations!</p>
+<p>The MIDL3 compiler lets you use this erroneous declaration. It assumes that you meant “Has instances, empty” and secretly synthesizes an empty <code>[default_interface]</code> for you. It’s only when you try to do anything that requires this synthesized <code>[default_interface]</code>, that the MIDL3 compiler then yells at you, “Hey, you forgot to say <code>[default_interface]</code>.”</p>
+<p>The trap is that if you intended the class to be a static class, but simply forgot to apply the <code>static</code> keyword, then you will never do anything that requires the synthesized <code>[default_interface]</code>, and you never get any error message. The secretly synthesized empty interface is still generated, but it is completely useless since there is no way to obtain any objects that implement it.</p>
+
+
+</body>

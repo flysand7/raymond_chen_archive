@@ -1,0 +1,66 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Dragging a shell object, part 3: Detecting an optimized move</h1>  <!-- .entry-meta -->
+
+<p><p>
+We were considering how to detect that the drag/drop operation
+resulted in a conceptual Move even if the <code>DROPEFFECT_MOVE</code>
+was optimized away.
+</p>
+<p>
+If the drop target is the shell, you can query the
+data object for <code>CFSTR_PERFORMEDDROPEFFECT</code>
+to see what the performed effect was.
+</p>
+<pre>
+void OnLButtonDown(HWND hwnd, BOOL fDoubleClick,
+                   int x, int y, UINT keyFlags)
+{
+  …
+        if (dwEffect &amp; DROPEFFECT_MOVE) {
+          DeleteFileW(wszPath);
+        }
+        <font color="blue">CheckPerformedEffect(hwnd, pdto);</font>
+  …
+}
+</pre>
+<p>
+Of course, we need that <code>CheckPerformedEffect</code>
+function too.
+</p>
+<pre>
+void CheckPerformedEffect(HWND hwnd, IDataObject *pdto)
+{
+  FORMATETC fe = {
+     (CLIPFORMAT)RegisterClipboardFormat(CFSTR_PERFORMEDDROPEFFECT),
+     NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+  STGMEDIUM stgm;
+  if (SUCCEEDED(pdto-&gt;GetData(&amp;fe, &amp;stgm))) {
+    if ((stgm.tymed &amp; TYMED_HGLOBAL) &amp;&amp;
+        GlobalSize(stgm.hGlobal) &gt;= sizeof(DWORD)) {
+       DWORD *pdw = (DWORD*)GlobalLock(stgm.hGlobal);
+       if (pdw) {
+         if (*pdw == DROPEFFECT_MOVE) {
+            MessageBox(hwnd, TEXT(“Moved”), TEXT(“Scratch”), MB_OK);
+         }
+         GlobalUnlock(stgm.hGlobal);
+       }
+    }
+    ReleaseStgMedium(&amp;stgm);
+  }
+}
+</pre>
+<p>
+If the item is dropped on a shell window, the drop target
+will set data into the data object under the clipboard format name
+<code>CFSTR_PERFORMEDDROPEFFECT</code>.
+The data takes the form of a <code>DWORD</code> in an
+<code>HGLOBAL</code>, and the value is the actual drop effect
+before any optimizations kicked in.
+</p>
+<p>
+Here, we check whether it was a <code>DROPEFFECT_MOVE</code> and
+display a special message if so.
+</p></p>
+
+
+</body>

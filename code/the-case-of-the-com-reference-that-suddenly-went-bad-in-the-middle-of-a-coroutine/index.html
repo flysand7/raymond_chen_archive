@@ -1,0 +1,178 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the COM reference that suddenly went bad in the middle of a coroutine</h1>  <!-- .entry-meta -->
+
+<p>A customer reported a crash in a coroutine and needed help understanding it.</p>
+<p>Here’s the crash:</p>
+<pre style="white-space: pre-wrap;">contoso!winrt::impl::consume_<wbr/>Contoso_<wbr/>IWidgetOptions&lt;<wbr/>winrt::<wbr/>Contoso::<wbr/>IWidgetOptions&gt;::<wbr/>Name+0x15:
+00007ff8`fa6c77e1 mov     rax,qword ptr [rcx] ds:00000000`00000000=????????????????
+</pre>
+<p>And the stack trace:</p>
+<pre style="white-space: pre-wrap;">contoso!winrt::<wbr/>impl::<wbr/>consume_<wbr/>Contoso_<wbr/>IWidgetOptions&lt;<wbr/>winrt::<wbr/>Contoso::<wbr/>IWidgetOptions&gt;::<wbr/>Name+0x15
+contoso!winrt::Contoso::<wbr/>implementation::<wbr/>Widget::<wbr/>CreateAsync$_ResumeCoro$1+0xfe
+contoso!winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Widget::<wbr/>CreateAsync$_InitCoro$2+0x95
+contoso!winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Widget::<wbr/>CreateAsync+0x63
+contoso!winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Gadget::<wbr/>CreateWidgetAsync+0x7e
+contoso!winrt::<wbr/>impl::<wbr/>produce&lt;winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Gadget,<wbr/>winrt::<wbr/>Contoso::<wbr/>IGadget&gt;::<wbr/>CreateWidgetAsync+0x35
+litware!winrt::<wbr/>impl::<wbr/>consume_Contoso_Gadget&lt;winrt::<wbr/>Contoso::<wbr/>Gadget&gt;::<wbr/>CreateWidgetAsync+0x47
+litware!winrt::<wbr/>LitWare::<wbr/>implementation::<wbr/>GadgetViewer::<wbr/>CreateWidgetsAsync$_ResumeCoro$2+0x343
+litware!std::<wbr/>experimental::<wbr/>coroutine_handle&lt;void&gt;::<wbr/>resume+0xc
+litware!std::<wbr/>experimental::<wbr/>coroutine_handle&lt;void&gt;::<wbr/>operator()+0xc
+litware!winrt::<wbr/>impl::<wbr/>resume_background_callback+0x10
+ntdll!TppSimplepExecuteCallback+0xa3
+ntdll!TppWorkerThread+0x686
+kernel32!BaseThreadInitThunk+0x10
+ntdll!RtlUserThreadStart+0x2b
+</pre>
+<p>This is crashing inside the C++/WinRT projection, which you can infer because we crashed inside a <code>consume_</code> function. The <code>consume_</code> functions are provided by the C++/WinRT library to convert your C++/WinRT calls into low-level ABI calls. So something happened inside that projection.</p>
+<p>Here’s the consume function up to the point of the crash:</p>
+<pre style="white-space: pre-wrap;">    push    rbx
+    sub     rsp,20h
+    mov     rcx,qword ptr [rcx]   ; get the raw pointer from the IWidgetOptions
+    and     qword ptr [rsp+30h],0 ; pre-null the output parameter
+    mov     rbx,rdx
+    mov     rax,qword ptr [rcx]   ; Load the vtable
+</pre>
+<p>The problem it seems is that the <code>this</code> parameter to <code>IWidgetOptions::<wbr/>Name()</code> is a COM wrapper around a null pointer.</p>
+<p>We are called from <code>_InitCoro</code>, which runs the initial synchronous portion, so we are still in the synchronous portion of the coroutine. That’s nice, because it means that the caller is still on the stack:</p>
+<pre>IAsyncOperation&lt;Widget&gt; Widget::CreateAsync(const WidgetOptions&amp; options)
+{
+    auto name = options.Name();
+</pre>
+<p>Let’s see what we got as the <code>options</code>:</p>
+<pre style="white-space: pre-wrap;">0:018&gt; .frame 3
+03 000000bb`dccff630 00007ff8`fa6c7b32     contoso!Widget::CreateAsync+0x63
+0:018&gt; dv
+     options = 0x000000bb`dccff978
+0:018&gt; ?? options
+struct winrt::Contoso::IWidgetOptions * 0x000000bb`dccff978
+   +0x000 m_ptr            : (null)
+</pre>
+<p>Yes indeed, the <code>options</code> is null. That’s why we crash trying to call a method on it.</p>
+<p>The caller of <code>Widget::<wbr/>Create­Async</code> is <code>Gadget::<wbr/>Create­Widget­Async</code>:</p>
+<pre>IAsyncOperation&lt;Widget&gt; Gadget::CreateWidgetAsync()
+{
+    return Widget::CreateAsync(m_options);
+}
+</pre>
+<p>The customer suspected that this function was incorrectly implemented. Shouldn’t it be this?</p>
+<pre>IAsyncOperation&lt;Widget&gt; Gadget::CreateWidgetAsync()
+{
+    co_return co_await Widget::CreateAsync(m_options);
+}
+</pre>
+<p>“The immediate return might be losing some necessary coroutine frame lifetime, so that when <code>GadgetViewer::<wbr/>Create­Widgets­Async</code> completes, it’s operating on already-freed memory. However, I’m not confident in this analysis.”</p>
+<p>The function is fine. While it’s true that the common way of producing a <code>IAsync­Operation&lt;Widget&gt;</code> is to autogenerate one from a coroutine, it is also perfectly legal to just create one by other means and just return it.</p>
+<p>Let’s try to walk back up the stack to find out what the <code>m_options</code> were that we <i>thought</i> we were passing in.</p>
+<pre style="white-space: pre-wrap;">0:018&gt; .frame 4
+04 000000bb`dccff930 00007ff8`fa6c7a55 contoso!winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Gadget::<wbr/>CreateWidgetAsync+0x7e
+0:018&gt; dv
+           this = &lt;value unavailable&gt;
+</pre>
+<p>Rats, the <code>this</code> pointer got optimized out. Keep going.</p>
+<pre style="white-space: pre-wrap;">0:018&gt; .frame 5
+05 000000bb`dccff970 00007ff8`be19b2ff contoso!winrt::<wbr/>impl::<wbr/>produce&lt;winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Gadget,<wbr/>winrt::<wbr/>Contoso::<wbr/>IGadget&gt;::<wbr/>CreateWidgetAsync+0x35
+0:018&gt; dv
+           this = &lt;value unavailable&gt;
+      operation = 0x000000bb`dccff9d0
+
+0:018&gt; .frame 6
+06 000000bb`dccff9a0 00007ff8`be109963     litware!winrt::<wbr/>impl::<wbr/>consume_Contoso_Gadget&lt;winrt::<wbr/>Contoso::<wbr/>Gadget&gt;::<wbr/>CreateWidgetAsync+0x47
+0:018&gt; dv
+           this = &lt;value unavailable&gt;
+      operation = 0x00000000`00000000
+
+0:018&gt; .frame 7
+07 000000bb`dccff9f0 00007ff8`be0d4b40     litware!winrt::<wbr/>LitWare::<wbr/>implementation::<wbr/>GadgetViewer::<wbr/>CreateWidgetsAsync$_ResumeCoro$2+0x343
+0:018&gt; dv
+      &lt;coro_frame_ptr&gt; = 0x00000276`15223b00
+            strongThis = struct winrt::<wbr/>com_ptr&lt;winrt::<wbr/>LitWare::<wbr/>implementation::<wbr/>GadgetViewer&gt;
+</pre>
+<p>We had to chase all the way back to <code>GadgetViewer::<wbr/>Create­Widgets­Async</code> before we got a foothold into the thing that will lead us to the <code>options</code>. Now we can start working our way back in.</p>
+<p>The <code>GadgetViewer::<wbr/>Create­Widgets­Async</code> coroutine looks like this:</p>
+<pre>IAsyncOperation&lt;IVectorView&lt;MenuItem&gt;&gt; GadgetViewer::CreateWidgetsAsync()
+{
+    ...
+
+    const auto strongThis{ get_strong() };
+
+    co_await winrt::resume_background();
+
+    std::vector&lt;winrt::Contoso::Widget&gt; widgets;
+
+    if (const auto widget1 = co_await m_gadget.CreateWidgetAsync())
+    {
+        ...
+</pre>
+<p>Aha, so the outbound call to <code>Create­Widget­Async</code> is made on the <code>GadgetViewer</code>‘s <code>m_gadget</code>. Follow the call:</p>
+<pre style="white-space: pre-wrap;">0:018&gt; ?? strongThis
+struct winrt::<wbr/>com_ptr&lt;winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>GadgetViewer&gt;
+   +0x000 m_ptr            : 0x00000276`184121f0 winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>GadgetViewer
+0:018&gt; ??((winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>GadgetViewer*) 0x00000276`184121f0)-&gt;m_gadget
+struct winrt::<wbr/>Contoso::<wbr/>Gadget
+   +0x000 m_ptr            : 0x00000276`0f68d4e0 winrt::<wbr/>impl::<wbr/>abi&lt;winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IUnknown,<wbr/>void&gt;::<wbr/>type
+</pre>
+<p>Okay, we’ve found the <code>m_gadget</code>. Now to the options.</p>
+<pre style="white-space: pre-wrap;">0:018&gt; dt contoso!winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Gadget
+   +0x010 vtable           : winrt::<wbr/>impl::<wbr/>produce&lt;winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Gadget,<wbr/>winrt::<wbr/>Contoso::<wbr/>IGadget&gt;
+   +0x000 __VFN_table : Ptr64
+   +0x008 m_references     : std::<wbr/>atomic&lt;unsigned __int64&gt;
+   +0x018 m_options        : winrt::<wbr/>Contoso::<wbr/>WidgetOptions
+   +0x020 m_source         : winrt::<wbr/>Contoso::<wbr/>GadgetSource
+   +0x028 m_home           : std::<wbr/>basic_string&lt;wchar_t,<wbr/>std::<wbr/>char_traits&lt;wchar_t&gt;,<wbr/>std::<wbr/>allocator&lt;wchar_t&gt; &gt;
+</pre>
+<p>We see that the vtable for the producer of <code>IGadget</code> is at offset <code>0x010</code>, so we subtract that amount from our <code>winrt::<wbr/>Contoso::<wbr/>Gadget</code> pointer to get a pointer to the implementation.</p>
+<pre style="white-space: pre-wrap;">0:018&gt; ?? ((contoso!winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Gadget*)(0x00000276`0f68d4e0-0x10))
+struct winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Gadget * 0x00000276`0f68d4d0
+   +0x010 vtable           : winrt::<wbr/>impl::<wbr/>produce&lt;winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Gadget,<wbr/>winrt::<wbr/>Contoso::<wbr/>IGadget&gt;
+   +0x000 __VFN_table : 0x00007ff8`fa6df2e8
+   +0x008 m_references     : std::<wbr/>atomic&lt;unsigned __int64&gt;
+   +0x018 m_options        : winrt::<wbr/>Contoso::<wbr/>WidgetOptions
+   +0x020 m_source         : winrt::<wbr/>Contoso::<wbr/>GadgetSource
+   +0x028 m_home           : std::<wbr/>basic_string&lt;wchar_t,<wbr/>std::<wbr/>char_traits&lt;wchar_t&gt;,<wbr/>std::<wbr/>allocator&lt;wchar_t&gt; &gt;
+
+0:018&gt; ?? &amp;((contoso!winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Gadget*)(0x00000276`0f68d4e0-0x10))-&gt;m_options
+struct winrt::<wbr/>Contoso::<wbr/>WidgetOptions * 0x00000276`0f68d4e8
+   +0x000 m_ptr            : 0x00000276`152f6270 winrt::<wbr/>impl::<wbr/>abi&lt;winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IUnknown,<wbr/>void&gt;::<wbr/>type
+</pre>
+<p>The address of this <code>m_options</code> is <code>0x00000276`0f68d4e8</code>, which is not the same as the address that was passed to <code>Widget::<wbr/>Create­Async</code>:</p>
+<pre style="white-space: pre-wrap;">0:018&gt; .frame 3
+03 000000bb`dccff630 00007ff8`fa6c7b32     contoso!Widget::<wbr/>CreateAsync+0x63
+0:018&gt; dv
+     options = 0x000000bb`dccff978
+</pre>
+<p>What happened? How did the address of a variable change?</p>
+<p>Studying the code in the <code>Gadget­Viewer</code> that uses the <code>m_gadget</code> member variable, we see that the member variable is used from both the foreground thread as well as from a background thread:</p>
+<pre>// Property setter: Set the "Gadget" property of the GadgetViewer
+void GadgetViewer::Gadget(winrt::Contoso::Gadget const&amp; value)
+{
+    VerifyUIThread();
+
+    if (m_gadget != value)
+    {
+        m_gadget = value;
+        ...
+    }
+}
+</pre>
+<p>Recall that one of the principles of debugging somebody else’s code is to <a href="/other/psychic-debugging-when-reading-unfamiliar-code-assume-it-s-mostly-correct" title="Psychic debugging: When reading unfamiliar code, assume it's mostly correct"> assume that the code is mostly correct</a>. The problem is likely in a small detail, an edge case, or a peculiar combination of factors. After all, if the problem was in a common case, they probably wouldn’t have had to ask an outsider for help.</p>
+<p>The <code>Verify­UI­Thread</code> call tells us that the expectation is that the gadget is changed only from the UI thread. But there is no synchronization to protect access to this variable from multiple threads, even though we are accessing it from a background thread:</p>
+<pre>IAsyncOperation&lt;IVectorView&lt;MenuItem&gt;&gt; GadgetViewer::CreateWidgetsAsync()
+{
+    ...
+
+    const auto strongThis{ get_strong() };
+
+    <span style="color: blue;">co_await winrt::resume_background(); // ← hop to background thread</span>
+
+    std::vector&lt;winrt::Contoso::Widget&gt; widgets;
+
+    if (const auto widget1 = co_await m_gadget.CreateWidgetAsync())
+    {
+        ...
+</pre>
+<p>What may have happened is that while <code>Create­Widgets­Async</code> was using <code>m_gadget</code> on the background thread, the foreground thread changed the <code>m_gadget</code>, causing the old gadget (and its <code>m_options</code>) to be destructed while the background thread was still using it.</p>
+<p>The customer provided some history: As originally written, the <code>Gadget­Viewer</code> accessed the <code>m_gadget</code> only from the foreground thread, but a subsequent change moved some of the work to a background thread, and that introduced concurrency into code that was written on the assumption that there was no concurrency.</p>
+<p>One possible solution is for <code>Gadget­Viewer::<wbr/>Create­Widgets­Async</code> to capture the member variables it intends to use (the <code>m_gadget</code>, in this case, but possibly other member variables not seen here) before going to the background thread, and operating entirely on the captured variables. It means that when you call <code>Create­Widgets­Async</code>, you get the widgets associated with the gadget that you were viewing at the point you called <code>Create­Widgets­Async</code>, even if you changed the gadget while the <code>Create­Widgets­Async</code> was still working.</p>
+
+
+</body>

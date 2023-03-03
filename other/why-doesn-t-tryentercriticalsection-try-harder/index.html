@@ -1,0 +1,115 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why doesn't TryEnterCriticalSection try harder?</h1>  <!-- .entry-meta -->
+
+<p>
+Bart wants to know
+<a href="http://blogs.msdn.com/oldnewthing/pages/407234.aspx#1317239">
+why the <code>Try­Enter­Critical­Section</code>
+gives up if the critical
+section is busy instead of trying the number of times specified by
+the critical section spin count</a>.
+</p>
+<p>
+Actually, there was another condition on the proposed new behavior:
+“but does not release its timeslice
+to the OS if it fails to get it while spinning.”
+This second condition is a non-starter because you can’t prevent
+the operating system from taking your timeslice away from you.
+The best you can do is detect that you lost your previous
+timeslice when you receive the next one.
+And even that is expensive: You have to keep watching the CPU cycle
+counter, and if it jumps by too much, then you lost your timeslice.
+(And you might have lost it due to a hardware interrupt or paging.
+Good luck stopping those from happening.)
+</p>
+<p>
+Even if there were a cheap way of detecting that the operating system
+was about to take your timeslice away from you, what good would it do?
+“Oh, my calculations indicate that if I spin one more time,
+I will lose my timeslice, so I’ll just fail and return.”
+Now the application regains control with 2 instructions left
+in its timeslice.
+That’s not even enough time to test the return value and take
+a conditional jump!
+Even if the <code>Try­Enter­Critical­Section</code> managed to
+return just before the timeslice expired, that’s hardly any
+consolation, because the timeslice is going to expire
+before the application can react to it.
+Whatever purpose there was to “up to the point where you’re
+about to release the timeslice”
+is lost.
+</p>
+<p>
+Okay, maybe the intention of that clause was
+“without intentionally releasing its timeslice
+(but if it loses its timeslice in the normal course of events,
+well that’s the way the cookie crumbles).”
+That brings us back to the original question.
+Why doesn’t <code>Try­Enter­Critical­Section</code> try harder?
+Well, because if it tried harder, then the people who didn’t want
+it to try hard at all would complain that it tried too hard.
+</p>
+<p>
+The function <code>Try­Enter­Critical­Section</code> may have
+been ambiguously named, because it doesn’t describe <i>how hard</i>
+the function should try.
+Though in general, functions named <code>TryXxx</code> try only once,
+and that’s the number of times
+<code>Try­Enter­Critical­Section</code> tries.
+Perhaps a clearer (but bulkier name) would have been
+<code>Enter­Critical­Section­If­Not­Owned­By­Another­Thread</code>.
+</p>
+<p>
+The <code>Try­Enter­Critical­Section</code> function
+represents the core of the
+<code>Enter­Critical­Section</code> function.
+In pseudocode, the two functions work like this:
+</p>
+<pre>
+BOOL TryEnterCriticalSection(CRITICAL_SECTION *CriticalSection)
+{
+  atomically {
+   if (CriticalSection is free or is owned by the current thread) {
+     claim the critical section and return TRUE;
+   }
+  }
+  return FALSE;
+}
+void EnterCriticalSection(CRITICAL_SECTION *CriticalSection)
+{
+ for (;;) {
+  DWORD SpinTimes = 0;
+  do {
+    if (TryEnterCriticalSection(CriticalSection)) return;
+  } while (++SpinTimes &lt; GetSpinCount(CriticalSection));
+  WaitForCriticalSectionOwnerToLeave(CriticalSection);
+ }
+}
+</pre>
+<p>
+The <code>Try­Enter­Critical­Section</code> function represents
+the smallest meaningful part of the <code>Enter­Critical­Section</code>
+process.
+If you want it to spin, you can write your own
+<code>Try­Enter­Critical­Section­With­Spin­Count</code>
+function:
+</p>
+<pre>
+BOOL TryEnterCriticalSectionWithSpinCount(
+    CRITICAL_SECTION *CriticalSection,
+    DWORD SpinCount)
+{
+  DWORD SpinTimes = 0;
+  do {
+    if (TryEnterCriticalSection(CriticalSection)) return TRUE;
+  } while (++SpinTimes &lt; SpinCount);
+  return FALSE;
+}
+</pre>
+<p>
+(Unfortunately, there is no
+<code>Get­Critical­Section­Spin­Count</code>
+function, so you’ll just have to keep track of it yourself.)</p>
+
+
+</body>

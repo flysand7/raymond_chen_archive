@@ -1,0 +1,162 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why is there a <code>make_unique</code>? Why not just overload the <code>unique_ptr</code> constructor?</h1>  <!-- .entry-meta -->
+
+<p>At first, there was no <code>make_unique</code>. Only <code>unique_ptr</code>. And for expository simplicity, let’s focus just on the non-array version of <code>unique_ptr</code>.</p>
+<p>There’s <a href="http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2013/n3588.txt"> the proposal for <code>make_unique</code></a>, written by our pal <a href="https://twitter.com/StephanTLavavej"> Stephan T. Lavavej</a>. It cites a few motivating issues for the <code>make_unique</code> function:</p>
+<ol>
+<li>Parallel construction with <code>make_shared</code>.</li>
+<li>Avoiding the need to use the <code>new</code> operator explicitly, thereby permitting the simple rule: “Don’t write <code>new</code>.” Prior to <code>make_unique</code>, the rule was “Don’t write <code>new</code>, except to construct a <code>unique_ptr</code>.”</li>
+<li>Avoiding having to say the type name twice: <code>std::unique_ptr&lt;T&gt;(new T(args))</code>.</li>
+<li>Avoid a memory leak due to unspecified order of evaluation if a <code>std::unique_ptr</code> is constructed from a newly <code>new</code>‘d pointer as part of a larger expression which could throw. <a href="https://www.cppstories.com/2021/evaluation-order-cpp17/"> More details here</a>.</li>
+</ol>
+<p>But couldn’t we have solved this problem by adding a new constructor to <code>unique_ptr</code>?</p>
+<pre>template&lt;typename T&gt;
+struct unique_ptr
+{
+    ...
+
+    template&lt;typename... Args&gt;
+    unique_ptr(Args&amp;&amp;... args) :
+        unique_ptr(new T(std::forward&lt;Args&gt;(args)...)) {}
+};
+</pre>
+<p>With this new overload, you can write</p>
+<pre>// was p = std::make_unique&lt;Thing&gt;(arg1, arg2, arg3);
+auto p = std::unique_ptr&lt;Thing&gt;(arg1, arg2, arg3);
+</pre>
+<p>This seems convenient (avoids introducing a new name), but it still has problems. For example, consider this:</p>
+<pre>struct Node
+{
+    Node(Node* parent = nullptr);
+};
+
+auto create_child(Node* parent)
+{
+    // was return std::make_unique&lt;Node&gt;(parent);
+    return std::unique_ptr&lt;Node&gt;(parent);
+}
+</pre>
+<p>This version looks like it’s create a new child node with the specified parent, but since the constructor parameter is a pointer to the same type, what this really does is create a <code>unique_ptr</code> that manages the parent pointer. Everything will compile, and it may even run for a while, inadvertently updating the wrong node, and eventually leading to a double-free bug.</p>
+<p>And then there’s the converse problem:</p>
+<pre>struct NodeSource
+{
+    operator Node*();
+};
+
+auto wrap_proxy(NodeSource const&amp; source)
+{
+    // was return std::make_unique&lt;Node&gt;(source);
+    return std::unique_ptr&lt;Node&gt;(source);
+}
+</pre>
+<p>This time, we want to create a <code>unique_ptr</code> that manages the object produced by the <code>Node­Source</code>‘s conversion operator. A common case where you encounter this is if the <code>Node­Source</code> is some sort of proxy object. But since the parameter is not literally a <code>Node*</code>, this gets picked up by the new overload and is interpreted as</p>
+<pre>    return std::unique_ptr&lt;Node&gt;(new Node(source));
+</pre>
+<p>For backward compatibility, both of these cases must resolve to the constructor that takes a raw pointer to a <code>Node</code>. That can probably be accomplished via a special overload that takes exactly one universal reference, and a little SFINAE, but it’s starting to get complicated.</p>
+<p><i>The default constructor has entered the chat</i>:</p>
+<pre>auto make_something()
+{
+    // was return std::make_unique&lt;Node&gt;();
+    return std::unique_ptr&lt;Node&gt;();
+}
+</pre>
+<p>Does this create an empty <code>unique_ptr</code>? Or does it create a new default-constructed <code>Node</code> and then create a <code>unique_ptr</code> that manages it?</p>
+<p>For backward compatibility, this must create an empty <code>unique_ptr</code>, so now you have a third special case where passing <code>Node</code> constructor parameters to <code>unique_ptr</code> doesn’t actually construct a <code>Node</code>.</p>
+<p><i>The move and copy constructors have entered the chat</i>:</p>
+<pre>struct ListNode
+{
+    ListNode(std::unique_ptr&lt;ListNode&gt; rest);
+};
+
+auto prepend_node(std::unique_ptr&lt;ListNode&gt; rest)
+{
+    // was return std::unique_ptr&lt;ListNode&gt;(
+    //    new ListNode(std::move(rest));
+    return std::unique_ptr&lt;ListNode&gt;(std::move(rest));
+}
+</pre>
+<p>Does this create a new <code>ListNode</code> object, using <code>rest</code> as the constructor parameter? Or does this move-construct an existing <code>std::unique_ptr</code>? Again, for backward compatibility, this must move-construct the <code>std::unique_ptr</code>.</p>
+<p>Okay, so if you do some SFINAE magic and carve out the special cases for backward compatibility, you’ve resolved the <i>technical</i> ambiguity. But you’ve done nothing to address the <i>semantic</i> ambiguity.</p>
+<pre>contoso::table&lt;Node*&gt; nodes;
+...
+auto p = std::unique_ptr&lt;Node&gt;(nodes.get(i));
+</pre>
+<p>Does this get a <code>Node*</code> from the table and transfer ownership of it to a <code>unique_ptr</code>? Or does this get a <code>Node*</code> from the table and create a new <code>Node</code> from it?</p>
+<p>As we noted earlier, compatibility requires that we interpret this as an ownership transfer, and if you want to create a new node, you have to do so explicitly:</p>
+<pre>auto p = std::unique_ptr&lt;Node&gt;(new Node(nodes.get(i));
+</pre>
+<p>What makes this even more confusing is that similar expressions represent the creation of a new <code>Node</code> without having to write out the <code>new</code>:</p>
+<pre>// new Node(Node*, bool)
+auto p = std::unique_ptr&lt;Node&gt;(nodes.get(i), true);
+
+// new Node(42)
+auto p = std::unique_ptr&lt;Node&gt;(42);
+
+// does not create a new Node (!)
+auto p = std::unique_ptr&lt;Node&gt;(nodes.get(i));
+</pre>
+<p>In addition to the confusion over whether this is an ownership transfer or a creation, it is unforgiving of typos like</p>
+<pre>Node* n;
+
+// This takes ownership of n
+auto p = std::unique_ptr&lt;Node&gt;(n);
+
+// This creates a new Node that is a copy of *n
+auto p = std::unique_ptr&lt;Node&gt;(*n);
+</pre>
+<p>To avoid this pit of failure, we probably should use a tag type to indicate whether we are taking ownership or making a new object.</p>
+<pre>template&lt;typename T&gt;
+struct unique_ptr
+{
+    ...
+
+    template&lt;typename... Args&gt;
+    unique_ptr(in_place_t, Args&amp;&amp;... args) :
+        unique_ptr(new T(std::forward&lt;Args&gt;(args)...)) {}
+};
+
+Node* n;
+
+// Take ownership of n
+auto p = std::unique_ptr&lt;Node&gt;(n);
+
+// Create a new Node with n as its parent
+auto p = std::unique_ptr&lt;Node&gt;(std::in_place, n);
+
+// Create an empty unique_ptr
+auto p = std::unique_ptr&lt;Node&gt;();
+
+// Create a new default Node and wrap it in a unique_ptr
+auto p = std::unique_ptr&lt;Node&gt;(std::in_place);
+
+// Move-construct a new unique_ptr from an existing one
+std::unique_ptr&lt;ListNode&gt; rest = /* ... */;
+auto q = std::unique_ptr&lt;ListNode&gt;(std::move(rest));
+
+// Move-construct a new unique_ptr from an existing one
+auto q = std::unique_ptr&lt;ListNode&gt;(std::in_place, std::move(rest));
+</pre>
+<p>At this point, the new overload seems much more hassle than it’s worth. You may as well just factor the “make a new Node” feature into a separate function <code>make_unique</code>. This is more explicit that it makes a new Node, and it’s less typing anyway.</p>
+<pre>// Take ownership of n
+std::unique_ptr&lt;Node&gt; p(n);
+
+// Create a new Node with n as its parent
+auto p = std::make_unique&lt;Node&gt;(n);
+
+// Create an empty unique_ptr
+auto p = std::unique_ptr&lt;Node&gt;();
+
+// Create a new default Node and wrap it in a unique_ptr
+auto p = std::make_unique&lt;Node&gt;();
+
+// Move-construct a new unique_ptr from an existing one
+std::unique_ptr&lt;ListNode&gt; rest = /* ... */;
+auto q = std::unique_ptr&lt;ListNode&gt;(std::move(rest));
+
+// Move-construct a new unique_ptr from an existing one
+auto q = std::make_unique&lt;ListNode&gt;(std::move(rest));
+</pre>
+<p>If you want to make a new object, use the <code>make_unique</code> function.</p>
+
+
+</body>

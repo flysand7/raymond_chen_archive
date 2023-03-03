@@ -1,0 +1,122 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The performance improvements of a lock-free algorithm is often not in the locking</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/08/10151159.aspx#10151967">
+GWO
+wonders what the conditions are under which the lock-free version
+significantly outpeforms a simple critical section</a>.
+</p>
+<p>
+Remember that switching to a lock-free algorithm should be guided
+by performance measurements.
+Switching from a simple algorithm to a complex one shouldn’t be done
+unless you know that the simple algorithm is having trouble.
+</p>
+<p>
+That said, here are some non-obvious advantages of a lock-free algorithm
+over one that uses a simple lock.
+(Later, we’ll see how you can take advantage of
+these techniques without actually going lock-free.)
+</p>
+<p>
+Consider a program that uses a simple critical section to perform
+something like the singleton constructor.
+Instead of a fancy lock-free algorithm, we use the much simpler
+version:
+</p>
+<pre>
+CRITICAL_SECTION g_csSingletonX;
+X *g_px = NULL;
+X *GetSingletonX()
+{
+    EnterCriticalSection(&amp;g_csSingletonX);
+    if (g_px == NULL)
+    {
+        g_px = new(nothrow) X();
+    }
+    LeaveCriticalSection(&amp;g_csSingletonX);
+    return g_px;
+}
+</pre>
+<p>
+This simple code
+can run into trouble if the constructor function itself requires
+some locks,
+because now you have to impose a
+<a href="http://www.osronline.com/ddkx/ddtools/dv_8pkj.htm">
+lock hierarchy</a>
+in order to avoid a deadlock.
+(And this becomes impossible if the constructor function
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/18/10154966.aspx#10155205">
+belongs to code outside your control</a>.)
+</p>
+<p>
+When working out what your lock hierarchy should be,
+you may discover that you need to consolidate some locks.
+This avoids the inversion problem,
+but it also reduces your lock granularity.
+You might decide to use a single lock to cover all singletons,
+and then you later discover that you also have to extend the lock
+that protects X’s constructor to cover other operations on X.
+</p>
+<pre>
+CRITICAL_SECTION g_csCommon;
+// (updated to remove double-check lock because that just raises
+// more questions that distract from the point of the article)
+X *GetSingletonX()
+{
+    EnterCriticalSection(&amp;g_csCommon);
+    if (g_px == NULL)
+    {
+        g_px = new(nothrow) X();
+    }
+    LeaveCriticalSection(&amp;g_csCommon);
+    return g_px;
+}
+Y *GetSingletonY()
+{
+    EnterCriticalSection(&amp;g_csCommon);
+    if (g_py == NULL)
+    {
+        g_py = new(nothrow) Y();
+    }
+    LeaveCriticalSection(&amp;g_csCommon);
+    return g_py;
+}
+void X::DoSomething()
+{
+    EnterCriticalSection(&amp;g_csCommon);
+    .. something ..
+    LeaveCriticalSection(&amp;g_csCommon);
+}
+</pre>
+<p>
+Over time, your quiet little singleton lock has turned
+into a high-contention lock in your system.
+</p>
+<p>
+One nice thing about a lock-free algorithm is that since there
+is no lock, it can’t create inversion in a lock hierarchy.
+(Of course, you have to be careful not to use the interlocked operations
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/15/10154245.aspx">
+to build a private lock</a>, because that puts you back where
+you started.)
+</p>
+<p>
+Another nice consequence of a lock-free algorithm is that,
+since there is no lock, you don’t have to handle the
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/09/12/463977.aspx">
+<code>WAIT_ABANDONED</code></a> case.
+The data structure is never inconsistent; it passes atomically
+from one consistent state to another.
+Therefore, there’s no need to write code to clean up leftover
+inconsistency.
+This came in handy in
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/13/10152929.aspx">
+a case we looked at earlier</a>,
+so that an application which crashes at an inopportune time will not
+corrupt the shared data and require a server reboot.</p>
+
+
+</body>

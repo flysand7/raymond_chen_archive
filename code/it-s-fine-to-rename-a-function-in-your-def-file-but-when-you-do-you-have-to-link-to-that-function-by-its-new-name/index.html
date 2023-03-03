@@ -1,0 +1,214 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">It's fine to rename a function in your DEF file, but when you do, you have to link to that function by its new name</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="http://www.castledragmire.com">
+Jeffrey Riaboy</a>
+asks why,
+<a href="http://blogs.msdn.com/oldnewthing/pages/407234.aspx#759387">
+if he renames a function in his DEF file,
+attempts to link to the function by its old name fail</a>.
+</p>
+<p>
+Well, um, yeah, because you renamed it.
+</p>
+<p>
+Let’s take the situation apart a bit;
+maybe it’ll make more sense.
+I’m going to ignore a lot of details
+(<code>dllimport/dllexport</code>,
+calling conventions)
+since they are not relevant to the discussion
+and would end up just being distracting.
+I’m also going to assume we are running on an x86-class machine,
+just for concreteness.
+The same discussion works for other platforms; you just have to
+adjust the conventions accordingly.
+</p>
+<p>
+First, here is some source code for a DLL,
+let’s call it <code>FRED.DLL</code>:
+</p>
+<pre>
+int Dabba()
+{
+  return 0;
+}
+int Doo()
+{
+  return 1;
+}
+</pre>
+<p>
+And here is the DEF file for <code>FRED.DLL</code>:
+</p>
+<pre>
+EXPORTS
+ Yabba=Dabba
+ Dabba=Doo
+</pre>
+<p>
+When you compile this DLL, the result will be something like this:
+</p>
+<pre>
+FRED.DLL:
+ Yabba -&gt; return 0;
+ Dabba -&gt; return 1;
+</pre>
+<p>
+The function exported as <code>Yabba</code> returns <code>0</code>
+because the DEF file said,
+“I want to export a function with the exported name <code>Yabba</code>;
+when somebody calls the function, I want control to go to the
+function I called <code>Dabba</code> internally.”
+</p>
+<p>
+Similarly, the function exported as <code>Dabba</code> returns <code>1</code>
+because the DEF file said,
+“I want to export a function with the exported name <code>Dabba</code>;
+when somebody calls the function, I want control to go to the
+function I called <code>Doo</code> internally.”
+</p>
+<p>
+Remember that symbolic information disappears during linking.
+The names of the functions and variables in the original source
+code are not stored anywhere in the DLL.
+The names exist only so that the linker can resolve symbolic
+references between object files.
+Once that’s done, the names are discarded: Their work is done.
+(See
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/10/12/9905953.aspx">
+The classical model for linking</a>
+for a discussion of how linking works under the classical model.)
+</p>
+<p>
+Exported functions are also a mapping between labels and functions,
+but this mapping is not used when linking the DLL;
+rather, it is just a table the linker produces under the direction
+of your <code>DEF</code> file.
+To reduce confusion for the programmer writing the DLL,
+the name in the exported function table usually matches the name
+in the object files, but that is merely a convention.
+An entry in the export table that doesn’t perform renaming is
+just a shorthand for “I would like the exported name for this function
+to be the same as its internal name.”
+It’s a convenient typing-saver.
+</p>
+<p>
+By analogy,
+Microsoft employees have one email address for use inside the company,
+and
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/10/23/9011948.aspx">
+a different email address for use outside the company</a>.
+Some employees choose to have their external email address be the same
+as their internal one,
+but that is hardly a requirement.
+</p>
+<p>
+Meanwhile, the import library for our DLL looks something like this:
+</p>
+<pre>
+FRED.LIB:
+ __imp__Yabba -&gt; FRED.Yabba
+ __imp__Dabba -&gt; FRED.Dabba
+ <a href="http://blogs.msdn.com/oldnewthing/archive/2006/07/27/679634.aspx">_Yabba@0</a> -&gt; <a href="http://blogs.msdn.com/oldnewthing/archive/2006/07/20/672695.aspx">jmp [__imp__Yabba]</a>
+ _Dabba@0 -&gt; jmp [__imp__Dabba]
+</pre>
+<p>
+As we saw before,
+each exported function
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/07/21/673830.aspx">
+results in two symbols in the import library</a>,
+one with <code>__imp_</code> prepended to the exported name,
+which represents the import table entry,
+and one containing a stub function for the benefit of a naïve
+compiler.
+</p>
+<p>
+Now let’s look at a program that wants to call some functions from
+<code>FRED.DLL</code>:
+</p>
+<pre>
+int Flintstone()
+{
+ Yabba();
+ Dabba();
+ Doo();
+}
+</pre>
+<p>
+Let’s say that these functions were not declared as
+<code>dllimport</code>, just for the sake of concreteness.
+(The discussion works the same if they were declared as
+<code>dllimport</code>, making the appropriate changes to the
+symbol names.)
+When the linker goes to resolve the call to <code>Yabba@0</code>,
+it will find the entry in <code>FRED.DLL</code> that says,
+“I’ve got a function called <code>Yabba@0</code>; the code for it
+is the single instruction <code>jmp [__imp__Yabba]</code>.”
+When the program calls this function, the <code>jmp</code>
+instruction will jump through the import table entry for
+<code>FRED.Yabba</code>,
+which will wind up at the function in <code>FRED.DLL</code>
+exported under the name <code>Yabba</code>.
+If we look inside <code>FRED.DLL</code>, we see that this
+is a function that returns <code>0</code>
+(because it is the function which was called <code>Dabba</code>
+in the original source code, although that information was lost
+a long time ago).
+</p>
+<p>
+Similarly, when the linker resolves the call to <code>Dabba@0</code>,
+it finds the entry in <code>FRED.DLL</code> which pulls in the
+one-line stub function which jumps through the import table
+entry for <code>Dabba@0</code>.
+This leads to a function that returns <code>1</code>,
+a function which was called <code>Doo</code>
+in the original source code.
+</p>
+<p>
+However, that last call to <code>Doo</code>
+raises a linker error because it cannot find a function called
+<code>Doo</code> in the <code>FRED.LIB</code> import library.
+That’s just the internal name for a function in the source code
+for <code>FRED.DLL</code>,
+a name which was lost during linking.
+If you want to call the function which had been called <code>Doo</code>
+in the original source code,
+you have to import it by its new name,
+<code>Dabba</code>.
+</p>
+<p>
+In Jeffrey’s case, he took a function which was internally
+referred to by a decorated name
+(<code>?Dispose@MyClass@@QAEAAV1@XZ</code>)
+and renaming it to an undecorated name
+(<code>MC_Dispose</code>).
+But when other modules tried to use the library, they got the error
+saying that
+“?Dispose@MyClass@@QAEAAV1@XZ” is not found.
+Which is correct:
+<code>?Dispose@MyClass@@QAEAAV1@XZ</code>
+was not found because it no longer exists under that name.
+You renamed it to <code>MC_Dispose</code>.
+Those modules need to link to the function
+<code>MC_Dispose</code> if they want to call the
+function
+“formerly known as ?Dispose@MyClass@@QAEAAV1@XZ”.
+</p>
+<p>
+Actually, Jeffrey’s situation is more complicated than I described
+it because
+<code>?Dispose@MyClass@@QAEAAV1@XZ</code>
+undecorates to
+<code>public: class MyClass &amp; __thiscall MyClass::Dispose(void)</code>;
+this is a method not a static function.
+I don’t believe there’s a way to override the name decoration
+algorithm for instance methods;
+the compiler is always going to generate a reference to
+<code>?Dispose@MyClass@@QAEAAV1@XZ</code>.
+So renaming the export doesn’t buy you anything because you don’t
+control the name on the import side.</p>
+
+
+</body>

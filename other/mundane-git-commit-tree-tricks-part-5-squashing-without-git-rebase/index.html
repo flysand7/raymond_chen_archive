@@ -1,0 +1,146 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Mundane git commit-tree tricks, Part 5: Squashing without git rebase</h1>  <!-- .entry-meta -->
+
+<p>Suppose you’ve made a bunch of changes.</p>
+
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td>X WIP</td>
+<td> </td>
+<td>almost</td>
+<td> </td>
+<td>rename<br/>
+method</td>
+<td> </td>
+<td>silly typo</td>
+<td> </td>
+<td>X works</td>
+<td> </td>
+<td>update Y</td>
+<td> </td>
+<td>update Z</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 4em;">base</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">A</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">B</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">C</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">D</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">E</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">F</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">G</td>
+</tr>
+</tbody>
+</table>
+<p>You started by trying to get the <var>X</var> component working. I subscribe to the theory of <i><a href="https://en.wikipedia.org/wiki/Snowclone">commit early and commit often</a></i>. I don’t wait until all of <var>X</var> is done before committing. I’ll commit every time I reach a point where I have built up enough work that I don’t want to lose it, especially if I might wind up breaking it in the next stage of work. Think of it as <i>save game</i> for source code.</p>
+<p>After four tries, you finally got component <var>X</var> working. Next step is to update components <var>Y</var> and <var>Z</var> to use the new component.</p>
+<p>Okay, you’re ready to create your pull request. Now, <a href="https://bitbucket.org/blog/the-pull-request-story"> a pull request is a story</a>, so you need to decide how you want to tell the story of your work to others, so that they can review it. For this story, we want to say “First, I wrote this awesome bug-free <var>X</var> component. Then I updated the <var>Y</var> component to use the <var>X</var> component. Finally, I did the same with <var>Z</var>.” To tell this story, we want to do some internal squashing.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td>X WIP</td>
+<td> </td>
+<td>almost</td>
+<td> </td>
+<td>rename<br/>
+method</td>
+<td> </td>
+<td>silly typo</td>
+<td> </td>
+<td>X works</td>
+<td> </td>
+<td>update Y</td>
+<td> </td>
+<td>update Z</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 4em;">base</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">A</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">B</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">C</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">D</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">E</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">F</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">G</td>
+</tr>
+<tr>
+<td> </td>
+<td>↖︎</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="9" style="border: solid 1px black; width: 4em;">AE′</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">F′</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">G′</td>
+</tr>
+</tbody>
+</table>
+<p>The conventional way to do this is to check out the branch and perform an interactive rebase, squashing together commits <var>A</var> through <var>E</var> to form a new commit <var>AE′</var>, and then picking commits <var>F</var> and <var>G</var>, producing <var>F′</var> and <var>G′</var>.</p>
+<p>However, the conventional way may not be the convenient way. You may have moved on and checked out a different branch to to some other work, and returning to this branch for some squashing action would churn your working directory, forcing unwanted rebuilds.</p>
+<p>Or you might still be on that branch, but rewinding back to <var>base</var> is going to churn so many files that it will invalidate all the build collateral you’ve created, forcing you to rebuild them pointlessly. For example, part of the work in adding the <var>X</var> component may have involved changing a centrally-used header file, which means that your entire project will have to rebuild.</p>
+<p>Since all of the commits we want to squash are consecutive, we can do all this squashing by simply committing trees.</p>
+<pre>git commit-tree E^{tree} -p base -m "Write component X"
+</pre>
+<p><b>Note</b>: As before, if using the Windows <code>CMD</code> command prompt, you need to double the <tt>^</tt> character because it is the <code>CMD</code> escape character.</p>
+<p>This command prints out a hash, which is our <var>AE′</var>.</p>
+<p>Now we can stack <var>F</var> and <var>G</var> on top of it:</p>
+<pre>git commit-tree F^{tree} -p <var>AE′</var> -m "Update Y"
+</pre>
+<p>This prints a hash, which is our <var>F′</var>.</p>
+<pre>git commit-tree G^{tree} -p <var>F′</var> -m "Update Z"
+</pre>
+<p>This prints a hash, which is our <var>G′</var>.</p>
+<p>We can now reset the local branch to that commit, and then push it.</p>
+<p>If the branch you are “virtually rebasing” is the current branch, you can reset to it.</p>
+<pre>git reset --soft <var>G′</var>
+</pre>
+<p>Since the trees for <var>G</var> and <var>G′</var> are identical, this has no effect on your index. Any files that were staged remain staged, with exactly the same changes.</p>
+<p>If you are virtually rebasing a non-checked-out branch, then you can update it, and even push it, without checking it out:</p>
+<pre>git branch -f that-branch <var>G′</var>
+git push -f origin that-branch
+</pre>
+<p>Or we could bypass our local branch and push directly to the remote.</p>
+<pre>git push -f origin <var>G′</var>:that-branch
+</pre>
+<p>The point is that we were able to rewrite a branch without touching any files in the working directory.</p>
+<p>
+<script>
+window.addEventListener("load", function() {
+  var fullFF = getComputedStyle(document.body).fontFamily;
+  var simpleFF = fullFF.replace(/ Emoji/g, "");
+  // break up "style" to prevent wordpress from injecting random junk
+  document.getElementById("p20190510_head").innerHTML =
+`<s` + `tyle>
+body { font-family: ${simpleFF}; }
+.emoji { font-family: ${fullFF}; }
+</s` + `tyle>`;
+});
+</script></p>
+
+
+</body>

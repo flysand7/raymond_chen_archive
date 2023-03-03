@@ -1,0 +1,187 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I get the effect of C#’s <code>async void</code> in a C++ coroutine? Part 1: Why does the obvious solution crash?</h1>  <!-- .entry-meta -->
+
+<p>The <code>co_await</code> C++ language keyword makes it a lot easier to write coroutines. The compiler does the grunt work of transforming your function into a state machine, similar in spirit to the coroutine transformations performed by <a href="https://docs.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/async/">C#</a> and <a href="https://www.wptutor.io/web/js/generators-coroutines-async-javascript/">JavaScript</a>. </p>
+<p>C# and JavaScript have an additional feature that C++ doesn’t: They let you take a coroutine and treat it like a plain function which returns when the coroutine yields for the first time. With C#, this is done by declaring the function as <code>async void</code>. With JavaScript, you get this automatically because JavaScript is dynamically-typed. </p>
+<p>But you don’t get any built-in help in C++. </p>
+<pre>
+typedef void (*EventHandler_t)(int a, int b);
+
+void MyEventHandler(int a, int b)
+{
+  GetReady(a);
+  <font color="blue">co_await GetSetAsync(b); // oops - this doesn't compile</font>
+  Go(a, b);
+}
+
+extern void SetEventHandler(EventHandler_t eventHandler);
+
+void RegisterTheEventHandler()
+{
+   SetEventHandler(MyEventHandler);
+}
+</pre>
+<p>In order to use <code>co_await</code>, your function must return a <code>future</code> or <code>task</code> or some other representation of a coroutine. </p>
+<p>Okay, so let’s do that. </p>
+<pre>
+typedef void (*EventHandler_t)(int a, int b);
+
+Concurrency::task&lt;void&gt; MyEventHandler(int a, int b)
+{
+  GetReady(a);
+  co_await GetSetAsync(b); // all right, now this compiles!
+  Go(a, b);
+}
+
+extern void SetEventHandler(EventHandler_t eventHandler);
+
+void RegisterTheEventHandler()
+{
+   <font color="blue">SetEventHandler(MyEventHandler); // but this doesn't</font>
+}
+</pre>
+<p>So now what? </p>
+<p>If you’re lucky, your event handler takes a <code>std::function</code>, which is more generous about function return types, and the problem goes away. </p>
+<p>But suppose you’re not that lucky. </p>
+<p>Gor Nishanov, one of the brains behind <code>co_await</code>, <a href="https://channel9.msdn.com/Events/Build/2016/P489#c635962709818402409">had two suggestions</a>. The first is to create a wrapper. </p>
+<pre>
+Concurrency::task&lt;void&gt; MyEventHandlerAsync(int a, int b)
+{
+  GetReady(a);
+  co_await GetSetAsync(b);
+  Go(a, b);
+}
+
+<font color="blue">void MyEventHandler(int a, int b)
+{
+  MyEventHandlerAsync(); // throw away the task
+}</font>
+
+extern void SetEventHandler(EventHandler_t eventHandler);
+
+void RegisterTheEventHandler()
+{
+   SetEventHandler(MyEventHandler);
+}
+</pre>
+<p>The other is to roll up your sleeves and write a specialization of <code>coroutine_</code><code>traits</code> to support returning <code>void</code>. I’m not going to reproduce it here because it assumes you understand the low-level machinery that makes <code>co_await</code> work,¹ and it ties you to a specific asynchronous framework (since it’s going to be used for all functions returning <code>void</code>). </p>
+<p>I thought I discovered a third way: </p>
+<pre>
+// Code in italics is wrong.
+void MyEventHandler(int a, int b)
+{
+  <font color="blue"><i>[=]() -&gt; Concurrency::task&lt;void&gt;</i>
+  {</font>
+    GetReady(a);
+    co_await GetSetAsync(b);
+    Go(a, b);
+  <font color="blue">}();</font>
+}
+
+extern void SetEventHandler(EventHandler_t eventHandler);
+
+void RegisterTheEventHandler()
+{
+   SetEventHandler(MyEventHandler);
+}
+</pre>
+<p>We create a lambda that returns a coroutine, and that lambda can now use <code>co_await</code>. And then we invoke the lambda immediately and throw the result away. </p>
+<p>This does cost you a level of indentation, but it beats writing another function entirely. </p>
+<p>Basically, I just took Gor’s first suggestion and inlined the function as a lambda. </p>
+<p>Unfortunately, it also doesn’t work. </p>
+<p>To see why, let’s write out the lambda in its expanded form. </p>
+<pre>
+void MyEventHandler(int a, int b)
+{
+  <i>struct Lambda {
+   Lambda(int a, int b) : a_(a), b_(b) { }
+   Concurrency::task&lt;void&gt; operator() {
+    GetReady(a_);
+    co_await GetSetAsync(b_);
+    Go(a_, b_);
+   }
+  private:
+   int a_, b_;
+  } lambda(a, b);
+
+  lambda();</i>
+}
+</pre>
+<p>To make things even more explicit, let’s expand out the task, too. </p>
+<pre>
+void MyEventHandler(int a, int b)
+{
+  <i>struct LambdaFrame {
+   LambdaFrame(Lambda* lambda) : lambda_(lambda) { }
+
+   Concurrency::task&lt;void&gt; Run() {
+    if (state_ == 0) {
+     GetReady(lambda_-&gt;a_);
+     auto innerTask = GetSetAsync(lambda_-&gt;b_);
+     state_ = 1;
+     return magic_create_task_from_frame(this);
+    } else if (state_ == 1) {
+     Go(lambda_-&gt;a_, lambda_-&gt;b_);
+     state_ = 2;
+     return magic_completed_task();
+    }
+   }
+  private:
+   Lambda* lambda_;
+   int state_ = 0;
+  };
+
+  struct Lambda {
+   Lambda(int a, int b) : a_(a), b_(b) { }
+   Concurrency::task&lt;void&gt; operator() {
+    return magic_create_task_from_frame
+            &lt;LambdaFrame&gt;(__this, a_, b_);
+   }
+  private:
+   int a_, b_;
+  } lambda(a, b);
+
+  lambda();</i>
+}
+</pre>
+<p>I’m glossing over a bunch of <code>magic_</code> stuff which is part of the behind-the-scenes coroutine infrastructure. The important thing is that the <code>task</code> keeps the <code>Lambda­Frame</code> alive for as long as the task needs it. </p>
+<p>But there is no magic that keeps the <code>lambda</code> alive! </p>
+<p>What we did was invoke the lambda and then destruct it when the function returns. But the task is still running, and that task is going to try to use the <code>a_</code> and <code>b_</code> members of the lambda. Which no longer exists. </p>
+<p>In other words, we have a case of using an object after it has destructed. </p>
+<p>But wait, all is not lost. We can fix this by using a non-capturing lambda. </p>
+<pre>
+void MyEventHandler(int a, int b)
+{
+  [](int a, int b) -&gt; Concurrency::task&lt;void&gt;
+  {
+   GetReady(a);
+   co_await GetSetAsync(b);
+   Go(a, b);
+  }(a, b);
+}
+</pre>
+<p>We cannot capture state in the lambda because the lambda is going to be destructed as soon as the task reaches a suspension point. Instead, we capture the state in the explicit lambda parameters (which are part of the frame, not the lambda). </p>
+<p>If <code>My­Event­Handler</code> is a member function, you’ll also have to capture <code>this</code> explicitly. Furthermore, you need to make sure the instance doesn’t get destructed while the task is running. This might be implicit in the way you use the task, or it could be explicit by maintaining a strong reference to the enclosing object. </p>
+<pre>
+void MyClass::MyEventHandler(int a, int b)
+{
+  [](std::shared_ptr&lt;MyClass&gt; self, int a, int b)
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   self-&gt;GetReady(a);
+   co_await self-&gt;GetSetAsync(b);
+   self-&gt;Go(a, b);
+  }(this-&gt;shared_from_this(), a, b);
+}
+</pre>
+<p>Unfortunately, having to type <code>self-&gt;</code> each time you access a member makes this rather cumbersome. To solve this, you can make the lambda body a separate method. But now you’ve come full circle back to Gor’s original suggestion. </p>
+<p>So is this hopeless? Not quite. We’ll pick up the story next time. </p>
+<p>¹ If you want to learn the low-level machinery that makes <code>co_await</code> work, you can read this series of articles by <a href="https://lewissbaker.github.io/">Lewis Baker</a>: </p>
+<ul>
+<li> <a href="https://lewissbaker.github.io/2017/09/25/coroutine-theory">    Coroutine Theory</a></li>
+<li> <a href="https://lewissbaker.github.io/2017/11/17/understanding-operator-co-await">    Understanding operator co_await</a></li>
+<li> <a href="https://lewissbaker.github.io/2018/09/05/understanding-the-promise-type">    Understanding the promise type</a></li>
+</ul>
+
+
+</body>

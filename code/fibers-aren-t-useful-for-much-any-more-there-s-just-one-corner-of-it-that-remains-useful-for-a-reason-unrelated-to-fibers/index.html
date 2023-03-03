@@ -1,0 +1,41 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Fibers aren’t useful for much any more; there’s just one corner of it that remains useful for a reason unrelated to fibers</h1>  <!-- .entry-meta -->
+
+<p>Fibers were the new hotness back in 1996, but the initial excitement was gradually met with the realizations that fibers are awful. Gor Nishanov has a <a href="http://www.open-std.org/JTC1/SC22/WG21/docs/papers/2018/p1364r0.pdf"> fantastic write-up of the history of fibers and why they suck</a>. Of particular note is that nearly all of the original proponents of fibers subsequently abandoned them.</p>
+<p>Fibers make asynchronous functions appear to be synchronous. Depending on what color glasses you are wearing, this is either a cool trick or a hidden gotcha. Over time, the consensus of most of the computing community has settled on the side of “hidden gotcha”.</p>
+<p>But there’s still one part of Windows fibers that is still useful: The fiber destruction callback.</p>
+<p>Okay, let’s step back and look at thread-local storage first. Windows thread-local storage works like this:</p>
+<ul>
+<li>You allocate a thread-local storage slot.</li>
+<li>You learn that a thread has been created via the <code>DLL_</code><code>THREAD_</code><code>ATTACH</code> notification. You can initialize the thread-local storage in response to this notification.</li>
+<li>You learn that a thread has been destroyed via the <code>DLL_</code><code>THREAD_</code><code>DETACH</code> notification. You can clean up the thread-local storage in response to this notification.</li>
+<li>You free the thread-local storage slot.</li>
+</ul>
+<p>There are a few problems here.</p>
+<p>One problem is the case of the thread that existed prior to the allocation of the thread-local storage slot. It’s possible that you never received any <code>DLL_</code><code>THREAD_</code><code>ATTACH</code> notification for these pre-existing threads, because your DLL wasn’t even loaded at the time. Even if your DLL did receive those notifications, you couldn’t do anything to initialize a thread-local storage slot that didn’t exist.</p>
+<p>In practice, what happens is that thread-local storage is lazily allocated. The DLL ignores the <code>DLL_</code><code>THREAD_</code><code>ATTACH</code> notification and allocates the storage on demand the first time a thread does something that requires it.</p>
+<p>Another problem is with threads that remain in existence at the time the thread-local storage slot is deallocated. You have to free the memory at deallocation time because even if you get a subsequent <code>DLL_</code><code>THREAD_</code><code>DETACH</code>, the slot is already gone, so you lost track of the memory you wanted to free.</p>
+<p>A common workaround for this is to keep your own data structure that remembers all the data that has been allocated for thread-local storage, and free that data structure when the slot is deallocated. But if you’re going to do this, then you really didn’t need the thread-local storage slot in the first place. When a thread needs to access per-thread storage, you can just look it up in that data structure you’re using to keep track of them!</p>
+<p>A third problem is with code that doesn’t have access to the <code>Dll­Main</code> function. Executables do not receive DLL notifications, so they never learn about thread creation or destruction. Static libraries do not have access to the <code>Dll­Main</code> function of their host.</p>
+<p>A common workaround for this is to <a href="https://devblogs.microsoft.com/oldnewthing/20160930-00/?p=94425"> hire a lackey</a>. Executables may have a lackey DLL whose purpose is to forward the notification back to the executable. Static libraries may require the host to forwared the notifications into a special function in the static library.</p>
+<p>Even though workarounds for all these problems exist, they’re still annoying problems.</p>
+<p>An alternate workaround is to abandon thread-local storage and use fiber-local storage instead. But not because you care about fibers. Rather, it’s because fiber-local storage <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms682664(v=vs.85).aspx"> has this nifty callback</a>.</p>
+<pre>DWORD WINAPI FlsAlloc(
+    _In_ PFLS_CALLBACK_FUNCTION lpCallback
+);
+</pre>
+<p>The callback function is called when a fiber is destroyed. This is the fiber equivalent of <code>DLL_</code><code>THREAD_</code><code>DETACH</code>, except that it’s not just for DLLs. Executables can use it too.</p>
+<p>Even better: When you deallocate the fiber-local storage slot, the callback is invoked for every extant fiber. This lets you clean up all your per-fiber data before it’s too late.</p>
+<p>As a bonus you support fibers, in case anybody uses your code with fibers.</p>
+<p>The new fancy pattern is now this:</p>
+<ul>
+<li>You allocate a filber-local storage slot with a callback function.</li>
+<li>The fiber-local storage is allocated on demand the first time a fiber needs access to it.</li>
+<li>The callback function frees the fiber-local storage, if it had been allocated.</li>
+<li>When finished, you free the thread-local storage slot. This will call the callback for each fiber still in existence, so you can clean up the data.</li>
+</ul>
+<p>Even though fibers are basically dead, you can use fiber-local storage to get an improved version of thread-local storage.</p>
+<p> </p>
+
+
+</body>

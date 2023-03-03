@@ -1,0 +1,205 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Reducing chattiness by querying for multiple interfaces at once, part 1</h1>  <!-- .entry-meta -->
+
+<p>During performance analysis, you may discover that your usage of a remote COM object is too chatty, meaning that too much time spent communicating back and forth at the expense of actual work. We saw some time ago how you can <a href="/code/we-batched-up-our-com-requests-and-return-a-single-stream-of-results-but-the-performance-is-still-slow" title="We batched up our COM requests and return a single stream of results, but the performance is still slow"> marshal a buffer by value instead of by reference</a>, so that there is only one round trip to the server to get the buffer.</p>
+<p>But maybe your chattiness problem is with the <code>Query­Interface</code> calls:</p>
+<pre>// Error checking elided for expository purposes.
+
+// Create a widget.
+wil::com_ptr&lt;IWidget&gt; widget;
+CoCreateInstance(CLSID_Widget, nullptr,
+    CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&amp;widget));
+
+// Set ourselves as its site.
+wil::com_ptr&lt;IObjectWithSite&gt; objectWithSite;
+widget-&gt;QueryInterface(IID_PPV_ARGS(&amp;objectWithSite));
+objectWithSite-&gt;SetSite(this);
+
+// Load it from a file.
+wil::com_ptr&lt;IPersistFile&gt; persistFile;
+widget-&gt;QueryInterface(IID_PPV_ARGS(&amp;persistFile));
+persistFile-&gt;Load(fileName, STGM_READ);
+
+// Ready to do widget things.
+widget-&gt;DoSomething();
+</pre>
+<p>Let’s count the number of calls to the server, and how many of them are performing actual work.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Call</th>
+<th>Purpose</th>
+<th>Nature</th>
+</tr>
+<tr>
+<td><code>Co­Create­Instance</code></td>
+<td>Create the widget</td>
+<td>Real work</td>
+</tr>
+<tr>
+<td><code>QueryInterface</code></td>
+<td>Get the <code>IObjectWithSite</code></td>
+<td>Bookkeeping</td>
+</tr>
+<tr>
+<td><code>SetSite</code></td>
+<td>Set the site</td>
+<td>Configuration</td>
+</tr>
+<tr>
+<td><code>QueryInterface</code></td>
+<td>Get the <code>IPersistFile</code></td>
+<td>Bookkeeping</td>
+</tr>
+<tr>
+<td><code>Load</code></td>
+<td>Load the widget</td>
+<td>Initialization</td>
+</tr>
+<tr>
+<td><code>DoSomething</code></td>
+<td>Do something</td>
+<td>Activity</td>
+</tr>
+</tbody>
+</table>
+<p>There are six calls to the server, and a third of them are just bookkeeping.</p>
+<p>We can batch together the <code>QueryInterface</code> by using <code>IMultiQI</code>:</p>
+<pre>// Error checking elided for expository purposes.
+
+// Create a widget.
+wil::com_ptr&lt;IWidget&gt; widget;
+CoCreateInstance(CLSID_Widget, nullptr,
+    CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&amp;widget));
+
+<span style="color: blue;">// Get two interfaces with one call.
+wil::com_ptr&lt;IMultiQI&gt; multiQI;
+widget-&gt;QueryInterface(IID_PPV_ARGS(&amp;multiQI));
+
+MULTI_QI mqi[2] = {
+    { &amp;__uuidof(IObjectWithSite), nullptr, 0 },
+    { &amp;__uuidof(IPersistFile), nullptr, 0 },
+};
+HRESULT hr = multiQI-&gt;QueryMultipleInterfaces(2, mqi);
+
+wil::com_ptr&lt;IObjectWithSite&gt; objectWithSite;
+objectWithSite.attach(mqi[0].pItf);
+
+wil::com_ptr&lt;IPersistFile&gt; persistFile;
+persistFile.attach(mqi[1].pItf);
+
+if (hr != S_OK) {
+    // Failed to get at least one interface.
+    return;
+}</span>
+
+// Set ourselves as its site.
+objectWithSite-&gt;SetSite(this);
+
+// Load it from a file.
+persistFile-&gt;Load(fileName, STGM_READ);
+
+// Ready to do widget things.
+widget-&gt;DoSomething();
+</pre>
+<p>We were able to combine the two <code>Query­Interface</code> calls into one by issuing a batch query. Note that the <code>Query­Interface</code> for <code>IMultiQI</code> is not a server call: The <code>IMultiQI</code> interface is implemented locally on the proxy.</p>
+<p>But wait, we can do even better: We can use <code>Co­Create­Instance­Ex</code> to obtain all thread interfaces as part of the initial creation:</p>
+<pre>// Error checking elided for expository purposes.
+
+<span style="color: blue;">// Create a widget and request three interfaces.
+
+MULTI_QI mqi[3] = {
+    { &amp;__uuidof(IWidget), nullptr, 0 },
+    { &amp;__uuidof(IObjectWithSite), nullptr, 0 },
+    { &amp;__uuidof(IPersistFile), nullptr, 0 },
+};
+HRESULT hr = CoCreateInstanceEx(
+    CLSID_Widget, nullptr, CLSCTX_LOCAL_SERVER,
+    nullptr, 3, mqi);
+
+wil::com_ptr&lt;IWidget&gt; widget;
+widget.attach(mqi[0].pItf);
+
+wil::com_ptr&lt;IObjectWithSite&gt; objectWithSite;
+objectWithSite.attach(mqi[1].pItf);
+
+wil::com_ptr&lt;IPersistFile&gt; persistFile;
+persistFile.attach(mqi[2].pItf);
+
+if (hr != S_OK) {
+    // Failed to get at least one interface.
+    return;
+}</span>
+
+// Set ourselves as its site.
+objectWithSite-&gt;SetSite(this);
+
+// Load it from a file.
+persistFile-&gt;Load(fileName, STGM_READ);
+
+// Ready to do widget things.
+widget-&gt;DoSomething();
+</pre>
+<p>Now we have gotten rid of all of the bookkeeping calls.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Call</th>
+<th>Purpose</th>
+<th>Nature</th>
+</tr>
+<tr>
+<td><code>Co­Create­Instance­Ex</code></td>
+<td>Create the widget and get interfaces</td>
+<td>Real work</td>
+</tr>
+<tr>
+<td><code>SetSite</code></td>
+<td>Set the site</td>
+<td>Configuration</td>
+</tr>
+<tr>
+<td><code>Load</code></td>
+<td>Load the widget</td>
+<td>Initialization</td>
+</tr>
+<tr>
+<td><code>DoSomething</code></td>
+<td>Do something</td>
+<td>Activity</td>
+</tr>
+</tbody>
+</table>
+<p>Okay, so now we get to talk about error checking.</p>
+<p>There are three classes of results related to whether the interfaces could be obtained.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Interfaces obtained</th>
+<th>QueryMultipleInterfaces</th>
+<th>CoCreateInstanceEx</th>
+</tr>
+<tr>
+<td>All</td>
+<td align="center" colspan="2"><code>S_OK</code></td>
+</tr>
+<tr>
+<td>Some but not all</td>
+<td align="center"><code>S_FALSE</code></td>
+<td align="center"><code>CO_<wbr/>S_<wbr/>NOT­ALL­INTERFACES</code></td>
+</tr>
+<tr>
+<td>None</td>
+<td align="center" colspan="2">Error</td>
+</tr>
+</tbody>
+</table>
+<p>Note that for <code>Co­Create­Instance­Ex</code>, there are other errors possible to report any problems creating the object, but I’m looking at the interface-related errors.</p>
+<p>In our case, we need all of the interfaces, so anything that isn’t <code>S_OK</code> is bad news, and we give up immediately.</p>
+<p>There may be other cases where you are probing for an interface and will take advantage of it if present, but its absence should not be considered a failure. In that case, you would dig into the <code>MULTI_QI</code> to find out which interfaces could be obtained and which failed. You can use <code>SUCCEEDED(hr)</code> as a shortcut to detect that <i>something</i> was obtained.</p>
+<p>Note that in our sample code above, the obtained interfaces are immediately transferred to smart pointers so that they will be released properly, even in the case where not all interfaces were obtained.</p>
+<p>Now, it may be that the various calls to <code>Query­Interface</code> are scattered through the code, and it is unwieldy to query them at creation and then pass them around to all the places that query for them. We’ll look at that case next time.</p>
+<p><b>Bonus chatter</b>: Note that the batched interface query is a significant improvement only for remote objects. For local objects, calls to the object occur directly, so there’s no marshaling overhead. Furthermore, local objects are unlikely to support the <code>IMulti­QI</code> interface at all.</p>
+
+
+</body>

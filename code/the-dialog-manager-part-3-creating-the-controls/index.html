@@ -1,0 +1,112 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The dialog manager, part 3: Creating the controls</h1>  <!-- .entry-meta -->
+
+<p>
+This is actually a lot less work than creating the frame,
+believe it or not.
+</p>
+<p>
+For each control in the template, the corresponding child
+window is created.  The control’s sizes and position is
+specified in the template in DLUs, so of course they need
+to be converted to pixels.
+</p>
+<pre>
+  int x = XDLU2Pix(ItemTemplate.x);
+  int y = YDLU2Pix(ItemTemplate.y);
+  int cx = XDLU2Pix(ItemTemplate.cx);
+  int cy = YDLU2Pix(ItemTemplate.cy);
+</pre>
+<p>
+The class name and caption also come from the template.
+There are also the optional extra bytes <code>pExtra</code> which nobody uses
+but which remain in the template definition for historical reasons.
+Once that information has been collected,
+it’s
+<a href="http://www.dunkindonuts.com/"></a>time to make the donuts.
+</p>
+<pre>
+  HWND hwndChild = CreateWindowEx(
+              ItemTemplate.dwExStyle | WS_EX_NOPARENTNOTIFY,
+              pszClass, pwzCaption, ItemTemplate.dwStyle,
+              x, y, cx, cy, hdlg, ItemTemplate.dwId,
+              hinst, pExtra);
+</pre>
+<p>
+Notice that the <code>WS_EX_NOPARENTNOTIFY</code> style is forced on
+for dialog controls.
+</p>
+<p>
+This next part often trips people up.  “When I try to create
+my dialog, it fails and I don’t know why.”  It’s probably
+because one of the controls on the dialog could not be created,
+usually
+because you forgot to register the window class for that
+control.  (For example, you forgot to call
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/commctls/common/functions/initcommoncontrolsex.asp">
+the <code>InitCommonControlsEx</code> function</a>
+or
+you forgot to
+<code>LoadLibrary</code> the appropriate version of the RichEdit control.)
+</p>
+<pre>
+  if (!hwndChild) {
+    DestroyWindow(hdlg);
+    return NULL;
+  }
+</pre>
+<p>
+The <code>DS_NOFAILCREATE</code> style suppresses the failure check above.
+</p>
+<p>
+But if the control did get created, then it needs to be
+initialized.
+</p>
+<pre>
+  SetWindowContextHelpId(hwndChild, ItemTemplate.dwHelpID);
+  SetWindowFont(hwndChild, hf, FALSE);
+</pre>
+<p>
+Repeat once for each item template, and you now have a dialog
+box with all its child controls.
+Tell the dialog procedure that it can initialize its child windows,
+show the (now-ready) dialog box
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/03/11/87941.aspx">
+if we deferred the <code>WS_VISIBLE</code> bit
+when constructing the frame</a>,
+and return the dialog box to our caller, ready for action.
+</p>
+<pre>
+  // The default focus is the first item that is a valid tab-stop.
+  HWND hwndDefaultFocus = GetNextDlgTabItem(hdlg, NULL, FALSE);
+  if (SendMessage(hdlg, WM_INITDIALOG, hwndDefaultFocus, lParam)) {
+     SetDialogFocus(hwndDefaultFocus);
+  }
+  if (fWasVisible) ShowWindow(hdlg);
+  return hdlg;
+}
+</pre>
+<p>
+The <code>SetDialogFocus</code> function
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/08/02/205624.aspx">
+we saw last year</a>.
+</p>
+<p>
+So there you have it:  You have now seen how dialog box
+sausages are made.
+</p>
+<p>
+(Actually, reality is much sausagier, since I skipped
+over all the app compat hacks!  For example, there’s a
+program out there that relies on the subtle placement and absence
+of the <code>WS_BORDER</code> style to decide whether a control is a combo
+box or a listbox.  I guess
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/WindowClasses/WindowClassReference/WindowClassFunctions/GetClassName.asp">
+the <code>GetClassName</code> function</a> was too much work?)
+</p>
+<p>
+I hope this helps you understand
+a little better how dialog templates fit into the big picture.</p>
+
+
+</body>

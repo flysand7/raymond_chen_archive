@@ -1,0 +1,156 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">It rather involved being on the other side of this airtight hatchway: Invalid parameters from one security level crashing code at the same security level</h1>  <!-- .entry-meta -->
+
+<p>
+In the category of dubious security vulnerability,
+I submit the following (paraphrased) report:
+</p>
+<blockquote class="q"><p>
+I have discovered that if you call the <code>XYZ</code> function
+(whose first parameter is supposed to be a pointer to a
+<i>IUnknown</i>),
+and instead of passing a valid COM object pointer,
+you pass a pointer to a random hunk of data,
+you can trigger an access violation in the
+<code>XYZ</code> function which is exploitable
+by putting specially-crafted  data in that memory blob.
+An attacker can exploit the <code>XYZ</code> function for remote
+execution and compromise the system,
+provided an application uses the <code>XYZ</code> function and passes
+a pointer to untrusted data as the first parameter
+instead of a valid <code>IUnknown</code> pointer.
+Although we have not found an application which uses the <code>XYZ</code>
+in this way,
+the function neverless contains the potential for exploit,
+and the bug should be fixed as soon as possible.
+</p></blockquote>
+<p>The person included a sample program which went something
+like this (except more complicated):</p>
+<pre>
+// We can control the behavior by tweaking the value
+// of the Exploit array.
+unsigned char Exploit[] = "\x01\x02\x03...";
+void main()
+{
+   XYZ((IUnknown*)Exploit);
+}
+</pre>
+<p>
+Well, yeah, but you’re already on the other side of the
+airtight hatchway.
+Instead of building up a complicated blob of memory
+with exactly the right format, just write your bad
+<code>IUnknown</code>:
+</p>
+<pre>
+void Pwnz0r()
+{
+  ... whatever you want ...
+}
+class Exploit : public IUnknown
+{
+public:
+  STDMETHODIMP QueryInterface(REFIID riid, void **ppv)
+  { Pwnz0r(); return E_NOINTERFACE; }
+  STDMETHODIMP_(ULONG) AddRef() { Pwnz0r(); return 2; }
+  STDMETHODIMP_(ULONG) Release() { Pwnz0r(); return 1; }
+};
+void main()
+{
+   XYZ(&amp;Exploit);
+}
+</pre>
+<p>
+Wow, this new “exploit” is even portable to other
+architectures!
+</p>
+<p>
+Actually, now that you’re on the other side of the airtight
+hatchway, you may as well take <code>XYZ</code> out of the picture
+since it’s just slowing you down:
+</p>
+<pre>
+void main()
+{
+   Pwnz0r();
+}
+</pre>
+<p>
+You’re already running code.
+<a href="http://blogs.msdn.com/oldnewthing/archive/2007/08/07/4268706.aspx">
+It’s not surprising that you can run code</a>.
+</p>
+<p>
+There’s nothing subtle going on here.
+There is no elevation of privilege because the rogue activity happens
+in user-mode code, based on rogue code provided by an executable
+with trusted code execution privileges,
+at the same security level as the original executable.
+</p>
+<p>
+The people reporting the alleged vulnerability do say that
+they haven’t yet found any program that calls the <code>XYZ</code>
+function with untrusted data,
+but even if they did,
+that would be a data handling bug in the application itself:
+Data crossed a trust boundary without proper validation.
+It’s like saying “There is a security vulnerability in the
+<code>DeleteFile</code> function because it is possible for
+an application to pass an untrusted file name and thereby result
+in an attacker deleting any file of his choosing.”
+Even if such a vulnerability existed, the flaw is in the
+application for not validating its input, not in
+<code>DeleteFile</code> for, um, deleting the file it was told to delete.
+</p>
+<p>
+The sad thing is that it took the security team five days to
+resolve this issue,
+because even though it looks like a slam dunk,
+the issue resolution process must be followed, just to be sure.
+Who knows,
+maybe there really is a bug in the <code>XYZ</code> function’s
+use of the first parameter that would result in elevation
+of privilege.
+All supported versions of Windows need to be examined for the
+slim possibility that there’s something behind this confused
+vulnerability report.
+</p>
+<p>
+But there isn’t.
+It’s just another dubious security vulnerability report.
+</p>
+<p>
+<b>Exercise</b>:
+Apply what you learned to this security vulnerability report.
+This is also paraphrased from an actual security report:
+</p>
+<blockquote class="q">
+<p>
+There is a serious denial-of-service vulnerability in the
+function <code>XYZ</code>.
+This function takes a pointer to a buffer and a length.
+If the function is passed malformed parameters,
+it may encounter an access violation when it tries to read
+from an invalid buffer.
+Any application which calls this function with bad parameters
+will crash.
+Here is a sample program that illustrates the vulnerability:
+</p>
+<pre>
+int main(int argc, char **argv)
+{
+ // crash inside XYZ attempting to read past end of buffer
+ XYZ("x", 9999999);
+ return 0;
+}
+</pre>
+<p>
+Credit for discovering this vulnerability
+goes to ABC Security Research Company.
+Copyright© 20xx ABC Security Research Company.
+All Rights Reserved.
+</p>
+</blockquote>
+
+
+</body>

@@ -1,0 +1,51 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to get your C++/WinRT asynchronous operations to respond more quickly to cancellation, part 3</h1>  <!-- .entry-meta -->
+
+<p>Back in <a href="/code/how-to-get-your-c-winrt-asynchronous-operations-to-respond-more-quickly-to-cancellation-part-2" title="How to get your C++/WinRT asynchronous operations to respond more quickly to cancellation, part 2"> How to get your C++/WinRT asynchronous operations to respond more quickly to cancellation, part 2</a>, I introduced a helper function that propagates cancellation of a coroutine into the coroutines it is itself awaiting, so that the whole thing can cancel faster.</p>
+<p>The release of <a href="https://github.com/microsoft/cppwinrt/releases/tag/2.0.200917.4"> C++/WinRT version 2.0.200917.4</a> includes a new feature: Automatic propagation of cancellation. You can read <a href="https://github.com/microsoft/cppwinrt/pull/721"> the pull request</a> for a deep dive.</p>
+<p>The way it works for you, the application developer, is that you can call the <code>enable_propagation()</code> method on the cancellation token. If the coroutine is cancelled while it is busy <code>co_await</code>ing another coroutine, the cancellation of the coroutine is propagated into the awaited-for coroutine, thereby hastening the death of the outer coroutine.</p>
+<p>For example:</p>
+<pre>IAsyncAction DoHttpThingAsync()
+{
+    auto cancellation = co_await get_cancellation_token();
+    <span style="color: blue;">cancellation.enable_propagation();</span>
+
+    auto result = co_await httpClient.TryGetStringAsync(uri);
+
+    if (result.Succeeded()) {
+        DoSomethingWith(result.Value());
+    }
+}
+</pre>
+<p>Thanks to the <code>enable_propagation()</code>, if <code>Do­Http­Thing­Async</code> is cancelled while awaiting the result of <code>Try­Get­String­Async</code>, the <code>Try­Get­String­Async</code> operation is cancelled immediately rather than waiting for it to complete on its own, thereby avoiding a very lengthy network timeout.</p>
+<p>The <code>enable_propagation()</code> method takes an optional <code>bool</code> parameter which specifies whether you want to enable cancellation propagation (<code>true</code>, the default value) or disable it (<code>false</code>). It also returns the previous setting, so you can restore it if you need to.</p>
+<p>Cancellation propagation is now built into C++/WinRT, so we don’t need the <code>Make­Cancellable</code> helper we saw in Part 2.</p>
+<p>What’s more, cancellation propagation supports <code>resume_on_signal</code> and <code>resume_after</code>, so you can cancel out of a wait operation. This is important for <code>resume_on_signal</code>: If you’re cancelling the operation because the kernel object will never be signaled (e.g., because you realize that the thing you’re waiting for will never happen), you need some way to get the coroutine to resume (in a canceled state) so it can clean up its resources. Otherwise, the coroutine will get stuck in a permanently-suspended state and end up leaked.</p>
+<p>For compatibility with previous versions of C++/WinRT, automatic cancellation propagation is disabled by default. You must opt in by calling <code>enable_propagation()</code>.</p>
+<p><b>Bonus chatter</b>: The implementation of cancellation propagation is a little odd because it is optimized for the case that cancellation never occurs. Most of the expensive work happens during cancellation, with only a tiny bit of bookkeeping performed at each <code>co_await</code>. I paid for this extra cost by removing a lock from the <code>co_await</code> path in <a href="https://github.com/microsoft/cppwinrt/pull/717"> PR 171</a>.</p>
+<p><b>Bonus bonus chatter</b>: Any awaiter can participate in cancellation propagation by being convertible to <code>winrt::<wbr/>enable_<wbr/>await_<wbr/>cancellation</code> (typically by inheriting from it) and implementing the <code>enable_<wbr/>cancellation()</code> method. Here is the breakdown for C++/WinRT awaitables:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th colspan="2">Supports cancellation propagation</th>
+</tr>
+<tr>
+<th>Yes</th>
+<th>No</th>
+</tr>
+<tr>
+<td valign="top"><code>IAsyncXxx</code> <br/>
+<code>resume_after</code> <br/>
+<code>resume_on_signal</code></td>
+<td valign="top"><code>apartment_context</code> <br/>
+<code>resume_background</code> <br/>
+<code>resume_foreground</code> <br/>
+<code>thread_pool</code> <br/>
+<code>wait_for_deferrals</code></td>
+</tr>
+</tbody>
+</table>
+<p>The thread-switching awaitables do not support cancellation propagation because there’s nowhere to cancel back to. The original thread is long gone. The only way to proceed is to go forward and resume on the target thread.</p>
+
+
+</body>

@@ -1,0 +1,89 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using fibers to expand a thread’s stack at runtime, part 1</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/how-can-i-expand-my-thread-s-stack-at-runtime"> considered a library that required a lot of stack space</a>, and critiqued one proposed solution that involved pre-emptively converting every thread to a fiber.</p>
+<p>The solution is simply not doing anything at all in the <code>DLL_</code><code>PROCESS_</code><code>ATTACH</code> notification. Instead, do the work when the application calls into the library.</p>
+<p>For concreteness, let’s say that the library reports errors with <code>HRESULT</code> values.</p>
+<pre>HRESULT TransformWidget(Widget&amp; widget, Options options)
+{
+ return RunOnFiber([&amp;]() -&gt; HRESULT {
+  return TransformWidgetWorker(widget, options);
+ });
+}
+</pre>
+<p>The <code>Run­On­Fiber</code> function’s job is to create a temporary fiber and run the lambda on it. The lambda’s job is to do whatever it is the library needs to do. In this example, you would fill in the lambda with whatever you need to do in order to transform the widget. I just used a placeholder function.</p>
+<p>Of course, the interesting part for the purpose of today’s discussion is the <code>Run­On­Fiber</code> function.</p>
+<p>We start with two custom deleters.</p>
+<pre>struct fiber_deleter
+{
+ using pointer = HANDLE;
+ void operator()(HANDLE h) { DeleteFiber(h); }
+};
+using unique_fiber =
+    std::unique_ptr&lt;HANDLE, fiber_deleter&gt;;
+
+struct thread_as_fiber_deleter
+{
+ using pointer = HANDLE;
+ void operator()(HANDLE) { ConvertFiberToThread(); }
+};
+using unique_thread_as_fiber =
+    std::unique_ptr&lt;HANDLE, thread_as_fiber_deleter&gt;;
+</pre>
+<p>The <code>fiber_</code><code>deleter</code> let us create a <code>unique_</code><code>fiber</code> RAII type which destroys the fiber.</p>
+<p>The <code>thread_</code><code>as_</code><code>fiber_</code><code>deleter</code> lets us create a <code>unique_</code><code>thread_</code><code>as_</code><code>fiber</code> RAII type which undoes the <code>Convert­Thread­To­Fiber</code> if it succeeded. (As a bonus check, we could assert that the provided handle is equal to <code>Get­Current­Fiber()</code>.)</p>
+<p>The idea is to convert the thread to a fiber, do our work, and then convert the fiber back to a thread before returning to the application. We leave the thread in the same state we found it. That way, the application never observes a thread that has been converted to a fiber behind its back.</p>
+<pre>template&lt;typename Lambda&gt;
+HRESULT RunOnFiber(Lambda&amp;&amp; lambda)
+{
+  struct State
+  {
+    Lambda&amp; lambda;
+    HANDLE originalFiber;
+    HRESULT result = S_OK;
+
+    void FiberProc()
+    {
+      result = lambda();
+      SwitchToFiber(originalFiber);
+    }
+
+  } state{ lambda };
+
+  unique_fiber workFiber{ CreateFiberEx(0, EXTRA_STACK_SIZE, 0,
+      [](void* parameter)
+      {
+        reinterpret_cast&lt;State*&gt;(parameter)-&gt;FiberProc();
+      }, &amp;state) };
+
+  if (!workFiber) return HRESULT_FROM_WIN32(GetLastError());
+
+  unique_thread_as_fiber threadFiber;
+  if (!IsThreadAFiber()) {
+    threadFiber.reset(ConvertThreadToFiber(nullptr));
+    if (!threadFiber) {
+      return HRESULT_FROM_WIN32(GetLastError());
+    }
+  }
+
+  state.originalFiber = GetCurrentFiber();
+  SwitchToFiber(workFiber.get());
+
+  return state.result;
+}
+</pre>
+<p>Okay, let’s walk through this.</p>
+<p>We start by capturing all of the information we need to share with the fiber into a <code>State</code> object. We start by giving the fiber access to the lambda that it needs to run.</p>
+<p>Next, we create a fiber to use for our large stack-consuming operation. We assign a specific stack size for this fiber because the entire reason for the fiber is that we need to be running a a stack of known minimum size.</p>
+<p>The fiber’s procedure extracts the lambda from the state and executes it. It saves the result of the lambda into the <code>result</code> member, and then switches back to the original fiber.</p>
+<p>What’s the original fiber? We’ll get there.</p>
+<p>Next, we convert the thread to a fiber if it isn’t one already. We use a <code>unique_</code><code>thread_</code><code>as_</code><code>fiber</code> to remember whether this succeeded, so we know whether to convert the fiber back to a thread before we return.</p>
+<p>After we are sure the thread is a fiber (either because it already was a fiber, or because we converted it to one), we get the fiber and save into the <code>originalFiber</code> so that our worker fiber can switch back.</p>
+<p>And then the fun begins: We switch to our worker fiber. That fiber then runs the lambda, and then switches back to the original fiber. Switching back to the original fiber returns control back to the point immediately after the <code>Switch­To­Fiber</code> call in the <code>Run­On­Fiber</code> function.</p>
+<p>Now that we have run the lambda on the fiber, we can return the result that we captured in the fiber.</p>
+<p>Thanks to RAII, the destructors for the <code>threadFiber</code> and <code>workFiber</code> do the work of restoring the thread to its original state and destroying our temporary fiber.</p>
+<p>That’s the basic idea. Creating a fiber only as needed means that we don’t waste memory by filling it with fibers that never end up being used, or fibers which are sitting around idle waiting for something to do. Converting the thread to a fiber only for the lifetime of the library function, and then converting it back, means that we do not interfere with any other code that wanted to control the fiber state of the thread.</p>
+<p>Now that we have the basic idea, we can start refining and extending it. We’ll take a simple first step next time.</p>
+
+
+</body>

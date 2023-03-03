@@ -1,0 +1,175 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Getting rid of our reference count</h1>  <!-- .entry-meta -->
+
+<p>In an earlier installment, we <a href="/code/c-coroutines-making-it-impossible-to-co-await-a-task-twice" title="C++ coroutines: Making it impossible to co_await a task twice"> simplified our <code>promise_ptr</code> type</a>, and one of the consequences of this is that there are no remaining caller of <code>increment_ref</code>. This means that we don’t need a reference count at all and can rely on the state changes to tell us when to destroy the promise: When the awaiter has obtained the result or, or when the coroutine completes and discovers that the awaiter has abandoned its effort to obtain the result.</p>
+<p>This means that we need a new sentinel value to mean “abandoned”.</p>
+<p>If I could target C++20, then I would have <code>noop_<wbr/>coroutine_<wbr/>handle</code> available to use for another sentinel value.¹ But I want to be able to run on MSVC’s coroutine implementation in C++17, so that’s off the table.</p>
+<p>I can’t think of another coroutine handle that we can use for our new sentinel value, so I’m going to use a trick: Coroutine handles can be converted to and from <code>void*</code>, and the <code>void*</code> represents the “address” of the coroutine, for some unspecified meaning of <i>address</i>.</p>
+<p>If we assume that the term <i>address</i> means that the result must be the address of <i>something</i>, then we can convert all of our coroutine handles to <code>void*</code>, and our sentinel values become pointers that are known not to point to a valid coroutine. We can’t use our <code>this</code> pointer, because the coroutine might have the promise as its first member, and that would make the addresses match. Similarly, we can’t use the address of the promise’s first nonstatic member variable. But we could use a pointer to a second or subsequent nonstatic member variable (assuming it isn’t marked as <code>[[no_unique_address]]</code>). Or we could declare some static variables for the sole purpose of providing unique addresses.</p>
+<p>But instead, I’m going to use some hard-coded invalid pointer values, like <code>(void*)1</code>, because the code generation for them will be more efficient.</p>
+<p>Okay, so our values are</p>
+<ul>
+<li><code>nullptr</code> if the coroutine is running and nobody is awaiting (“started”).</li>
+<li><code>(void*)1</code> if the coroutine has completed (“completed”).</li>
+<li><code>address</code> if another coroutine is awaiting (“awaiting”).</li>
+<li><code>(void*)2</code> if the awaiter has been abandoned (“abandoned”).</li>
+</ul>
+<p>We have two life cycles running in parallel: One of the life cycle of the coroutine body, and the other is the life cycle of the task. The coroutine body will eventually complete. The task will usually (but not always) be awaited, and then will always be abandoned.</p>
+<p>In other words, we have started → awaiting (maybe) → abandoned, and the completed step can be inserted at any arrow.</p>
+<p>The results are</p>
+<ul>
+<li>started → completed → awaiting → abandoned: This is the case where the coroutine completes before anybody can await on it.</li>
+<li>started → awaiting → completed → abandoned: This is the common case where the task is awaited before it completes.</li>
+<li><span style="text-decoration: line-through;">started → awaiting → abandoned → completed</span>: This case is not possible because the awaiting phase will always wait for completed before continuing to abandoned.</li>
+<li>started → completed → abandoned: This is the case where the coroutine completes before the task is abandoned without ever having been awaited.</li>
+<li>started → abandoned → completed: This is the case where the coroutine is abandoned before it completes.</li>
+</ul>
+<p>Studying the four legal transition sequences leads to this state transition action chart:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="position: relative;">
+
+
+</td>
+<td>completed</td>
+<td>awaiting</td>
+<td>abandoned</td>
+</tr>
+<tr>
+<td>started</td>
+<td>Do nothing</td>
+<td>Do nothing</td>
+<td>Do nothing</td>
+</tr>
+<tr>
+<td>completed</td>
+<td style="background-color: #808080;"> </td>
+<td>Resume awaiter</td>
+<td>Destroy promise</td>
+</tr>
+<tr>
+<td>awaiting</td>
+<td>Resume awaiter</td>
+<td style="background-color: #808080;"> </td>
+<td style="background-color: #808080;"> </td>
+</tr>
+<tr>
+<td>abandoned</td>
+<td>Destroy promise</td>
+<td style="background-color: #808080;"> </td>
+<td style="background-color: #808080;"> </td>
+</tr>
+</tbody>
+</table>
+<p>Okay, now we can implement the diagrams.</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_promise_base
+    {
+        using Promise = simple_promise&lt;T&gt;;
+        auto as_promise() noexcept
+        {
+            return static_cast&lt;Promise*&gt;(this);
+        }
+
+        std::atomic&lt;uint32_t&gt; m_refcount{ 2 };
+        <span style="color: red;">// <span style="text-decoration: line-through;">std::mutex m_mutex;</span></span>
+        <span style="color: blue;">std::atomic&lt;void*&gt; m_waiting{ running_ptr };</span>
+        simple_promise_result_holder&lt;T&gt; m_holder;
+
+        <span style="color: blue;">static constexpr void* running_ptr = nullptr;</span>
+        <span style="color: blue;">static constexpr void* completed_ptr = reinterpret_cast&lt;void*&gt;(1);</span>
+        <span style="color: blue;">static constexpr void* abandoned_ptr = reinterpret_cast&lt;void*&gt;(2);</span>
+
+        ...
+
+        <span style="color: red;">// <span style="text-decoration: line-through;">void increment_ref() noexcept</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">{</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">    m_refcount.fetch_add(1, std::memory_order_relaxed);</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">}</span></span>
+        <span style="color: red;">// </span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">void decrement_ref() noexcept</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">{</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">    auto count = m_refcount.fetch_sub(1,</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">        std::memory_order_release) - 1;</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">    if (count == 0)</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">    {</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">        std::atomic_thread_fence(std::memory_order_acquire);</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">        as_handle().destroy();</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">}</span></span>
+
+        <span style="color: blue;">void destroy()
+        {
+            as_handle().destroy();
+        }
+
+        void abandon()
+        {
+            auto waiting = m_waiting.exchange(abandoned_ptr,
+                std::memory_order_acquire);
+            if (waiting != running_ptr) destroy();
+        }</span>
+
+        ...
+
+        auto final_suspend() noexcept
+        {
+            struct awaiter : std::experimental::suspend_always
+            {
+                simple_promise_base&amp; self;
+                void await_suspend(
+                    std::experimental::coroutine_handle&lt;&gt; <span style="color: red;">/* handle */</span>)
+                    const noexcept
+                {
+                    auto waiter = self.m_waiting.exchange(<span style="color: blue;">completed_ptr</span>,
+                        std::memory_order_acq_rel);
+                    <span style="color: red;">// <span style="text-decoration: line-through;">self.decrement_ref();</span></span>
+                    <span style="color: blue;">if (waiting == abandoned_ptr) self.destroy();
+                    else if (waiting != running_ptr) std::experimental::
+                        coroutine_handle&lt;&gt;::from_address(waiting).resume();</span>
+                }
+            };
+            return awaiter{ {}, *this };
+        }
+
+        bool client_await_ready()
+        {
+            <span style="color: blue;">auto waiting = m_waiting.load(
+                std::memory_order_acquire);
+            assert(waiting == running_ptr || waiting == completed_ptr);
+            return waiting != running_ptr;</span>
+        }
+
+        auto client_await_suspend(
+            std::experimental::coroutine_handle&lt;&gt; handle)
+        {
+            return m_waiting.exchange(<span style="color: blue;">handle.address()</span>,
+                std::memory_order_acq_rel) == running_ptr;
+        }
+
+        ...
+    };
+
+    struct promise_deleter
+    {
+        void operator()(simple_promise_base&lt;T&gt;* promise) const noexcept
+        {
+            promise-&gt;<span style="color: blue;">abandon</span>();
+        }
+    };
+</pre>
+<p>We define a few constants to represent our sentinel addresses for the completed and abandoned states. The remaining methods follow our flowchart above to change to the new state and inspect the previous state to see what action needs to be taken.</p>
+<p>Abandoning the promise needs acquire semantics so that the values used in the destruction of the promise are not fetched prematurely.</p>
+<p>Does abandoning the promise require release semantics? That would be the case if our transition to the abandoned state could cause another thread to destroy the promise. We need to make sure our modifications to the promise (say, due to us having moved resources out of it) are visible to the other thread.</p>
+<p>In the cases where abandonment leads directly to destruction, we don’t need release semantics because we are the one who will destroy the promise. The only remaining case is where the coroutine is abandoned before it completes, and in that case, we haven’t made any changes to the promise, so there is nothing that needs to get flushed out.</p>
+<p>Therefore, my conclusion is that we do not need release semantics on abandonment. (I could be wrong.)</p>
+<p>The next interesting point is the completion of the coroutine in the <code>final_suspend</code> awaiter. When we set the value to <code>completed_ptr</code>, we need release semantics in case there is no awaiter yet, to ensure that the result of the coroutine is properly published to the eventual awaiter. And we need acquire semantics in case there is an awaiter already registered, so that we use the values that were published when the awaiter registered itself with the promise.</p>
+<p>In <code>client_<wbr/>await_<wbr/>ready</code>, we check whether the coroutine has already completed by peeking at the state in <code>m_waiting</code>. We do this with acquire semantics so that, in the event the answer is “Already completed”, we will read the values that were published at completion.</p>
+<p>In <code>client_<wbr/>await_<wbr/>suspend</code>, we publish the awaiter with release semantics so that the suspension of the awaiting coroutine is published to the thread that will resume it. And we also do it with acquire semantics, so that we can read the results from <code>m_holder</code> in the case that the coroutine has already completed.</p>
+<p>And finally, the <code>promise_<wbr/>deleter</code> now calls <code>abandon</code> instead of <code>decrement_<wbr/>ref</code>.</p>
+<p>Okay, that eliminates our reference count. Next time, we’ll eliminate the atomic variable that we use to remember what’s in the result holder object.</p>
+<p><b>Bonus chatter</b>: You may have noticed that getting rid of the reference count also fixes the problem of an awaiting coroutine being destroyed while suspended: If that happens, the <code>promise_ptr</code> in the awaiter is destructed, and that abandons the coroutine. This means that when the coroutine completes, it will see that nobody is awaiting and won’t try to resume a destroyed awaiting coroutine.</p>
+<p>¹ Note, however, that there is no requirement that the <code>noop_<wbr/>coroutine_<wbr/>handle</code> be unique, so we would have to keep a well-known handle in our class that everybody agrees to use. This adds another memory access to our code paths which check for the sentinel value.</p>
+
+
+</body>

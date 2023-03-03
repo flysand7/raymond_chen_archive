@@ -1,0 +1,80 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">COM asynchronous interfaces, part 9: Asynchronous release, assembling a solution</h1>  <!-- .entry-meta -->
+
+<p>Last time, we learned about <a href="/code/com-asynchronous-interfaces-part-8-asynchronous-release-the-problems" title="COM asynchronous interfaces, part 8: Asynchronous release, the problems"> the complex juggling required in order to accomplish a successful asynchronous release</a>. Let’s try to put them together.</p>
+<p>One of the things we need to do is aggregate the call object so that we can learn when the call has completed. This tells us when it’s safe to call <code>Finish_<wbr/>Release</code> and complete the client-side portion of the operation.</p>
+<pre>struct SyncForRelease :
+    winrt::implements&lt;SyncForRelease, ISynchronize&gt;
+{
+  winrt::com_ptr&lt;::IUnknown&gt; m_inner;
+  <span style="color: blue;">::AsyncIUnknown* m_asyncUnknown;</span>
+
+  int32_t query_interface_tearoff(winrt::guid const&amp; id, void** object)
+    const noexcept override {
+    if (m_inner) return m_inner.as(id, object);
+    return E_NOINTERFACE;
+  }
+
+  auto Sync() <span style="color: blue;">noexcept</span> { return m_inner.as&lt;ISynchronize&gt;(); }
+
+  STDMETHODIMP Reset() { return Sync()-&gt;Reset(); }
+  STDMETHODIMP Signal() {
+    auto hr = Sync()-&gt;Signal();
+    <span style="color: blue;">m_asyncUnknown-&gt;Finish_Release();
+    m_inner.detach(); // don't Release it
+    Release(); // I am dead to me</span>
+    return hr;
+  }
+  STDMETHODIMP Wait(DWORD flags, DWORD timeout) {
+    return Sync()-&gt;Wait(flags, timeout);
+  }
+};
+</pre>
+<p>This is the object we’re going to use to aggregate the call. This follow the pattern we had seen earlier for aggregating the call object in order to override the <code>ISynchronize</code> method, and doing out bonus work inside the <code>Signal</code> method.</p>
+<p>Actually, if the <code>Signal</code> and <code>Wait</code> calls fail, we fail to clean up or fail to wait for the operation to complete, and we have nowhere to report the failure. We may as well just fail fast. Instead of trying to catch the exception coming from the <code>Sync()</code> method, I just mark it as <code>noexcept</code>, which terminates the process if the query fails.</p>
+<p>The stuff we do in the <code>Signal</code> won’t make sense until we understand how things are set up. So let’s set them up:</p>
+<pre>void ReleaseAsynchronously(IUnknown* unk)
+{
+  winrt::com_ptr&lt;::ICallFactory&gt; factory;
+  unk-&gt;QueryInterface(IID_PPV_ARGS(factory.put()));
+  unk-&gt;Release();
+  if (!factory) return;
+
+  winrt::com_ptr&lt;SyncForRelease&gt; sync;
+  try {
+    sync = winrt::make_self&lt;SyncForRelease&gt;();
+  } catch (std::bad_alloc const&amp;) { }
+  if (!sync) return;
+
+  factory-&gt;CreateCall(
+    __uuidof(::AsyncIUnknown), sync.get(),
+    __uuidof(::IUnknown), sync-&gt;m_inner.put());
+  factory = nullptr;
+  if (!sync-&gt;m_inner) return;
+
+  sync-&gt;m_inner.as(IID_PPV_ARGS(&amp;sync-&gt;m_asyncUnknown));
+  if (!sync-&gt;m_asyncUnknown) return;
+
+  // Release + AddRef cancel out
+
+  sync-&gt;m_asyncUnknown-&gt;Begin_Release();
+}
+</pre>
+<p>This function guarantees that the incoming <code>IUnknown</code> is released, one way or another: If we can’t release it asynchronously, then we’ll release it synchronously. This makes things easier for the caller, who can treat it as a fire-and-forget type of function.</p>
+<p>First, we query the <code>IUnknown</code> for <code>ICallFactory</code>, and then immediately release the <code>IUnknown</code>. If the object is local, then the query will fail, and the <code>Release</code> will be a synchronous one. We detect this failure and return: The object has been release synchronously, and we’re done.</p>
+<p>If the query for <code>ICallFactory</code> succeeds, then we have a proxy to a remote object. The release of the <code>IUnknown</code> won’t destroy the proxy because the <code>ICallFactory</code> is still outstanding.</p>
+<p>Next up, we create the <code>Sync­For­Release</code> object, which we will use to aggregate the call so that we can be called back when the asynchronous method completes. We do it inside of a <code>try</code> block so we can handle the low-memory case and abandon the operation. The <code>return</code> will release the factory, which will be a synchronous release of the proxy. Sorry, we tried.</p>
+<p>Assuming we have the <code>Sync­For­Release</code> object, we ask the factory to create a call (saving it as the aggregated inner object), and then immediately release the factory. This is a repeat of the previous pattern: If the <code>Create­Call</code> fails, then the release of the factory is a synchronous release, and we just return immediately. Otherwise, we keep going.</p>
+<p>We ask the aggregated inner object for <code>AsyncIUnknown</code> so we can call the <code>Begin_<wbr/>Release</code> and <code>Finish_<wbr/>Release</code> methods. Again, if this fails, we just return, and the destructors will release the proxy synchronously.</p>
+<p>Now, the normal pattern for querying an inner object for an interface is to perform the <code>Query­Interface</code>, and then perform a counteracting <code>Release</code> on the outer object. So in theory, there should be a <code>Release()</code> call here.</p>
+<p>But we have a trick up our sleeve.</p>
+<p>The next step would normally be to call <code>AddRef()</code> on the <code>Sync­For­Release</code> object so that it keeps itself alive while the call is in flight. This <code>AddRef()</code> cancels out the <code>Release()</code>, so the net result is that we don’t have to do anything! We are basically repurposing the reference count created by the <code>Query­Interface</code> call.</p>
+<p>Now that everything is set up, we perform the <code>Begin_<wbr/>Release()</code>, which sets the asynchronous call into motion.</p>
+<p>And then we wait.</p>
+<p>Eventually, the asynchronous call completes, and the <code>Sync­For­Release::<wbr/>Signal</code> method is called. After asking the inner object to do the standard signaling work, we proceed with our custom response to the signal. We start by calling <code>Finish_<wbr/>Release</code>, which tells the call object that we have acknowledged the release of the object, and once <code>Finish_<wbr/>Release</code> returns, the object is truly released. The call to <code>Finish_<wbr/>Release</code> will not block because we forwarded the <code>Signal</code> call to the inner object, so the call is definitely complete.</p>
+<p>When <code>Finish_<wbr/>Release</code> returns, the call object has been released, so we must throw away our references to it without calling <code>Release</code>. For our raw pointer, we can just abandon it. For our <code>m_inner</code> smart pointer, we use <code>detach()</code> to take ownership of the pointer. We just throw the pointer away, because it has already been released by the call to <code>Finish_<wbr/>Release()</code>.</p>
+<p>It took us a long time to get here, but we finally got it: A function for asynchronously releasing a COM pointer to a remote object.</p>
+<p><b>Bonus chatter</b>: Note in particular that our call to <code>Sync()-&gt;Signal()</code> was done with a temporary reference to the inner <code>ISynchronize</code>, so it got released when <code>Signal()</code> returned. If you do some tweaking of this method, make sure that you release the inner <code>ISynchronize</code> before calling <code>Finish_<wbr/>Release()</code>. Because <code>Finish_<wbr/>Release()</code> tears down the inner object, and all references to it become dead.</p>
+
+
+</body>

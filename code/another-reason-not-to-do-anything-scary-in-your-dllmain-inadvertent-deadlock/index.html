@@ -1,0 +1,78 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Another reason not to do anything scary in your DllMain: Inadvertent deadlock</h1>  <!-- .entry-meta -->
+
+<p>
+Your DllMain function runs inside the loader lock,
+one of the few times the OS lets you run code while one
+of its internal locks is held.
+This means that you must be extra careful not to violate
+a lock hierarchy in your DllMain; otherwise, you
+are asking for a deadlock.
+</p>
+<p>
+(You do have a
+<a href="http://www.osr.com/ddk/ddtools/dv_8pkj.htm">
+lock hierarchy</a> in your DLL, right?)
+</p>
+<p>
+The loader lock is taken by any function that needs to
+access the list of DLLs loaded into the process.
+This includes functions like GetModuleHandle
+and GetModuleFileName.
+If your DllMain enters a critical section or waits on
+a synchronization object, and that critical section or
+synchronization object is owned by some code that is
+in turn waiting for the loader lock, you just created a deadlock:
+</p>
+<pre>
+// global variable
+CRITICAL_SECTION g_csGlobal;
+// some code somewhere
+EnterCriticalSection(&amp;g_csGlobal);
+... GetModuleFileName(MyInstance, ..);
+LeaveCriticalSection(&amp;g_csGlobal);
+BOOL WINAPI
+DllMain(HINSTANCE hinstDLL, DWORD fdwReason,
+        LPVOID lpvReserved)
+{
+  switch (fdwReason) {
+  ...
+  case DLL_THREAD_DETACH:
+   EnterCriticalSection(&amp;g_csGlobal);
+   ...
+  }
+  ...
+}
+</pre>
+<p>
+Now imagine that some thread is happily executing the first
+code fragment and enters g_csGlobal, then
+gets pre-empty.  During this time, another thread exits.
+This enters the loader lock and sends out
+DLL_THREAD_DETACH messages while the loader lock is still held.
+</p>
+<p>
+You receive the DLL_THREAD_DETACH and attempt to enter your DLL’s
+g_csGlobal.  This blocks on the first thread, who owns the
+critical section. That thread then resumes execution and calls
+GetModuleFileName. This function requires the loader lock
+(since it’s accessing the list of DLLs loaded into the process),
+so it blocks, since the loader lock is owned by somebody else.
+</p>
+<p>
+Now you have a deadlock:</p>
+<ul>
+<li>
+g_cs owned by first thread, waiting on loader lock.
+<li>
+Loader lock owned by second thread, waiting on g_cs.
+</li></li></ul>
+<p>
+I have seen this happen. It’s not pretty.
+</p>
+<p>Moral of the story: Respect the loader lock.
+Include it in your lock hierarchy rules if you take
+any locks in your DllMain.</p>
+
+
+</body>

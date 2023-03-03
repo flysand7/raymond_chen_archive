@@ -1,0 +1,77 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The PowerPC 600 series, part 4: Bitwise operations and constants</h1>  <!-- .entry-meta -->
+
+<p>The PowerPC 600 series includes the following bitwise logical operations: </p>
+<pre>
+    and     rd, ra, rb      ; rd =   ra &amp;  rb
+    or      rd, ra, rb      ; rd =   ra |  rb
+    xor     rd, ra, rb      ; rd =   ra ^  rb
+    nand    rd, ra, rb      ; rd = ~(ra &amp;  rb)
+    nor     rd, ra, rb      ; rd = ~(ra |  rb)
+    eqv     rd, ra, rb      ; rd = ~(ra ^  rb)
+    andc    rd, ra, rb      ; rd =   ra &amp; ~rb "and complement"
+    orc     rd, ra, rb      ; rd =   ra | ~rb "or complement"
+    ; also "." versions
+</pre>
+<p>Each of these instructions also comes with a dot variant that updates <var>cr0</var> based on the result. </p>
+<p>There are also versions that take immediates or sometimes shifted immediates, and sometimes they update flags, and sometimes they don’t. There isn’t much orthogonality here. It’s all case-by-case. </p>
+<pre>
+    andi.   rd, ra, imm16   ; rd =   ra &amp;  (uint16_t)imm16, update cr0
+    andis.  rd, ra, imm16   ; rd =   ra &amp; ((uint16_t)imm16 &lt;&lt; 16), update cr0
+    ori     rd, ra, imm16   ; rd =   ra |  (uint16_t)imm16
+    oris    rd, ra, imm16   ; rd =   ra | ((uint16_t)imm16 &lt;&lt; 16)
+    xori    rd, ra, imm16   ; rd =   ra ^  (uint16_t)imm16
+    xoris   rd, ra, imm16   ; rd =   ra ^ ((uint16_t)imm16 &lt;&lt; 16)
+</pre>
+<p>Immediates are allowed only on three of the bitwise operations, and the <code>and</code> version always updates flags, whereas the <code>or</code> and <code>xor</code> versions never update flags. </p>
+<p>For some reason, sign extension is placed in the logical operations group. </p>
+<pre>
+    extsb   rd, ra          ; rd = (int8_t)ra
+    extsb.  rd, ra          ; rd = (int8_t)ra, update cr0
+    extsh   rd, ra          ; rd = (int16_t)ra
+    extsh.  rd, ra          ; rd = (int16_t)ra, update cr0
+</pre>
+<p>We now have enough instructions to load constants. </p>
+<p>If the constant is in the range <code>0xFFFF8000</code> to <code>0x00007FFF</code>, it can be loaded in one instruction:</p>
+<pre>
+    ; load immediate: rd = (int16_t)imm16
+    addi    rd, 0, imm16     ; li   rd, imm16
+</pre>
+<p>It can also be done in one instruction if the constant is an exact multiple of 65536. </p>
+<pre>
+    ; load immediate shifted: rd = imm16 &lt;&lt; 16
+    addis   rd, 0, imm16     ; lis  rd, imm16
+</pre>
+<p>These take advantage of the fact that the <code>addi</code> and <code>addis</code> instructions treat <var>r0</var> as if it were zero. They are the only non-memory instructions that have this special behavior with respect to <var>r0</var>. </p>
+<p>If the constant you want to load doesn’t fall into either of the two categories above, then you’ll have to load it in two steps: </p>
+<pre>
+    addis   rd, 0, imm16a    ; rd =  imm16a &lt;&lt; 16
+    ori     rd, rd, imm16b   ; rd = (imm16a &lt;&lt; 16) | (uint16_t)imm16b
+</pre>
+<p>This sequence takes advantage of the fact that the <code>ori</code> instruction treats its 16-bit immediate as an unsigned value. That way, we don’t have to play funny games with the most significant 16 bits if the least-significant 16 bits happen to form a negative integer when interpreted as a signed 16-bit value. </p>
+<p>While I’m here I may as well mention a third synthetic instruction based on <code>addi</code>: </p>
+<pre>
+    ; load address: rd = effective address of imm16(ra)
+    addi    rd, ra, imm16    ; la   rd, imm16(ra)
+</pre>
+<p>A commonly-used synthetic instruction is “move register”: </p>
+<pre>
+    or      rd, ra, ra       ; mr  rd, ra
+    or.     rd, ra, ra       ; mr. rd, ra
+</pre>
+<p>Moving a register to itself is functionally a nop, but the processor overloads it  to signal information about priority. </p>
+<pre>
+    or      r1, r1, r1       ; low priority
+    or      r6, r6, r6       ; medium-low priority
+    or      r2, r2, r2       ; normal priority
+</pre>
+<p>A program can voluntarily set itself to low priority if it is waiting for a spin lock. There are other priority levels which are available only to kernel mode and are ignored in user mode. </p>
+<p>Finally, everybody’s favorite instruction: </p>
+<pre>
+    ori     r0, r0, 0        ; nop
+</pre>
+<p>This is the official <code>nop</code> instruction recognized by the processor. There are other instructions that have no visible effect, but they might not be optimized efficiently. For example, <code>rlwinm ra, ra, 0, 0, 31</code> has no visible effect, but it will probably introduce a register dependency. And as we saw above, sometimes instructions with no visible effect become overloaded as signals to the processor, so your best bet is to avoid them. </p>
+<p>Wait, you don’t know what the <code>rlwinm</code> instruction does? We’ll dig into that <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180810-00/?p=99465">next time</a>, when we enter the crazy world of rotating and shifting, and you’ll be formally introduced to the <code>rlwinm</code> instruction, the Swiss army knife instruction of the PowerPC instruction set. </p>
+
+
+</body>

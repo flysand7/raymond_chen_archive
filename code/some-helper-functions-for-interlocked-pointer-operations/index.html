@@ -1,0 +1,73 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Some helper functions for interlocked pointer operations</h1>  <!-- .entry-meta -->
+
+<p>The pointer-related Interlocked functions all operate on <code>void*</code>. In practice, though, you are operating on typed pointers. Here are some helper functions to save you a bunch of typing. </p>
+<pre>
+template&lt;typename T, typename U&gt;
+T* InterlockedExchangePointerT(
+    T* volatile *target,
+    U value)
+{
+  return reinterpret_cast&lt;T*&gt;(InterlockedExchangePointer(
+    reinterpret_cast&lt;void* volatile*&gt;(target),
+    static_cast&lt;T*&gt;(value)));
+}
+
+// Repeat for InterlockedExchangePointerAcquire and
+// InterlockedExchangePointerNoFence.
+
+template&lt;typename T, typename U, typename V&gt;
+T* InterlockedCompareExchangePointerT(
+    T* volatile *target,
+    U exchange,
+    V compare)
+{
+  return reinterpret_cast&lt;T*&gt;(InterlockedCompareExchangePointer(
+    reinterpret_cast&lt;void* volatile*&gt;(target),
+    static_cast&lt;T*&gt;(exchange),
+    static_cast&lt;T*&gt;(compare)));
+}
+
+// Repeat for InterlockedCompareExchangePointerAcquire,
+// InterlockedCompareExchangePointerRelease, and
+// InterlockedCompareExchangePointerNoFence.
+</pre>
+<p>The naïve versions of these functions would be </p>
+<pre>
+<i>template&lt;typename T, typename U&gt;
+T* InterlockedExchangePointerT(
+    T* volatile *target,
+    T* value)
+{
+  return reinterpret_cast&lt;T*&gt;(InterlockedExchangePointer(
+    reinterpret_cast&lt;void* volatile*&gt;(target),
+    value));
+}
+
+template&lt;typename T, typename U, typename V&gt;
+T* InterlockedCompareExchangePointerT(
+    T* volatile *target,
+    T* exchange,
+    T* compare)
+{
+  return reinterpret_cast&lt;T*&gt;(InterlockedCompareExchangePointer(
+    reinterpret_cast&lt;void* volatile*&gt;(target),
+    exchange,
+    compare));
+}</i>
+</pre>
+<p>but those simpler versions fail on things like </p>
+<pre>
+class Base { ... };
+class Derived : public Base { ... };
+
+extern Base* b;
+
+Derived* d = new Derived();
+if (InterlockedCompareExchange(&amp;p, d, nullptr)) ...
+</pre>
+<p>because the compiler wouldn’t be able to choose a value for <code>T</code>. From the first paramter, it would infer that <code>T = Base</code>; from the second parameter, it would infer that <code>T = Derived</code>; and from the third parameter, it would give up because it can’t figure out what value of <code>T</code> would result in <code>T*</code> being the same as <code>std::nullptr_t</code>. </p>
+<p>(You can guess how I discovered these limitations of the naïve versions.) </p>
+
+
+</body>

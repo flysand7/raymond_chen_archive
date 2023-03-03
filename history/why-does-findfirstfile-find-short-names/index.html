@@ -1,0 +1,15 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does FindFirstFile find short names?</h1>  <!-- .entry-meta -->
+
+<p><a href="http://msdn.microsoft.com/library/en-us/fileio/base/findfirstfile.asp"> The <code>FindFirstFile</code> function</a> matches both the short and long names. This can produce somewhat surprising results. For example, if you ask for “*.htm”, this also gives you the file “x.html” since its short name is “X~1.HTM”.</p>
+<p> Why does it bother matching short names? Shouldn’t it match only long names? After all, only old 16-bit programs use short names. </p>
+<p> But that’s the problem: 16-bit programs use short names. </p>
+<p> Through a process known as <a href="http://msdn.microsoft.com/library/en-us/winprog/winprog/generic_thunks.asp"> generic thunks</a>, a 16-bit program can load a 32-bit DLL and call into it. Windows 95 and  the Windows 16-bit emulation layer in Windows NT rely heavily on generic thunks so that they don’t have to write two versions of everything. Instead, the 16-bit version just thunks up to the 32-bit version. </p>
+<p> Note, however, that this would mean that 32-bit DLLs would see two different views of the file system, depending on whether they are hosted from a 16-bit process or a 32-bit process. </p>
+<p> “Then make the <code>FindFirstFile</code> function check to see who its caller is and change its behavior accordingly,” doesn’t fly because <a href="http://blogs.msdn.com/oldnewthing/archive/2004/01/01/47042.aspx"> you can’t trust the return address</a>. </p>
+<p> Even if this problem were solved, you would still have the problem of 16/32 interop across the process boundary. </p>
+<p> For example, suppose a 16-bit program calls <code>WinExec("notepad X~1.HTM")</code>. The 32-bit Notepad program had better open the file X~1.HTM even though it’s a short name. What’s more, a common way to get properties of a file such as its last access time is to call <code>FindFirstFile</code> with the file name, since the <code>WIN32_FIND_DATA</code> structure returns that information as part of the find data. (Note: <code>GetFileAttributesEx</code> is a better choice, but that function is comparatively new.) If the <code>FindFirstFile</code> function did not work for short file names, then the above trick would fail for short names passed across the 16/32 boundary. </p>
+<p> As another example, suppose the DLL saves the file name in a location external to the process, say a configuration file, the registry, or a shared memory block.  If a 16-bit program program calls into this DLL, it would pass short names, whereas if a 32-bit program calls into the DLL, it would pass long names.  If the file system functions returned only long names for 32-bit programs, then the copy of the DLL running in a 32-bit program would not be able to read the data written by the DLL running in a 16-bit program. </p>
+
+
+</body>

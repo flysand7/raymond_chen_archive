@@ -1,0 +1,88 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Non-psychic debugging: If you can't find something, make sure you're looking in the right place</h1>  <!-- .entry-meta -->
+
+<p>
+This isn’t psychic debugging,
+but it’s the sort of dumb mistake everybody makes
+and which you can’t see when re-reading your code
+because your brain shows you what you want to see,
+not what’s really there.
+</p>
+<blockquote class="q"><p>
+I’m trying to respond to the <code>PSN_QUERYINITIALFOCUS</code>
+notification, but it’s not working. What am I doing wrong?</p>
+<pre>
+INT_PTR CALLBACK DlgProc(HWND hdlg, UINT uMsg,
+                         WPARAM wParam, LPARAM lParam)
+{
+ switch (uMsg) {
+ ...
+ case WM_NOTIFY:
+  switch (reinterpret_cast&lt;NMHDR*&gt;(lParam)-&gt;code) {
+  ...
+  case PSN_QUERYINITIALFOCUS:
+   {
+    PSHNOTIFY *ppsn = reinterpret_cast&lt;PSHNOTIFY*&gt;(lParam);
+    SetWindowLongPtr(ppsn-&gt;hdr.hwndFrom, DWLP_MSGRESULT,
+                    (LPARAM)GetDlgItem(ppsn-&gt;hdr.hwndFrom, IDC_MYCONTROL));
+   }
+   return TRUE;
+  ...
+  }
+  break;
+ }
+ return FALSE;
+}
+</pre>
+</blockquote>
+<p>
+You can stare at this code for ages and completely overlook
+that the wrong window handle is being passed to <code>GetDlgItem</code>
+and <code>SetWindowLongPtr</code>.
+The <code>hwndFrom</code> of a <code>WM_NOTIFY</code> message is
+the window that is generating the notification; in this case,
+the <code>PSN_QUERYINITIALFOCUS</code> is generated from the
+property sheet frame window.
+But the result of a dialog message needs to be stored
+in the extra bytes of the dialog that’s
+<strong>receiving</strong> the message, not the one that’s
+sending it.
+And when you call <code>GetDlgItem</code>, the window manager
+searches for the control among the children of the window you
+pass as the first parameter—but here, <code>IDC_MYCONTROL</code>
+is a child of the property sheet page, not the property sheet frame.
+</p>
+<p>
+The correct code should read
+</p>
+<pre>
+    SetWindowLongPtr(hdlg, DWLP_MSGRESULT,
+                    (LPARAM)GetDlgItem(hdlg, IDC_MYCONTROL));
+</pre>
+<p>
+This phenomenon of missing the obvious because your brain shows you
+what you want to see (rather than what’s actually there)
+reminds me of a time
+one of my colleagues called me into his office to help figure
+out why one of his loops was iterating only once.
+He called the function up on the screen and talked me through it.
+“Okay, now the variables are set up for the loop, so
+<code>while</code> we haven’t found the entry, we grab the
+next item from the list…”
+</p>
+<p>
+I hesitatantly interrupted.
+“Um, ‘<code>while</code>‘?
+The code says ‘<code>if</code>‘.”
+</p>
+<p>
+“Oops. Um, nevermind. Nothing to see here. Move along now.”
+</p>
+<p>
+This is the same reason you want to have somebody else
+proofread your writing.
+Since you wrote it, your brain will show you what you meant to write,
+not necessarily what you actually wrote.</p>
+
+
+</body>

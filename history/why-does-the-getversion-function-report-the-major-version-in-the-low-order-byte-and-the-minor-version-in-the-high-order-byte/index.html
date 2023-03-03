@@ -1,0 +1,44 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does the <code>Get­Version</code> function report the major version in the low-order byte, and the minor version in the high-order byte?</h1>  <!-- .entry-meta -->
+
+<p><a href="https://twitter.com/WindowsDocs/status/1124329256736251904"> Laura Butler wonders</a> whose idea it was to have the <code>Get­Version</code> function report the major version in the low-order byte, and the minor version in the high-order byte. This is completely messed up: You clearly should put the major version in the high-order byte and the minor version in the low-order byte, so that you can do things like</p>
+<pre>if (HypotheticalBetterGetVersion() &gt;= 0x030A) {
+  // version is at least 3.10
+}
+</pre>
+<p>Instead, as things stand today, the major version in the low-order byte, and the minor version in the high-order byte, so version 3.10 is reported as the value <code>0x0A03</code>, which leads to mistakes like this:</p>
+<pre>// Code in italics is wrong
+<i>if (GetVersion() &gt;= 0x0A03)</i> {
+  // incorrect check for version ≥ 3.10
+}
+</pre>
+<p>Why is the version number reported in such a strange way?</p>
+<p>Rewind to MS-DOS.</p>
+<p>MS-DOS has a <i>Get Version</i> system call, and it returns the operating system version in the same reversed way, with the major version in the low-order byte, and the minor version in the high-order byte.</p>
+<p>The thinking was that programs will almost always be checking the major version exclusively, because the only time you’d need to check the minor version is if you needed to check for some feature that was added in a minor version. But by definition, minor versions don’t add many features (right?), so checking for the minor version should be very rare.</p>
+<p>During this era, programs were written in assembly language, and that’s the detail that shines light on the unusual format of the version number.</p>
+<p>On the 8086, the 16-bit <code>AX</code> register can be treated as a 16-bit value, or it can be treated as two 8-bit values. If you treat it as two 8-bit values, then the high-order byte is called <code>AH</code>, and the low-order byte is called <code>AL</code>.</p>
+<p>The 8086 instructions to compare the values in these registers are encoded as follows:</p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Instruction</th>
+<th>Encoding</th>
+</tr>
+<tr>
+<td><code>CMP AL, 03h</code></td>
+<td><tt>3C 03</tt></td>
+</tr>
+<tr>
+<td><code>CMP AH, 03h</code></td>
+<td><tt>80 FC 03</tt></td>
+</tr>
+</tbody>
+</table>
+<p>Since almost everyone will be comparing the major version, we should put the major version in the location that is most efficient to consume, and that would be the <code>AL</code> register. Putting the value there permits a shorter instruction encoding than if the value had been in the <code>AH</code> register.</p>
+<p>It saves a byte!</p>
+<p>The IBM PC came in two memory configurations, 16KB and 64KB. If you had shelled out the big bucks for the 64KB version, that one byte is 0.0015% of your total memory. Scaled to a modern 8GB system, choosing this format for the version number saves 128KB.</p>
+<p>Windows adopted the version numbering scheme from MS-DOS, and that’s why the <code>Get­Version</code> function returns the major and minor versions in reverse order.</p>
+
+
+</body>

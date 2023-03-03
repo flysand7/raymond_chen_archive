@@ -1,0 +1,42 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When I memcpy a struct into a std::atomic of that struct, why does the result not match?</h1>  <!-- .entry-meta -->
+
+<p>Consider the following code: </p>
+<pre>
+<i>// Code in italics is wrong.
+
+struct Point3D { float x, y, z; };
+
+std::atomic&lt;Point3D&gt; currentPoint;
+
+bool LoadCurrentPointFromFile(HANDLE file)
+{
+ DWORD actualBytesRead;
+ if (!ReadFile(file, &amp;currentPoint, sizeof(Point3D),
+               &amp;actualBytesRead, nullptr)) return false;
+ if (actualBytesRead != sizeof(Point3D)) return false;
+ return true;
+}</i>
+</pre>
+<p>This code tries to load a <code>Point3D</code> structure from a file directly into a <code>std::atomic</code>. However, the customer found that the results were not properly loaded and suspected there may a bug in the <code>Read­File</code> function, because the value that should have been in the <code>z</code> member ended up in <code>y</code>, the value that should have been in the <code>y</code> member ended up in <code>x</code>, and the value that should have been in the <code>x</code> member wasn’t loaded at all. </p>
+<p>The <code>Read­File</code> function is working fine. What’s wrong is that you aren’t using the <code>std::atomic</code> variable properly. </p>
+<p>The contents of a <code>std::atomic</code> variable are not directly accessible. You have to use methods like <code>store</code> and <code>load</code>. There are operator overloads which make atomic variables appear to be regular variables, but at no point can you get the address of the underlying <code>Point3D</code> storage. </p>
+<p>Processors have restrictions on the sizes of operands on which they can natively perform atomic operations. Some restrictions apply to the size of the operand: Most processors do not support atomic operations on 12-byte objects, and it’s not reasonable to expect a processor to be able to perform an atomic operation on a memory object that is megabytes in size, after all. Some restrictions are based on layout, such as whether the object is suitably aligned. </p>
+<p>In the cases where the object cannot be managed atomically by the processor, the standard library steps in and adds a lock, and operations on the atomic variable take the lock to ensure that the operation is atomic. The reason everything is shifted is that the code took the address of the atomic variable itself, which includes the intenral lock, and the value you intended to read into <code>x</code> didn’t vanish. It overwrote the lock! </p>
+<p>Access to the contents of the atomic variable must be done by the appropriate methods on the atomic variable. </p>
+<pre>
+bool LoadCurrentPointFromFile(HANDLE file)
+{
+ DWORD actualBytesRead;
+ <font color="blue">Point3D point;</font>
+ if (!ReadFile(file, <font color="blue">&amp;point</font>, sizeof(Point3D),
+               &amp;actualBytesRead, nullptr)) return false;
+ if (actualBytesRead != sizeof(Point3D)) return false;
+ <font color="blue">currentPoint.store(point);</font>
+ return true;
+}
+</pre>
+<p>There’s <a href="https://www.youtube.com/watch?v=ZQFzMfHIxng">a presentation from CppCon 2017 that covers <code>std::atomic</code> from start to finish</a>, including performance characteristics. I’m going to consider this video to be homework, because <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180329-00/?p=98375">next time I’m going to chatter about it</a>. </p>
+
+
+</body>

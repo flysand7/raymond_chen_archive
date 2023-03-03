@@ -1,0 +1,21 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What happens if I wake a condition variable when nobody is waiting for it? Is the wake saved for the next thread that waits?</h1>  <!-- .entry-meta -->
+
+<p>Suppose you call <a href="https://msdn.microsoft.com/library/windows/desktop/ms687080(v=vs.85).aspx"><code>Wake­Xxx­Condition­Variable</code></a> to wake a <code>CONDITION_</code><code>VARIABLE</code>, but nobody is waiting on the condition variable. What happens? In particular, is the wake saved for the next thread that waits, so the next call to <code>Sleep­Condition­Variable­Xxx</code> returns immediately instead of waiting? </p>
+<p>The answer is, “It shouldn’t matter.” </p>
+<p>The <a href="https://msdn.microsoft.com/library/windows/desktop/ms682052(v=vs.85).aspx">intended use pattern for a condition variable</a> is to do the following: </p>
+<ol>
+<li>Enter a lock.</li>
+<li>Check a condition.</li>
+<li>If the condition is false, then call     <code>Sleep­Condition­Variable­Xxx</code>     and then go to step 2.     </li>
+<li>Perform an operation.</li>
+<li>Release the lock.</li>
+</ol>
+<p>And the code that establishes the condition (or at least changes the condition so it might be true for at least one waiter) calls <code>Wake­Xxx­Condition­Variable</code>. </p>
+<p>If you follow this pattern, then it doesn’t matter whether a call to <code>Wake­Xxx­Condition­Variable</code> is remembered when there are no waiting threads. According to the intended use pattern, a thread is expected to check the condition first, and only if the condition is false should the thread call <code>Sleep­Condition­Variable­Xxx</code>. Whether the wake is remember or not is irrelevant because the waiting thread never actually waits! </p>
+<p>In other words, if you are counting on an unnecessary wake being saved and waking up a future sleep, then that means that you went to sleep before checking the condition. (Because if you had checked the condition, you would have avoided the sleep.) <a href="http://youreholdingitwrong.org/">You’re holding it wrong</a>. </p>
+<p>Conversely, if you didn’t expect the unnecessary wake to be remembered, but you got one anyway, well, that’s also permitted because condition variables are explicitly documented as subject to spurious wakes. Again, if you follow the intended use pattern, spurious wakes aren’t a problem (aside from performance) because the recommended pattern is to re-check the condition after the sleep wakes. If the wake were spurious, the check would fail, and you would go back to sleep. </p>
+<p>In summary, if you wake a condition variable when nobody is waiting for it, it is unspecified whether the wake is saved for the next thread that waits, and that’s okay, because if you follow the intended use pattern, it doesn’t matter. </p>
+
+
+</body>

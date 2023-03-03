@@ -1,0 +1,51 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A brief introduction to C++ structured binding</h1>  <!-- .entry-meta -->
+
+<p>C++17 introduced a feature known as <a href="https://en.cppreference.com/w/cpp/language/structured_binding"> <i>structured binding</i></a>. It allows a single source object to be taken apart:</p>
+<pre>std::pair&lt;int, double&gt; p{ 42, 0.0 };
+auto [i, d] = p;
+// int i = 42;
+// double d = 0.0;
+</pre>
+<p>It seems that no two languages agree on what to call this feature. C# calls it <a href="https://docs.microsoft.com/en-us/dotnet/csharp/deconstruct"> <i>deconstructing</i></a>. JavaScript calls it <a href="https://developer.mozilla.org/docs/Web/JavaScript/Reference/Operators/Destructuring_assignment"> <i>destructuring</i></a>. <span style="text-decoration: line-through;">(Python doesn’t seem to have a specific name for this concept, although the common case where the source is a list does have the name <i>list comprehension</i>.)</span> Python calls it <a href="https://docs.python.org/3/reference/simple_stmts.html#assignment-statements"> <i>unpacking</i></a>. My guess is that C++ avoided both of these terms to avoid confusion with the word <i>destructor</i>.</p>
+<p>There is a subtlety in the way structured binding works: Binding qualifiers on the <code>auto</code> apply to how the <i>source</i> is bound, not on how the <i>destination</i> is bound.¹</p>
+<p>For example,</p>
+<pre>auto&amp;&amp; [i, d] = p;
+</pre>
+<p>becomes (approximately)¹</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>If <tt>p.get&lt;N&gt;</tt> exists</th>
+<th>If <tt>p.get&lt;N&gt;</tt> does not exist</th>
+</tr>
+<tr>
+<td><tt><u>auto&amp;&amp;</u> hidden = p;</tt><br/>
+<tt>decltype(auto) i = p.get&lt;0&gt;();</tt><br/>
+<tt>decltype(auto) d = p.get&lt;1&gt;();</tt></td>
+<td><tt><u>auto&amp;&amp;</u> hidden = p;</tt><br/>
+<tt>decltype(auto) i = get&lt;0&gt;(p);</tt><br/>
+<tt>decltype(auto) d = get&lt;1&gt;(p);</tt></td>
+</tr>
+</tbody>
+</table>
+<p>where <code>hidden</code> is a hidden variable introduced by the compiler. The declarations of <code>i</code> and <code>d</code> are inferred from the <code>get</code> method or free function.²</p>
+<p>(In a cruel twist of fate, if <code>hidden</code> is const or a const reference, then that const-ness propagates to the destinations. But the reference-ness of <code>hidden</code> does not propagate.)</p>
+<p>The <code>decltype(auto)</code> means that the reference-ness of the return type is preserved rather than decayed. If <code>get</code> returns a reference, that reference or qualifier is preserved. This differs from <code>auto</code> which will decay references to copies.</p>
+<p>All of this comes into play when you want to make your own objects available to structured binding, which we’ll look at next time.</p>
+<p><b>Bonus chatter</b>: There is no way to specify that you want only selected pieces. You must bind all the pieces.</p>
+<p>¹ In reality, the bound variables have underlying type <code>std::tuple_element_t&lt;N, T&gt;</code> (where <code>N</code> is the zero-based index and <code>T</code> is the type of the source), possibly with references added. But in practice, these types match the return types of <code>get</code>, so it’s easier just to say that they come from <code>get</code>.</p>
+<p>² My reading of the language specification is that the destination variables are always references:</p>
+<blockquote class="q"><p><b>[dcl.struct.bind]</b><br/>
+3. … [E]ach <tt>v</tt>ᵢ is a variable of type “reference to <tt>T</tt>ᵢ” initialized with the initializer, where the reference is an lvalue reference if the initializer is an lvalue and an rvalue reference otherwise.</p></blockquote>
+<p>and therefore the expansion of the structured binding would be</p>
+<pre><u>auto&amp;&amp;</u> i = get&lt;0&gt;(p);
+<u>auto&amp;&amp;</u> d = get&lt;1&gt;(p);
+</pre>
+<p>However, in practice, the compilers declare the destination variables as matching the return value of <code>get</code>, as I noted above.</p>
+<p>So I must be reading the specification wrong.</p>
+<p>(The text was <a href='https://wg21.link/p1091r3"'> revised for C++20</a>, but even in the revision, it’s still a reference.)</p>
+<p>¹ That’s because a structured binding <i>really</i> is a hidden variable plus a bunch of references to the pieces of that hidden variable. That’s why the qualifiers apply to the hidden variable, not to the aliases.</p>
+
+
+</body>

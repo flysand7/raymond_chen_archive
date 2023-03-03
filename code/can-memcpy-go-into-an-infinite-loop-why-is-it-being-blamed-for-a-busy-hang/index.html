@@ -1,0 +1,38 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Can memcpy go into an infinite loop? Why is it being blamed for a busy hang?</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that their program locks up once or twice each day. They took a full dump of the file while it was hung and asked <code>windbg</code> to analyze it. Here’s a redacted version of what it said: </p>
+<pre>
+PRIMARY_PROBLEM_CLASS: APPLICATION_HANG_BusyHang
+
+STACK_TEXT:  
+msvcr80!_memcpy+0x7d
+contoso!Buffer::Compact+0x3d
+contoso!BufferReader::Parse+0x14c
+contoso!handle_widget_message+0x37
+contoso!handle_input+0x12f
+contoso!dispatch_event+0x27
+contoso!handle_events+0xbe
+</pre>
+<p>The <code>Buffer::Compact</code> method shifts some memory around inside the buffer: </p>
+<pre>
+void Buffer::Compact()
+{
+  if (m_bytesRead &gt; 0) {
+    memmove(m_buffer, m_buffer + m_bytesRead, m_capacity - m_bytesRead);
+    m_capacity -= m_bytesRead;
+    m_bytesRead = 0;
+  }
+}
+</pre>
+<p>“Is it possible that <code>memmove</code> has a busy wait? What could it be waiting for?” </p>
+<p>The <code>memmove</code> function doesn’t have a busy loop where it waits for something. It just moves the memory from one location to another. </p>
+<p>What’s probably happening is that there is a busy loop higher up the stack. Maybe  <code>Buffer­Reader::Parse</code> has gotten into a loop, or (my guess) <code>handle_events</code> is stuck in a loop processing a huge number of incoming events. </p>
+<p>When you take the memory dump, you are capturing the program at a moment in time. All you know is that the thread is probably in a busy wait, but the source of the busy wait need not be the thing at the top of the stack. </p>
+<p>If <code>memcpy</code> is consistently at the top of the stack, then it means that the thread is spending most of its time copying memory. But that doesn’t necessarily mean that <code>memcpy</code> is stuck in a loop. The more likely reason is that the thread is busy doing some larger operation, and that larger operation entails a lot of <code>memcpy</code> operations. </p>
+<p><a href="https://blogs.msdn.microsoft.com/oldnewthing/20040827-00/?p=38033">Though in extreme edge cases it might be a busy loop</a>. </p>
+<p><a href="https://blogs.msdn.microsoft.com/oldnewthing/20150813-00/?p=91821">Sort-of related</a>. </p>
+<p><b>Exercise</b>: The customer’s code calls <code>memmove</code>, so why is the <code>memcpy</code> function the one at the top of the stack? What happened to <code>memmove</code>? </p>
+
+
+</body>

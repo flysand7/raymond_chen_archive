@@ -1,0 +1,18 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Notes on COM aggregation: How do you implement tear-offs in an aggregated object?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/notes-on-com-aggregation-obtaining-a-pointer-to-your-aggregated-partner-without-introducing-a-reference-cycle" title="Notes"> how an inner or outer object participating in COM aggregation can obtain an interface from its partner without creating a circular reference</a>. We also concluded with a realization that tear-offs create a particular problem with the technique we developed. Let’s fix that.</p>
+<p>Again, I’m going to assume that you have a basic understanding of COM tear-offs: A tear-off interface is an interface implemented in an object separate from the main object. The tear-off object maintains a reference-counted pointer to the main object, to which it delegates <code>Query­Interface</code> calls. When the tear-off object is destroyed, the reference-counted pointer to the main object decrements the reference count on the main object.</p>
+<p>The non-aggregating implementation of tear-offs does not delegate <code>AddRef</code> or <code>Release</code>. Each tear-off has a private reference count, and reference count operations on the tear-off operate exclusively on that tear-off. However, aggregated objects are required to delegate all the <code>IUnknown</code> methods to the outer object.</p>
+<p>Let’s see what happens if we make tear-offs forward reference counts to the outer object: The outer object queries the inner object for a tear-off. The inner object creates a tear-off, and then calls <code>AddRef</code> on the outer object. Eventually, the tear-off interface is released by the client. But all reference count operations on the tear-off are forwarded to the outer object. How does the tear-off know when to destroy itself?</p>
+<p>Tear-offs of aggregated objects must retain their own reference count so that they know when to destroy themselves. But they also are required to forward reference count operations to the outer object. So which one should it do?</p>
+<p>Do both!</p>
+<p>An aggregated tear-off’s <code>Add­Ref</code> and <code>Release</code> method should forward the call to the outer object <i>and</i> also update its own tear-off reference count. When the tear-off reference count reaches zero, the tear-off destroys itself.</p>
+<p>This rule also applies to the outer object’s tear-offs, if it has any.</p>
+<p>With this rule, we can use our “query, then release” trick for obtaining a pointer to an interface on the aggregated partner:</p>
+<p>When querying from outer to inner, the inner object creates a tear-off, with an initial reference count of 1, and which also increments the outer object’s reference count by 1. The outer object performs a <code>Release</code> on itself to counteract that second <code>AddRef</code>. To clean up, the outer object performs an <code>AddRef</code> on itself to undo the artificial <code>Release</code>, and then releases the tear-off, which both decrements the reference count on the outer object, as well as realizing that it too needs to destroy itself when it decrements its own reference count to zero.</p>
+<p>The same calculations apply when querying from the inner object to the outer: The outer object’s tear-off manages its own reference count as well as updating the reference count on the original outer object. This allows the inner object to perform the artificial <code>Release</code>. And the same sequence of operations applies when the inner object is finished with the tear-off.</p>
+<p>Phew, disaster averted.</p>
+
+
+</body>

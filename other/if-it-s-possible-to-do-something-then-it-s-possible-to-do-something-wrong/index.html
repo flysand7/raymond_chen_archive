@@ -1,0 +1,120 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If it's possible to do something, then it's possible to do something WRONG</h1>  <!-- .entry-meta -->
+
+<p>
+Once you make it possible to do something,
+you have to accept that you also made it possible to do something <i>wrong</i>.
+</p>
+<p>
+When the window manager was originally designed,
+it made it possible for programs to override many standard behaviors.
+They could handle the <code>WM_NC­HIT­TEST</code> message
+<a href="http://support.microsoft.com/kb/320687">
+so a window can be dragged by grabbing any part of the window,
+not just the caption bar</a>.
+They could handle the <code>WM_NC­PAINT</code> message
+to draw custom title bars.
+The theory was that making all of these things possible
+permitted smart people to do clever things.
+</p>
+<p>
+The downside is that it also permits stupid people to do dumb things.
+</p>
+<p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/01/24/7213752.aspx#7225416">
+Changing the window procedure model from
+<i>call <code>Def­Window­Proc</code> to get default behavior</i>
+to
+<i>return whether you handled the message</i></a>
+wouldn’t have helped.
+First of all, the handled/not-handled model is too restrictive:
+It requires you to do <i>everything</i> (handled)
+or <i>nothing</i> (not handled).
+There is no option to do <i>a little bit</i>.
+(Imagine if C++ didn’t let you call the base class implementation
+of an overridden method.)
+</p>
+<p>
+Doing <i>a little bit</i> is a very common pattern.
+The <code>WM_NC­HITTEST</code> technique mentioned above,
+for example, uses the default hit-testing implementation,
+and then tweaks the result slightly:
+</p>
+<pre>
+case WM_NCHITTEST:
+ // call base class first
+ lres = DefWindowProc(hwnd, uMsg, wParam, lParam);
+ // tweak the result
+ if (lres == HTCLIENT) lres = HTCAPTION;
+ return lres;
+</pre>
+<p>
+How would you do this with the handled/not-handled model?
+</p>
+<pre>
+case WM_NCHITTEST:
+ if (not handling this message would have resulted in HTCLIENT) {
+  lres = HTCAPTION;
+  handled = TRUE;
+ } else {
+  handled = FALSE;
+ }
+ break;
+</pre>
+<p>
+The trick about that bit in parentheses is that it requires
+the research department to finish the final details on that
+time machine they’ve been working on.
+It’s basically saying, “Return <i>not handled</i>,
+then follow the message until handling is complete
+and if the final result is <code>HTCLIENT</code>,
+then fire up the time machine and rewind to this point
+so I can change my mind and return <i>handled</i> instead.”
+</p>
+<p>
+And even if the research department comes through with that
+time machine,
+the handled/not-handled model doesn’t even solve the original problem!
+</p>
+<p>
+The original problem was people failing to call
+<code>Def­Window­Proc</code>
+when they decided that they didn’t want to handle a message.
+In the handled/not-handled model, the equivalent problem would be
+people returning <code>handled = TRUE</code> unconditionally.
+</p>
+<pre>
+BOOL NewStyleWindowProc(HWND hwnd, UINT uMsg,
+ WPARAM wParam, LPARAM lParam, LRESULT&amp; lres)
+{
+ BOOL handled = TRUE;
+ switch (uMsg) {
+ case WM_THIS: ...; break;
+ case WM_THAT: ...; break;
+ // no "default: handled = FALSE; break;"
+ }
+ return handled;
+}
+</pre>
+<p>
+(Side note: The dialog manager uses the handled/not-handled model,
+and
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/11/07/55619.aspx#55623">
+some people would prefer that it use the
+<code>Def­Xxx­Proc</code> model</a>,
+so you might say “We tried that, and some people didn’t like it.”)
+</p>
+<p>
+This topic raises another one of those “No matter what you do,
+somebody will call you an idiot” dilemmas.
+On the one side, there’s the
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/01/24/7213752.aspx#7230191">
+<i>Windows should perform extra testing at runtime to
+detect bad applications</i></a> school,
+and on the other side, there’s the
+<a href="http://blogs.msdn.com/oldnewthing/archive/2007/07/17/3903614.aspx#3918131">
+<i>Windows should get rid of all the code whose sole purpose
+in life is to detect bad applications</i></a> school.</p>
+
+
+</body>

@@ -1,0 +1,141 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Let GDI do your RLE compression for you</h1>  <!-- .entry-meta -->
+
+<p><p>
+This is another trick along the lines of
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/11/16/1086835.aspx">
+using DIB sections to perform bulk color mapping</a>.
+GDI will do it for you; you just have to know how to ask.
+Today’s mission is to take a 4bpp bitmap and compress it in
+<code>BI_RLE4</code> format.
+Now, sure, there are programs out there which already do this conversion,
+but the lesson is in the journey, not in the destination.
+</p>
+<p>
+The secret is the <code>GetDIBits</code> function.
+You give this function a bitmap and a bitmap format,
+and out come the bits in the format you requested;
+GDI will convert as necessary.
+</p>
+<p>
+<b>Note</b>: I’m going to take a risk and write “sloppy” code.
+This is code that is not production quality but is enough to get
+the point across,
+so put your nitpicking notepads away.
+</p>
+<pre>
+void ConvertToRLE4(LPCTSTR pszSrc, LPCTSTR pszDst)
+{
+    // error checking elided for expository purposes
+    HBITMAP hbm = (HBITMAP)LoadImage(NULL, pszSrc, IMAGE_BITMAP,
+                                     0, 0,
+                                     LR_LOADFROMFILE |
+                                     LR_CREATEDIBSECTION);</pre></p>
+<p>    DIBSECTION ds;</p>
+<p>    // error checking elided for expository purposes
+    GetObject(hbm, sizeof(ds), &amp;ds);</p>
+<p>    if (ds.dsBmih.biBitCount != 4) {
+        // error – source bitmap is not 4bpp
+    }</p>
+<p>    struct BITMAPINFO16COLOR {
+        BITMAPINFOHEADER bmih;
+        RGBQUAD rgrgb[16];
+    } bmi16;
+    bmi16.bmih = ds.dsBmih;</p>
+<p>    bmi16.bmih.biCompression = BI_RLE4;</p>
+<p>    BYTE *rgbPixels = new BYTE[bmi16.bmih.biSizeImage];
+    HDC hdc = GetDC(NULL);
+    if (GetDIBits(hdc, hbm, 0, bmi16.bmih.biHeight, rgbPixels,
+                  (LPBITMAPINFO)&amp;bmi16, DIB_RGB_COLORS)
+        != bmi16.bmih.biHeight) {
+        // error – bitmap not compressible
+    }
+    ReleaseDC(NULL, hdc);</p>
+<p>    BITMAPFILEHEADER bfh = { 0 };
+    bfh.bfType = MAKEWORD(‘B’, ‘M’);
+    bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(bmi16);
+    bfh.bfSize = bfh.bfOffBits + bmi16.bmih.biSizeImage;</p>
+<p>    // error checking elided for expository purposes
+    HANDLE h = CreateFile(pszDst, GENERIC_WRITE, 0, NULL,
+                          CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD dwWritten;
+    WriteFile(h, &amp;bfh, sizeof(bfh), &amp;dwWritten, NULL);
+    WriteFile(h, &amp;bmi16, sizeof(bmi16), &amp;dwWritten, NULL);
+    WriteFile(h, rgbPixels, bmi16.bmih.biSizeImage, &amp;dwWritten, NULL);
+    CloseHandle(h);
+    delete[] rgbPixels;
+}
+
+<p>
+Let’s start from the top.
+After loading the bitmap and verifying that it is a 4bpp bitmap,
+we declare a <code>BITMAPINFO16COLOR</code> structure that is
+just a <code>BITMAPINFO</code> structure that holds 16 colors
+instead of just one.
+We copy the <code>BITMAPINFOHEADER</code> from the
+<code>DIBSECTION</code> to our structure for two reasons:
+</p>
+<ol>
+<li>We want to make some changes, and
+<li>GDI expects the color table to come immediately after the
+    <code>BITMAPINFOHEADER</code>.
+</li></li></ol>
+<p>
+The second reason is the more important one.
+We can’t use the <code>BITMAPINFOHEADER</code> that is part of the
+<code>DIBSECTION</code> structure because
+the <code>DIBSECTION</code> structure puts <code>dsBitfields</code>
+after the <code>BITMAPINFOHEADER</code> instead of a color table.
+</p>
+<p>
+After copying the <code>BITMAPINFOHEADER</code>, we make the key change:
+Changing the compression type to <code>BI_RLE4</code>.
+We allocate a pixel buffer of a size equal to the uncompressed size
+of the original bitmap and use <code>GetDIBits</code> to fill it
+with compressed data.
+Key points:
+</p>
+<ul>
+<li>Before calling the <code>GetDIBits</code> function,
+    we must set the <code>biSizeImage</code> member of the
+    <code>BITMAPINFO</code> structure to the size of
+    the buffer we passed as <code>rgbPixels</code>.
+    In our case, this happened implicitly since we allocated
+    <code>rgbPixels</code> based on the value of
+    <code>bmi16.bmih.biSizeImage</code>.
+<li>On successful exit from the <code>GetDIBits</code> function,
+    the <code>GetDIBits</code> function sets the
+    <code>biSizeImage</code> member of the
+    <code>BITMAPINFO</code> structure to the number of bytes
+    actually written to the buffer.
+<li>On successful exit from the <code>GetDIBits</code> function,
+    the <code>GetDIBits</code> function fills the color table
+    if you’re using a bitmap format that requires a color table.
+    It’s important that you allocate enough memory to hold
+    the color table; if you forget, then you have a buffer overflow
+    bug.
+</li></li></li></ul>
+<p>
+Since the <code>GetDIBits</code> function returns the number of
+scan lines successfully read,
+if the value is different from the value we requested, then
+something went wrong.
+In our case, the most likely reason is that the bitmap
+is not compressible according to the
+<code>BI_RLE4</code> algorithm.
+</p>
+<p>
+Now that we have the compressed bits, it’s just grunt work
+to turn it into a <code>BMP</code> file.
+The <code>BMP</code> file format specifies that the file
+begins with a <code>BITMAPFILEHEADER</code>,
+followed by the <code>BITMAPINFOHEADER</code>,
+the color table, and the pixels.
+So we write them out in that order.
+</p>
+<p>
+Easy peasy.
+</p></p>
+
+
+</body>

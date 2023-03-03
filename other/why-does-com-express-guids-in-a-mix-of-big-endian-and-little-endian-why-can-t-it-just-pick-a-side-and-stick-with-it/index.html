@@ -1,0 +1,129 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does COM express GUIDs in a mix of big-endian and little-endian? Why can’t it just pick a side and stick with it?</h1>  <!-- .entry-meta -->
+
+<p>Wikipedia claims that <a href="https://en.wikipedia.org/wiki/Universally_unique_identifier#Encoding"> the COM textual representation of GUIDs is mixed-endian</a>.</p>
+<p>Is it, really?</p>
+<p>No, it is little-endian all the way. But if you don’t understand how GUIDs are formed, it might look like some parts are big-endian.</p>
+<p><a href="https://datatracker.ietf.org/doc/html/rfc4122#section-4.1.2"> The parts of a GUID as defined in the specification</a> are</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Field</th>
+<th>Type</th>
+</tr>
+<tr>
+<td><tt>time_low</tt></td>
+<td>32-bit integer</td>
+</tr>
+<tr>
+<td><tt>time_mid</tt></td>
+<td>16-bit integer</td>
+</tr>
+<tr>
+<td><tt>time_hi_and_version</tt></td>
+<td>16-bit integer</td>
+</tr>
+<tr>
+<td><tt>clock_seq_hi_and_reserved</tt></td>
+<td>8-bit integer</td>
+</tr>
+<tr>
+<td><tt>cloc_seq_low</tt></td>
+<td>8-bit integer</td>
+</tr>
+<tr>
+<td><tt>node</tt></td>
+<td>6-byte MAC address</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>GUID</code> structure breaks it down as</p>
+<pre>struct GUID
+{
+    uint32_t Data1;
+    uint16_t Data2;
+    uint16_t Data3;
+    uint8_t  Data4[8];
+}
+</pre>
+<p>Let’s line up the two pieces against each other.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Structure</th>
+</tr>
+<tr>
+<td><tt>time_low</tt></td>
+<td>32-bit integer</td>
+<td><code>Data1</code></td>
+</tr>
+<tr>
+<td><tt>time_mid</tt></td>
+<td>16-bit integer</td>
+<td><code>Data2</code></td>
+</tr>
+<tr>
+<td><tt>time_hi_and_version</tt></td>
+<td>16-bit integer</td>
+<td><code>Data3</code></td>
+</tr>
+<tr>
+<td><tt>clock_seq_hi_and_reserved</tt></td>
+<td>8-bit integer</td>
+<td><code>Data4[0]</code></td>
+</tr>
+<tr>
+<td><tt>cloc_seq_low</tt></td>
+<td>8-bit integer</td>
+<td><code>Data4[1]</code></td>
+</tr>
+<tr>
+<td><tt>node</tt></td>
+<td>6-byte MAC address</td>
+<td><code>Data4[2..7]</code></td>
+</tr>
+</tbody>
+</table>
+<p>If you print out each piece of the <code>GUID</code> structure, with hyphens between each part, then you get</p>
+<p><code><span style="border: solid 1px gray;">33221100</span>-<!--
+--><span style="border: solid 1px gray;">5544</span>-<!--
+--><span style="border: solid 1px gray;">7766</span>-<!--
+--><span style="border: solid 1px gray;">88</span>-<!--
+--><span style="border: solid 1px gray;">99</span>-<!--
+--><span style="border: solid 1px gray;">AA</span>-<!--
+--><span style="border: solid 1px gray;">BB</span>-<!--
+--><span style="border: solid 1px gray;">CC</span>-<!--
+--><span style="border: solid 1px gray;">DD</span>-<!--
+--><span style="border: solid 1px gray;">EE</span>-<!--
+--><span style="border: solid 1px gray;">FF</span>
+</code></p>
+<p>Notice that everything is still little-endian. We didn’t have to do any byte flipping when printing:</p>
+<pre>printf("%04x-%04x-%04x-%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x",
+    Data1, Data2, Data3,
+    Data4[0], Data4[1], Data4[2], Data4[3],
+    Data4[4], Data4[5], Data4[6], Data4[7]);
+</pre>
+<p>My guess is that the folks who designed the string format thought there were too many dashes, so they removed the byte dashes, except for the one that separates the clock bytes from the MAC address.</p>
+<pre>printf("%04x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+    Data1, Data2, Data3,
+    Data4[0], Data4[1], Data4[2], Data4[3],
+    Data4[4], Data4[5], Data4[6], Data4[7]);
+</pre>
+<p><code><span style="border: solid 1px gray;">33221100</span>-<!--
+--><span style="border: solid 1px gray;">5544</span>-<!--
+--><span style="border: solid 1px gray;">7766</span>-<!--
+--><span style="border: solid 1px gray;">88</span><!--
+--><span style="border: solid 1px gray;">99</span>-<!--
+--><span style="border: solid 1px gray;">AA</span><!--
+--><span style="border: solid 1px gray;">BB</span><!--
+--><span style="border: solid 1px gray;">CC</span><!--
+--><span style="border: solid 1px gray;">DD</span><!--
+--><span style="border: solid 1px gray;">EE</span><!--
+--><span style="border: solid 1px gray;">FF</span>
+</code></p>
+<p>The result is that the last two pieces of the stringified GUID look big-endian, but they’re not. They’re just little-endian with some dashes missing.</p>
+
+
+</body>

@@ -1,0 +1,129 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I show the sharing pane from a Win32 desktop application?</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to show the sharing pane from their Win32 desktop application. In a UWP application, this would be done by calling <code>Windows.Application­Model.Data­Transfer.Data­Transfer­Manager.Show­Sharing­UI()</code>. Let’s do it in a Win32 desktop app by following <a href="https://blogs.msdn.microsoft.com/oldnewthing/20160629-00/?p=93775">the basic rules for projection</a>: Static methods are represented as methods on a “Statics” interface on the activation factory. </p>
+<p>Start with <a href="https://blogs.msdn.microsoft.com/oldnewthing/20030723-00/?p=43073">the scratch program</a> and make these changes. (Remember, Little Programs do little to no error checking.) </p>
+<pre>
+<font color="blue">#include &lt;wrl/client.h&gt;
+#include &lt;wrl/wrappers/corewrappers.h&gt;
+#include &lt;windows.applicationmodel.datatransfer.h&gt;
+#include &lt;tchar.h&gt; // Huh? Why are you still using ANSI?
+#include &lt;roapi.h&gt;
+
+namespace WRL = Microsoft::WRL;
+namespace dt = ABI::Windows::ApplicationModel::DataTransfer;
+
+using Microsoft::WRL::Wrappers::HStringReference;
+
+void OnChar(HWND hwnd, TCHAR ch, int cRepeat)
+{
+  switch (ch) {
+  case TEXT(' '):
+    {
+      WRL::ComPtr&lt;dt::IDataTransferManagerStatics&gt; dtmStatics;
+      RoGetActivationFactory(HStringReference(
+        RuntimeClass_Windows_ApplicationModel_DataTransfer_DataTransferManager)
+                             .Get(), IID_PPV_ARGS(&amp;dtmStatics));
+      dtmStatics-&gt;ShowShareUI();
+    }
+    break;
+  }
+}
+
+HANDLE_MSG(hwnd, WM_CHAR, OnChar);
+</font></pre>
+<p>
+Fire up this program, hit the space bar,
+and… nothing happens.
+</p>
+<p>
+Okay, so maybe we need to do a tiny bit of error checking
+after all.
+The call to
+<code>Show­Share­UI</code> fails with
+<code>E_NOT_SET</code>.
+The reason is that the
+<code>Show­Share­UI</code> method
+has an implicit dependency on the current thread’s
+<code>Core­Window</code>,
+because it needs to know
+which window is being shared.
+But since we are a Win32 desktop program,
+we don’t have a
+<code>Core­Window</code>.
+</p>
+<p>
+Oh no, what do we do?
+</p>
+<p>
+Enter the interop pattern.
+</p>
+<p>
+To accommodate Win32 desktop programs,
+there is a parallel universe of <code>HWND</code>-based
+methods.
+In places where WinRT depends on the current thread’s
+<code>Core­Window</code>,
+this alternative universe offers a similarly-named method,
+but with the <code>For­Window</code> suffix,
+indicating that it operates on classic Win32 <code>HWND</code>s
+rather than fancy-pants
+<code>Core­Window</code>s.
+</p>
+<p>
+One component of
+this parallel universe of
+<code>-For­Window</code> methods
+consists of interfaces that end in the name <code>Interop</code>.
+In our case, it’s
+<code>IData­Transfer­Manager­Interop</code>.
+This interface is available on the activation factory,
+the same as the
+<code>IData­Transfer­Manager­Statics</code> interface.
+The general pattern is as follows:
+</p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tr>
+<th>XxxStatics</th>
+<th>XxxInterop</th>
+</tr>
+<tr>
+<td>Get­For­Current­View</td>
+<td>Get­For­Window</td>
+</tr>
+<tr>
+<td>Do­Something (implied “for current view”)</td>
+<td>Do­Something­For­Window</td>
+</tr>
+</table>
+<p>
+In our case, we have a
+<code>Show­Sharing­UI()</code> method
+on the <code>Statics</code>
+interface,
+so the corresponding interop method is called
+<code>Show­Sharing­For­WIndow()</code>.
+</p>
+<pre>
+#include &lt;shlobj.h&gt; // IDataTransferManagerInterop
+
+void OnChar(HWND hwnd, TCHAR ch, int cRepeat)
+{
+  switch (ch) {
+  case TEXT(' '):
+    {
+      <font color="blue">WRL::ComPtr&lt;dt::IDataTransferManagerInterop&gt; dtmInterop;</font>
+      RoGetActivationFactory(HStringReference(
+        RuntimeClass_Windows_ApplicationModel_DataTransfer_DataTransferManager)
+                             .Get(), IID_PPV_ARGS(<font color="blue">&amp;dtmInterop</font>));
+      <font color="blue">dtmInterop-&gt;ShowShareUIForWindow(hwnd);</font>
+    }
+    break;
+  }
+}
+</pre>
+<p>Okay, so now we show the share pane, but the pane just offers to share a screen shot. How can we get the pane to offer custom data provided by the program? We’ll look at that next time. </p>
+<p><b>Bonus chatter</b>: One of my colleagues noted that “data transfer manager” is a poor name for the class, seeing as transferring data is what computers do most of the time anyway. </p>
+
+
+</body>

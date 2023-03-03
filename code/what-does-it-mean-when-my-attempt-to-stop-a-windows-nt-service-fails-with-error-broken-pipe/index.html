@@ -1,0 +1,16 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What does it mean when my attempt to stop a Windows NT service fails with ERROR_BROKEN_PIPE?</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that they had a sporadic problem: Their product includes a Windows NT service, and when their client program tries to stop the service, it sometimes fails with <code>ERROR_</code><code>BROKEN_</code><code>PIPE</code>. Their client program is written in C#, so it uses the <code>Service­Controller.</code><code>Stop</code> method to stop the service, and the failure is reported in the form of an exception. In Win32, this turns into a call to the <code>Control­Service</code> function with the <code>SERVICE_</code><code>CONTROL_</code><code>STOP</code> code. </p>
+<p>Under what conditions would an attempt to stop a service result in the error <code>ERROR_</code><code>BROKEN_</code><code>PIPE</code>? </p>
+<p>One of the developer support escalation engineers used psychic powers: </p>
+<blockquote class="q">
+<p>Does your service terminate itself before the call to its <code>Handler­Ex</code> routine returns from the <code>SERVICE_</code><code>CONTROL_</code><code>STOP</code> request, or before the call to <code>Start­Service­Ctrl­Dispatcher</code> returns? </p>
+<p>I’m guessing that the <code>ERROR_</code><code>BROKEN_</code><code>PIPE</code> arises because the service process terminated itself while the Service Control Manager was still talking to it, waiting for the service to report that it finished processing the <code>SERVICE_</code><code>CONTROL_</code><code>STOP</code> request. The error is <code>ERROR_</code><code>BROKEN_</code><code>PIPE</code> because the process on the other end of the pipe (the service) died. </p>
+</blockquote>
+<p>The customer agreed that this was a possibility: When the service receives the <code>SERVICE_</code><code>CONTROL_</code><code>STOP</code> request, it signals a helper thread to clean up, and that helper thread may finish its cleanup and terminate the service process before the main thread can report a successful stop to the Service Control Manager. </p>
+<p>A short time later, the customer reported back and confirmed that when they forced the race condition to occur, they indeed got the <code>ERROR_</code><code>BROKEN_</code><code>PIPE</code> error code. </p>
+<p>I like this example of psychic debugging because it demonstrates how you can take something you know (<code>ERROR_</code><code>BROKEN_</code><code>PIPE</code> means that two processes were talking to each other over a pipe, and one side suddenly terminated), and think about how it could apply to something you don’t know (surmising that the Service Control Manager uses a pipe to talk to the service). </p>
+
+
+</body>

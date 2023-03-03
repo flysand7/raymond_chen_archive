@@ -1,0 +1,44 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Making the <code>COM_</code><code>INTERFACE_</code><code>ENTRY</code> macro better at detecting misuse</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/the-com-interface-entry-must-be-a-com-interface-but-nobody-actually-checks"> Last time</a>, we studied a crash involving improper use of the <code>COM_</code><code>INTERFACE_</code><code>ENTRY</code> macro. Can we make it better at detecting misuse at compile time?</p>
+<p>We want to make sure that <code>IWidget­Provider­Info</code> derives directly from <code>IUnknown</code>, so that, given the declaration</p>
+<pre>IWidgetProviderInfo* p;
+</pre>
+<p>we can guarantee that <code>IWidget­Provider­Info</code> is convertible to <code>IUnknown</code> and that</p>
+<pre>reinterpret_cast&lt;IUnknown*&gt;(p) == static_cast&lt;IUnknown*&gt;(p)
+</pre>
+<p>Otherwise, somebody could try this:</p>
+<pre>struct Strange { ... };
+interface IWidgetProvider : Strange, IUnknown
+{
+  ...
+};
+</pre>
+<p>The <code>IWidget­Provider</code> can be converted to a <code>IUnknown</code>, but it will probably also need to be adjusted by <code>sizeof(Strange)</code>.¹</p>
+<p>ATL already has a macro for calculating the amount by which the two parts of the above comparison differ. It uses it for deciding how much to adjust the pointer to get to the desired interface:</p>
+<pre>#define offsetofclass(base, derived) \
+    ((DWORD_PTR)(static_cast&lt;base*&gt;((derived*)_ATL_PACKING)) \
+                                             -_ATL_PACKING)
+</pre>
+<p>So we just need to assert that the value is (1) calculable, and (2) zero.</p>
+<p>The original definition of <code>COM_</code><code>INTERFACE_</code><code>ENTRY</code> is</p>
+<pre>#define COM_INTERFACE_ENTRY(x)\
+    {&amp;IID_##x, \
+    offsetofclass(x, _ComMapClass), \
+    _ATL_SIMPLEMAPENTRY},
+</pre>
+<p>We can make this minor adjustment to ensure that converting from <code>x</code> to <code>IUnknown</code> is both possible and a nop:</p>
+<pre>#define COM_INTERFACE_ENTRY(x)\
+    {&amp;IID_##x, \
+    offsetofclass(x, _ComMapClass)<span style="color: blue;">/!offsetofclass(IUnknown, x)</span>, \
+    _ATL_SIMPLEMAPENTRY},
+</pre>
+<p>If <code>x</code> cannot be converted to <code>IUnknown</code>, then the <code>offsetofclass</code> will encounter a compile-time error because the <code>static_cast</code> from <code>x*</code> to <code>IUnknown*</code> is not possible.</p>
+<p>If the conversion is possible but requires a pointer adjustment, then the <code>offsetof</code> will produce a nonzero value. Negating it with <code>!</code> will produce <code>0</code>, and dividing by it will trigger a divide-by-zero compile-time error.</p>
+<p>If the conversion is possible and does not require a pointer adjustment (which is the case we want to permit), then the <code>offsetof</code> will result in the value <code>0</code>. Negating it with <code>!</code> will produce <code>1</code>, and dividing by <code>1</code> has no effect.</p>
+<p>You can apply this same fix to the other <code>COM_</code><code>INTERFACE_</code><code>ENTRY</code> macros, and to any other macro that assumes that its type parameter is derived from <code>IUnknown</code>.</p>
+<p>¹ Types that are not <a href="https://en.cppreference.com/w/cpp/language/data_members#Standard_layout"> standard layout</a> are not required to place the first named base class at offset zero relative to the derived class, so this is something worth checking even if you think everything is set up correctly.</p>
+
+
+</body>

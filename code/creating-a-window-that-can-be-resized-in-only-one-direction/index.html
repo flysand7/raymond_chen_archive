@@ -1,0 +1,69 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a window that can be resized in only one direction</h1>  <!-- .entry-meta -->
+
+<p>Today’s Little Program shows a window that can be resized in only <a href="http://www.onedirectionmusic.com/">one direction</a>, let’s say vertically but not horizontally. </p>
+<p>Start with the scratch program and make these changes: </p>
+<pre>
+UINT OnNcHitTest(HWND hwnd, int x, int y)
+{
+ UINT ht = FORWARD_WM_NCHITTEST(hwnd, x, y, DefWindowProc);
+ switch (ht) {
+ case HTBOTTOMLEFT:  ht = HTBOTTOM; break;
+ case HTBOTTOMRIGHT: ht = HTBOTTOM; break;
+ case HTTOPLEFT:     ht = HTTOP;    break;
+ case HTTOPRIGHT:    ht = HTTOP;    break;
+ case HTLEFT:        ht = HTBORDER; break;
+ case HTRIGHT:       ht = HTBORDER; break;
+ }
+ return ht;
+}
+
+HANDLE_MSG(hwnd, WM_NCHITTEST, OnNcHitTest);
+</pre>
+<p>We accomplish this by removing horizontal resize behavior from the left and right edges and corners. For the corners, we remove the horizontal resizing, but leave the vertical resizing. For the edges, we remove resizing entirely by reporting that the left and right edges should act like an inert border. </p>
+<p>Wait, we’re not done yet. This handles resizing by grabbing the edges with the mouse, but it doesn’t stop the user from hitting <kbd>Alt</kbd>+<kbd>Space</kbd>, followed by <kbd>S</kbd> (for Size), and then hitting the left or right arrow keys. </p>
+<p>For that, we need to handle <code>WM_GET­MIN­MAX­INFO</code>. </p>
+<pre>
+void OnGetMinMaxInfo(HWND hwnd, LPMINMAXINFO lpmmi)
+{
+ RECT rc = { 0, 0, 500, 0 };
+ AdjustWindowRectEx(&amp;rc, GetWindowStyle(hwnd), FALSE,
+                    GetWindowExStyle(hwnd));
+
+ // Adjust the width
+ lpmmi-&gt;ptMaxSize.x =
+ lpmmi-&gt;ptMinTrackSize.x =
+ lpmmi-&gt;ptMaxTrackSize.x = rc.right - rc.left;
+}
+
+HANDLE_MSG(hwnd, WM_GETMINMAXINFO, OnGetMinMaxInfo);
+</pre>
+<p>This works out great, except for the case of being <!-- backref: How does the window manager adjust ptMaxSize and ptMaxPosition for multiple monitors? -->maximized onto a secondary monitor, because we run into the mixed case of being small than the monitor in the horizontal direction, but larger than the monitor in the vertical direction. </p>
+<pre>
+void OnGetMinMaxInfo(HWND hwnd, LPMINMAXINFO lpmmi)
+{
+ RECT rc = { 0, 0, 500, 0 };
+ AdjustWindowRectEx(&amp;rc, GetWindowStyle(hwnd), FALSE,
+                    GetWindowExStyle(hwnd));
+
+ // Adjust the width
+ lpmmi-&gt;ptMaxSize.x =
+ lpmmi-&gt;ptMinTrackSize.x =
+ lpmmi-&gt;ptMaxTrackSize.x = rc.right - rc.left;
+
+ <font color="blue">// Adjust the height
+ MONITORINFO mi = { sizeof(mi) };
+ GetMonitorInfo(MonitorFromWindow(hwnd,
+                    MONITOR_DEFAULTTOPRIMARY), &amp;mi);
+ lpmmi-&gt;ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top
+                    - lpmmi-&gt;ptMaxPosition.y + rc.bottom;</font>
+}
+</pre>
+<p>The math here is a little tricky. We want the window height to be the height of the work area of the window monitor, plus some extra goop in order to <a href="http://blogs.msdn.com/b/oldnewthing/archive/2015/03/04/10597470.aspx">let the borders hang over the edge</a>. </p>
+<p>The first two terms are easy to explain: <code>mi.rcWork.bottom - mi.rcWork.top</code> is the height of the work area. </p>
+<p>Next, we want to add the height consumed by the borders that hang off the top of the monitor. Fortunately, the window manager told us exactly how much the window is going to hang off the top of the monitor: It’s in <code>lpmmi-&gt;ptMaxPosition.y</code>, but as a negative value since it is a coordinate that is off the top of the screen. We therefore have to negate it before adding it in. </p>
+<p>Finally, we add the borders that hang off the bottom of the work area. </p>
+<p>Yes, handling this mixed case (where the window is partly constrained and partly unconstrained) is annoying. Sorry. </p>
+
+
+</body>

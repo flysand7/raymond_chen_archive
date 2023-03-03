@@ -1,0 +1,224 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you get a procedure address by ordinal, you had better be absolutely sure it's there, because the failure mode is usually indistinguishable from success</h1>  <!-- .entry-meta -->
+
+<p>
+A customer reported that the <code>Get­Proc­Address</code>
+function was behaving strangely.
+</p>
+<blockquote class="q">
+<p>
+We have this code in one of our tests:
+</p>
+<pre>
+typedef int (CALLBACK *T_FOO)(int);
+void TestFunctionFoo(HINSTANCE hDLL)
+{
+  // Function Foo is ordinal 1 in our DLL
+  T_FOO pfnFoo = (T_FOO)GetProcAddress(hDLL, (PCSTR)1);
+  if (pfnFoo) {
+    ... run tests on pfnFoo ...
+  }
+}
+</pre>
+<p>
+Recently, this test started failing in bizarre ways.
+When we stepped through the code, we discovered that
+<code>pfnFoo</code> ends up calling
+<code>Bar</code> instead of <code>Foo</code>.
+The first time we try to test <code>pfnFoo</code>,
+we get stack corruption because
+<code>Bar</code> has a different function prototype
+from
+<code>Foo</code>,
+and of course on top of that the test fails horribly because
+it’s calling the wrong function!
+</p>
+<p>
+When trying to narrow the problem, we found that the issue
+began when the test was run against a version of the DLL
+that was missing the <code>Foo</code> function entirely.
+The line
+</p>
+<pre>
+    Foo @1
+</pre>
+<p>
+was removed from the DEF file.
+Why did the call to
+<code>Get­Proc­Address</code> succeed and return the wrong
+function?
+We expected it to fail.
+</p>
+</blockquote>
+<p>
+Let’s first consider the case where a DLL exports no functions
+by ordinal.
+</p>
+<pre>
+EXPORTS
+    Foo
+    Bar
+    <a href="http://plugh.com/">Plugh</a>
+</pre>
+<p>
+The linker builds a list of
+all the exported functions (in an unspecified order)
+and fills in two arrays based on that list.
+If you look in the DLL image, you’ll see something like this:
+</p>
+<pre>
+Exported Function Table
+00049180 address of Bar
+00049184 address of Foo
+0004918C address of Plugh
+Exported Names
+00049190 address of the string "Bar"
+00049194 address of the string "Foo"
+00049198 address of the string "Plugh"
+</pre>
+<p>
+There are two parallel arrays,
+one with function addresses and one with function names.
+The string <code>"Bar"</code> is the first entry in the
+exported names table,
+and the function <code>Bar</code> is the first entry in the
+exported function table.
+In general, the string in the
+<var>N</var>th entry in the exported names table
+corresponds to the function in the
+<var>N</var>th entry of the exported function table.
+</p>
+<p>
+Since it is only the relative position that matters, let’s replace
+the addresses with indices.
+</p>
+<pre>
+Exported Function Table
+[1] address of Bar
+[2] address of Foo
+[3] address of Plugh
+Exported Names
+[1] address of the string "Bar"
+[2] address of the string "Foo"
+[3] address of the string "Plugh"
+</pre>
+<p>
+Okay, now let’s introduce functions exported by ordinal.
+When you do that, you’re telling the linker,
+“Make sure this function goes into the <var>NN</var>th slot in the exported
+function table.”
+Suppose your DEF file went like this:
+</p>
+<pre>
+EXPORTS
+    Foo @1
+    Bar
+    Plugh
+</pre>
+<p>
+This says “<a href="http://bartleby.com/73/1017.html">First thing we do</a>
+is put <code>Foo</code> in slot 1.
+Once that’s done, fill in the rest arbitrarily.”
+</p>
+<p>
+The linker says,
+“Okay, I have a total of three functions, so let me build two tables
+with three entries each.”
+</p>
+<pre>
+Exported Function Table
+[1] address of ?
+[2] address of ?
+[3] address of ?
+Exported Names
+[1] address of ?
+[2] address of ?
+[3] address of ?
+</pre>
+<p>
+“Now I place <code>Foo</code> in slot 1.”
+</p>
+<pre>
+Exported Function Table
+[1] address of Foo
+[2] address of ?
+[3] address of ?
+Exported Names
+[1] address of the string "Foo"
+[2] address of ?
+[3] address of ?
+</pre>
+<p>
+“Now I fill in the rest arbitrarily.”
+</p>
+<pre>
+Exported Function Table
+[1] address of Foo
+[2] address of Bar
+[3] address of Plugh
+Exported Names
+[1] address of the string "Foo"
+[2] address of the string "Bar"
+[3] address of the string "Plugh"
+</pre>
+<p>
+Since you explicitly placed <code>Foo</code> in slot 1,
+when you do a
+<code>Get­Proc­Address(hDLL, 1)</code>,
+you will get
+<code>Foo</code>.
+On the other hand, if you do a
+<code>Get­Proc­Address(hDLL, 2)</code>,
+you will get <code>Bar</code>,
+or at least you will with this build.
+With the next build, you may get something else,
+because the linker just fills in the slots arbitrarily,
+and next time, it may choose to fill them arbitrarily
+in some other order.
+Furthermore,
+if you do a
+<code>Get­Proc­Address(hDLL, 6)</code>,
+you will get <code>NULL</code> because the table
+has only three functions in it.
+</p>
+<p>
+I hope you see where this is going.
+</p>
+<p>
+If you delete <code>Foo</code> from the <code>EXPORTS</code>
+section,
+this stops exporting <code>Foo</code> but says nothing about
+what goes into slot 1.
+As a result, the linker is free to put anything it wants into that slot.
+</p>
+<pre>
+Exported Function Table
+[1] address of Bar
+[2] address of Plugh
+Exported Names
+[1] address of the string "Bar"
+[2] address of the string "Plugh"
+</pre>
+<p>
+Now, when you do a
+<code>Get­Proc­Address(hDLL, 1)</code>,
+you get <code>Bar</code>,
+since that’s the function that happened to fall into slot 1
+this time.
+</p>
+<p>
+The moral of the story is that if you try to obtain a function
+by ordinal,
+then it had better be there,
+because there is no reliable way of being sure that the function
+you got is one that was explicitly placed there,
+as opposed to some other function that happened to be assigned that
+slot arbitrarily.
+</p>
+<p>
+<b>Related reading</b>:
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2006/07/18/669668.aspx">
+How are DLL functions exported in 32-bit Windows?</a></p>
+
+
+</body>

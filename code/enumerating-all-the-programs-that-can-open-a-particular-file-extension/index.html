@@ -1,0 +1,85 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Enumerating all the programs that can open a particular file extension</h1>  <!-- .entry-meta -->
+
+<p>Today’s Little Program enumerates all the applications which are registered for a particular file extension and lets the user choose one. We then open a file with that chosen program. </p>
+<p>As always, Little Programs do little to no error checking. </p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;atlalloc.h&gt;
+#include &lt;vector&gt;
+#include &lt;iostream&gt;
+
+std::vector&lt;CComPtr&lt;IAssocHandler&gt;&gt; LoadHandlers(
+  PCWSTR extension,
+  ASSOC_FILTER filter)
+{
+  std::vector&lt;CComPtr&lt;IAssocHandler&gt;&gt; handlers;
+  CComPtr&lt;IEnumAssocHandlers&gt; enumerator;
+  SHAssocEnumHandlers(extension, filter, &amp;enumerator);
+  for (CComPtr&lt;IAssocHandler&gt; handler;
+       enumerator-&gt;Next(1, &amp;handler, nullptr) == S_OK;
+       handler.Release()) {
+       handlers.push_back(handler);
+  }
+  return handlers;
+}
+</pre>
+<p>The <code>Load­Handlers</code> function shows off the meat of the program: We use <code>SHAssoc­Enum­Handlers</code> to enumerate all the handlers for a particular extension. The results get saved into a vector. </p>
+<pre>
+auto
+ChooseHandler(
+  const std::vector&lt;CComPtr&lt;IAssocHandler&gt;&gt;&amp; handlers,
+  bool allowChooseMore) -&gt; decltype(handlers.size())
+{
+  decltype(handlers.size()) i;
+  for (i = 0; i &lt; handlers.size(); i++) {
+    CComHeapPtr&lt;wchar_t&gt; name;
+    handlers[i]-&gt;GetUIName(&amp;name);
+    std::wcout &lt;&lt; i &lt;&lt; L": " &lt;&lt; static_cast&lt;PCWSTR&gt;(name)
+                             &lt;&lt; std::endl;
+  }
+  if (allowChooseMore) {
+    std::wcout &lt;&lt; i &lt;&lt; L": Show more handlers" &lt;&lt; std::endl;
+    i++;
+  }
+
+  decltype(handlers.size()) selection;
+  std::wcin &gt;&gt; selection;
+  if (std::wcin.fail()) selection = i + 1;
+  return selection;
+}
+</pre>
+<p>The <code>Choose­Handler</code> function prints the vector of handlers (and optionally adds a “Show more handlers” option). It collects the user’s reply and returns it, using <code>handlers.size()</code> to represent the “Show more handlers” option, if available. If the user’s input is invalid, we return a value that is out of range. (I’m assuming you don’t have four billion handlers.) </p>
+<pre>
+int __cdecl main(int, char**)
+{
+  <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+  <a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/05/28/8555658.aspx">ProcessReference</a> ref;
+
+  auto handlers = LoadHandlers(L".txt", ASSOC_FILTER_RECOMMENDED);
+  auto selection = ChooseHandler(handlers, true);
+  if (selection == handlers.size()) {
+    handlers = LoadHandlers(L".txt", ASSOC_FILTER_NONE);
+    selection = ChooseHandler(handlers, false);
+  }
+
+  if (selection &lt; handlers.size()) {
+    CComPtr&lt;IDataObject&gt; dobj;
+    <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/09/20/231739.aspx">GetUIObjectOfFile</a>(nullptr, L"C:\\windows\\win.ini",
+                      IID_PPV_ARGS(&amp;dobj));
+    handlers[selection]-&gt;Invoke(dobj);
+  }
+  return 0;
+}
+</pre>
+<p>And here’s the main function that ties everything together. </p>
+<p>After some initial throat-clearing, it loads up the recommended handlers for the <code>.txt</code> file extension and lets the user choose from among them. </p>
+<p>If the user says “Show more handlers”, then we load up all handlers and try again. </p>
+<p>We then take the user’s selection and open <code>WIN.INI</code> with that program. </p>
+<p><b>Exercise</b>: What is the purpose of the <code>Process­Reference</code> object? </p>
+
+
+</body>

@@ -1,0 +1,293 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A user's SID can change, so make sure to check the SID history</h1>  <!-- .entry-meta -->
+
+<p>
+It doesn’t happen often,
+but a user’s SID can change.
+For example, when I started at Microsoft,
+my account was in the SYS-WIN4 domain,
+which is where all the people on the Windows 95 team
+were placed.
+At some point, that domain was retired,
+and my account moved to the REDMOND domain.
+We saw
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/03/15/89753.aspx">
+some time ago</a>
+that the format of a user SID is
+</p>
+<table border="0" cellspacing="3">
+<tr>
+<td>S-1-</td>
+<td>version number (SID_REVISION)</td>
+</tr>
+<tr>
+<td>-5-</td>
+<td>SECURITY_NT_AUTHORITY</td>
+</tr>
+<tr>
+<td>-21-</td>
+<td>SECURITY_NT_NON_UNIQUE</td>
+</tr>
+<tr>
+<td>-w-x-y-</td>
+<td>the entity (machine or domain) that issued the SID</td>
+</tr>
+<tr>
+<td>-z</td>
+<td>the unique user ID for that entity</td>
+</tr>
+</table>
+<p>
+The issuing entity for a local account on a machine is the machine
+to which the account belongs.
+The issuing entity for a domain account is the domain.
+</p>
+<p>
+If an account moves between domains,
+the issuing entity changes,
+which means that the old SID is not valid.
+A new SID must be issued.
+</p>
+<p>
+Wait, does this mean that if my account moves between domains,
+then I lose access to all my old stuff?
+All my old stuff grants access to my old SID, not my new SID.
+</p>
+<p>
+Fortunately, this doesn’t happen,
+thanks to the
+<a href="http://technet.microsoft.com/en-us/library/cc974384(v=WS.10).aspx">
+<i>SID history</i></a>.
+When your account moves to the new domain, the new domain controller
+remembers all the previous SIDs you used to have.
+When you authenticate against the domain controller,
+it populates your token with your SID history.
+In my example, it means that my token not only says
+“This is user number 271828 on the REDMOND domain”,
+it also says
+“This user used to be known as number 31415 on the SYS-WIN4 domain.”
+That way, when the system sees an object whose ACL says,
+“Grant access to user 31415 on the SYS-WIN4 domain,”
+then it should grant me access to that object.
+</p>
+<p>
+The existence of SID history means that recognizing users when they
+return is more complicated than a simple
+<code>Equal­Sid</code>,
+because <code>Equal­Sid</code> will say that
+“No, S-1-5-21-REDMOND-271828 is not equal to
+S-1-5-21-SYS-WIN4-31415,”
+even though both SIDs refer to the same person.
+</p>
+<p>
+If you are going to remember a SID and then try to recognize a user
+when they return, you need to search the SID history for a match,
+in case the user changed domains between the two visits.
+The easiest way to do this is with the
+<code>Access­Check</code> function.
+For example, suppose I visited your site while I belong to the
+SYS-WIN4 domain,
+and you remembered my SID.
+When I return,
+you create a security descriptor that grants access to
+the SID you remembered,
+and then you ask <code>Access­Check</code>,
+“If I had an object that granted access only to this SID,
+would you let this guy access it?”
+</p>
+<p>
+(So far, this is just recapping
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/08/29/10553610.aspx">
+stuff I discussed a few months ago</a>.
+Now comes the new stuff.)
+</p>
+<p>
+There are a few ways of building up the security descriptor.
+In all the cases, we will create a security descriptor that
+grants the specified SID some arbitrary access,
+and then we will ask the operating system whether the current
+user has that access.
+</p>
+<p>
+My arbitrary access shall be
+</p>
+<pre>
+#define FROB_ACCESS     1 // any single bit less than 65536
+</pre>
+<p>
+One way to build the security descriptor
+is to let SDDL do the heavy lifting:
+Generate the string
+<code>D:(A;;1;;;⟨SID⟩)</code>
+and then pass it to
+<code>String­Security­Descriptor­To­Security­Descriptor</code>.
+</p>
+<p>
+Another is to build it up with security descriptor functions.
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa446595(v=vs.85).aspx">
+I defer to the sample code in MSDN</a>
+for an illustration.
+</p>
+<p>
+The hard-core way is just to build the security descriptor by hand.
+For a security descriptor this simple, the direct approach involves
+the least amount of code.
+Go figure.
+</p>
+<p>
+The format of the security descriptor we want to build is
+</p>
+<pre>
+struct ACCESS_ALLOWED_ACE_MAX_SIZE
+{
+    ACCESS_ALLOWED_ACE Ace;
+    BYTE SidExtra[SECURITY_MAX_SID_SIZE - sizeof(DWORD)];
+};
+</pre>
+<p>
+The <code>ACCESS_ALLOWED_ACE_MAX_SIZE</code>
+structure represents the maximum possible size of an
+<code>ACCESS_ALLOWED_ACE</code>.
+The
+<code>ACCESS_ALLOWED_ACE</code>
+leaves a <code>DWORD</code> for the SID
+(<code>Sid­Start</code>),
+so we add additional bytes afterward to accommodate the largest
+valid SID.
+If you wanted to be more C++-like, you could make
+<code>ACCESS_ALLOWED_ACE_MAX_SIZE</code>
+derive from
+<code>ACCESS_ALLOWED_ACE</code>.
+</p>
+<pre>
+struct ALLOW_ONLY_ONE_SECURITY_DESCRIPTOR
+{
+    SECURITY_DESCRIPTOR_RELATIVE Header;
+    ACL Acl;
+    ACCESS_ALLOWED_ACE_MAX_SIZE Ace;
+};
+const ALLOW_ONLY_ONE_SECURITY_DESCRIPTOR c_sdTemplate = {
+  // SECURITY_DESCRIPTOR_RELATIVE
+  {
+    SECURITY_DESCRIPTOR_REVISION,           // Revision
+    0,                                      // Reserved
+    SE_DACL_PRESENT | SE_SELF_RELATIVE,     // Control
+    FIELD_OFFSET(ALLOW_ONLY_ONE_SECURITY_DESCRIPTOR, Ace.Ace.SidStart),
+                                            // Offset to owner
+    FIELD_OFFSET(ALLOW_ONLY_ONE_SECURITY_DESCRIPTOR, Ace.Ace.SidStart),
+                                            // Offset to group
+    0,                                      // No SACL
+    FIELD_OFFSET(ALLOW_ONLY_ONE_SECURITY_DESCRIPTOR, Acl),
+                                            // Offset to DACL
+  },
+  // ACL
+  {
+    ACL_REVISION,                           // Revision
+    0,                                      // Reserved
+    sizeof(ALLOW_ONLY_ONE_SECURITY_DESCRIPTOR) -
+    FIELD_OFFSET(ALLOW_ONLY_ONE_SECURITY_DESCRIPTOR, Acl),
+                                            // ACL size
+    1,                                      // ACE count
+    0,                                      // Reserved
+  },
+  // ACCESS_ALLOWED_ACE_MAX_SIZE
+  {
+    // ACCESS_ALLOWED_ACE
+    {
+      // ACE_HEADER
+      {
+        ACCESS_ALLOWED_ACE_TYPE,            // AceType
+        0,                                  // flags
+        sizeof(ACCESS_ALLOWED_ACE_MAX_SIZE),// ACE size
+      },
+      FROB_ACCESS,                          // Access mask
+    },
+  },
+};
+</pre>
+<p>
+Our template security descriptor says that it is a self-relative
+security descriptor with an owner, group and DACL,
+but no SACL.
+The DACL consists of a single ACE.
+We set up everything in the ACE except for the SID.
+We point the owner and group to that same SID.
+Therefore, this security descriptor is all ready for action
+once you fill in the SID.
+</p>
+<pre>
+BOOL IsInSidHistory(HANDLE Token, PSID Sid)
+{
+  DWORD SidLength = GetLengthSid(Sid);
+  if (SidLength &gt; SECURITY_MAX_SID_SIZE) {
+    // Invalid SID. That's not good.
+    // Somebody is playing with corrupted data.
+    // Stop before anything bad happens.
+    RaiseFailFastException(nullptr, nullptr, 0);
+  }
+  ALLOW_ONLY_ONE_SECURITY_DESCRIPTOR Sd = c_sdTemplate;
+  CopyMemory(&amp;Sd.Ace.Ace.SidStart, Sid, SidLength);
+</pre>
+<p>
+As you can see, generating the security descriptor is a simple
+matter of copying our template and then replacing the SID.
+The next step is performing an access check of the token
+against that SID.
+</p>
+<pre>
+  const static GENERIC_MAPPING c_GenericMappingFrob = {
+    FROB_ACCESS,
+    FROB_ACCESS,
+    FROB_ACCESS,
+    FROB_ACCESS,
+  };
+  PRIVILEGE_SET PrivilegeSet;
+  DWORD PrivilegeSetSize = sizeof(PrivilegeSet);
+  DWORD GrantedAccess = 0;
+  BOOL AccessStatus = 0;
+  return AccessCheck(&amp;Sd, Token, FROB_ACCESS,
+    const_cast&lt;PGENERIC_MAPPING&gt;(&amp;c_GenericMappingFrob),
+    &amp;PrivilegeSet, &amp;PrivilegeSetSize,
+    &amp;GrantedAccess, &amp;AccessStatus) &amp;&amp;
+    AccessStatus;
+}
+</pre>
+<p>
+So let’s take this guy out for a spin.
+Since I don’t know what is in your SID history,
+I’m going to pick something that should be in your token already
+(<i>Authenticated Users</i>)
+and something that shouldn’t
+(<i>Local System</i>).
+</p>
+<pre>
+// Note: Error checking elided for expository purposes.
+void CheckWellKnownSid(HANDLE Token, WELL_KNOWN_SID_TYPE type)
+{
+  BYTE rgbSid[SECURITY_MAX_SID_SIZE];
+  DWORD cbSid = sizeof(rgbSid);
+  CreateWellKnownSid(type, NULL, rgbSid, &amp;cbSid);
+  printf("Is %d in SID history? %d\n", type,
+         IsInSidHistory(Token, rgbSid));
+}
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+  HANDLE Token;
+  // In real life you had better error-check these calls,
+  // to avoid a security hole.
+  ImpersonateSelf(SecurityImpersonation);
+  OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &amp;Token);
+  RevertToSelf();
+  CheckWellKnownSid(Token, WinAuthenticatedUserSid);
+  CheckWellKnownSid(Token, WinLocalSystemSid);
+  CloseHandle(Token);
+  return 0;
+}
+</pre>
+<p>
+<b>Related reading</b>:
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/09/12/10060082.aspx">
+Hey there token, long time no see! (Did you do something with your hair?)</a></p>
+
+
+</body>

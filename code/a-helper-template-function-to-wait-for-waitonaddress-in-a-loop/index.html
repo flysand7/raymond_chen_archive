@@ -1,0 +1,31 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A helper template function to wait for WaitOnAddress in a loop</h1>  <!-- .entry-meta -->
+
+<p>The <code>Wait­On­Address</code> function suffers from the problem of <a href="https://blogs.msdn.microsoft.com/oldnewthing/20160826-00/?p=94185">spurious wake-ups</a>. This means that most uses of the <code>Wait­On­Address</code> function are of the form “while the value is bad, wait for it to change.” </p>
+<p>There is a subtlety here, because you have to  capture the value, then make your decision based on the captured value, and if you decide that you want to wait some more, you need to pass the captured value to <code>Wait­On­Address</code>. The extra capturing is necessary to avoid a race condition if you determine that the value is bad, but before you can call <code>Wait­On­Address</code>, the value becomes good. </p>
+<p>Here’s a simple helper function to encapsulate the loop: </p>
+<pre>
+template&lt;typename T, typename TLambda&gt;
+void WaitForValueByAddress(T&amp; value, TLambda&amp;&amp; is_okay)
+{
+  auto capturedValue = value;
+  while (!is_okay(capturedValue)) {
+    WaitOnAddress(&amp;value, &amp;capturedValue, sizeof(value), INFINITE);
+    capturedValue = value;
+  }
+}
+</pre>
+<p>The assumption here is that <code>T</code> is a simple value type like <code>int32_t</code>. If you pass a funky class, then we’re going to be copying it, which is probably a bad idea given that the variable is going to be asynchronously modified (possibly while we are copying it). </p>
+<p>The predicate evaluates the value: Return <code>true</code> if it acceptable, or return <code>false</code> to reject it and wait some more. </p>
+<p>Here’s a sample usage: </p>
+<pre>
+int32_t someValue;
+
+void WaitForValueToBecomeZero()
+{
+  WaitForValueByAddress(someValue, [](auto&amp;&amp; v) { return v == 0; });
+}
+</pre>
+
+
+</body>

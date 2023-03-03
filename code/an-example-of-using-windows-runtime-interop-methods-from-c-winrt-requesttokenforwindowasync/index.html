@@ -1,0 +1,134 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">An example of using Windows Runtime interop methods from C++/WinRT: <code>Request­Token­For­Window­Async</code></h1>  <!-- .entry-meta -->
+
+<p>A customer was trying to use the <a href="https://docs.microsoft.com/en-us/windows/win32/api/webauthenticationcoremanagerinterop/nf-webauthenticationcoremanagerinterop-iwebauthenticationcoremanagerinterop-requesttokenforwindowasync"> <code>IWeb­Authentication­Core­Manager­Interop::<wbr/>Request­Token­For­Window­Async</code> method</a> from C++/WinRT. The <code>IWeb­Authentication­Core­Manager­Interop</code> interface follows <a href="https://devblogs.microsoft.com/oldnewthing/20170315-00/?p=95735" title="How do I show the sharing pane from a Win32 desktop application?"> the interop pattern</a> and lets a Win32 program use the Windows Runtime <code>Web­Authentication­Core­Manager</code> by associating it with a <code>HWND</code> instead of a <code>Core­Window</code>.</p>
+<p>A customer was having trouble getting this to work, though:</p>
+<pre>#include &lt;WebAuthenticationCoreManagerInterop.h&gt;
+#include &lt;winrt/Windows.Foundation.h&gt;
+#include &lt;winrt/Windows.Security.Authentication.Web.Core.h&gt;
+
+namespace winrt
+{
+    using namespace Windows::Foundation;
+    using namespace Windows::Security::Authentication::Web::Core;
+}
+
+// Note: Code in italics is wrong; see discussion
+winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;
+RequestTokenForWindowAsync(HWND window, winrt::WebTokenRequest const&amp; request)
+{
+    auto interop = winrt::get_activation_factory&lt;winrt::WebAuthenticationCoreManager,
+                                                ::IWebAuthenticationCoreManagerInterop&gt;();
+
+    winrt::com_ptr&lt;winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;&gt; operation;
+    auto requestInspectable = static_cast&lt;::IInspectable*&gt;(winrt::get_abi(request));
+
+    <i>winrt::check_hresult(
+        interop-&gt;RequestTokenForWindowAsync(
+        window,
+        requestInspectable,
+        __uuidof(operation),
+        operation.put_void()));</i>
+
+    co_return co_await operation;
+}
+</pre>
+<p>The <code>__uuid(operation)</code> fails to compile, producing the error</p>
+<pre style="white-space: pre-wrap;">error C2787: 'winrt::<wbr/>com_ptr&lt;<wbr/>winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IAsyncOperation&lt;<wbr/>winrt::<wbr/>Windows::<wbr/>Security::<wbr/>Authentication::<wbr/>Web::<wbr/>Core::<wbr/>Web­Token­Request­Result&gt;&gt;': no GUID has been associated with this object
+</pre>
+<p>What’s going on?</p>
+<p>The first order of business is understanding the error message.</p>
+<p>The <code>__uuidof</code> nonstandard extension keyword can be applied to a type or a variable. If you apply it to a variable, then it uses the type of that variable. If the type is a pointer or reference, the pointed-to or referenced type is used. And then the compiler checks if the resulting type has a <code>__declspec(uuid(...))</code> attribute.</p>
+<p>What happened here is that we passed a variable whose type is <code>winrt::com_ptr&lt;something&gt;</code>, and <code>winrt::com_ptr</code> doesn’t have a <code>__declspec(uuid(...))</code> attribute because the UUID associated with a <code>winrt::com_ptr</code> depends on what the <code>something</code> is.</p>
+<p>Okay, so let’s fix that by using the <code>something</code>.</p>
+<pre>    winrt::check_hresult(
+        interop-&gt;RequestTokenForWindowAsync(
+        window,
+        requestInspectable,
+        <span style="color: blue;">__uuidof(winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;)</span>,
+        operation.put_void()));
+</pre>
+<p>That still doesn’t work. We just get the same error again:</p>
+<pre style="white-space: pre-wrap;">error C2787: 'winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IAsyncOperation&lt;<wbr/>winrt::<wbr/>Windows::<wbr/>Security::<wbr/>Authentication::<wbr/>Web::<wbr/>Core::<wbr/>Web­Token­Request­Result&gt;': no GUID has been associated with this object
+</pre>
+<p>It’s the same problem again. <code><wbr/>winrt::<wbr/>IAsyncOperation&lt;<wbr/>winrt::<wbr/>Web­Token­Request­Result&gt;</code> doesn’t have a <code>__declspec(uuid(...))</code> because the UUID depends on the thing inside.</p>
+<p>But this time, we can’t unwrap it because we really do want the UUID of the <code>IAsyncOperation&lt;something&gt;</code>, not the UUID of the <code>something</code>.</p>
+<p>It turns out that we ran astray much earlier:</p>
+<pre>    winrt::com_ptr&lt;winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;&gt; operation;
+</pre>
+<p>We created a <code>winrt::<wbr/>com_ptr</code> to a <code>winrt::<wbr/>IAsyncOperation&lt;T&gt;</code>. But the catch is that <code>winrt::<wbr/>IAsyncOperation&lt;T&gt;</code> is itself already a smart pointer. You created a smart pointer to a smart pointer, and that’s the source of confusion.</p>
+<p>The type wrapped by a <code>winrt::<wbr/>com_ptr</code> is expected to be a type that has methods <code>Query­Interface</code>, <code>AddRef</code>, and <code>Release</code>, according to the conventions of the ABI <code>::IUnknown</code>. The thing to pass here is not another smart pointer, but rather the ABI COM interface type.</p>
+<pre>    // Oh my goodness, please don't make me type this.
+    winrt::com_ptr&lt;ABI::Windows::Foundation::IAsyncOperation&lt;
+        ABI::Windows::Security::Authentication::Web::Core::WebTokenRequestResult*&gt;&gt;
+        operation;
+</pre>
+<p>That is a horrible mouthful, and requires you to include the Windows Runtime ABI header files. Mixing the Windows Runtime ABI header files with C++/WinRT does work, but it usually creates mass confusion for the developer, so let’s try not to do that.</p>
+<p>Even if you wade into this world, you have to take the COM ABI version of <code>IAsyncOperation&lt;WebTokenResult&gt;</code> and convert it back to its C++/WinRT equivalent before you can <code>co_await</code> it, which is another level of annoying typing.</p>
+<p>Fortunately, there’s a way out of this mess. One is to realize that <code>winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;</code> is the thing we want: A smart pointer around a raw ABI pointer. So use that.</p>
+<pre>winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;
+RequestTokenForWindowAsync(HWND window, winrt::WebTokenRequest const&amp; request)
+{
+    auto interop = winrt::get_activation_factory&lt;winrt::WebAuthenticationCoreManager,
+                                                ::IWebAuthenticationCoreManagerInterop&gt;();
+
+    <span style="color: blue;">winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;</span> operation;
+    auto requestInspectable = static_cast&lt;::IInspectable*&gt;(winrt::get_abi(request));
+
+    winrt::check_hresult(
+        interop-&gt;RequestTokenForWindowAsync(
+        window,
+        requestInspectable,
+        <span style="color: blue;">winrt::guid_of&lt;decltype(operation)&gt;()</span>,
+        operation.put_void()));
+
+    co_return co_await operation;
+}
+</pre>
+<p>Once we have it in this form, we can call upon our old friend <a href="https://devblogs.microsoft.com/oldnewthing/20200917-00/?p=104230" title='The C++/WinRT "capture" function helps you interoperate with the COM ABI world'> <code>winrt::capture</code></a>, whose job is to help obtain COM ABI objects and convert them to C++/WinRT objects.</p>
+<pre>winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;
+RequestTokenForWindowAsync(HWND window, winrt::WebTokenRequest const&amp; request)
+{
+    auto interop = winrt::get_activation_factory&lt;winrt::WebAuthenticationCoreManager,
+                                                ::IWebAuthenticationCoreManagerInterop&gt;();
+
+    auto requestInspectable = static_cast&lt;::IInspectable*&gt;(winrt::get_abi(request));
+
+    co_return co_await
+        winrt::capture&lt;winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;&gt;(
+            interop,
+            &amp;::IWebAuthenticationCoreManagerInterop::RequestTokenForWindowAsync,
+            window,
+            requestInspectable);
+}
+</pre>
+<p>For style points, you could collapse the entire function into a one-liner.</p>
+<pre>winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;
+RequestTokenForWindowAsync(HWND window, winrt::WebTokenRequest const&amp; request)
+{
+    return
+        winrt::capture&lt;winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;&gt;(
+            winrt::get_activation_factory&lt;winrt::WebAuthenticationCoreManager,
+                                          ::IWebAuthenticationCoreManagerInterop&gt;(),
+            &amp;::IWebAuthenticationCoreManagerInterop::RequestTokenForWindowAsync,
+            window,
+            static_cast&lt;::IInspectable*&gt;(winrt::get_abi(request)));
+}
+</pre>
+<p>Replacing <code>co_return co_await</code> with a simple <code>return</code> works here because we are just returning the operation, so we can pass it through instead of wrapping it inside a coroutine. (This sort of trick is <a href="https://devblogs.microsoft.com/oldnewthing/20200416-00/?p=103677" title="Why can't you return an IAsyncAction from a coroutine that also does a co_await?"> not available in general</a>, but we can use it here.)</p>
+<p>One final tweak is using the WIL helper method <code>com_raw_ptr</code> to extract the ABI <code>IInspectable*</code> from a C++/WinRT object.</p>
+<pre>winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;
+RequestTokenForWindowAsync(HWND window, winrt::WebTokenRequest const&amp; request)
+{
+    return
+        winrt::capture&lt;winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;&gt;(
+            winrt::get_activation_factory&lt;winrt::WebAuthenticationCoreManager,
+                                          ::IWebAuthenticationCoreManagerInterop&gt;(),
+            &amp;::IWebAuthenticationCoreManagerInterop::RequestTokenForWindowAsync,
+            window,
+            wil::com_raw_ptr(request));
+}
+</pre>
+
+
+</body>

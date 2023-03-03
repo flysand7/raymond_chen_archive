@@ -1,0 +1,70 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Implementing a critical section in terms of WaitOnAddress</h1>  <!-- .entry-meta -->
+
+<p><!-- backref: Implementing a synchronization barrier in terms of WaitOnAddress -->Last time, we built a synchronization barrier out of <code>Wait­On­Address</code>. Today, we’ll build a critical section. Remember that this is an exercise just to demonstrate ways of using <code>Wait­On­Address</code>; in real life, you should just use <code>Enter­Critical­Section</code> because it has stuff like spin counts and <a href="http://joeduffyblog.com/2006/12/14/anticonvoy-locks-in-windows-server-2003-sp1-and-windows-vista/">lock convoy resistance</a>. </p>
+<p>Okay, enough with the warnings. Let’s try it. </p>
+<pre>
+struct ALTCS
+{
+  DWORD OwnerThread;
+  LONG ClaimCount;
+};
+
+void InitializeAltCS(ALTCS* Cs)
+{
+    Cs-&gt;OwnerThread = 0;
+    Cs-&gt;ClaimCount = 0;
+}
+</pre>
+<p>Our alternative critical section keeps track of its owner and the number of times the owner thread (if any) has entered the critical section. If the owner thread is zero, then the critical section is available. </p>
+<pre>
+void EnterAltCs(ALTCS* Cs)
+{
+  DWORD ThisThread = GetCurrentThreadId();
+  while (true) {
+    DWORD PreviousOwner = InterlockedCompareExchangeAcquire(
+               &amp;Cs-&gt;OwnerThread, ThisThread, 0);
+    if (PreviousOwner == 0) {
+      Cs-&gt;ClaimCount++;
+      return;
+    }
+
+    if (PreviousOwner == ThisThread) {
+      Cs-&gt;ClaimCount++;
+      return;
+    }
+
+    WaitOnAddress(&amp;Cs-&gt;OwnerThread,
+                  &amp;PreviousOwner, sizeof(PreviousOwner), INFINITE);
+  }
+}
+</pre>
+<p>To enter the critical section, we try to change the owner from nobody to ourselves. If that succeeds, then we increment the claim count (from zero to one) and we’re done. Note that the increment doesn’t need to be interlocked, because only the owner thread will manipulate the claim count, and we are the owner. </p>
+<p>If the attempt to change the owner from nobody to ourselves fails because we are already the owner, then great! Increment the claim count and we’re done. </p>
+<p>Otherwise, the critical section is owned by somebody else. This means we have to wait. Use <code>Wait­On­Address</code> to wait for the owner to change, after which we go back and try to claim the critical section again. There’s a wrinkle here: As written, it looks like we will wake up when the critical section becomes free (owner is zero) or when it becomes claimed by another thread (owner is nonzero). But look at this function: When the <code>Interlocked­Compare­Exchange­Acquire</code> succeeds, which means that the critical section owner has changed to a nonzero value, we do not call <code>Wake­By­Address­Xxx</code>. This means that the <code>Wait­On­Address</code> does not wake when the critical section becomes claimed. As we’ll see below, we wake the wait only when the critical section becomes available. (Of course, you also have to worry about spurious wakes.) </p>
+<p>Next comes the code to leave the critical section: </p>
+<pre>
+void LeaveAltCs(ALTCS* Cs)
+{
+  Cs-&gt;ClaimCount--;
+  if (Cs-&gt;ClaimCount != 0) {
+     return;
+  }
+
+  InterlockedExchange(&amp;Cs-&gt;OwnerThread, 0);
+
+  WakeByAddressSingle(&amp;Cs-&gt;OwnerThread);
+}
+</pre>
+<p>Only the thread that owns the critical section is allowed to leave it, so we can assume that the <code>Owner­Thread</code> is the current thread. Decrement the claim count, and if it hasn’t dropped to zero, then the critical section remains claimed, and we’re done. </p>
+<p>If the claim count drops to zero, then we release the critical section by setting the owner to zero. Note that we use an interlocked operation to ensure that the claim count is published as zero before the owner thread is cleared. (Ideally, we’d use <code>Interlocked­Exchange­Release</code> if such a thing existed. I guess we could have done </p>
+<pre>
+  InterlockedCompareExchangeRelease(
+    &amp;Cs-&gt;OwnerThread, 0, Cs-&gt;OwnerThread);
+</pre>
+<p>because we know that no other thread can change the owner.) </p>
+<p>Once we’ve set the owner to zero, indicating that the critical section is available, we use <code>Wake­By­Address­Single</code> to wake up just one waiting thread (if any). </p>
+<p>Next time, we’ll peek behind the curtain of <code>Wait­On­Address</code> a little bit. </p>
+
+
+</body>

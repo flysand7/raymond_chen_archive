@@ -1,0 +1,39 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Understanding warning C4265: class has virtual functions, but destructor is not virtual, part 1</h1>  <!-- .entry-meta -->
+
+<p>A few customers have noted that compiling WRL and C++/WinRT headers generate warning C4265: class has virtual functions, but destructor is not virtual.</p>
+<p>What’s this warning trying to say?</p>
+<p>If a non-final class has a virtual method, then the compiler considers the possibility that there will be a derived class which overrides that virtual method. And if the class does not have a virtual destructor when a pointer to the base class is <code>delete</code>d, then only the destructor for the base class will run; the destructor for the derived class will not run.¹</p>
+<pre>struct Base
+{
+  virtual void f();
+};
+
+struct Derived : Base
+{
+ ~Derived();
+};
+</pre>
+<p>In the above case, the warning is generated because of this possibility:</p>
+<pre>void Finish(Base *base)
+{
+ delete base;
+}
+
+void Something()
+{
+  auto d = new Derived();
+  Finish(d);
+}
+</pre>
+<p>If a pointer points to a base class, but the pointer points at runtime to a derived class, then the base class must have a virtual destructor in order to destruct the derived class. Without the virtual destructor, only the destructor for the base class will run.</p>
+<p>However, if you never do a <code>delete base</code>, then the problem never arises.</p>
+<p>The compiler is warning about a potential trap, rather then waiting for you to fall into the trap. This means that if you are careful to avoid the trap, you have no actual problem, but the compiler will warn you about it anyway.²</p>
+<p>If you know that nobody derives from <code>Derived</code>, you can mark it as <code>final</code>, which will make the warning go away.</p>
+<p>Next time, we’ll apply this understanding to WRL and C++/WinRT.</p>
+<p>¹ Formally, the behavior is undefined. See <b>[expr.delete]</b> paragraph 3.</p>
+<blockquote class="q"><p>If the static type of the object to be deleted is different from its dynamic type…, the static type shall be a base class of the dynamic type of the object to be deleted and the static type shall have a virtual destructor or <u>the behavior is undefined</u>.</p></blockquote>
+<p>² I would prefer the compiler wait until you actually do the <code>delete</code> before generating the warning. But it’s being proactive and warning about a potential problem, even if that potential is not realized immediately.</p>
+
+
+</body>

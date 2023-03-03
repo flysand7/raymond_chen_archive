@@ -1,0 +1,85 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I transfer ownership of a C-style array to a Windows Runtime component?</h1>  <!-- .entry-meta -->
+
+<p>Suppose you have a large C-style array, and you want to transfer ownership of that array to a Windows Runtime component. For concreteness, let’s say that we have this:</p>
+<pre>namespace Sample
+{
+    runtimeclass Widget
+    {
+        // The "indices" array will be very large.
+        void SetIndices(Int32[] indices);
+    }
+}
+</pre>
+<p>You might be tempted to do something like this:</p>
+<pre>void SetWidgetIndices(Widget const&amp; widget)
+{
+  winrt::com_array&lt;int32_t&gt; indices = CalculateIndices();
+  widget.SetIndices(<span style="color: blue;">std::move(indices)</span>);
+}
+</pre>
+<p>Using a <code>std::move</code> means that you are fine with the method stealing the resources out of the object, and you no-so-secretly hope that it will do so.</p>
+<p>But it won’t.</p>
+<p>If you look at the <a href="/code/the-various-patterns-for-passing-c-style-arrays-across-the-windows-runtime-abi-boundary" title="The various patterns for passing C-style arrays across the Windows Runtime ABI boundary"> rules for passing C-style arrays across the Windows Runtime ABI boundary</a>, you’ll see that a parameter declared as <code>T[] v</code> uses the <i>PassArray</i> pattern. In that pattern, ownership of the data remains with the caller, and the recipient must make a copy if it wants to access it beyond the end of the method.</p>
+<p>So that’s not going to work.</p>
+<p>The <i>FillArray</i> pattern doesn’t work either. That is for asking the method to fill a preallocated array, which is not what we’re doing here.</p>
+<p>And the last pattern, <i>ReceiveArray</i> doesn’t work, because that is for transferring ownership from the method back to the caller.</p>
+<p>So we’re stuck. How can we do this without incurring a copy of a large block of data?</p>
+<p>One option is to express the data in the form of an <code>IVector</code> instead of a C-style array. Since <code>IVector</code> is an interface, the recipient can just <code>AddRef</code> the interface and continue using it later. The major downside of this is that it costs you a lot of performance, since access to each element of an <code>IVector</code> is a virtual method call.¹</p>
+<p>Another option is to express the data in the form of a byte buffer, <code>IBuffer</code>. However, this works only for types that have no destructor (like integers). Furthermore, getting the data into and out of the buffer is a bit awkward, since you have to do some casting of the byte buffer to get it into the form you want.</p>
+<pre>auto data = reinterpret_cast&lt;int32_t*&gt;(m_buffer.data());
+auto size = m_buffer.Length() / sizeof(int32_t);
+auto view = winrt::array_view(data, data + size);
+// access the data via the view
+</pre>
+<p>It’s also a problem for languages which do not have raw pointer types.</p>
+<p>It occurred to me that there’s still a third option, but you have to change your point of view: Since the only ownership-transferring operation is from the method to its caller, reverse the roles so that the caller can “return” the array to the method.</p>
+<pre>namespace Sample
+{
+    // The "indices" array will be very large.
+    <span style="color: blue;">delegate Int32[] WidgetIndicesProducer();</span>
+
+    runtimeclass Widget
+    {
+        void SetIndices(<span style="color: blue;">WidgetIndicesProducer producer</span>);
+    }
+}
+</pre>
+<p>To provide the indices, you actually provide a callback that generates the indices and returns them via the <i>ReceiveArray</i> pattern.</p>
+<pre>void SetWidgetIndices(Widget const&amp; widget)
+{
+  winrt::com_array&lt;int32_t&gt; indices = CalculateIndices();
+  widget.SetIndices(
+    <span style="color: blue;">[&amp;] { return std::move(indices); }</span>);
+}
+</pre>
+<p>The <code>[&amp;]</code> capture assumes that the lambda will be called back before the <code>indices</code> variable is destructed. A safer version would be to store the indices inside the lambda itself.</p>
+<pre>void SetWidgetIndices(Widget const&amp; widget)
+{
+  widget.SetIndices(
+    <span style="color: blue;">[indices = CalculateIndices()]() mutable</span>
+    { return std::move(indices); });
+}
+</pre>
+<p>You could simplify this to</p>
+<pre>void SetWidgetIndices(Widget const&amp; widget)
+{
+  widget.SetIndices([] { return <span style="color: blue;">CalculateIndices()</span>; });
+}
+</pre>
+<p>but note that this changes the order of evaluation, since <code>Calculate­Indices()</code> is called from inside the call to <code>Set­Indices()</code>.</p>
+<p>Yes, it’s awkward, but at least it’s a workaround. You can make it slightly less awkward with a wrapper function:</p>
+<pre>void SetWidgetIndices(
+    Widget const&amp; widget,
+    winrt::com_array&lt;int32_t&gt;&amp;&amp; indices)
+{
+  widget.SetIndices(
+    [indices = std::move(indices)]() mutable
+    { return std::move(indices); });
+}
+</pre>
+<p>Next time, we’ll look at the implementation side of this method.</p>
+<p>¹ You can use <code>IVector::Get­Many()</code> to slurp out the elements, but that’s still a copy operation, which we are trying to avoid.</p>
+
+
+</body>

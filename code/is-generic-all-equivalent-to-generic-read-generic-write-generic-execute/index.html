@@ -1,0 +1,72 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Is GENERIC_ALL equivalent to GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE?</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to know whether passing <code>GENERIC_ALL</code> as an access mask is effectively equivalent to passing <code>GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE</code>. Specifically, they were interested in the answer to this question with respect to the <code>Create­File</code> function. </p>
+<p>Okay, first question first. Is <code>GENERIC_ALL</code> effectively equivalent to <code>GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE</code>? </p>
+<p>The answer is “It depends.” </p>
+<p>Each object decides what these generic access masks mean. Now, the intended use is that <code>GENERIC_READ</code> correspond to whatever “read” access means for an object, <code>GENERIC_WRITE</code> correspond to whatever “write” access means for an object, and <code>GENERIC_EXECUTE</code> correspond to whatever “execute” access means for an object. It’s also the intended use that <code>GENERIC_ALL</code> represent whatever access makes the most sense for “all access”. </p>
+<p>But that’s just the intended use. There is nothing physically preventing an object from giving those four generic access masks nonsensical values. Because <a href="https://devblogs.microsoft.com/oldnewthing/?p=20733">anybody can make up a generic mapping</a>. Therefore, there’s nothing you can guarantee about the relationship between the generic access masks beyond “they are what the object decides they are.” </p>
+<p>In practice, <code>GENERIC_ALL</code> is at least as big as <code>GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE</code>, but it can be bigger. For example, for files (which is probably what the customer is asking about when they talk about <code>Create­File</code>), the values are defined as follows, in <code>winnt.h</code>: </p>
+<pre>
+#define DELETE                           (0x00010000L)
+#define READ_CONTROL                     (0x00020000L)
+#define WRITE_DAC                        (0x00040000L)
+#define WRITE_OWNER                      (0x00080000L)
+#define SYNCHRONIZE                      (0x00100000L)
+
+#define STANDARD_RIGHTS_REQUIRED         (0x000F0000L)
+
+#define STANDARD_RIGHTS_READ             (READ_CONTROL)
+#define STANDARD_RIGHTS_WRITE            (READ_CONTROL)
+#define STANDARD_RIGHTS_EXECUTE          (READ_CONTROL)
+
+#define FILE_READ_DATA            ( 0x0001 )    // file &amp; pipe
+#define FILE_LIST_DIRECTORY       ( 0x0001 )    // directory
+
+#define FILE_WRITE_DATA           ( 0x0002 )    // file &amp; pipe
+#define FILE_ADD_FILE             ( 0x0002 )    // directory
+
+#define FILE_APPEND_DATA          ( 0x0004 )    // file
+#define FILE_ADD_SUBDIRECTORY     ( 0x0004 )    // directory
+#define FILE_CREATE_PIPE_INSTANCE ( 0x0004 )    // named pipe
+
+
+#define FILE_READ_EA              ( 0x0008 )    // file &amp; directory
+
+#define FILE_WRITE_EA             ( 0x0010 )    // file &amp; directory
+
+#define FILE_EXECUTE              ( 0x0020 )    // file
+#define FILE_TRAVERSE             ( 0x0020 )    // directory
+
+#define FILE_DELETE_CHILD         ( 0x0040 )    // directory
+
+#define FILE_READ_ATTRIBUTES      ( 0x0080 )    // all
+
+#define FILE_WRITE_ATTRIBUTES     ( 0x0100 )    // all
+
+#define FILE_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x1FF)
+
+#define FILE_GENERIC_READ         (STANDARD_RIGHTS_READ     |\
+                                   FILE_READ_DATA           |\
+                                   FILE_READ_ATTRIBUTES     |\
+                                   FILE_READ_EA             |\
+                                   SYNCHRONIZE)
+
+#define FILE_GENERIC_WRITE        (STANDARD_RIGHTS_WRITE    |\
+                                   FILE_WRITE_DATA          |\
+                                   FILE_WRITE_ATTRIBUTES    |\
+                                   FILE_WRITE_EA            |\
+                                   FILE_APPEND_DATA         |\
+                                   SYNCHRONIZE)
+
+#define FILE_GENERIC_EXECUTE      (STANDARD_RIGHTS_EXECUTE  |\
+                                   FILE_READ_ATTRIBUTES     |\
+                                   FILE_EXECUTE             |\
+                                   SYNCHRONIZE)
+</pre>
+<p>Right off the bat, you can see that of the standard rights, <code>FILE_ALL_ACCESS</code> includes <code>STANDARD_RIGHTS_REQUIRED</code>, whereas the <code>FILE_GENERIC_*</code> values include only <code>STANDARD_RIGHTS_*</code>, all of which are defined as <code>READ_CONTROL</code>. This means that <code>FILE_ALL_ACCESS</code> includes <code>DELETE</code>, <code>WRITE_DAC</code>, and <code>WRITE_OWNER</code> which are not included in any of the other generic access masks. (<code>SYNCHRONIZE</code> is explicitly added by all of the <code>FILE_GENERIC_*</code> access masks.) </p>
+<p>If you study it a bit more, you’ll see that <code>FILE_ALL_ACCESS</code> also includes <code>FILE_DELETE_CHILD</code>, which is not present in any of the other generic access masks. </p>
+<p>So even in the specific case of file access, we see that <code>GENERIC_ALL</code> is not equivalent to <code>GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE</code>. </p>
+
+
+</body>

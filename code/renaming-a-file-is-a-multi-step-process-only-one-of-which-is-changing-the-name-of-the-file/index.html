@@ -1,0 +1,98 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Renaming a file is a multi-step process, only one of which is changing the name of the file</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that the <code>Read­Directory­ChangesW</code> function was reporting changes too soon. No, it wasn’t generating changes from the future, <i>à la</i> <i><a href="http://en.wikipedia.org/wiki/Minority_Report_(film)">Minority Report</a></i>. Rather, it generated rename notifications before the rename was complete.</p>
+<p>The customer came to this conclusion because they observed their program behaving like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th style="border-bottom: solid 1px black; border-right: solid 1px black;">Thread 1</th>
+<th style="border-bottom: solid 1px black;">Thread 2</th>
+</tr>
+<tr>
+<td> </td>
+<td><code>Read­Directory­ChangesW(<wbr/>
+    FILE_<wbr/>NOTIFY_<wbr/>CHANGE_<wbr/>FILE_<wbr/>NAME)</code>.</td>
+</tr>
+<tr>
+<td>Call <code>Move­File­Ex</code> to rename a file.</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td><code>Read­Directory­ChangesW</code> reports a rename occurred.</td>
+</tr>
+<tr>
+<td> </td>
+<td>Tries to read the renamed file and gets <code>ERROR_<wbr/>SHARING_<wbr/>VIOLATION</code>.</td>
+</tr>
+<tr>
+<td><code>Move­File­Ex</code> returns.</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td>Tries to read the renamed file and succeeds.</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>Read­Directory­ChangesW</code> function reports the rename before the <code>Move­File­Ex</code> function returns, and consequently before the rename has completed.</p>
+<p>What’s going on here?</p>
+<p>Well, the first thing to observe is that the customer’s conclusion doesn’t match the evidence. Observe that the attempt to open the renamed file failed with <code>ERROR_<wbr/>SHARING_<wbr/>VIOLATION</code>, whereas they expected error would be <code>ERROR_<wbr/>FILE_<wbr/>NOT_<wbr/>FOUND</code> if the file hadn’t been renamed yet. The fact that they’re getting <code>ERROR_<wbr/>SHARING_<wbr/>VIOLATION</code> means that the rename <i>really did occur</i>, but they are unable to access the renamed file due to a sharing violation.</p>
+<p>Okay, let’s look at how renaming a file is performed internally. It’s a multi-step operation.</p>
+<ol>
+<li>Open the file with <code>DELETE</code> permission.</li>
+<li>Call <a href="https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile"> <code>Nt­Set­Information­File</code></a> with <code>File­Rename­Information</code>.</li>
+<li>Close the handle.</li>
+</ol>
+<p>Opening with <code>DELETE</code> permission grants permission to rename the file. The required permission is <code>DELETE</code> because the old name is being deleted.</p>
+<p>The call with <code>File­Rename­Information</code> is what actually renames the file, and it is here that the <code>Read­Directory­ChangesW</code> is signaled.</p>
+<p>Now that the rename is complete, the handle can be closed.</p>
+<p>It is technically correct for the <code>Read­Directory­ChangesW</code> to be signaled once the <code>Nt­Set­Information­File</code> is done, because the file is well and truly renamed.</p>
+<p>Let’s look at that sharing violation again. The customer explained that they tried to open the file by doing this:</p>
+<pre>std::ifstream file(path, std::ios::binary, _SH_DENYNO);
+</pre>
+<p>The <code>_SH_<wbr/>DENYNO</code> indicates that no sharing operations are denied. So why is sharing denied?</p>
+<p>You were faked out by a flag name that makes sense in context, but has ended up being confusing due to the passage of time.</p>
+<p>Let’s <a href="https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/fsopen-wfsopen?view=msvc-160"> look at those sharing flags</a> in context:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Flag</th>
+<th>Meaning</th>
+<th>Mnemonic</th>
+</tr>
+<tr>
+<td><code>_SH_DENYRD</code></td>
+<td>Deny read, allow write.</td>
+<td>Deny read.</td>
+</tr>
+<tr>
+<td><code>_SH_DENYWR</code></td>
+<td>Allow read, deny write.</td>
+<td>Deny write.</td>
+</tr>
+<tr>
+<td><code>_SH_DENYRW</code></td>
+<td>Deny read, deny write.</td>
+<td>Deny read and write.</td>
+</tr>
+<tr>
+<td><code>_SH_DENYNO</code></td>
+<td>Allow read, allow write.</td>
+<td>Deny none.</td>
+</tr>
+</tbody>
+</table>
+<p>The mnemonic for <code>_SH_<wbr/>DENY­NO</code> is “Deny none”, but the word “none” is only with the context of read and write. You could say that it denies <a href="https://www.youtube.com/watch?v=cSZfUnCK5qk"> neither country <i>nor</i> western</a>.</p>
+<p>The important sharing mode here is neither read nor write. It’s <code>FILE_<wbr/>SHARE_<wbr/>DELETE</code>, which means “I’m okay with letting someone delete or rename the file while I have it open.”¹ This is a sharing flag that programs really should be using more often than they do, and the fact that the C runtime doesn’t give you an easy way to set this sharing flag may be a contributing factor.</p>
+<p>If you call the <code>Create­File</code> function directly, then you can pass the <code>FILE_<wbr/>SHARE_<wbr/>DELETE</code> sharing flag, and then you’ll be able to open the file even before <code>Move­File­Ex</code> cleans up its handle.</p>
+<p>“So why not have <code>Read­Directory­ChangesW</code> wait until the handle is closed before raising the rename notification?”</p>
+<p>Well, for one thing, the file really has been renamed as soon as the <code>Nt­Set­Information­File</code> is complete, so delaying the notification would be a little disingenuous. But seeing as it’s just a small delay, maybe that’s okay, seeing as the whole thing is a notification anyway, and notifications can be delayed for other reasons.</p>
+<p>But the real reason is that delaying the notification until the close of the handle could delay it indefinitely. The caller is not required to close the handle immediately after the <code>Nt­Set­Information­File</code> returns. It could leave the handle open so it can perform other operations on the file. For example, maybe it’s a log file that is being renamed while it is still being actively written to. That log file’s new name takes effect immediately, but the handle won’t be closed for a long time yet.</p>
+<p>The customer confirmed that switching to a direct <code>Create­File</code> with <code>FILE_<wbr/>SHARE_<wbr/>DELETE</code> allowed them to open and read the file immediately after it was renamed.</p>
+<p>Moral of the story: Don’t forget <code>FILE_<wbr/>SHARE_<wbr/>DELETE</code>. It lets you coexist with code that is deleting or renaming the file you are looking at.</p>
+<p>¹ My colleague Malcolm Smith, whom I rely on for all things filesystem, notes that the name <code>FILE_<wbr/>SHARE_<wbr/>DELETE</code> is rather misleading. Because the fact that you opened the file for <code>FILE_<wbr/>SHARE_<wbr/>DELETE</code> prevents it from being deleted, even though you’re allowing it! In Windows, when you mark a file for deletion, the deletion doesn’t take effect until all outstanding handles are closed, and holding a file open for <code>FILE_<wbr/>SHARE_<wbr/>DELETE</code> means that the last handle isn’t closed yet. What <code>FILE_<wbr/>SHARE_<wbr/>DELETE</code> does is allow the file to be opened by others in <code>DELETE</code> mode, which as it happens is a prerequisite for both deleting and renaming files.</p>
+
+
+</body>

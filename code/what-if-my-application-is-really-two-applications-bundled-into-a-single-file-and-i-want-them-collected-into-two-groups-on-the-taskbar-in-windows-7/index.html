@@ -1,0 +1,168 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What if my application is really two applications bundled into a single file, and I want them collected into two groups on the taskbar in Windows 7?</h1>  <!-- .entry-meta -->
+
+<p>
+A customer wanted to prevent multiple copies of their program
+from being grouped on the taskbar.
+They didn’t give an explanation why,
+but let’s assume that they are doing this for honorable purposes
+rather than as a way to annoy the user.
+For example, maybe their program is really multiple applications
+bundled inside a single EXE file for convenience.
+</p>
+<p>
+The information you need to do this is in MSDN under
+<a href="http://msdn.microsoft.com/en-us/library/dd378459(v=VS.85).aspx">
+Application User Model IDs</a>,
+specifically in the
+<a href="http://msdn.microsoft.com/en-us/library/dd378459(v=VS.85).aspx#where">
+<i>Where to assign an AppUserModelID</i></a> section.
+I’ll assume you’ve read the guidance there, and I’m just going to dive
+into the implementation.
+</p>
+<p>
+Suppose our scratch program can serve
+<a href="http://snltranscripts.jt.org/75/75ishimmer.phtml">
+both as a floor wax and as a dessert topping</a>.
+It decides on the mode based on a command line switch.
+</p>
+<pre>
+<font color="blue">#include &lt;shlobj.h&gt;</font>
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+    MSG msg;
+    HWND hwnd;
+    g_hinst = hinst;
+    if (!InitApp()) return 0;
+    <font color="blue">BOOL fDessert = strcmp(lpCmdLine, "-dessert") == 0;
+    SetCurrentProcessExplicitAppUserModelID(fDessert ?
+            L"Contoso.LitWare.DessertTopping" :
+            L"Contoso.LitWare.FloorWax");</font>
+    if (SUCCEEDED(CoInitialize(NULL))) {/* In case we use COM */
+        hwnd = CreateWindow(
+            TEXT("Scratch"),                /* Class Name */
+            <font color="blue">fDessert ? TEXT("Dessert topping") : TEXT("Floor wax"),</font>
+            WS_OVERLAPPEDWINDOW,            /* Style */
+            CW_USEDEFAULT, CW_USEDEFAULT,   /* Position */
+            CW_USEDEFAULT, CW_USEDEFAULT,   /* Size */
+            NULL,                           /* Parent */
+            NULL,                           /* No menu */
+            hinst,                          /* Instance */
+            0);                             /* No special parameters */
+    ...
+}
+</pre>
+<p>
+Run this program a few times, some with the
+<code>-dessert</code> switch and some without.
+Observe that the dessert versions and non-dessert versions
+group separately.
+</p>
+<p>
+The next level of fancy-pants behavior is to give different
+AppIDs to different windows within a single process.
+You might do this if your combination floor wax/dessert topping
+program actually runs both modes inside the same process.
+Something like this:
+</p>
+<pre>
+<font color="blue">#include &lt;shellapi.h&gt;
+#include &lt;propkey.h&gt;
+#include &lt;propvarutil.h&gt;
+#include &lt;shlobj.h&gt;</font>
+<font color="blue">int g_cWindows = 0;</font>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  <font color="blue">++g_cWindows;</font>
+  return TRUE;
+}
+void
+OnDestroy(HWND hwnd)
+{
+  <font color="blue">if (--g_cWindows == 0)</font> PostQuitMessage(0);
+}
+<font color="blue">HWND
+CreateTaskWindow(BOOL fDessert, int nShowCmd)
+{
+  HWND hwnd = CreateWindow(
+      TEXT("Scratch"),                /* Class Name */
+      <font color="blue">fDessert ? TEXT("Dessert topping") : TEXT("Floor wax"),</font>
+      WS_OVERLAPPEDWINDOW,            /* Style */
+      CW_USEDEFAULT, CW_USEDEFAULT,   /* Position */
+      CW_USEDEFAULT, CW_USEDEFAULT,   /* Size */
+      NULL,                           /* Parent */
+      NULL,                           /* No menu */
+      g_hinst,                        /* Instance */
+      0);                             /* No special parameters */
+  if (hwnd) {
+    IPropertyStore *pps;
+    HRESULT hr = SHGetPropertyStoreForWindow(hwnd, IID_PPV_ARGS(&amp;pps));
+    if (SUCCEEDED(hr)) {
+      <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/06/01/10170113.aspx">IPropertyStore_SetValue</a>(pps, PKEY_AppUserModel_ID,
+            fDessert ?
+            L"Contoso.LitWare.DessertTopping" :
+            L"Contoso.LitWare.FloorWax");
+      pps-&gt;Release();
+    }
+    ShowWindow(hwnd, nShowCmd);
+  }
+  return hwnd;
+}
+void
+OnChar(HWND hwnd, TCHAR ch, int cRepeat)
+{
+    switch (ch) {
+    case 'd': CreateTaskWindow(TRUE, SW_SHOWNORMAL); break;
+    case 'f': CreateTaskWindow(FALSE, SW_SHOWNORMAL); break;
+    }
+}
+    HANDLE_MSG(hwnd, WM_CHAR, OnChar);</font>
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+    MSG msg;
+    HWND hwnd;
+    g_hinst = hinst;
+    if (!InitApp()) return 0;
+    <font color="blue">BOOL fDessert = strcmp(lpCmdLine, "-dessert") == 0;</font>
+    <font color="red"><strike>// SetCurrentProcessExplicitAppUserModelID(...);</strike></font>
+    if (SUCCEEDED(CoInitialize(NULL))) {/* In case we use COM */
+        hwnd = <font color="blue">CreateTaskWindow(fDessert, nShowCmd);</font>
+        <font color="red"><strike>// ShowWindow(hwnd, nShowCmd);</strike></font>
+    ...
+}
+</pre>
+<p>
+This time, instead of setting the application ID globally,
+we set it on a per-window basis.
+When you run this program, you can press “f” to open a new floor wax window
+or “d” to open a new dessert topping window.
+As before, observe that the two types of windows group separately.
+</p>
+<p>
+The last detail is setting the <code>System.AppUserModel.ID</code>
+property on the shortcuts used to launch these programs.
+You can do this from MSI by adding an entry to your
+<code>Msi­Shortcut­Property</code> table,
+or if you create your shortcuts programmatically, you do this by
+setting the property yourself:
+</p>
+<pre>
+ CComPtr&lt;IShellLink&gt; spsl;
+ spsl.CoCreateInstance(CLSID_ShellLink);
+ spsl-&gt;SetPath(TEXT("C:\\Path\\to\\scratch.exe"));
+ <font color="blue">CComQIPtr&lt;IPropertyStore&gt; spps(spsl);
+ IPropertyStore_SetValue(spps, PKEY_AppUserModel_ID,
+                         L"Contoso.LitWare.FloorWax");
+ spps-&gt;Commit();</font>
+ CComQIPtr&lt;IPersistFile&gt;(spsl)-&gt;Save(L"LitWare Floor Wax.lnk", TRUE);
+</pre>
+<p>
+Next time, we’ll look at another reason you might want
+to customize how your application group on the taskbar
+in Windows 7.</p>
+
+
+</body>

@@ -1,0 +1,107 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Reading a contract from the other side: Simulating a drop</h1>  <!-- .entry-meta -->
+
+<p><p>
+Most people, when they think of the
+<code>IDropTarget</code> interface,
+think only of implementing a drop target.
+But you can read the contract from the other side,
+because the description of how a drag source interacts with a drop target
+tells you how to be a drag source.
+</p>
+<p>
+To summarize, the sequence of drop target operations go like this:
+</p>
+<ul>
+<li><code>IDropTarget::DragEnter</code> is called to indicate that
+    an object has been dragged into the drop target.
+    If the drop target returns a failure code, then the drop operation
+    ends immediately.
+<li>Otherwise, <code>IDropTarget::DragOver</code> calls
+    are made to advise the drop target as to the object’s location.
+<li>If the user completes the drop operation, then call
+    <code>IDropTarget::Drop</code>.
+    Otherwise call <code>IDropTarget::Leave</code>.
+    A drop operation can fail to complete because the user hit the
+    Escape key, for example, or dragged the mouse out of the drop target.
+</li></li></li></ul>
+<p>
+Let’s write a simple program that drops one file onto another.
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;shellapi.h&gt;
+#include &lt;tchar.h&gt;</pre></p>
+<p>… Insert the function <a href="http://blogs.msdn.com/oldnewthing/archive/2004/09/20/231739.aspx">GetUIObjectOfFile</a> here …</p>
+<p>int __cdecl wmain(int argc, WCHAR **argv)
+{
+ if (argc == 3 &amp;&amp; SUCCEEDED(CoInitialize(NULL))) {
+  IDataObject *pdto;
+  if (SUCCEEDED(GetUIObjectOfFile(NULL, argv[1],
+                         IID_IDataObject, (void**)&amp;pdto))) {
+   IDropTarget *pdt;
+   if (SUCCEEDED(GetUIObjectOfFile(NULL, argv[2],
+                          IID_IDropTarget, (void**)&amp;pdt))) {
+    POINTL pt = { 0, 0 };
+    DWORD dwEffect = DROPEFFECT_COPY | DROPEFFECT_LINK;
+    if (SUCCEEDED(pdt-&gt;DragEnter(pdto, MK_LBUTTON,
+                                 pt, &amp;dwEffect))) {
+     dwEffect &amp;= DROPEFFECT_COPY | DROPEFFECT_LINK;
+     if (dwEffect) {
+      pdt-&gt;Drop(pdto, MK_LBUTTON, pt, &amp;dwEffect);
+     } else {
+      pdt-&gt;DragLeave();
+     }
+    }
+    pdt-&gt;Release();
+   }
+   pdto-&gt;Release();
+  }
+  CoUninitialize();
+ }
+ return 0;
+}
+
+<p>
+This is a pretty straightforward implementation of the
+host side of the drag/drop protocol.
+Run this program with the <i>full paths</i> to two files,
+the first being the file to drop, and the second being
+the file you want to drop it onto.
+(Modifying this program to accept relative paths is left
+as an exercise for the reader.)
+For example, you might try
+</p>
+<pre>
+fakedrop c:\autoexec.bat c:\windows\notepad.exe
+</pre>
+<p>
+Now, sure, dropping a file on a program is nothing exciting.
+You could’ve just run the program with the file as the
+command line argument, after all.
+But that’s looking at it too narrowly;
+you are simulating a drop operation,
+after all.
+For example,
+you can drop a file onto a shortcut to a printer, and the
+file will print;
+or you can drop a file onto a folder and it will be copied
+there (since we specified <code>DROPEFFECT_COPY | DROPEFFECT_LINK</code>,
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/11/12/256472.aspx">
+but folders prefer copy to link if the Ctrl+Shift keys are not held down</a>);
+or you can drop a file onto the
+<code>Mail Recipient.MAPIMail</code> shortcut in your
+“Send To” folder to create a mail message with the file as
+an attachment.
+</p>
+<p>
+Oh wait, that last example with
+<code>Mail Recipient.MAPIMail</code>
+doesn’t work.
+We’ll look at why next time,
+although I suspect you already know the reason.
+</p></p>
+
+
+</body>

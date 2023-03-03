@@ -1,0 +1,62 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I launch an unelevated process from my elevated process, redux</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, I showed how you can launch an unelevated process from an elevated process by <a href="https://blogs.msdn.microsoft.com/oldnewthing/20131118-00/?p=2643">asking Explorer to launch the program on your behalf</a>. </p>
+<p>There’s another way which is a bit more direct, but it assumes that the thing you want to do can be done with a direct <code>Create­Process</code> call. In other words, if you need the system to look up the user’s file associations or default browser, then this technique is not for you. </p>
+<p>The idea is to take advantage of <code>PROCESS_</code><code>CREATE_</code><code>PROCESS</code> access and the accompanying <a href="https://docs.microsoft.com/en-us/windows/desktop/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute"><code>PROC_</code><code>THREAD_</code><code>ATTRIBUTE_</code><code>PARENT_</code><code>PROCESS</code> process thread attribute</a>: </p>
+<blockquote class="q">
+<p><b>PROC_THREAD_ATTRIBUTE_PARENT_PROCESS</b> </p>
+<p>The <i>lpValue</i> parameter is a pointer to a handle to a process to use instead of the calling process as the parent for the process being created. The process to use must have the <b>PROCESS_CREATE_PROCESS</b> access right.  </p>
+<p>Attributes inherited from the specified process include handles, the device map, processor affinity, priority, quotas, the process token, and job object. (Note that some attributes such as the debug port will come from the creating process, not the process specified by this handle.) </p>
+</blockquote>
+<p>Basically, this lets you tell the <code>Create­Process</code> function, “Hey, like, um, pretend that other guy over there is creating the process.” </p>
+<p>Here’s a Little Program to demonstrate. Remember that Little Programs do little to no error checking so that they can demonstrate the underlying technique without distractions. </p>
+<pre>
+int main(int, char**)
+{
+  HWND hwnd = GetShellWindow();
+
+  DWORD pid;
+  GetWindowThreadProcessId(hwnd, &amp;pid);
+
+  HANDLE process =
+    OpenProcess(PROCESS_CREATE_PROCESS, FALSE, pid);
+
+  SIZE_T size;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &amp;size);
+  auto p = (PPROC_THREAD_ATTRIBUTE_LIST)new char[size];
+
+  InitializeProcThreadAttributeList(p, 1, 0, &amp;size);
+  UpdateProcThreadAttribute(p, 0,
+    PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
+    &amp;process, sizeof(process),
+    nullptr, nullptr);
+
+  wchar_t cmd[] = L"C:\\Windows\\System32\\cmd.exe";
+  STARTUPINFOEX siex = {};
+  siex.lpAttributeList = p;
+  siex.StartupInfo.cb = sizeof(siex);
+  PROCESS_INFORMATION pi;
+
+  CreateProcessW(cmd, cmd, nullptr, nullptr, FALSE,
+    CREATE_NEW_CONSOLE | EXTENDED_STARTUPINFO_PRESENT,
+    nullptr, nullptr, &amp;siex.StartupInfo, &amp;pi);
+
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  delete[] (char*)p;
+  CloseHandle(process);
+  return 0;
+}
+</pre>
+<p>We start by getting the shell window and using that to identify the process that is responsible for the shell. </p>
+<p>We then use that process ID to open the process with the magic <code>PROCESS_</code><code>CREATE_</code><code>PROCESS</code> access. </p>
+<p>We then ask the system how much memory is required to create a <code>PROC_</code><code>THREAD_</code><code>ATTRIBUTE_</code><code>LIST</code> that holds one attribute, and allocate it. </p>
+<p>We initialize the newly-allocated attribute list and update it with our process handle, saying that we want this to be the parent for the process we’re about to create. </p>
+<p>We set up a <code>STARTUPINFOEX</code> structure like usual, but we take the extra step of setting the <code>lpAttributeList</code> to point to the attribute list. </p>
+<p>Finally, we call <code>Create­Process</code>, but also set the <code>EXTENDED_</code><code>STARTUPINFO_</code><code>PRESENT</code> flag to tell it, “Hey, I gave you a <code>STARTUPINFOEX</code>, and if you look inside, you might find a surprise!” </p>
+<p>A little bit of cleaning up, and we’re done. </p>
+<p>This program runs a copy of <code>cmd.exe</code> using the shell process (usually <code>explorer.exe</code>) as its parent, which means that if the shell process is unelevated, then so too will the <code>cmd.exe</code> process. Of course, if the user is an administrator and has disabled <a href="https://docs.microsoft.com/en-us/windows/security/identity-protection/user-account-control/user-account-control-overview">UAC</a>, then Explorer will still be elevated, and so too will be the <code>cmd.exe</code>. But in that case, the user wants everything to run elevated, so you’re just following the user’s preferences. </p>
+
+
+</body>

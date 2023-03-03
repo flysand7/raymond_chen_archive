@@ -1,0 +1,151 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you protect a write with a critical section, you may also want to protect the read</h1>  <!-- .entry-meta -->
+
+<p>
+It is common to have a critical section which protects against
+concurrent writes to a variable or collection of variables.
+But if you protect a write with a critical section,
+you may also want to protect the read,
+because the read might race against the write.
+</p>
+<p>
+<a href="http://adamrosenfield.com">
+Adam Rosenfield</a>
+shared his experience with this issue
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/12/23/9940330.aspx#9940599">
+in a comment from a few years back</a>.
+I’ll reproduce the example here in part to save you the trouble of clicking,
+but also to make this entry look longer and consequently make it seem
+like I’m actually doing some work (when in fact Adam did nearly all of the
+work):
+</p>
+<pre>
+<i>class X {
+ volatile int mState;
+ CRITICAL_SECTION mCrit;
+ HANDLE mEvent;
+};
+X::Wait() {
+ while(mState != kDone) {
+   WaitForSingleObject(mEvent, INFINITE);
+ }
+}
+X::~X() {
+ DestroyCriticalSection(&amp;mCrit);
+}
+X::SetState(int state) {
+ EnterCriticalSection(&amp;mCrit);
+ // do some state logic
+ mState = state;
+ SetEvent(mEvent);
+ LeaveCriticalSection(&amp;mCrit);
+}
+Thread1()
+{
+ X x;
+ ... spawn off thread 2 ...
+ x.Wait();
+}
+Thread2(X* px)
+{
+ ...
+ px-&gt;SetState(kDone);
+ ...
+}</i>
+</pre>
+<p>
+There is a race condition here:
+</p>
+<ul>
+<li>Thread 1 calls <code>X::Wait</code> and waits.
+<li>Thread 2 calls <code>X::SetState</code>.
+<li>Thread 2 gets pre-empted immediately after calling
+    <code>Set­Event</code>.
+<li>Thread 1 wakes up from the
+    <code>Wait­For­Single­Object</code>
+    call, notices that <code>mState == kDone</code>, and therefore
+    returns from the <code>X::Wait</code> method.
+<li>Thread 1 then destructs the <code>X</code> object, which
+    destroys the critical section.
+<li>Thread 2 finally runs and tries to leave a critical section
+    that has been destroyed.
+</li></li></li></li></li></li></ul>
+<p>
+The fix was to enclose the <i>read</i> of <code>mState</code>
+inside a critical section:
+</p>
+<pre>
+X::Wait() {
+ while(1) {
+   EnterCriticalSection(&amp;mCrit);
+   int state = mState;
+   LeaveCriticalSection(&amp;mCrit);
+   if(state == kDone)
+     break;
+   WaitForSingleObject(mEvent, INFINITE);
+ }
+}
+</pre>
+<p>
+Forgetting to enclose the read inside a critical section is a common
+oversight.
+I’ve made it myself more than once.
+You say to yourself,
+“I don’t need a critical section here.
+I’m just reading a value which can safely be read atomically.”
+But you forget that the critical section isn’t just for protecting
+the write to the variable;
+it’s also to protect all the other actions that take place under
+the critical section.
+</p>
+<p>
+And just to make it so I actually did some work today,
+I leave you with this puzzle based on an actual customer problem:
+</p>
+<pre>
+<i>class BufferPool {
+public:
+ BufferPool() { ... }
+ ~BufferPool() { ... }
+ Buffer *GetBuffer()
+ {
+  Buffer *pBuffer = FindFreeBuffer();
+  if (pBuffer) {
+   pBuffer-&gt;mIsFree = false;
+  }
+  return pBuffer;
+ }
+ void ReturnBuffer(Buffer *pBuffer)
+ {
+  pBuffer-&gt;mIsFree = true;
+ }
+private:
+ Buffer *FindFreeBuffer()
+ {
+  EnterCriticalSection(&amp;mCrit);
+  Buffer *pBuffer = NULL;
+  for (int i = 0; i &lt; 8; i++) {
+   if (mBuffers[i].mIsFree) {
+    pBuffer = &amp;mBuffers[i];
+    break;
+   }
+  }
+  LeaveCriticalSection(&amp;mCrit);
+  return pBuffer;
+ }
+private:
+ CRITICAL_SECTION mCrit;
+ Buffer mBuffers[8];
+};</i>
+</pre>
+<p>
+The real class was significantly more complicated than this,
+but I’ve distilled the problem to its essence.
+</p>
+<p>
+The customer added,
+“I tried declaring <code>mIs­Free</code> as a volatile variable,
+but that didn’t seem to help.”</p>
+
+
+</body>

@@ -1,0 +1,176 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Building on our program that draws content at a fixed screen position regardless of window position</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s Little Program
+uses the technique we saw last week of
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/06/24/10428001.aspx">
+drawing content at a fixed screen position, regardless of window position</a>,
+but adds a little physics to it.
+</p>
+<p>
+Start with our
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make these changes:
+</p>
+<pre>
+#include &lt;math.h&gt; // physics requires math (go figure)
+#define Omega 2.0f
+class Motion
+{
+public:
+ Motion() : x0(0.0f), v0(0.0f) { RecalcCurve(); }
+ void ShiftOrigin(double dx)
+ {
+  Tick();
+  v0 = v;
+  x0 = x + dx;
+  RecalcCurve();
+ }
+ double Pos() { return x; }
+ bool Moving() { return fabs(x) &gt;= 0.5f || fabs(v) &gt;= 1.0f; }
+ void Tick() {
+  t = (GetTickCount() - tm0) / 1000.0f;
+  double ewt = exp(-Omega * t);
+  double abt = A + B * t;
+  x = abt * ewt;
+  v = (-Omega * abt + B) * ewt;
+ }
+private:
+ void RecalcCurve() {
+  A = x0;
+  B = v0 + Omega * x0;
+  tm0 = GetTickCount();
+ }
+public:
+ DWORD tm0;
+ double x0, v0, A, B, t, x, v;
+};
+</pre>
+<p>
+The <code>Motion</code> class simulates damped motion.
+Ask a physicist how it works.
+</p>
+<pre>
+Motion g_mX;  // motion in x-direction
+Motion g_mY;  // motion in y-direction
+POINT g_ptRest; // desired rest point
+POINT CalcRestPoint(HWND hwnd)
+{
+    RECT rc;
+    GetClientRect(hwnd, &amp;rc);
+    MapWindowRect(hwnd, HWND_DESKTOP, &amp;rc);
+    POINT pt = { rc.left + (rc.right - rc.left) / 2,
+                 rc.top + (rc.bottom - rc.top) / 2 };
+    return pt;
+}
+</pre>
+<p>
+The rest point is the center of the window.
+</p>
+<pre>
+void ScheduleFrame(HWND hwnd)
+{
+    InvalidateRect(hwnd, 0, TRUE);
+    KillTimer(hwnd, 1);
+}
+VOID CALLBACK InvalidateMe(HWND hwnd, UINT, UINT_PTR, DWORD)
+{
+    ScheduleFrame(hwnd);
+}
+</pre>
+<p>
+To schedule the painting of a new frame,
+we invalidate our window and
+cancel any outstanding animation timer
+(because the timer is no longer needed
+now that a paint has been scheduled).
+</p>
+<pre>
+void OnWindowPosChanged(HWND hwnd, LPWINDOWPOS lpwpos)
+{
+    if (IsWindowVisible(hwnd)) {
+        POINT ptRest = CalcRestPoint(hwnd);
+        if (ptRest.x != g_ptRest.x ||
+            ptRest.y != g_ptRest.y) {
+          g_mX.ShiftOrigin(g_ptRest.x - ptRest.x);
+          g_mY.ShiftOrigin(g_ptRest.y - ptRest.y);
+          ScheduleFrame(hwnd);
+        }
+        g_ptRest = ptRest;
+    }
+}
+    HANDLE_MSG(hwnd, WM_WINDOWPOSCHANGED, OnWindowPosChanged);
+</pre>
+<p>
+If the window changes its rest point while it is vislble,
+then move the origin of the motion variables and schedule
+a new frame of animation.
+</p>
+<p>
+Okay, here’s the fun part: Drawing the moving circle.
+</p>
+<pre>
+void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+ RECT rc;
+ g_mX.Tick();
+ g_mY.Tick();
+ POINT ptOrigin = { 0, 0 };
+ ClientToScreen(hwnd, &amp;ptOrigin);
+ POINT ptOrg;
+ SetWindowOrgEx(pps-&gt;hdc, ptOrigin.x, ptOrigin.y, &amp;ptOrg);
+ int x = g_ptRest.x + static_cast&lt;int&gt;(floor(g_mX.Pos() + 0.5f));
+ int y = g_ptRest.y + static_cast&lt;int&gt;(floor(g_mY.Pos() + 0.5f));
+ Ellipse(pps-&gt;hdc, x - 20, y - 20, x + 20, y + 20);
+ SetWindowOrgEx(pps-&gt;hdc, ptOrg.x, ptOrg.y, nullptr);
+ if (g_mX.Moving() || g_mY.Moving()) {
+  SetTimer(hwnd, 1, 30, InvalidateMe);
+ }
+}
+</pre>
+<p>
+We tick the motion variables to get their current locations,
+then
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/06/24/10428001.aspx">
+tinker with our window origin because we’re going to be drawing
+based on screen coordinates</a>.
+We then draw a circle at the current animated position,
+and if the circle is still moving, we schedule a timer to draw
+the next frame.
+</p>
+<p>
+Finally, we initialize our rest point before we show the window,
+so that the circle starts out at rest.
+</p>
+<pre>
+        <font color="blue">g_ptRest = CalcRestPoint(hwnd);</font>
+        ShowWindow(hwnd, nShowCmd);
+</pre>
+<p>
+And that’s it.
+Run the program and move it around.
+The circle will seek the center of the window,
+wherever it is.
+</p>
+<p>
+(For extra credit, you can also add
+</p>
+<pre>
+UINT OnNCHitTest(HWND hwnd, int x, int y)
+{
+    UINT ht = FORWARD_WM_NCHITTEST(hwnd, x, y, DefWindowProc);
+    if (ht == HTCLIENT) ht = HTCAPTION;
+    return ht;
+}
+    HANDLE_MSG(hwnd, WM_NCHITTEST, OnNCHitTest);
+</pre>
+<p>
+so that
+<a href="http://support.microsoft.com/kb/320687">
+the window can be dragged by its client area</a>.)</p>
+
+
+</body>

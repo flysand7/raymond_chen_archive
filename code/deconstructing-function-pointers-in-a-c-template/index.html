@@ -1,0 +1,80 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Deconstructing function pointers in a C++ template</h1>  <!-- .entry-meta -->
+
+<p>I always forget how to deconstruct a function pointer type in a C++ template, so I’m writing it down.</p>
+<pre>template&lt;typename F&gt; struct FunctionTraits;
+
+template&lt;typename R, typename... Args&gt;
+struct FunctionTraits&lt;R(*)(Args...)&gt;
+{
+    using Pointer = R(*)(Args...);
+    using RetType = R;
+    using ArgTypes = std::tuple&lt;Args...&gt;;
+    static constexpr std::size_t ArgCount = sizeof...(Args);
+    template&lt;std::size_t N&gt;
+    using NthArg = std::tuple_element_t&lt;N, ArgTypes&gt;;
+    using FirstArg = NthArg&lt;0&gt;;
+    using LastArg = NthArg&lt;ArgCount - 1&gt;;
+};
+</pre>
+<p>We start by saying that <code>FunctionTraits</code> is a template class that takes a single type parameter, but don’t actually provide any class definition yet. The class definition will come from the specializations.</p>
+<p>We then define a specialization that takes a function pointer, where <code>R</code> is the return type, and where <code>Args...</code> are the argument types. This specialization defines a bunch of stuff.</p>
+<p>This gets us started, but there are a bunch of weird things that cause this definition to fail.</p>
+<p>One is the case of a function with no parameters. In that case, the <code>FirstArg</code> and <code>LastArg</code> will not compile, since there are no arguments to be the first or last of. We’ll need to specialize for that case.</p>
+<pre>template&lt;typename R&gt;
+struct FunctionTraits&lt;R(*)()&gt;
+{
+    using Pointer = R(*)();
+    using RetType = R;
+    using ArgTypes = std::tuple&lt;&gt;;
+    static constexpr std::size_t ArgCount = 0;
+};
+</pre>
+<p>The specialization for the no-parameter case doesn’t define <code>NthArg</code>, <code>FirstArg</code> or <code>LastArg</code>, since those things don’t exist.</p>
+<p>We can factor the common pieces into a base class to avoid repeating ourselves quite so much.</p>
+<pre>template&lt;typename R, typename... Args&gt;
+struct FunctionTraitsBase
+{
+   using RetType = R;
+   using ArgTypes = std::tuple&lt;Args...&gt;;
+   static constexpr std::size_t ArgCount = sizeof...(Args);
+};
+
+template&lt;typename F&gt; struct FunctionTraits;
+
+template&lt;typename R, typename... Args&gt;
+struct FunctionTraits&lt;R(*)(Args...)&gt;
+    : FunctionTraitsBase&lt;R, Args...&gt;
+{
+  using Pointer = R(*)(Args...);
+  template&lt;std::size_t N&gt;
+  using NthArg = std::tuple_element_t&lt;N, ArgTypes&gt;;
+  using FirstArg = NthArg&lt;0&gt;;
+  using LastArg = NthArg&lt;ArgCount - 1&gt;;
+};
+
+template&lt;typename R&gt;
+struct FunctionTraits&lt;R(*)()&gt;
+    : FunctionTraitsBase&lt;R&gt;
+{
+  using Pointer = R(*)();
+};
+</pre>
+<p>Unfortunately, this doesn’t work because <code>ArgCount</code> is not not recognized as dependent names. We have to give the compiler a little help:¹</p>
+<pre>template&lt;typename R, typename... Args&gt;
+struct FunctionTraits&lt;R(*)(Args...)&gt;
+    : FunctionTraitsBase&lt;R, Args...&gt;
+{
+  <span style="color: blue;">using base = FunctionTraitsBase&lt;R, Args...&gt;;</span>
+  using Pointer = R(*)(Args...);
+  template&lt;std::size_t N&gt;
+  using NthArg = std::tuple_element_t&lt;N, ArgTypes&gt;;
+  using FirstArg = NthArg&lt;0&gt;;
+  using LastArg = NthArg&lt;<span style="color: blue;">base::</span>ArgCount - 1&gt;;
+};
+</pre>
+<p>That looks pretty good. But we’re not done yet, not by a longshot. Next time, we’ll investigate one of the categories of function pointers that this template cannot recognize.</p>
+<p>¹ For dependent names that represent members, you can use <code>this-&gt;</code> to mark them as dependent names if you are using them in an instance member function. But for dependent names that are types, or for use where there is no <code>this</code>, there doesn’t seem to be an easy way to identify them as dependent.</p>
+
+
+</body>

@@ -1,0 +1,126 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Tree-walking algorithms: Incrementally enumerating leaf nodes of an N-ary tree</h1>  <!-- .entry-meta -->
+
+<p>Suppose you have an <var>N</var>-ary tree, in which the node operations are</p>
+<ul>
+<li>Get first child.</li>
+<li>Get next sibling.</li>
+<li>Get parent.</li>
+</ul>
+<p>For example, this type of tree structure may represent a window hierarchy. You also see it in a TreeView control.</p>
+<p>Enumerating the nodes of this tree with a recursive algorithm is relatively straightforward. Doing it incrementally is trickier.</p>
+<p>The idea is that we want to walk through the tree following the red arrows, as if we are walking along the outside of the tree with our left hand touching it.</p>
+<table border="0" cellpadding="0" cellspacing="0" style="text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="width: 2em; color: red; font-family: '';">↙︎</td>
+<td style="border: solid 1px black; width: 2em;">A</td>
+<td style="width: 2em; color: red; font-family: '';">↖︎</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="width: 2em; color: red; font-family: '';">↙︎</td>
+<td style="width: 2em;">╱</td>
+<td style="width: 2em;">│</td>
+<td style="width: 2em;">╲</td>
+<td style="width: 2em; color: red; font-family: '';">↖︎</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 2em; color: red; font-family: '';">↙︎</td>
+<td style="border: solid 1px black; width: 2em;">B</td>
+<td style="width: 2em; color: red;">↷</td>
+<td style="border: solid 1px black; width: 2em;">C</td>
+<td style="width: 2em; color: red;">↷</td>
+<td style="border: solid 1px black; width: 2em;">D</td>
+<td style="width: 2em; color: red; text-align: left;"> ↑</td>
+</tr>
+<tr>
+<td style="width: 2em; color: red; text-align: right; font-family: '';">↙︎</td>
+<td style="text-align: right; width: 2em;">╱</td>
+<td style="width: 2em; color: red;">↷</td>
+<td style="text-align: left; width: 2em;">╲<span style="color: red; font-family: '';">↖︎</span></td>
+<td style="width: 2em; color: red;">→</td>
+<td style="width: 2em; color: red; font-family: '';">⤴︎↓︎</td>
+<td style="width: 2em;">│</td>
+<td style="width: 2em; color: red; text-align: left;"> ↑</td>
+</tr>
+<tr>
+<td style="width: 2em; color: red; font-family: '';">↓︎</td>
+<td style="border: solid 1px black; width: 2em;">E</td>
+<td style="width: 2em; color: red;">↑↓</td>
+<td style="border: solid 1px black; width: 2em;">F</td>
+<td style="width: 2em; color: red; font-family: '';">↖︎</td>
+<td style="width: 2em; color: red; text-align: right;">↓ </td>
+<td style="border: solid 1px black; width: 2em;">G</td>
+<td style="width: 2em; color: red; text-align: left;"> ↑</td>
+</tr>
+<tr>
+<td style="width: 2em; color: red; text-align: right;">⤷</td>
+<td style="width: 2em; color: red;">→</td>
+<td style="width: 2em; color: red; font-family: '';">⤴︎⤷︎</td>
+<td style="width: 2em; color: red;">→</td>
+<td style="width: 2em; color: red; font-family: '';">⤴︎</td>
+<td style="width: 2em; color: red; text-align: right;">⤷</td>
+<td style="width: 2em; color: red;">→</td>
+<td style="width: 2em; color: red; text-align: left; font-family: '';">⤴︎</td>
+</tr>
+</tbody>
+</table>
+<p>The various types of tree walks differ primarily in where you stop to rest. And therefore, the differences are in the state that needs to be preserved when we reach the stopping point, so that we know how to resume our tree walk.</p>
+<p>Let’s assume that we have a cursor class that can move through the tree.</p>
+<pre>class TreeCursor
+{
+  TreeCursor(TreeNode node);
+  bool TryMoveToFirstChild();
+  bool TryMoveToNextSibling();
+  bool TryMoveToParent();
+  TreeNode Current { get; };
+};
+</pre>
+<p>Our first algorithm is to walk through the tree, stopping at each leaf node. A leaf node is a node with no children.</p>
+<p>I choose this as our first algorithm because it has only one state: You’re at a leaf node and need to find the next leaf node. Being at a leaf node means that you’re at the “curve around the bottom of a node ⭯” part of the path around the tree.</p>
+<p>To find the first leaf node, we keep moving to the first child until we find a node with no children.</p>
+<p>To find the next leaf node, we first realize that since we are at a leaf node, we have no children of our own. So we move up to the parent, and then back down to the next child. That next child is our starting node’s next sibling. Once there, we keep moving to the first child until we find a node with no children.</p>
+<p>The last case is where we are at the last sibling. In that case, we move up to the parent node and try again. If we are at the root (no parent node), then we’re done.</p>
+<p>Capturing this algorithm results in the following:</p>
+<pre>class LeafWalker
+{
+  private TreeCursor cursor;
+
+  public LeafWalker(TreeNode node)
+  {
+    cursor = new TreeCursor(node);
+    GoDeep();
+  }
+
+  public bool MoveNext()
+  {
+    do {
+      if (cursor.TryMoveToNextSibling()) {
+        GoDeep();
+        return true;
+      }
+    } while (cursor.TryMoveToParent());
+    return false;
+  }
+
+  public TreeNode Current =&gt; cursor.Current;
+
+  private void GoDeep()
+  {
+    while (cursor.TryMoveToFirstChild()) { }
+  }
+}
+</pre>
+<p>That was a nice warm-up. We’ll try something a little harder next time.</p>
+
+
+</body>

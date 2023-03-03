@@ -1,0 +1,282 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Lock-free algorithms: The one-time initialization</h1>  <!-- .entry-meta -->
+
+<p>
+A special case of
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/06/10150261.aspx">
+the singleton constructor</a>
+is simply lazy-initializing a bunch of variables.
+In a single-threaded application you can do something like this:
+</p>
+<pre>
+// suppose that any valid values for a and b stipulate that
+// a ≥ 0 and b ≥ a. Therefore, -1 is never a valid value,
+// and we use it to mean "not yet initialized".
+int a = -1, b = -1;
+void LazyInitialize()
+{
+ if (a != -1) return; // initialized already
+ a = calculate_nominal_a();
+ b = calculate_nominal_b();
+ // Adjust the values to conform to our constraint.
+ a = max(0, a);
+ b = max(a, b);
+}
+</pre>
+<p>
+This works fine in a single-threaded program, but if the
+program is multi-threaded, then two threads might end up
+trying to lazy-initialize the variables, and there are
+race conditions which can result in one thread using
+values before they have been initialized:
+</p>
+<table>
+<tbody>
+<tr>
+<th>Thread 1</th>
+<th>Thread 2</th>
+</tr>
+<tr>
+<td><code>if (a != -1)</code> [not taken]</td>
+<td></td>
+</tr>
+<tr>
+<td><code>a = calculate_nominal_a();</code> // returns 2</td>
+</tr>
+<tr>
+<td></td>
+<td><code>if (a != -1) return;</code> // premature return!</td>
+</tr>
+</tbody>
+</table>
+<p>
+Observe that if the first thread is pre-empted after
+the value for <code>a</code> is initially set,
+the second thread will think that everything is initialized
+and may end up using an uninitialized <code>b</code>.
+</p>
+<p>
+“Aha,” you say, “that’s easy to fix.
+Instead of <code>a</code>,
+I’ll just use <code>b</code> to tell if initialization is complete.”
+</p>
+<pre>
+void LazyInitialize()
+{
+ if (<font color="red">b</font> != -1) return; // initialized already (test b, not a)
+ a = calculate_nominal_a();
+ b = calculate_nominal_b();
+ // Adjust the values to conform to our constraint.
+ a = max(0, a);
+ b = max(a, b);
+}
+</pre>
+<p>
+This still suffers from a race condition:
+</p>
+<table>
+<tbody>
+<tr>
+<th>Thread 1</th>
+<th>Thread 2</th>
+</tr>
+<tr>
+<td><code>if (b != -1)</code> [not taken]</td>
+<td></td>
+</tr>
+<tr>
+<td><code>a = calculate_nominal_a();</code> // returns 2</td>
+</tr>
+<tr>
+<td><code>b = calculate_nominal_b();</code> // returns 1</td>
+</tr>
+<tr>
+<td></td>
+<td><code>if (b != -1) return;</code> // premature return!</td>
+</tr>
+</tbody>
+</table>
+<p>
+“I can fix that too.
+I’ll just compute the values of <code>a</code> and <code>b</code>
+in local variables, and update the globals only after the final
+values have been computed.
+That way, the second thread won’t see partially-calculated values.”
+</p>
+<pre>
+void LazyInitialize()
+{
+ if (b != -1) return; // initialized already
+ <font color="red">// perform all calculations in temporary variables first</font>
+ <font color="red">int temp_a</font> = calculate_nominal_a();
+ <font color="red">int temp_b</font> = calculate_nominal_b();
+ // Adjust the values to conform to our constraint.
+ <font color="red">temp_a</font> = max(0, <font color="red">temp_a</font>);
+ <font color="red">temp_b</font> = max(<font color="red">temp_a</font>, <font color="red">temp_b</font>);
+ <font color="red">// make the temporary values permanent
+ a = temp_a;
+ b = temp_b;</font>
+}
+</pre>
+<p>
+Nearly there,
+but there is <i>still</i> a race condition:
+</p>
+<table>
+<tbody>
+<tr>
+<th>Thread 1</th>
+<th>Thread 2</th>
+</tr>
+<tr>
+<td><code>if (b != -1)</code> [not taken]</td>
+<td></td>
+</tr>
+<tr>
+<td><code>temp_a = calculate_nominal_a();</code> // returns 2</td>
+</tr>
+<tr>
+<td><code>temp_b = calculate_nominal_b();</code> // returns 1</td>
+</tr>
+<tr>
+<td><code>temp_a = max(0, temp_a);</code> // temp_a = 2</td>
+</tr>
+<tr>
+<td><code>temp_b = max(temp_a, temp_b);</code> // temp_b = 2</td>
+</tr>
+<tr>
+<td><code>a = temp_a;</code> // store issued to memory</td>
+</tr>
+<tr>
+<td><code>b = temp_b;</code> // store issued to memory</td>
+</tr>
+<tr>
+<td>store of <code>b</code> completes to memory</td>
+</tr>
+<tr>
+<td></td>
+<td><code>if (b != -1) return;</code> // premature return!</td>
+</tr>
+<tr>
+<td>store of <code>a</code> completes to memory</td>
+</tr>
+</tbody>
+</table>
+<p>
+There is no guarantee that the assignment <code>b = 2</code> will
+become visible to other processors after the assignment
+<code>a = 2</code>.
+Even though the store operations are issued in that order,
+the memory management circuitry might
+<a href="http://en.wikipedia.org/wiki/Memory_barrier#An_illustrative_example">
+complete the memory operations in the opposite order</a>,
+resulting in Thread 2 seeing <code>a = -1</code> and <code>b = 2</code>.
+</p>
+<p>
+To prevent this from happening, the store to <code>b</code> must
+be performed with
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/10/03/8969397.aspx">
+Release semantics</a>,
+indicating that all prior memory stores must complete before
+the store to <code>b</code> can be made visible to other processors.
+</p>
+<pre>
+void LazyInitialize()
+{
+ if (b != -1) return; // initialized already
+ // perform all calculations in temporary variables first
+ int temp_a = calculate_nominal_a();
+ int temp_b = calculate_nominal_b();
+ // Adjust the values to conform to our constraint.
+ temp_a = max(0, temp_a);
+ temp_b = max(temp_a, temp_b);
+ // make the temporary values permanent
+ a = temp_a;
+ <font color="red">// since we use "b" as our indication that
+ // initialization is complete, we must store it last,
+ // and we must use release semantics.
+ InterlockedCompareExchangeRelease(
+    reinterpret_cast&lt;LONG*&gt;&amp;b, temp_b, -1);</font>
+}
+</pre>
+<p>
+If you look at the final result,
+you see that this is pretty much a re-derivation of the
+singleton initialization pattern:
+Do a bunch of calculations off to the side, then
+publish the result with a single
+<code>Interlocked­Compare­Exchange­Release</code>
+operation.
+</p>
+<p>
+The general pattern is therefore
+</p>
+<pre>
+void LazyInitializePattern()
+{
+ if (global_signal_variable != sentinel_value) return;
+ ... calculate values into local variables ...
+ globalvariable1 = temp_variable1;
+ globalvariable2 = temp_variable2;
+ ...
+ globalvariableN = temp_variableN;
+ // publish the signal variable last, and with release
+ // semantics to ensure earlier values are visible as well
+ InterlockedCompareExchangeRelease(
+    reinterpret_cast&lt;LONG*&gt;&amp;global_signal_variable,
+    temp_signal_variable, sentinel_value);
+}
+</pre>
+<p>
+If this all is too much for you
+(and given some of the subtlety of double-check-locking
+that I messed up the first time through,
+it’s clearly too much for me),
+you can let the Windows kernel team do the thinking
+and use the
+<a href="http://msdn.microsoft.com/en-us/library/aa363808.aspx">
+one-time initialization functions</a>,
+which encapsulate all of this logic.
+(My pal
+<a href="http://blogs.msdn.com/doronh/">
+Doron</a>
+called out the one-time initialization functions
+<a href="http://blogs.msdn.com/doronh/archive/2006/11/29/support-for-double-checked-locking.aspx">
+a while back</a>.)
+Version 4 of the .NET Framework has corresponding functionality
+in the
+<a href="http://msdn.microsoft.com/en-us/library/dd997286.aspx">
+<code>Lazy&lt;T&gt;</code> class</a>.</p>
+<p>
+<b>Exercise</b>:
+What hidden assumptions are being made about the functions
+<code>calculate_nominal_a</code> and
+<code>calculate_nominal_b</code>?
+</p>
+<p>
+<b>Exercise</b>:
+What are the consequences if we use
+<code>Interlocked­Exchange</code>
+instead of <code>Interlocked­Compare­Exchange­Release</code>?
+</p>
+<p>
+<b>Exercise</b>:
+In the final version of <code>Lazy­Initialize</code>, are the variables
+<code>temp_a</code> and <code>temp_b</code> really necessary,
+or are they just leftovers from previous attempts at fixing
+the race condition?
+</p>
+<p>
+<b>Exercise</b>:
+What changes (if any) are necessary to the above pattern
+if the global variables are pointers? Floating point variables?
+</p>
+<p>
+<b>Update</b>: See discussion below
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/07/10150728.aspx#10151639">
+between Niall and Anon</a>
+regarding the need for acquire semantics on the initial read.
+</p>
+
+
+</body>

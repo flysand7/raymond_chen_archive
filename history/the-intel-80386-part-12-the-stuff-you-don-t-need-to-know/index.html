@@ -1,0 +1,96 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Intel 80386, part 12: The stuff you don’t need to know</h1>  <!-- .entry-meta -->
+
+<p>There are quite a few extra instructions that are technically legal in user-mode code, but which you won’t see in compiler-generated code because they are simply too weird. </p>
+<pre>
+    PUSHAD              ; push all general-purpose registers
+    POPAD               ; pop (almost) all general-purpose registers
+    PUSHFD              ; push flags register
+    POPFD               ; pop flags register
+    LAHF                ; AH = flags
+    SAHF                ; flags = AH
+</pre>
+<p>The <code>PUSHAD</code> (push all doubleword) and <code>POPAD</code> (pop all doubleword) instructions push and pop the eight general-purpose registers onto the stack. This includes the stack pointer register <var>esp</var>! The <code>PUSHAD</code> instruction pushes the <var>esp</var> register onto the stack, and the <code>POPAD</code> instruction pops the value, but doesn’t store it into the <var>esp</var> register. The value that would normally go into the <var>esp</var> register is simply discarded. </p>
+<p>The <code>PUSHFD</code> (push flags doubleword) and <code>POPFD</code> (pop flags doubleword) instructions push and pop the flags register to/from the stack. When popped, <a href="https://blogs.msdn.microsoft.com/oldnewthing/20160411-00/?p=93281">some flag bits are discarded</a> rather than being stored into the flags register. </p>
+<p>The <code>LAHF</code> (load <var>ah</var> from flags) and the <code>SAHF</code> (store <var>ah</var> to flags) instructions transfer the <var>sf</var>,<var>zf</var>, <var>af</var>, <var>pf</var>, and <var>cf</var> flags to and from the <var>ah</var> register. </p>
+<p>The next group of instructions are for binary-coded decimal. Packed binary coded decimal (packed BCD) uses a single byte to represent values from 0 to 99, putting the tens digit in the upper nibble and the units digit in the lower nibble. Each subsequent byte represents another power of 100. For example, the decimal number 764 is represented by the byte <code>0x64</code> followed by the byte <code>0x07</code>. In the mnenonic, this is known as “decimal” BCD. </p>
+<p>Unpacked binary coded decimal (unpacked BCD) uses a single byte to represent a single digit from 0 to 9. The value simply represents itself. Each subsequent byte represents another power of ten. For example, the decimal number 764 is represented by the bytes <code>0x04</code>, <code>0x06</code> and <code>0x07</code>. In the mnenonic, this is known as “ASCII” BCD. </p>
+<pre>
+    DAA                 ; decimal (packed BCD) adjust after addition
+    DAS                 ; decimal (packed BCD) adjust after subtraction
+    AAA                 ; ASCII (unpacked BCD) adjust after addition
+    AAS                 ; ASCII (unpacked BCD) adjust after subtraction
+    AAM                 ; ASCII (unpacked BCD) adjust after multiplication
+    AAD                 ; ASCII (unpacked BCD) adjust after division
+</pre>
+<p>All of the BCD adjustment instructions are expected to be executed immediately after the corresponding arithmetic operation, and the destination of the arithmetic operation is expected to be the <var>al</var> register. I mean, there’s nothing preventing you from executing the instructions even if you didn’t meet the prerequisites, but the results are not likely to be very useful. </p>
+<p>The <code>DAA</code> instruction (decimal adjust after addition) assumes that you added two bytes in packed BCD format, and it converts the result back into packed BCD format, setting the carry flag according to whether the result was 100 or greater. For example, if you added <code>0x23</code> and <code>0x59</code>, the initial result is <code>0x7C</code> (which is the sum as normal integers), and the the <code>DAA</code> instruction adjusts the value to <code>0x82</code>, to represent the packed BCD sum. </p>
+<p>The <code>DAS</code> (decimal adjust after subtraction) instruction operates similarly. </p>
+<p>The <code>AAA</code> (ASCII adjust after addition) assumes that the operation you performed was on an unpacked BCD value. It adjusts the value in the <var>al</var>, and if a carry occured, it increments the <var>ah</var> register. The <code>AAS</code> (ASCII adjust after subtraction) operates similarly. </p>
+<p>The <code>AAM</code> (ASCII adjust after multiplication) instruction assumes that the most recent operation was a multiply of two 8-bit values in unpacked BCD format, producing a result in <var>ax</var>. </p>
+<p>The <code>AAD</code> (ASCII adjust before division) instruction is unusual in that you execute it <i>before</i> the corresponding instruction. It takes an unpacked BCD two-digit value in <var>ax</var> and prepares it so that the upcoming 16-by-8 division will produce correct decimal values. </p>
+<p>The next instructions are for bit-scanning. </p>
+<pre>
+    BSF     r, r/m      ; d = index of first set bit in s
+    BSR     r, r/m	; d = index of last set bit in s
+</pre>
+<p>The <code>BSF</code> (bit scan forward) instruction searches for the least significant set bit in the source value and sets the destination register to the index of that bit. The <code>BSR</code> (bit scan reverse) instruction does the same, but it looks for the most significant set bit. If the source is zero, then the destination is undefined and the <var>zf</var> flag is set. </p>
+<p>The next group is the rotation instructions. </p>
+<pre>
+    ROL     r/m, CL/i   ; d = d rotate left by s, set flags
+    ROR     r/m, CL/i   ; d = d rotate left by s, set flags
+    RCL     r/m, CL/i   ; d = d|CF rotate left by s, set flags
+    RCR     r/m, CL/i   ; d = d|CF rotate left by s, set flags
+</pre>
+<p>The <code>ROL</code> instruction rotates the bits of the destination left (towards higher significance) by the amount specified by the source, which is taken mod 32. The <code>ROR</code> instruction rotates right. The carry flag contains the last bit rotated out, and if the shift amount is the immediate 1, then the overflow flag is set if the sign bit changed. (If the shift amount is not the immediate 1, then the overflow flag is undefined.) The zero, sign, and parity flags are set based on the result. </p>
+<p>The <code>RCL</code> and <code>RCR</code> instructions are similar, except that rotation is through an <var>n</var>+1 bit value, where the carry flag is the extra bit. </p>
+<p>And then there are the counted loop instructions. </p>
+<pre>
+    LOOP    dest        ; decrement ecx, jump if result is nonzero
+    LOOPE   dest        ; decrement ecx, jump if result is nonzero
+                        ; and ZF is set (alternate opcode: LOOPZ)
+    LOOPNE  dest        ; decrement ecx, jump if result is nonzero
+                        ; and ZF is clear (alternate opcode: LOOPNZ)
+    JECXZ   dest        ; jump if ecx is zero
+</pre>
+<p>The counted loop instructions require the loop counter to be stored in the <var>ecx</var> register. The usual pattern is </p>
+<pre>
+    MOV     ecx, number_of_iterations
+    JECXZ   done        ; no iterations at all
+again:
+    ... do something ...
+    LOOP    again       ; do it number_of_iterations times
+done:
+</pre>
+<p>You can also make the loop conditional upon the <var>zf</var> flag. The <code>LOOPE</code> (loop while equal) instruction loops provided the result of the most recent flags-setting operation was zero. The <code>LOOPNE</code> (loop while not equal) requires that the most recent flags-setting result be nonzero. </p>
+<pre>
+    MOV     ecx, number_of_iterations
+    JECXZ   done        ; no iterations at all
+again:
+    ... do something ...
+    CMP     eax, 90
+    LOOPZ   again       ; do it number_of_iterations times
+                        ; provided eax is 90
+done:
+    ; loop ends when we have executed all iterations or eax is not 90
+</pre>
+<p>And then some random instructions I couldn’t categorize easily. </p>
+<pre>
+    XLAT                ; al = byte at ebx+al
+    BOUND   r, m        ; check that d is in range [s]..[s+4]
+    INTO                ; check if overflow is set
+</pre>
+<p>The <code>XLAT</code> instruction treats the value in the <var>al</var> register as an index into in a table of 256 bytes starting at <var>ebx</var>, putting the result back into the <var>al</var> register. My guess, given the opcode name, is that this was for character set translation where the characters in the source and destination character sets are both single-byte. (Think ASCII and EBCDIC.) </p>
+<p>The <code>BOUND</code> instruction performs a bounds check of the destination register. The source refers to two 32-bit values in memory, the first being the smallest legal value and the second being the largest legal value. If the destination value is not in range, then interrupt 5 is raised. The values are treated as unsigned because the intended purpose of this instruction is to perform an array bounds check. </p>
+<p>The <code>INTO</code> instruction checks whether the overflow bit is set. If so, then it raises interrupt 4. </p>
+<p>Finally, there are instructions so weird I won’t even go into them. They are technically legal instructions but are not useful in practice because 32-bit Windows uses a flat address space. </p>
+<pre>
+    ARPL    r/m16, r16  ; adjust requested privilege level
+    LAR     r32, r/m32  ; load access rights
+    LSL     r32, r/m32  ; load selector limit
+</pre>
+<p>These instructions operate on selectors, but since there are no interesting selectors in 32-bit Windows (aside from the TEB, which we discussed earlier), these instructions don’t accomplish anything interesting. </p>
+<p><a href="http://devblogs.microsoft.com/oldnewthing/20190206-00/?p=101032">Next time</a>, we’ll look at the Windows calling conventions. </p>
+
+
+</body>

@@ -1,0 +1,51 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What happens to custom unhandled exception filters if a debugger is not running?</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to know what happens to custom exception filters if a debugger is not running. They included this sample code fragment: </p>
+<pre>
+#define CUSTOM_CODE 0x87654321
+
+LONG CALLBACK CustomFilter(EXCEPTION_POINTERS* pointers)
+{
+ Log("Inside exception filter");
+ if (pointers-&gt;ExceptionRecord-&gt;ExceptionCode == CUSTOM_CODE) {
+  Log("Handling custom exception");
+  return EXCEPTION_CONTINUE_EXECUTION;
+ } else {
+  Log("Allowing handler to execute");
+  return EXCEPTION_EXECUTE_HANDLER;
+ }
+}
+
+void Test()
+{
+ SetUnhandledExceptionFilter(CustomFilter);
+ Log("Raising custom exception");
+ RaiseException(CUSTOM_CODE, 0, 0, nullptr);
+ Log("Raised custom exception");
+
+ try {
+  Log("Raising custom exception inside try");
+  RaiseException(CUSTOM_CODE, 0, 0, nullptr);
+  Log("Raised custom exception inside try");
+
+  Log("Throwing runtime_error inside try");
+  throw std::runtime_error("oh dear");
+  Log("Threw runtime_error inside try");
+ } catch (std::runtime_error&amp;) {
+  Log("Caught runtime_error");
+ }
+}
+</pre>
+<p>The customer reported that the results of the <code>Test</code> function are highly context-dependent. If the <code>Test</code> function is called from <code>main</code>, then it works, provided that a debugger is not attached. But if they call the <code>Test</code> function from inside their window procedure, then the behavior is different based on whether the program is 32-bit or 64-bit, and whether the operating system is 32-bit or 64-bit, <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms633573(v=vs.85).aspx">as discussed on MSDN</a>. </p>
+<p>The customer also noted that the documentation for the <code>Set­Unhandled­Exception­Filter</code> function talks about what happens if no debugger is attached, but what about the case where there <i>is</i> a debugger? </p>
+<p>Okay, let’s answer the last question first. If a debugger is attached, then the custom unhandled exception filter is ignored. </p>
+<p>What about the complicated behavior if you raise an exception from inside a window procedure and try to handle it in the unhandled exception filter? </p>
+<p>Yeah, well, that’s complicated. </p>
+<p>But you shouldn’t be doing that in the first place. </p>
+<p>Because you are violating one of the cardinal rules of Win32 exceptions: <a href="https://blogs.msdn.microsoft.com/oldnewthing/20120910-00/?p=6653">Exceptions must not cross foreign stack frames</a>. If you’re going to raise an exception in one place and handle it in another, then every stack frame that the exception travels through must be aware of the funny game that you’re playing. </p>
+<p>The unhandled exception filter runs as the very last exception filter. (And only if there is no debugger attached.) This means that before control even reaches the unhandled exception filter, it must go through every active stack frame on your thread, including stack frames outside your control (such as the code that manages the window procedure callback). Which means you have already broken the rules. </p>
+<p>So don’t do that. </p>
+
+
+</body>

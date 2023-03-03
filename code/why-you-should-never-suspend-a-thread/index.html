@@ -1,0 +1,85 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why you should never suspend a thread</h1>  <!-- .entry-meta -->
+
+<p>
+It’s almost as bad as terminating a thread.
+</p>
+<p>
+Instead of just answering a question, I’m going
+to ask you the questions and see if you can come
+up with the answers.
+</p>
+<p>
+Consider the following program, in (gasp) C#:
+</p>
+<pre>
+using System.Threading;
+using SC = System.Console;
+class Program {
+  public static void Main() {
+    Thread t = new Thread(new ThreadStart(Program.worker));
+    t.Start();
+    SC.WriteLine("Press Enter to suspend");
+    SC.ReadLine();
+    t.Suspend();
+    SC.WriteLine("Press Enter to resume");
+    SC.ReadLine();
+    t.Resume();
+  }
+  static void worker() {
+    for (;;) SC.Write("{0}\r", System.DateTime.Now);
+  }
+}
+</pre>
+<p>
+When you run this program and hit Enter to suspend, the program hangs.
+But if you change the worker function to just “for(;;) {}” the program
+runs fine.
+Let’s see if we can figure out why.
+</p>
+<p>
+The worker thread spends nearly all its time calling System.Console.WriteLine,
+so when you call Thread.Suspend(), the worker thread is almost certainly
+inside the System.Console.WriteLine code.
+</p>
+<p>
+Q: Is the System.Console.WriteLine method threadsafe?
+</p>
+<p>
+Okay, I’ll answer this one:  Yes.  I didn’t even have to look at any
+documentation to figure this out.  This program calls it from two
+different threads without any synchronization, so it had better be
+threadsafe or we would be in a lot of trouble already even before
+we get around to suspending the thread.
+</p>
+<p>
+Q: How does one typically make an object threadsafe?
+</p>
+<p>
+Q: What is the result of suspending a thread in the middle of a threadsafe
+operation?
+</p>
+<p>
+Q: What happens if – subsequently –
+you try to access that same object (in this case,
+the console) from another thread?
+</p>
+<p>
+These results are not specific to C#. The same logic applies
+to Win32 or any other threading model.
+In Win32, the process heap
+is a threadsafe object, and since it’s hard to do very much in
+Win32 at all without accessing the heap, suspending a thread
+in Win32 has a very high chance of deadlocking your process.
+</p>
+<p>
+So why is there even a SuspendThread function in the first place?
+</p>
+<p>Debuggers use it to freeze all the threads in a process while you
+are debugging it.  Debuggers can also use it to freeze all but one
+thread in a process, so you can focus on just one thread at a time.
+This doesn’t create deadlocks in the debugger since the debugger
+is a separate process.</p>
+
+
+</body>

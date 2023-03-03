@@ -1,0 +1,65 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">MapGenericMask is just a convenience function for converting generic access to specific access, according to the instructions you provide</h1>  <!-- .entry-meta -->
+
+<p>For some reason, people call the <code>Map­Generic­Mask</code> function in order to calculate what access mask to pass to request access to something. That’s not what <code>Map­Generic­Mask</code> is for. The <code>Map­Generic­Mask</code> function is to assist the server side of the access, not the client side. </p>
+<p>As the documentation says, the <code>Map­Generic­Mask</code> function <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa379266(v=vs.85).aspx">maps the generic access rights in an access mask to specific and standard access rights.  The function applies a mapping supplied in a <code>GENERIC_MAPPING</code> structure</a>. </p>
+<p>This is further explained in the remarks: </p>
+<blockquote class="m"><p>After calling the <b>Map­Generic­Mask</b> function, the access mask pointed to by the <i>Access­Mask</i> parameter has none of its generic bits (GenericRead, GenericWrite, GenericExecute, or GenericAll) or undefined bits¹ set, although it can have other bits set. If bits other than the generic bits are provided on input, this function does not clear them. </p></blockquote>
+<p>What this function does is take the <code>Access­Mask</code> parameter and convert all of the <code>GENERIC_*</code> bits into object-specific bits, as defined by the <code>GENERIC_MAPPING</code>. </p>
+<p>In other words, the code for the <code>Map­Generic­Mask</code> function looks basically like this: </p>
+<pre>
+void MapGenericMask(
+  PDWORD AccessMask,
+  PGENERIC_MAPPING GenericMapping
+)
+{
+ if (*AccessMask &amp; GENERIC_READ)
+     *AccessMask |= GenericMapping-&gt;GenericRead;
+
+ if (*AccessMask &amp; GENERIC_WRITE)
+     *AccessMask |= GenericMapping-&gt;GenericWrite;
+
+ if (*AccessMask &amp; GENERIC_EXECUTE)
+     *AccessMask |= GenericMapping-&gt;GenericExecute;
+
+ if (*AccessMask &amp; GENERIC_ALL)
+     *AccessMask |= GenericMapping-&gt;GenericAll;
+
+ *AccessMask &amp;= ~(GENERIC_READ | GENERIC_WRITE |
+                  GENERIC_WRITE | GENERIC_ALL);
+}
+</pre>
+<p>The function takes the access mask and sees if any of the generic access bits are set. If so, then it replaces them with the corresponding specific access bits provided by the <code>Generic­Mapping</code> parameter. </p>
+<p>Note that this function doesn’t tell you anything you don’t already know. It’s just a helper function to make access checks easier to implement: If you are a component that manages an object and you need to perform an access check, you use <code>Map­Generic­Access</code> to convert all the generic access requests into specific requests according to the rules you specified in your <code>GENERIC_MAPPING</code>, and the rest of your code only needs to deal with specific requests. </p>
+<p>For example, we saw some time ago that <a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/09/29/8966821.aspx">a hypothetical Gizmo object</a> could map <code>GENERIC_READ</code> to operations that query information from a Gizmo without modifying it, map <code>GENERIC_WRITE</code> to operations that alter the gizmo properties, map <code>GENERIC_EXECUTE</code> to operations that enable or disable the Gizmo, and map <code>GENERIC_ALL</code> to include all Gizmo operations. </p>
+<p>And if you needed to do a security check on a Gizmo, you would do something like this: </p>
+<pre>
+BOOL IsGizmoAccessGranted(
+ HTOKEN Token,
+ PSECURITY_DESCRIPTOR SecurityDescriptor,
+ DWORD AccessDesired,
+ PDWORD AccessAllowed)
+{
+ MapGenericMask(&amp;AccessDesired, &amp;GizmoGenericMapping);
+
+ BOOL AccessGranted = FALSE;
+ PRIVILEGE_SET PrivilegeSet;
+ DWORD PrivilegeSetSize = sizeof(PrivilegeSet);
+
+ return AccessCheck(SecurityDescriptor,
+            Token,
+            AccessDesired,
+            &amp;GizmoGenericMapping,
+            &amp;PrivilegeSet,
+            &amp;PrivilegeSetSize,
+            AccessAllowed,
+            &amp;AccessGranted) &amp;&amp; AccessGranted;
+}
+</pre>
+<p>When somebody wants to access a Gizmo, you use <code>Map­Generic­Mask</code> to convert all the generic requests to specific requests. You then pass that request to <code>Access­Check</code>, along with token for the user making the request and the security descriptor for the widget. The <code>Access­Check</code> function does the heavy lifting of seeing which ACEs apply to the user specified by the token, then verifying that all the requested accesses have an <i>Allow</i> ACE, and that none of the requested accesses have a <i>Deny</i> ACE. It also takes care of the <code>MAXIMMUM_ALLOWED</code> access request by simply returning all the accesses that are allowed and not denied. </p>
+<p>The point of the <code>Map­Generic­Mask</code> function is to make life a little easier for the code that enforces security. </p>
+<p>On the other hand, the <code>Map­Generic­Mask</code> function is not particularly useful on the side that is requesting access. If you are requesting generic read access, just pass <code>GENERIC_READ</code>. The code that does the security check will convert the <code>GENERIC_READ</code> into the access masks that are specific to the object you are trying to access. (And it will most likely use the <code>Map­Generic­Mask</code> function to do it.) </p>
+<p>¹ That extra phrase “or undefined bits” is contradicted by the subsequent sentence “If bits other than the generic bits are provided on input, the function does not clear them.” The second sentence is correct; the extra phrase “or undefined bits” is incorrect and should be removed. </p>
+
+
+</body>

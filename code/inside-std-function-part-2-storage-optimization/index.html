@@ -1,0 +1,186 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Inside <code>std::function</code>, part 2: Storage optimization</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/inside-std-function-part-1-the-basic-idea"> Last time</a>, we looked at the basic idea behind <code>std::function</code>. For each callable type, it creates a custom <code>callable</code> wrapper class that knows how to invoke the instance of that type. Each <code>callable</code> derives from a common base interface, and the main <code>std::function</code> holds a pointer to that interface.</p>
+<p>As I noted, the standard requires that if the callable is a plain function pointer or a <code>reference_wrapper</code>, then no additional allocations are permitted.</p>
+<p>The way the optimization works is that the <code>function</code> also carries with it a small buffer of raw bytes. If the <code>callable</code> is small (as it will be for a function pointer or or a <code>reference_wrapper</code>), then the <code>callable</code> is stored directly in the buffer, avoiding an extra allocation. If the <code>callable</code> is large, then a separate allocation is done as before.¹</p>
+<p>The concept behind the optimization is simple, but the execution is rather complicated. Since the memory is now being partly managed by the class itself, we can’t use a <code>unique_ptr</code> any more. Instead, we keep a raw pointer and do manual memory management.</p>
+<p>Let’s start with what we need in our <code>function</code>:</p>
+<pre>inline constexpr size_t storage_size =
+  std::max(sizeof(callable&lt;void(*)()&gt;),
+           sizeof(reference_wrapper&lt;char&gt;));
+
+using storage_t = typename
+           aligned_storage&lt;storage_size&gt;::type;
+
+struct function
+{
+  callable_base* m_callable = nullptr;
+
+  storage_t m_storage;
+
+  void* storage() { return addressof(m_storage); }
+
+  ...
+};
+</pre>
+<p>In addition to the <code>callable_base</code> pointer, we also have some storage that we can use for small callables. In order to satisfy the standard, our storage needs to be large enough to hold a callable function pointer or a callable reference wrapper.</p>
+<p>There’s a bit of a trick here: Calculating the size of an arbitrary function pointer and an arbitrary reference wrapper. Fortunately, the standard requires that all function pointers have the same size,² due to the rule that says that you can <code>reinterpret_cast</code> among function pointers, and if you <code>reinterpret_cast</code> back to where you started, the result is the same. A <code>reference_wrapper</code> is a wrapper around a pointer, and the largest pointer is the <code>void*</code>, which the standard requires to be the same size as a <code>char*</code>.³</p>
+<p>The idea is that the <code>m_callable</code> points either to a heap-allocated <code>callable&lt;T&gt;</code> (if it is large) or to a <code>callable&lt;T&gt;</code> constructed via placement new into the <code>m_storage</code> (if it is small).</p>
+<p>It’s a simple idea, but the implementation gets kind of messy, because the <code>callable&lt;T&gt;</code>‘s <code>clone</code> method has to do different things depending on whether it is a large or small object.</p>
+<pre>struct function
+{
+  ...
+
+  template&lt;typename T&gt;
+  function(T&amp;&amp; t)
+  {
+    if constexpr (sizeof(*new callable(t)) &lt;= storage_size) {
+      m_callable = new(storage()) callable(t);
+    } else {
+      m_callable = new callable(t);
+    }
+  }
+
+  ...
+};
+</pre>
+<p>To create a <code>function</code>, we take the functor object and construct it either in-place (if it is small) or on the heap (if it is large).</p>
+<pre>struct function
+{
+  ...
+
+  function(const function&amp; other)
+  {
+    if (other.m_callable) {
+      m_callable = other.m_callable.clone(m_storage);
+    }
+  }
+
+  ...
+};
+</pre>
+<p>To copy a <code>function</code>, we take the source’s <code>m_callable</code> and ask it to clone itself, using our storage if it can.</p>
+<pre>struct function
+{
+  ...
+
+  function(function&amp;&amp; other)
+  {
+    if (other.m_callable == other.storage()) {
+      m_callable = other.m_callable.move_to(m_storage);
+      exchange(other.m_callable, nullptr)-&gt;~callable();
+    } else if (other.m_callable) {
+      m_callable = exchange(other.m_callable, nullptr);
+    }
+  }
+
+  ...
+};
+</pre>
+<p>To move a <code>function</code>, there are three cases.</p>
+<ul>
+<li>If the callable is small (the <code>m_callable</code> points to its storage), then move it into the destination’s storage and destruct the original, leaving the source empty.</li>
+<li>If the callable is large (the <code>m_callable</code> is non-null but does not point to its storage), then transfer the pointer into the new object and leave the source empty.</li>
+<li>If there is no callable (<code>m_callable</code> is <code>nullptr</code>), then leave both source and destination empty.</li>
+</ul>
+<p>The order of operations in the <code>move_to</code> case is tricky. The <code>move_to</code> comes first, because we don’t want to make any changes to the source if the operation fails. Once the move succeeds, we need to null out the <code>other.m_callable</code> before destructing it, so that an exception during destruction will not result in double-destruction later.</p>
+<pre>struct function
+{
+  ...
+
+  ~function()
+  {
+    if (m_callable == storage()) {
+      m_callable-&gt;~callable();
+    } else {
+      delete m_callable;
+    }
+  }
+
+  ...
+};
+</pre>
+<p>To destruct a <code>function</code>, there are again three cases, but two of them collapse.</p>
+<ul>
+<li>If the callable is small (the <code>m_callable</code> points to our storage), then destruct it in place.</li>
+<li>Otherwise the callable is large or null. We take advantage of the fact that <code>delete</code>-ing a null pointer is harmless.</li>
+</ul>
+<p>The <code>operator()(int, char*)</code> is the same as before.</p>
+<p>We need to make some adjustments to <code>callable_base</code>:</p>
+<pre>struct callable_base
+{
+  callable_base() = default;
+  virtual ~callable_base() { }
+  virtual bool invoke(int, char*) = 0;
+  virtual callable_base* clone(storage_t&amp; storage) = 0;
+  virtual callable_base* move_to(storage_t&amp; storage) = 0;
+};
+</pre>
+<p>The <code>callable_base</code> has new <code>clone</code> and <code>move_to</code> methods.</p>
+<pre>template&lt;typename T&gt;
+struct callable : callable_base
+{
+  T m_t;
+
+  callable(T const&amp; t) : m_t(t) {}
+  callable(T&amp;&amp; t) : m_t(move(t)) {}
+
+
+  bool invoke(int a, char* b) override
+  {
+    return m_t(a, b);
+  }
+
+  ...
+};
+</pre>
+<p>The constructors and <code>invoke</code> method haven’t changed.</p>
+<pre>template&lt;typename T&gt;
+struct callable : callable_base
+{
+  ...
+
+  callable_base* clone(storage_t&amp; storage) override
+  {
+    if constexpr (sizeof(*this) &lt;= sizeof(storage)) {
+      return new(addressof(storage)) callable(m_t);
+    } else {
+      return new callable(m_t);
+    }
+  }
+
+  callable_base* move_to(storage_t&amp; storage) override
+  {
+    if constexpr (sizeof(*this) &lt;= sizeof(storage)) {
+      return new(addressof(storage)) callable(move(m_t));
+    } else {
+      return nullptr; // should not be called
+    }
+  }
+};
+</pre>
+<p>The <code>clone</code> and <code>move_to</code> methods use the provided storage if it is large enough. Otherwise, the <code>clone</code> allocates the cloned object on the heap. (On the other hand <code>move_to</code> should never be called for heap-allocated objects, for in those cases, we move the pointer to the callable instead of the callable itself.)</p>
+<p>I think that’s the necessary changes to keep track of the memory bookkeeping for our miniature <code>function</code>. I left out a bunch of methods that are required by the standard, particularly the assignment operators. I’m not even going to leave them as an exercise, because you should just be using the <code>std::function</code> implementation that came with your compiler.</p>
+<p>The purpose of this entry was to give you an idea of what’s happening under the hood. This will help you when you need to debug one of these things, and the techniques may come in handy later. Like next time, for instance. Stay tuned.</p>
+<p>¹ Implementations typically do some tuning to decide how big this small buffer should be. You want the buffer to be small, so that the function object consumes less memory. But you want the buffer to be large enough to hold the most common callables. (Plus, of course, the two callables required by the standard.)</p>
+<p>² Note that the same requirement <a href="https://devblogs.microsoft.com/oldnewthing/20040209-00/?p=40713"> does not apply to pointers to member functions</a>.</p>
+<p>³ Technically, I guess, you could have an implementation where function pointers were different sizes, but where <code>reinterpret_cast</code> applies appropriate conversions to “squeeze out the air” from large function pointers so they can be recovered from small function pointers;⁴ or an implementation where <code>reference_</code><code>wrapper</code> did something weird based on the type. But since <code>std::function</code> is part of the implementation, it can make these sorts of implementation-dependent assumptions.</p>
+<p>⁴ For example, you might have “fast function pointers” which are fat (say, because they consist of a code pointer plus a table of contents) and “slow function pointers” which are smaller but slower (consisting of just the code pointer). The idea is that the bytes immediately before the code pointer hold the table of contents. Calling through a fast function pointer consists of loading the table of contents into the global pointer register, and calling the code pointer.</p>
+<pre>  ; assume fast function pointer is in r34/r35
+  mov   gp, r34                 // set up global pointer
+  mov   b6, r35                 // set up branch target
+  br.call.dptk.many rp = b6 ;;  // call it
+</pre>
+<p>Calling through a slow function pointer requires the call site to recover the table of contents from memory before calling the target.</p>
+<pre>  ; assume slow function pointer is in r34
+  add   r30 = r34, -8           // get address of TOC
+  mov   b6, r34 ;;              // set up branch target
+  mov   gp, [r30]               // set up global pointer
+  br.call.dptk.many rp = b6 ;;  // call the target
+</pre>
+<p>The slow version costs a memory access and takes an extra cycle. It may also burn an extra cache line, because we have to access the data that comes before the start of the code, and the code may have to satisfy certain alignment requirements which cause it tend to appear at the start of a cache line.</p>
+<p>To convert a fast function pointer to a slow one, discard the table of contents pointer. To convert a slow function pointer to a fast one, fetch the table of contents pointer from the memory immediately before the code address.</p>
+
+
+</body>

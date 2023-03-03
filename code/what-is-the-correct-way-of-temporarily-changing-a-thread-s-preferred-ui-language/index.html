@@ -1,0 +1,120 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is the correct way of temporarily changing a thread's preferred UI language?</h1>  <!-- .entry-meta -->
+
+<p>
+A customer ran into a crashing bug in their shell extension.
+The shell extension wants to change the thread’s preferred UI language
+temporarily, so that it can load its resources from a specific language.
+You’d think this would be easy:
+</p>
+<pre>
+<i>// error checking elided for simplicity
+// There is a bug in this code - read on
+// Get the current thread preferred UI languages
+ULONG cLanguages;
+PZZWSTR pszzPrevLanguages;
+ULONG cchPrevLanguages = 0;
+GetThreadPreferredUILanguages(MUI_LANGUAGE_NAME,
+                              &amp;cLanguages, NULL,
+                              &amp;cchPrevLanguages);
+pszzPrevLanguages = new WCHAR[cchPrevLanguages];
+GetThreadPreferredUILanguages(MUI_LANGUAGE_NAME,
+                              &amp;cLanguages,
+                              pszzPrevLanguages,
+                              &amp;cchPrevLanguages);
+... change the thread preferred UI languages ...
+... load resources ...
+// Restore the original thread preferred UI languages
+SetThreadPreferredUILanguages(MUI_LANGUAGE_NAME,
+                              pszzPrevLanguages,
+                              &amp;cLanguages);
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/02/03/66660.aspx">delete[]</a> pszzPrevLanguages;</i>
+</pre>
+<p>
+Approximately ten seconds after this code runs, Explorer crashes
+with the exception <code>STATUS_CALLBACK_RETURNED_LANG</code>
+whose description is
+“A threadpool worker thread enter a callback,
+which left with preferred languages set.
+This is unexpected, indicating that the callback missed clearing them.”
+(Just before Explorer crashes, the message
+“ThreadPool: callback 77180274(05B67430) returned with preferred languages set”
+appears on the debugger, which says basically the same thing as the
+status code.)
+</p>
+<p>
+<b>Exercise</b>: Why does it take ten seconds before the crash occurs?
+</p>
+<p>
+This crash is puzzling, because it’s claiming that the callback didn’t
+reset the thread preferred languages, but you can see us doing it
+right there in the code when we call
+<code>Set­Thread­Preferred­UI­Languages</code>!
+Somebody’s on crack, but who?
+</p>
+<p>
+A closer reading of the error message indicates that the callback
+needs to “clear” the thread preferred languages, not merely reset them
+to their original values, and the documentation for
+<code>Set­Thread­Preferred­UI­Languages</code> says,
+“To clear the thread preferred UI languages list,
+the application can set this parameter to a null string
+or an empty double null-terminated string.”
+Okay, so now the question is,
+“How can I tell, when I call <code>Get­Thread­Preferred­UI­Languages</code>,
+that the list of languages I receive back represents the
+<i>clear</i> state as opposed to indicating that some other
+code called <code>Set­Thread­Preferred­UI­Languages</code> before I did?”
+</p>
+<p>
+The magic is the flag
+<code>MUI_THREAD_LANGUAGES</code>.
+If you pass this flag when you call
+<code>Get­Thread­Preferred­UI­Languages</code>,
+it will return a null string if the thread has not customized
+its preferred UI languages, indicating that the way to restore
+the thread’s preferred UI language state is to clear it
+rather than setting it.
+Fortunately, this lines up nicely with the way you’re supposed to
+clear the state,
+so at the end of the day there is no special case.
+</p>
+<p>
+The fix to the above code, then, is to make the following simple
+change:
+</p>
+<pre>
+// error checking elided for simplicity
+// Get the current thread preferred UI languages
+ULONG cLanguages;
+PZZWSTR pszzPrevLanguages;
+ULONG cchPrevLanguages = 0;
+GetThreadPreferredUILanguages(MUI_LANGUAGE_NAME <font color="red">|
+                              MUI_THREAD_LANGUAGES</font>,
+                              &amp;cLanguages, NULL,
+                              &amp;cchPrevLanguages);
+pszzPrevLanguages = new WCHAR[cchPrevLanguages];
+GetThreadPreferredUILanguages(MUI_LANGUAGE_NAME <font color="red">|
+                              MUI_THREAD_LANGUAGES</font>,
+                              &amp;cLanguages,
+                              pszzPrevLanguages,
+                              &amp;cchPrevLanguages);
+... change the thread preferred UI languages ...
+... load resources ...
+// Restore the original thread preferred UI languages
+SetThreadPreferredUILanguages(MUI_LANGUAGE_NAME,
+                              pszzPrevLanguages,
+                              &amp;cLanguages);
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/02/03/66660.aspx">delete[]</a> pszzPrevLanguages;
+</pre>
+<p>
+As you might expect,
+<a href="http://blogs.msdn.com/michkap/archive/2009/12/01/9930855.aspx">
+Michael Kaplan has his own thoughts on the
+<code>Set­Thread­Preferred­UI­Languages</code> function</a>.
+In fact, he has
+<a href="http://www.bing.com/search?q=site:blogs.msdn.com/b/michkap+SetThreadPreferredUILanguages">
+several such thoughts</a>.</p>
+
+
+</body>

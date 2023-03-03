@@ -1,0 +1,81 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Peeking inside an IShellItem to see what it’s made of</h1>  <!-- .entry-meta -->
+
+<p>Windows XP introduced <a href="https://msdn.microsoft.com/library/windows/desktop/bb761144(v=vs.85).aspx">the <code>IShell­Item</code> interface</a> which represents an item in the shell namespace. This <a href="https://devblogs.microsoft.com/oldnewthing/">encapsulates what traditionally is represented by a pair of things</a>, the <a href="https://msdn.microsoft.com/library/windows/desktop/bb775075(v=vs.85).aspx">the <code>IShell­Folder</code> interface</a> and an <a href="https://msdn.microsoft.com/library/windows/desktop/bb773321(v=vs.85).aspx"><code>ITEMID_CHILD</code></a>. The shell item lets you carry just one object around instead of two. </p>
+<p>Another way of representing an item in the shell namespace is in the form of a single <code>ITEMID_ABSOLUTE</code>, and you can also create a shell item from that. </p>
+<p>Creating a single unit of currency to represent a shell item tries to solve the problem of <a href="https://en.wikipedia.org/wiki/Category:Currencies_replaced_by_the_euro">having to exchange money every time you cross a boundary</a>. The <code>IShell­Item</code> also gives you some methods which simplifies various operations by wrapping low-level methods on <code>IShell­Folder</code>. For example, the <code>IShell­Item::Bind­To­Handler</code> method figures out the right way to get the item you ask for rather than making you puzzle out the arcane rules behind <code>IShell­Folder::Bind­To­Object</code>, <code>IShell­Folder::Bind­To­Storage</code>, <code>IShell­Folder::Create­View­Object</code>, <code>IShell­Folder::Get­UI­Object­Of</code>, and more. </p>
+<p>But what if you need something that <code>IShell­Item</code> doesn’t provide a convenience wrapper for? Then you need to peek inside. </p>
+<p>If you want to peek inside and get the <code>IShell­Folder</code> and <code>ITEMID_CHILD</code>, you can use <a href="https://msdn.microsoft.com/library/windows/desktop/bb775360(v=vs.85).aspx">the <code>IParent­And­Item</code> interface</a>, specifically, <a href="https://msdn.microsoft.com/library/windows/desktop/bb775358(v=vs.85).aspx">the <code>IParent­And­Item::Get­Parent­And­Item</code> method</a>. Once nice thing about the <code>IParent­And­Item::Get­Parent­And­Item</code> method is that you can pass <code>nullptr</code> for the things you aren’t interested in. </p>
+<p>Alternatively, if you want to peek inside and get the <code>ITEMIDLIST_ABSOLUTE</code>, then you can use <a href="https://msdn.microsoft.com/library/windows/desktop/bb775326(v=vs.85).aspx">the <code>IPersist­ID­List::Get­ID­List</code> method</a> to suck it out. We saw this <a href="https://blogs.msdn.microsoft.com/oldnewthing/20130128-00/?p=5433">a while back</a>, but I’ll repeat it here just so the information is all in one place. </p>
+<p>If you are willing to abandon Windows XP support, you can use <a href="https://msdn.microsoft.com/library/windows/desktop/bb762184(v=vs.85).aspx">the <code>SH­Get­ID­List­From­Object</code> function</a> which knows how to do this. (It tries other things, too.) </p>
+<p>Okay, let’s take things out for a spin. We’ll get the normal display name for a shell item in four ways: </p>
+<ul>
+<li>By asking the item directly. 
+<li>By using the <code>IShell­Folder::Get­Display­Name</code>     method. 
+<li>By using the     <code>IPersist­ID­List::Get­ID­List</code>     method,     and then the     <code>SH­Get­Name­From­ID­List</code> function. 
+<li>By using the     <code>SH­Get­ID­List­From­Object</code>     function,     and then the     <code>SH­Get­Name­From­ID­List</code> function. </li></li></li></li></ul>
+<p>If all goes well, we should get the same string printed each time. </p>
+<p>Remember that Little Programs do little to no error checking. </p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;atlalloc.h&gt;
+#include &lt;stdio.h&gt;     // horrors! mixing C and C++!
+
+void PrintNameDirectlyFromItem(IShellItem* item)
+{
+    CComHeapPtr&lt;wchar_t&gt; name;
+    item-&gt;GetDisplayName(SIGDN_NORMALDISPLAY, &amp;name);
+    _putws(name);
+}
+
+void PrintNameViaIShellFolder(IShellItem* item)
+{
+    CComPtr&lt;IShellFolder&gt; folder;
+    CComHeapPtr&lt;ITEMID_CHILD&gt; child;
+    CComQIPtr&lt;IParentAndItem&gt;(item)-&gt;GetParentAndItem(nullptr, &amp;folder, &amp;child);
+    <a href="https://blogs.msdn.microsoft.com/oldnewthing/20040823-00/?p=38073">STRRET</a> ret;
+    folder-&gt;GetDisplayNameOf(child, SHGDN_NORMAL, &amp;ret);
+    CComHeapPtr&lt;wchar_t&gt; name;
+    StrRetToStrW(&amp;ret, child, &amp;name);
+    _putws(name);
+}
+
+void PrintNameViaAbsoluteIDList(IShellItem* item)
+{
+    CComHeapPtr&lt;ITEMIDLIST_ABSOLUTE&gt; absolute;
+    CComQIPtr&lt;IPersistIDList&gt;(item)-&gt;GetIDList(&amp;absolute);
+    CComHeapPtr&lt;wchar_t&gt; name;
+    SHGetNameFromIDList(absolute, SIGDN_NORMALDISPLAY, &amp;name);
+    _putws(name);
+}
+
+void PrintNameViaAbsoluteIDList2(IShellItem* item)
+{
+    CComHeapPtr&lt;ITEMIDLIST_ABSOLUTE&gt; absolute;
+    SHGetIDListFromObject(item, &amp;absolute);
+    CComHeapPtr&lt;wchar_t&gt; name;
+    SHGetNameFromIDList(absolute, SIGDN_NORMALDISPLAY, &amp;name);
+    _putws(name);
+}
+
+int main(int, char**)
+{
+    <a href="https://devblogs.microsoft.com/oldnewthing/">CCoInitialize</a> init;
+
+    CComPtr&lt;IShellItem&gt; item;
+    SHGetKnownFolderItem(FOLDERID_Downloads, KF_FLAG_DEFAULT, nullptr, IID_PPV_ARGS(&amp;item));
+
+    PrintNameDirectlyFromItem(item);
+    PrintNameViaIShellFolder(item);
+    PrintNameViaAbsoluteIDList(item);
+    PrintNameViaAbsoluteIDList2(item);
+
+    return 0;
+}
+</pre>
+<p><b>Bonus chatter</b>: When you create a shell item, it takes the things you created it from, and it produces the other equivalent things on demand. For example, if you create a shell item from an absolute item ID list, and then you ask for the folder and child item ID, it will convert the absolute item ID list into a folder and child item ID list. (It also caches the result so that the next time you ask, it’ll be able to answer the question more quickly.) </p>
+
+
+</body>

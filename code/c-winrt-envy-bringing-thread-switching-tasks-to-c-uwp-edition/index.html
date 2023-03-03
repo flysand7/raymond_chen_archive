@@ -1,0 +1,199 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++/WinRT envy: Bringing thread switching tasks to C# (UWP edition)</h1>  <!-- .entry-meta -->
+
+<p><!-- backref: How do I wait for the completion of the delegate I passed to CoreDispatcher.RunAsync and ThreadPool.RunAsync? -->Last time, we developed a <code>Run­Task­Async</code> method to try to make it easier to switch threads in a task, but we saw that while it simplified some operations, it was still cumbersome because of the difficulty of sharing state between the main method and the async lambdas that it kicked off to other threads. </p>
+<p>Let’s fix that by stealing an idea from C++/WinRT: Make thread-switching an awaitable operation. </p>
+<p>In C++/WinRT, you can switch threads by awaiting a magic object where you enter on one thread and pop out the other side on a different thread. It’s like <a href="https://en.wikipedia.org/wiki/Portal_(video_game)">Portal</a> for threads! </p>
+<pre>
+// C++/WinRT
+
+winrt::fire_and_forget MyPage::Button_Click()
+{
+  // We start on a UI thread.
+  auto lifetime = get_strong();
+
+  // Get the control's value from the UI thread.
+  auto v = SomeControl().Value();
+
+  // Move to a background thread.
+  co_await winrt::resume_background();
+
+  // Do the computation on a background thread.
+  auto result1 = Compute1(v);
+  auto other = co_await ContactWebServiceAsync();
+  auto result2 = Compute2(result1, other);
+
+  // Return to the UI thread to provide an interim update.
+  co_await winrt::resume_foreground(Dispatcher());
+
+  // Back on the UI thread: We can update UI elements.
+  TextBlock1().Text(result1);
+  TextBlock2().Text(result2);
+
+  // Back to the background thread to do more computations.
+  co_await winrt::resume_background();
+
+  auto extra = co_await GetExtraDataAsync();
+  auto result3 = Compute3(result1, result2, extra);
+
+  // Return to the UI thread to provide a final update.
+  co_await winrt::resume_foreground(Dispatcher());
+
+  // Update the UI one last time.
+  TextBlock3().Text(result3);
+}
+</pre>
+<p>The thread-switching is expressed simply as an asynchronous operation. Constructors and destructors still run at the usual times, so you can use RAII types naturally. You can perform these magic <code>co_await</code> operations inside loops or conditionals, and they behave in the natural way. </p>
+<pre>
+// Move to a background thread if a condition is met.
+if (condition) {
+  co_await winrt::resume_background();
+}
+
+DoSomething();
+</pre>
+<p>In the above case, the <code>Do­Something()</code> occurs on a background thread if the condition is met, or it occurs on the current thread if the condition is not met. This sort of flexibility is difficult to express using our previous model of always putting off-thread actions into an asynchronous lambda. </p>
+<p>Okay, enough hype. Let’s bring <code>resume_</code><code>foreground()</code> and <code>resume_</code><code>background()</code> to C#! </p>
+<pre>
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using Windows.System.Threading;
+using Windows.UI.Core;
+
+struct DispatcherThreadSwitcher : INotifyCompletion
+{
+    internal DispatcherThreadSwitcher(CoreDispatcher dispatcher) =&gt;
+        this.dispatcher = dispatcher;
+    public DispatcherThreadSwitcher GetAwaiter() =&gt; this;
+    public bool IsCompleted =&gt; dispatcher.HasThreadAccess;
+    public void GetResult() { }
+    public void OnCompleted(Action continuation) =&gt;
+        _ = dispatcher.RunAsync(CoreDispatcherPriority.Normal,
+                                () =&gt; continuation());
+    CoreDispatcher dispatcher;
+}
+
+struct ThreadPoolThreadSwitcher : INotifyCompletion
+{
+    public ThreadPoolThreadSwitcher GetAwaiter() =&gt; this;
+    public bool IsCompleted =&gt;
+       SynchronizationContext.Current == null;
+    public void GetResult() { }
+    public void OnCompleted(Action continuation) =&gt;
+        _ = ThreadPool.RunAsync(_ =&gt; continuation());
+}
+
+class ThreadSwitcher
+{
+    static public DispatcherThreadSwitcher ResumeForegroundAsync(
+        CoreDispatcher dispatcher) =&gt;
+        new DispatcherThreadSwitcher(dispatcher);
+    static public ThreadPoolThreadSwitcher ResumeBackgroundAsync() =&gt;
+        new ThreadPoolThreadSwitcher();
+}
+</pre>
+<p>We can use the methods in <code>Thread­Switcher</code> the same way we did in C++/WinRT: </p>
+<pre>
+public sealed partial class MyPage : Page
+{
+  void Button_Click()
+  {
+    // Get the control's value from the UI thread.
+    var v = SomeControl.Value;
+
+    // Move to a background thread.
+    await ThreadSwitcher.ResumeBackgroundAsync();
+
+    // Do the computation on a background thread.
+    var result1 = Compute1(v);
+    var other = await ContactWebServiceAsync();
+    var result2 = Compute2(result1, other);
+
+    // Return to the UI thread to provide an interim update.
+    await ThreadSwitcher.ResumeForegroundAsync(Dispatcher);
+
+    // Back on the UI thread: We can update UI elements.
+    TextBlock1.Text = result1;
+    TextBlock2.Text = result2;
+
+    // Back to the background thread to do more computations.
+    await ThreadSwitcher.ResumeBackgroundAsync();
+
+    var extra = await GetExtraDataAsync();
+    var result3 = Compute3(result1, result2, extra);
+
+    // Return to the UI thread to provide a final update.
+    await ThreadSwitcher.ResumeForegroundAsync(Dispatcher);
+
+    // Update the UI one last time.
+    TextBlock3.Text = result3;
+  }
+}
+</pre>
+<p>This is identical to our original “all on the UI thread” code, excepty for the calls to <code>Thread­Switcher</code> members. </p>
+<p>How does this <code>Thread­Switcher</code> class work? </p>
+<p>We need to understand <a href="https://weblogs.asp.net/dixin/understanding-c-sharp-async-await-2-awaitable-awaiter-pattern">the awaitable-awaiter pattern</a> and <a href="https://weblogs.asp.net/dixin/understanding-c-sharp-async-await-1-compilation">how the compiler uses it</a>. Read the linked articles for details. In summary, the line </p>
+<pre>
+result = await x;
+</pre>
+<p>compiles to something spiritually similar to the following:¹ </p>
+<pre>
+var awaiter = x.GetAwaiter();
+if (!awaiter.IsCompleted) {
+ awaiter.OnCompleted(() =&gt; goto resume);
+ return task;
+resume:;
+}
+result = awaiter.GetResult();
+</pre>
+<p>First, the compiler calls the <code>Get­Awaiter</code> method to obtain an “awaiter”. If the awaiter says that the task has not yet completed, then the compiler tells the awaiter, “Okay, well, when it’s complete, let me know.” Then the function returns. When the operation finally completes, execution resumes. </p>
+<p>When the operation is complete, either because it was complete all along, or because we were resumed after a delayed completion, the result is obtained by calling the awaiter’s <code>Get­Result()</code> method. </p>
+<p>You can create custom awaitable things by plugging into the above pattern. </p>
+<p>In our case, <code>Thread­Switcher.</code><code>Resume­Foreground­Async()</code> works as follows: </p>
+<ul>
+<li>It creates a <code>Dispatcher­Thread­Switcher</code>     with the <code>dispatcher</code> you want to use.</li>
+<li>The <code>Dispatcher­Thread­Switcher.</code><code>Get­Awaiter</code>     method returns itself.     The object serves double-duty as the awaitable object and     its own awaiter.</li>
+<li>To determine whether the operation has already completed,     the <code>Is­Completed</code> property reports     whether we are already on the dispatcher’s thread.     If so, then the compiler won’t bother scheduling a continuation;     it’ll just keep executing.</li>
+<li>If we report that the operation has not completed,     the compiler will use the <code>On­Completed</code>     method to ask us to complete the operation and then     call a specific delegate once it’s done.     We queue a work item onto the dispatcher’s thread.</li>
+<li>The work item runs on the dispatcher’s thread,     and from that work item, we invoke the completion delegate.     The coroutine resumes execution on the dispatcher’s thread,     as desired.</li>
+</ul>
+<p>The <code>Thread­Switcher.</code><code>Resume­Background­Async()</code> method works almost the same way, but for the thread pool rather than for a dispatcher. </p>
+<ul>
+<li>It creates a <code>Thread­Pool­Thread­Switcher</code>.</li>
+<li>The <code>Thread­Pool­Thread­Switcher.</code><code>Get­Awaiter</code>     method returns itself.     Again, the object serves double-duty as the awaitable object and     its own awaiter.</li>
+<li>To determine whether the operation has already completed,     we check the current <code>Synchronization­Context</code>.     A value of <code>null</code> means that we are already on a background     thread.</li>
+<li>If we report that the operation has not completed,     the compiler will use the <code>On­Completed</code>     method to ask us to complete the operation and then     call a specific delegate once it’s done.     We queue a work item onto the thread pool.</li>
+<li>The work item runs on a thread pool thread,     and from that work item, we invoke the completion delegate.     The coroutine resumes execution on a thread pool thread,     as desired.</li>
+</ul>
+<p>All the magic is done by a handful of one-line methods. </p>
+<p>Integrating thread switching via <code>await</code> not only simplifies the code, it also opens up new usage patterns that were difficult to accomplish without it. </p>
+<pre>
+// Assume we enter on the UI thread.
+using (var connection = new Connection()) {
+
+    // Initialize on the UI thread since
+    // we need information from UI objects.
+    connection.Initialize(SomeParameter);
+
+    await ThreadSwitcher.ResumeBackgroundAsync();
+    // Execute on a background thread.
+    connection.Execute();
+
+} // connection is disposed here
+
+// Process the results on a background thread.
+Process(connection.GetResults());
+</pre>
+<p>Notice that we switched threads right in the middle of the <code>using</code> block, so that we exited the block on a different thread from the one we started! </p>
+<p>When I show this trick to people, their reactions tend to fall into one of two categories. </p>
+<ol>
+<li>This is truly embracing the concept of asynchronous     operations, and it’s a game-changer for code that needs     to perform multiple actions on different threads.     We should make this trick more widely known.</li>
+<li>This is an offense against nature.     C# developers have long internalized the rule that     “Unless     <a href="https://docs.microsoft.com/en-us/dotnet/api/system.threading.tasks.task.configureawait">explicitly configured</a>,     <code>await</code> does not switch threads,”     but this class violates that rule.</li>
+</ol>
+<p>Let me know in the comments which side you identify with. And if you identify with the first group, should I adopt the <code>Thread­Switcher</code> class in the <a href="https://github.com/Microsoft/Windows-universal-samples/">UWP samples repo</a>? </p>
+<p>Next time, we’ll implement the <code>Thread­Switcher</code> methods for WPF and WinForms. </p>
+<p>¹ In reality, the compiler remembers where to resume execution in a state variable prior to the <code>return</code>, and the <code>goto resume</code> is done by resuming the state machine. </p>
+
+
+</body>

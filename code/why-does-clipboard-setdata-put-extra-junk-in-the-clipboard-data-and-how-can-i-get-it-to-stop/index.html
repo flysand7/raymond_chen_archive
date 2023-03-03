@@ -1,0 +1,67 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does Clipboard.SetData put extra junk in the clipboard data? And how can I get it to stop?</h1>  <!-- .entry-meta -->
+
+<p>One of the ways of putting data on the clipboard is with the <code>System.<code></code>Windows.<code></code>Forms.<code></code>Clipboard</code> object. There are methods for putting text on the clipboard in one of a few <a href="https://docs.microsoft.com/en-us/dotnet/api/system.windows.textdataformat">the standard text formats</a>. And if you use the <a href="https://msdn.microsoft.com/en-us/library/system.windows.forms.clipboard.setdata(v=vs.110).aspx"><code>Clipboard.<code></code>Set­Data</code> method</a>, you can place data on the clipboard with a custom format name. But when you use <code>Clipboard.<code></code>Set­Data</code> to put text on the clipboard, the actual raw data on the clipboard contains extra stuff. </p>
+<pre>
+Clipboard.SetData("customText", "Hello, world!");
+</pre>
+<p>The actual raw bytes on the clipboard are </p>
+<pre>
+96 A7 9E FD 13 3B 70 43 A6 79 56 10 6B B2 88 FB
+00 01 00 00 00 FF FF FF FF 01 00 00 00 00 00 00
+00 06 01 00 00 00 0D <u>48 65 6C 6C 6F 2C 20 77 6F
+72 6C 64 21</u> 0B
+</pre>
+<p>The underlined bytes are the ASCII string <tt>Hello, world!</tt>, but what’s the other junk? </p>
+<p>The <code>Clipboard.<code></code>Set­Data</code> method must serve two masters. One master is the Windows clipboard. Custom formats on the Windows clipboard are just binary blobs of data with no externally-imposed format. Any format for the data is by mutual agreement of the two parties using that custom format. </p>
+<p>The other master is the CLR. If a C# program puts a serializable object on the clipboard, then it should be able to read it back as an object. </p>
+<p>The <code>Clipboard.<code></code>Set­Data</code> method takes two parameters. The first, a string, is the custom clipboard format name. The second, an object, is the object to put on the clipboard. </p>
+<p>When putting an object on the clipboard, the CLR uses a <code>Binary­Formatter</code> to <a href="https://referencesource.microsoft.com/#System.Windows.Forms/winforms/Managed/System/WinForms/DataObject.cs#97ce7cbce10929cb">serialize the object to a binary blob</a>, and puts that binary blob on the clipboard. When reading an object from the clipboard, takes the binary blob from the clipboard and uses a <code>Binary­Formatter</code> to <a href="https://referencesource.microsoft.com/#System.Windows.Forms/winforms/Managed/System/WinForms/DataObject.cs#e947b692ecde8c3b">deserialize the object back into a CLR object</a>. </p>
+<p>Okay, so that keeps the second master happy. But what about the first master? Suppose the native clipboard has some arbitrary binary blob. How do we recognize that it is an arbitrary binary blob, rather than a serialized CLR object? Because if we try to deserialize it as a CLR object, we’ll get garbage. </p>
+<p>The answer is that the clipboard puts <a href="https://referencesource.microsoft.com/#System.Windows.Forms/winforms/Managed/System/WinForms/DataObject.cs#8c51bc95917bf024">a secret signal</a> <a href="https://referencesource.microsoft.com/#System.Windows.Forms/winforms/Managed/System/WinForms/DataObject.cs#f13ace5762df124c">at the start of the binary blob</a>. <a href="https://referencesource.microsoft.com/#System.Windows.Forms/winforms/Managed/System/WinForms/DataObject.cs#8788128edebb76a9">If the secret signal is present</a>, then it assumes that the data represents a binary-formatted serialized CLR object. Otherwise, it assumes the data represents an arbitrary binary blob. </p>
+<p>When you read data from the clipboard, and it turns out to be an arbitrary binary blob, the <code>Clipboard.<code></code>Get­Data</code> method returns a <code>Stream</code> containing the raw binary blob. </p>
+<p>Conversely, if you want to write a raw binary blob, you can <a href="https://referencesource.microsoft.com/#System.Windows.Forms/winforms/Managed/System/WinForms/DataObject.cs#aaeb640db20235c3">pass a <code>Stream</code></a> to the the <code>Clipboard.<code></code>Set­Data</code> method. </p>
+<p>Okay, so now with some help from <a href="https://msdn.microsoft.com/en-us/library/cc236844.aspx">[MS-NRBF]: .NET Remoting: Binary Format Data Structure</a>. we can parse the raw bytes: </p>
+<pre>
+magic prefix:
+    96 A7 9E FD 13 3B 70 43 A6 79 56 10 6B B2 88 FB
+
+SerializationHeaderRecord
+    RecordTypeEnum: 00
+    RootId: 01 00 00 00
+    HeaderId: FF FF FF FF
+    MajorVersion: 01 00 00 00
+    MinorVersion: 00 00 00 00
+
+RecordTypeEnum: 06 (<a href="https://referencesource.microsoft.com/#mscorlib/system/runtime/serialization/formatters/binary/binaryenums.cs#ed6b5341ded111db">BinaryObjectString</a>)
+ObjectId: 01 00 00 00
+Length: 0D
+UTF-8 data: 48 65 6C 6C 6F 2C 20 77 6F 72 6C 64 21
+
+End of serialization: 0B
+</pre>
+<p>And to wrap things up, a table, because people like tables. </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse">
+<tr>
+<th rowspan="2">Operation with<br/>custom format</th>
+<th colspan="2">Format</th>
+</tr>
+<tr>
+<th>Raw binary data</th>
+<th>CLR binary serialized data</th>
+</tr>
+<tr>
+<td><code>SetData</code></td>
+<td>Pass <code>Stream</code></td>
+<td>Pass anything except <code>Stream</code></td>
+</tr>
+<tr>
+<td><code>GetData</code></td>
+<td>Returns <code>Stream</code></td>
+<td>Returns anything except <code>Stream</code></td>
+</tr>
+</table>
+<p>That wraps up CLR week for this year. The good news is that you made it almost all the way to the end of the year before I inflicted it upon you. The bad news is that the new year is coming up soon, so the threat of another CLR week returns more quickly. </p>
+
+
+</body>

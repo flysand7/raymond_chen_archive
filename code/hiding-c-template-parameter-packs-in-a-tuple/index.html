@@ -1,0 +1,65 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Hiding C++ template parameter packs in a tuple</h1>  <!-- .entry-meta -->
+
+<p>C++11 introduced variadic templates and template parameter packs.</p>
+<pre>template&lt;typename... Args&gt;
+struct S;
+</pre>
+<p>Passing template parameter packs around is a bit of a hassle, because the dots “soak up” parameters, which make them hard to pass to other templated types. You also can’t “save” parameter packs in another type:</p>
+<pre>template&lt;typename... Args&gt;
+struct S
+{
+    // doesn't compile: cannot create a type that
+    // is itself a parameter pack
+    using TheArgs = Args...;
+};
+</pre>
+<p>One workaround for this is to capture the types into a <code>std::tuple</code>.</p>
+<pre>template&lt;typename... Args&gt;
+struct S
+{
+    using Tuple = std::tuple&lt;Args...&gt;;
+};
+</pre>
+<p>You can then pass the <code>Tuple</code> around, and if you need to extract the types, you can pull them out of the tuple.</p>
+<p>My first thought about how to extract the types was to use <code>std::get</code>:</p>
+<pre>// code in italics is wrong
+template&lt;typename... Args&gt;
+struct Traits
+{
+    using Tuple = std::tuple&lt;Args...&gt;;
+    static constexpr auto Size = sizeof...(Args);
+    template &lt;std::size_t N&gt;
+    <i>using Nth = decltype(std::get&lt;N&gt;(std::declval&lt;Tuple&gt;()));</i>
+    using First = Nth&lt;0&gt;;
+    using Last  = Nth&lt;Size - 1&gt;;
+};
+</pre>
+<p>This doesn’t work because <code>std::get</code> returns a reference:</p>
+<pre>void f()
+{
+ whatis&lt;Traits&lt;int, double&gt;::First&gt;();
+}
+
+    call    void whatis&lt;int&amp;&amp;&gt;()
+</pre>
+<p>This behavior is presumably so you can modify the tuple:</p>
+<pre>std::tuple&lt;int&gt; tuple;
+std::get&lt;0&gt;(tuple) = 2;
+</pre>
+<p>Fortunately, there’s another way to extract the type from a tuple: <code>std::tuple_element</code>.</p>
+<pre>template&lt;typename... Args&gt;
+struct Traits
+{
+    using Tuple = std::tuple&lt;Args...&gt;;
+    static constexpr auto Size = sizeof...(Args);
+    template &lt;std::size_t N&gt;
+    <span style="color: blue;">using Nth = typename std::tuple_element&lt;N, Tuple&gt;::type;</span>
+    using First = Nth&lt;0&gt;;
+    using Last  = Nth&lt;Size - 1&gt;;
+};
+</pre>
+<p>This provides a simpler way to extract the last type from a template parameter pack than writing some horrible recursive template metaprogram, which is what some people did instead of hiding the pack inside a tuple.</p>
+
+
+</body>

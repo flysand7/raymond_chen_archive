@@ -1,0 +1,115 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does my C++/WinRT project get errors of the form “<code>abi&lt;…&gt;::…</code> is abstract see reference to <code>producer&lt;…&gt;</code>“?</h1>  <!-- .entry-meta -->
+
+<p>Let’s say you want to implement an interface in your <a href="https://docs.microsoft.com/en-us/windows/uwp/cpp-and-winrt-apis/"> C++/WinRT</a> class.</p>
+<pre>namespace winrt
+{
+  using namespace ::winrt::Windows::Foundation;
+  using namespace ::winrt::Windows::Web::Http;
+  using namespace ::winrt::Windows::Web::Http::Filters;
+}
+
+struct MyFilter :
+  public winrt::implements&lt;MyFilter,
+                           winrt::IHttpFilter&gt;
+{
+  MyFilter();
+  winrt::IAsyncOperationWithProgress&lt;
+    winrt::HttpResponseMessage, winrt::HttpProgress&gt;
+  SendRequestAsync(winrt::HttpRequestMessage request);
+};
+</pre>
+<p>Looks great.</p>
+<p>And you get this horrible compiler error, which I’ve reformatted to make it slightly less horrible:</p>
+<pre>error C2259: 'winrt::impl::produce&lt;D,I&gt;': cannot instantiate abstract class
+    with
+    [
+        D=MyFilter,
+        I=winrt::Windows::Web::Http::Filters::IHttpFilter
+    ]
+
+due to following members:
+
+  'int32_t winrt::impl::abi&lt;
+    winrt::Windows::Web::Http::Filters::IHttpFilter,
+    void&gt;::type::SendRequestAsync(void *,void **)
+    noexcept': is abstract
+
+see declaration of
+
+  'winrt::impl::abi&lt;
+    winrt::Windows::Web::Http::Filters::IHttpFilter,
+    void&gt;::type::SendRequestAsync'
+
+see reference to class template instantiation
+
+  'winrt::impl::producer&lt;
+    D,winrt::Windows::Web::Http::Filters::IHttpFilter,
+    void&gt;' being compiled
+
+    with
+    [
+        D=MyFilter
+    ]
+
+see reference to class template instantiation
+
+  'winrt::impl::producer_convert&lt;
+    D,winrt::Windows::Web::Http::Filters::IHttpFilter,
+    void&gt;' being compiled
+
+    with
+    [
+        D=MyFilter
+    ]
+
+see reference to class template instantiation
+
+  'winrt::impl::producers_base&lt;D,
+    std::tuple&lt;winrt::Windows::Web::Http::Filters::IHttpFilter&gt;
+    &gt;' being compiled
+
+    with
+    [
+        D=MyFilter
+    ]
+
+see reference to class template instantiation
+
+  'winrt::implements&lt;MyFilter,
+    winrt::Windows::Web::Http::Filters::IHttpFilter&gt;' being compiled
+</pre>
+<p>This seems to be saying that a method was not implemented, but it’s some weird <code>int32_t abi&lt;...&gt;</code> thing that doesn’t resemble anything you’ve seen in any documentation anywhere.</p>
+<p>What’s even more confusing is that one of your colleagues copied this exact same code into their project, and it compiled just fine.</p>
+<p>The problem is that you forgot to include the header file for the namespace that contains the interface you are trying to implement. In this case, it means that you forgot to include the <code>winrt/Windows.Web.Http.Filters.h</code> header file.</p>
+<p>That also explains why your colleague doesn’t have the same problem: Your colleague included the header file.</p>
+<p>What makes this error message particularly insidious is that you might say, “Well, I must have forgotten to implement a method,” and try in vain to implement the missing methods and end up digging yourself into deeper and deeper holes.</p>
+<p>Starting in C++/WinRT build 20190923, the error message has been made <a href="https://github.com/microsoft/xlang/pull/598"> much less confusing</a>:</p>
+<pre>error C2079: 'winrt::impl::producer&lt;D
+    winrt::Windows::Web::Http::Filters::IHttpFilter,
+    void&gt;::vtable'
+    uses undefined struct 'winrt::impl::produce&lt;D,I&gt;'
+
+    with
+    [
+        D=MyFilter
+    ]
+</pre>
+<p>The new error message says that something is undefined, which is hopefully a better clue that you need to include the corresponding header file in order to get the definition.</p>
+<p>This is one of the things about writing libraries that is often overlooked: Arranging things so that when the developer makes a mistake, the compiler’s error message leads the developer in the right direction, or at least not in the <i>wrong</i> direction. This is hard, because you the library writer don’t actually control the compiler’s error messages. You just have to try to have things set up so that the error message the compiler generates is somehow indicative of how the library was incorrectly used.</p>
+<p>It’s indirect programming.</p>
+<p><b>Bonus chatter</b>: It is the job of the <code>produce</code> class to implement the ABI methods. In the original version, the <code>produce</code> class was defined as a template with a default definition:</p>
+<pre>template&lt;typename D, typename I&gt;
+struct produce
+{
+};
+</pre>
+<p>This means that if you forget to include the header file that contains the required specialization, the compiler happily uses the default. But the default definition doesn’t actually implement any of the ABI methods, resulting in a bunch of “cannot instantiate abstract class” errors.</p>
+<p>The fix is to leave the template class declared but not defined:</p>
+<pre>template&lt;typename D, typename I&gt;
+struct produce;
+</pre>
+<p>With this version, if somebody tries to produce an interface without having included the header file, there is no specialization, and there is no default definition either, so you get a compiler error that tells you that the structure isn’t defined yet.</p>
+
+
+</body>

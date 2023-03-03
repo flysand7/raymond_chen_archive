@@ -1,0 +1,90 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I synthesize a C++20 three-way comparison from two-way comparisons?</h1>  <!-- .entry-meta -->
+
+<p>The C++20 three-way comparison operator <tt>&lt;=&gt;</tt> (commonly nicknamed the <i>spaceship operator</i> due to its <a href="https://en.wikipedia.org/wiki/Unidentified_flying_object"> appearance</a>) compares two items and describes the result. It’s called the three-way comparison because there are five possible results: <i>less</i>, <i>equal</i>, <i>equivalent</i>, <i>greater</i>, and <i>unordered</i>.</p>
+<p>Yeah, the name is kind of weird.</p>
+<p>It’s called the three-way comparison because in other languages, the equivalent operator has three possible results: <i>less</i>, <i>equal</i>, and <i>greater</i>. C++20 expands the set of possible results but kept the old name. (<a href="https://en.wikipedia.org/wiki/Rule_of_three_(C%2B%2B_programming)" title="Rule of three">Sound familiar</a>?)</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<th>Ordering</th>
+<th colspan="5">Results</th>
+</tr>
+<tr>
+<td>strong ordering</td>
+<td>less</td>
+<td>equal</td>
+<td>equivalent</td>
+<td>greater</td>
+<td> </td>
+</tr>
+<tr>
+<td>weak ordering</td>
+<td>less</td>
+<td colspan="2">equivalent</td>
+<td>greater</td>
+<td> </td>
+</tr>
+<tr>
+<td>partial ordering</td>
+<td>less</td>
+<td colspan="2">equivalent</td>
+<td>greater</td>
+<td>unordered</td>
+</tr>
+</tbody>
+</table>
+<p>Each of the orderings can convert to the one below it, using the conversions given by the chart.</p>
+<p>The strong ordering distinguishes between items being <i>equal</i> (identical and interchangeable) and <i>equivalent</i> (not interchangeable but close enough for some purpose). For example, two instances of the same string <code>"hello"</code> are equal, in that they represent the same string and are fully interchangeable. On the other hand, two people with the same security clearance are <i>equivalent</i> from a security perspective (they have access to the same things), but they are not <i>equal</i> (they are nevertheless different people).</p>
+<p>When sorting, you are usually interested in equivalence, but when searching you might be interested in equality. (I’m looking for Bob, not just anybody with the same security clearance as Bob.)</p>
+<p>Suppose you have an object from a class library that predates C++20 and doesn’t support three-way comparison. You want your code to be able to take advantage of the three-way comparison should the library be updated but fall back to two-way comparison in the meantime. In other words, you want to take advantage of three-way comparison if available.</p>
+<p>Fortunately, you don’t have to write all that SFINAE nonsense, because somebody else has done it for you: <code>std::tuple</code>.</p>
+<p>Tuples have the bonus property of supporting the three-way comparison operator, even if the underlying types do not. In the case where they do not, they will synthesize a three-way comparison from the two-way comparisons.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3">
+<tbody>
+<tr>
+<td>if <code>a &lt; b</code></td>
+<td>return <code>less</code></td>
+</tr>
+<tr>
+<td>else if <code>a &gt; b</code></td>
+<td>return <code>greater</code></td>
+</tr>
+<tr>
+<td>otherwise</td>
+<td>return <code>equivalent</code></td>
+</tr>
+</tbody>
+</table>
+<p>So we can just wrap the objects inside a <code>std::tuple</code> and compare the tuples. To avoid unnecessary copies, we can wrap them as references, or use <code>forward_<wbr/>as_<wbr/>tuple</code> which <!-- backref: What's up with <CODE>std::piecewise_construct</CODE> and <CODE>std::forward_as_tuple</CODE>? --> always uses references.</p>
+<pre>std::weak_ordering
+compare_3way_via_tuple(T const&amp; a, T const&amp; b)
+{
+    return std::forward_as_tuple(a) &lt;=&gt;
+           std::forward_as_tuple(b);
+}
+</pre>
+<p>It turns out that there’s already a pre-made function that does something very similar: <code>std::<wbr/>compare_<wbr/>weak_<wbr/>order_<wbr/>fallback</code> also synthesize a missing three-way comparison, but it uses a different algorithm from tuples:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3">
+<tbody>
+<tr>
+<td>if <code>a == b</code></td>
+<td>return <code>equivalent</code></td>
+</tr>
+<tr>
+<td>else if <code>a &lt; b</code></td>
+<td>return <code>less</code></td>
+</tr>
+<tr>
+<td>otherwise</td>
+<td>return <code>greater</code></td>
+</tr>
+</tbody>
+</table>
+<p>Tuples use a different algorithm from <code>std::<wbr/>compare_<wbr/>weak_<wbr/>order_<wbr/>fallback</code>. Which one is better? Why are they different?</p>
+<p>I suspect that tuples use a different algorithm because tuple ordering comes from C++11, which predates three-way comparison. Back in those days, the comparison operators was used mostly for sorting and other ordered-sequence type algorithms. And those algorithms require only that the objects support the <code>&lt;</code> operator. Therefore, tuples have to make do with only the <code>&lt;</code> operator.</p>
+<p>On the other hand, <code>std::<wbr/>compare_<wbr/>weak_<wbr/>order_<wbr/>fallback</code> was born into the world of three-way comparisons, so it has more liberty to take dependencies on things beyond just the <code>&lt;</code> operator.</p>
+<p>If you know that the underlying object supports <code>==</code>, then my guess is that <code>std::<wbr/>compare_<wbr/>weak_<wbr/>order_<wbr/>fallback</code> is better, because <code>==</code> testing tends to be faster than <code>&lt;</code> testing. For example, comparing two strings for equality can short-circuit if the strings are different lengths. This shortcut is not available for less-than comparison.</p>
+
+
+</body>

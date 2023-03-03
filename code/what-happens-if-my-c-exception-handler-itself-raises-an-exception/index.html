@@ -1,0 +1,92 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What happens if my C++ exception handler itself raises an exception?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/is-it-true-that-raising-a-structured-exception-from-a-structured-exception-handler-terminates-the-process" title="Is it true that raising a structured exception from a structured exception handler terminates the process?"> what happens if your structured exception handler raises its own structured exception</a>. Today, we’ll look at the C++ version of the same question: What happens if my C++ exception handler itself raises an exception?</p>
+<p>Let’s look at this sample code fragment:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>
+<pre>try
+{
+    Block1;
+}
+catch (Type1 ex1)
+{
+    Block2;
+}
+catch (Type2 const&amp; ex2)
+{
+    Block3;
+}
+/* finally { destructors; } */</pre>
+</td>
+</tr>
+</tbody>
+</table>
+<p>If an exception is thrown out of <code>Block1</code>, C++ looks for a matching <code>catch</code> block,¹ and neither clause matches, then the search for a handler continues at the next outer scope. If no scope handles the exception, then the process terminates via <code>std::terminate</code>.</p>
+<p>The bodies of the <code>catch</code> blocks are not in scope of the <code>try</code> statement, so if an exception is thrown by <code>Block2</code> or <code>Block3</code>, the search for a handler does not include the <code>catch (Type1 ex1)</code> or <code>catch (Type2 const&amp; ex1)</code> clauses.</p>
+<p>There is no <code>finally</code> clause in C++ <code>try</code>/<code>catch</code> statements, but the equivalent functionality is obtained by putting the desired cleanup code in destructors of objects declared in <code>Block1</code>. If control exits <code>Block1</code> due to an exception, and one of the objects in that block throws an exception in its destructor, then the rules of C++ are that the process terminates immediately via <code>std::terminate</code>. This is different from Windows structured exceptions and C# exceptions.</p>
+<p>In the code sample above, I’ve put these destructors in a pseudo-“finally” clause, just so I will have a place to annotate them.</p>
+<p>Another difference from Windows structured exceptions is the case of an exception that occurs while performing type matching: If a <code>catch</code> clause captures the exception object by value, the exception object is constructed from the thrown object. And if that constructor throws an exception, the C++ standard says that the process terminates via <code>std::terminate</code>.² (This is also different from Windows structured exceptions.)</p>
+<p>Here’s an annotated version of the above discussion:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: solid 1px gray; border-right: none;">
+<pre>try
+{
+    Block1;
+}</pre>
+</td>
+<td style="border: solid 1px gray; border-left: none; margin-right: 1ex;">Under consideration</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none;">
+<pre>catch (Type1 ex1)</pre>
+</td>
+<td style="border: solid 1px gray; border-left: none; margin-right: 1ex;"><code>std::terminate</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none;">
+<pre>{
+    Block2;
+}</pre>
+</td>
+<td style="border: solid 1px gray; border-left: none; margin-right: 1ex;">Not considered</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none;">
+<pre>catch (Type2 const&amp; ex2)</pre>
+</td>
+<td style="border: solid 1px gray; border-left: none; margin-right: 1ex;"><code>std::terminate</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none;">
+<pre>{
+    Block3;
+}</pre>
+</td>
+<td style="border: solid 1px gray; border-left: none; margin-right: 1ex;">Not considered</td>
+<td rowspan="2"> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none;">
+<pre>/* finally { destructors; } */</pre>
+</td>
+<td style="border: solid 1px gray; border-left: none; margin-right: 1ex;">It’s complicated</td>
+<td rowspan="2"> </td>
+</tr>
+</tbody>
+</table>
+<p>The “It’s complicated” for the pseudo-finally clause applies because both behaviors are possible, depending on why the destructors are running.</p>
+<ul>
+<li>If <code>Block1</code> is exiting normally, then exceptions that occur in destructors are catchable by the <code>try</code> statement.</li>
+<li>If <code>Block1</code> is exiting due to an exception, then <code>std::terminate</code> is called.</li>
+</ul>
+<p>Note that both cases can occur in the same <code>try</code> statement! Suppose the <code>Block1</code> runs to the final close-brace, and then it becomes time to run the destructors. Suppose there are two objects inside the <code>Block1</code> that require destruction. The first one to destruct throws an exception. This is an exception thrown during normal exit of <code>Block1</code>, so the exception is catchable. But before we try to catch that exception, we need to run the second destructor. If this second destructor also throws an exception, we are now in the case of a destructor throwing an exception during exception handling, and this results in <code>std::terminate</code>.</p>
+<p>¹ This search is done sequentially, so it will try to match <code>Type1</code> first, and <code>Type2 const&amp;</code> second. As a result, reordering your <code>catch</code> clauses can result in changes in behavior if the thrown object matches multiple <code>catch</code> clauses.</p>
+<p>² In general, you should catch things by reference. This removes the possibility of exceptions during the construction of the <code>catch</code> argument, and it also avoids slicing if the thrown object is a derived class of the thing you’re catching.</p>
+
+
+</body>

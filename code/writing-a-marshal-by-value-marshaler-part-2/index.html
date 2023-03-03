@@ -1,0 +1,99 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Writing a marshal-by-value marshaler, part 2</h1>  <!-- .entry-meta -->
+
+<p>When we last left our marshal-by-value marshaler, we had it marshal by value for all cases that didn’t leave the computer. But it turns out that this is actually more work than necessary: If the object is immutable (as marshal-by-value objects generally are) and is staying inside the same process, then we can just use the free-threaded marshaler, assuming the immutable state does not have thread affinity.</p>
+<p>The idea here is that immutable objects are pretty much free-threaded already, seeing as they have no mutable state that requires synchronization. So there’s no need to create a copy when marshaling between apartments within the same process; we can just have all the apartments access the object directly.</p>
+<p>Old and busted:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center; border: solid 1px black;">
+<tbody>
+<tr>
+<td>client</td>
+<td rowspan="3" style="border-right: dashed 1px black;"> </td>
+<td rowspan="3"> </td>
+<td>client</td>
+</tr>
+<tr>
+<td>↓</td>
+<td>↓</td>
+</tr>
+<tr>
+<td><span style="border: solid 1px black;">data</span></td>
+<td><span style="border: solid 1px black;">data</span></td>
+</tr>
+</tbody>
+</table>
+<p>New hotness:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center; border: solid 1px black;">
+<tbody>
+<tr>
+<td>client</td>
+<td rowspan="3" style="border-right: dashed 1px black;"> </td>
+<td> </td>
+<td>client</td>
+</tr>
+<tr>
+<td>↓</td>
+<td>↙︎</td>
+<td> </td>
+</tr>
+<tr>
+<td><span style="border: solid 1px black;">data</span></td>
+<td> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>Clients within the same process don’t need a separate copy of the object. They can just share the object.</p>
+<p>Of course, clients from other processes can take advantage of having their own copy, since that would avoid inter-process calls to access the data. However, we permit this only for other processes on the same computer, because processes on other computers may not have our custom marshaler installed.</p>
+<p>This means that we want to treat each of the three categories differently:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Category</th>
+<th>Desired marshaler</th>
+</tr>
+<tr>
+<td>Same-process</td>
+<td>Free-threaded marshaler</td>
+</tr>
+<tr>
+<td>Same-machine</td>
+<td>Marshal-by-value marshaler</td>
+</tr>
+<tr>
+<td>Cross-machine</td>
+<td>Standard (marshal-by-reference) marshaler</td>
+</tr>
+</tbody>
+</table>
+<p>It sounds like we’re going to have three cases to deal with, but we can collapse it down to two by realizing that the free-threaded marshaler falls back to the standard marshaler when the destination context is cross-machine.</p>
+<pre>bool ShouldMarshalByValue(DWORD dwDestContext)
+{
+    return <span style="color: red;">// <span style="text-decoration: line-through;">dwDestContext == MSHCTX_CROSSCTX || dwDestContext == MSHCTX_INPROC ||</span></span>
+           dwDestContext == MSHCTX_LOCAL || dwDestContext == MSHCTX_NOSHAREDMEM;
+}
+</pre>
+<p>We no longer marshal by value in the same-process case, letting the free-threaded marshaler take care of that and the cross-machine case.</p>
+<p>None of our marshal-by-value business logic needs to change. What changes is our fallback marshaler. Instead of falling back to the standard marshaler, we fall back to the free-threaded marshaler.</p>
+<pre>    STDMETHODIMP GetUnmarshalClass(
+        REFIID riid, void* pv, DWORD dwDestContext,
+        void* pvDestContext, DWORD mshlflags,
+        CLSID *clsid)
+    {
+        if (ShouldMarshalByValue(dwDestContext)) {
+            *clsid = CLSID_MyClass;
+            return S_OK;
+        }
+
+        ComPtr&lt;IMarshal&gt; marshal;
+        RETURN_IF_FAILED(<span style="color: blue;">CoCreateFreeThreadedMarshaler(nullptr, &amp;marshal)</span>);
+        RETURN_IF_FAILED(marshal-&gt;GetUnmarshalClass(riid, pv, dwDestContext,
+                                              pvDestContext, mshlflags, clsid));
+        return S_OK;
+    }
+</pre>
+<p>Identical one-line changes apply to <code>Get­Marshal­Size­Max</code> and <code>Marshal­Interface</code>; I won’t write them out.</p>
+<p>Next time, we’ll apply all that we learned to diagnosing a reference counting bug related to marshaling.</p>
+
+
+</body>

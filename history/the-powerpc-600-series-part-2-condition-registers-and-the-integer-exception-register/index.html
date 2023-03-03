@@ -1,0 +1,146 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The PowerPC 600 series, part 2: Condition registers and the integer exception register</h1>  <!-- .entry-meta -->
+
+<p>The integer exception register <var>xer</var> contains a bunch of stuff, but the ones that are relevant to us are </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Bit</th>
+<th>Name</th>
+</tr>
+<tr>
+<td>0</td>
+<td>Summary overflow</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Overflow</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Carry</td>
+</tr>
+</table>
+<p>Some instructions update the overflow and summary overflow bits in the <var>xer</var> register. When those instructions are executed, the overflow bit is updated to represent whether the operation resulted in a signed overflow. The summary overflow bit accumulates all the overflow bits since it was last explicitly reset. This lets you perform a series of arithmetic operations and then test a single bit at the end to see if an overflow occurred anywhere along the way. </p>
+<p>Some instructions consume and/or target the carry bit in <var>xer</var>. We’ll discuss how carry works when we get to integer arithmetic. </p>
+<p>Each of the <var>cr#</var> condition registers consists of four bits, numbered from most signficant to least significant. </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Bit</th>
+<th>Name</th>
+<th>Mnemonic</th>
+</tr>
+<tr>
+<td>0</td>
+<td>Less than</td>
+<td><var>lt</var></td>
+</tr>
+<tr>
+<td>1</td>
+<td>Greater than</td>
+<td><var>gt</var></td>
+</tr>
+<tr>
+<td>2</td>
+<td>Equal to</td>
+<td><var>eq</var></td>
+</tr>
+<tr>
+<td>3</td>
+<td>Summary overflow</td>
+<td><var>so</var></td>
+</tr>
+</table>
+<p>For convenience, the assembler predefines the constants <var>lt</var>, <var>gt</var>, <var>eq</var>, and <var>so</var> to represent their respective bit numbers. </p>
+<p>The <code>cmp</code> family of instructions compare two values and write the result to a condition register. </p>
+<pre>
+    cmpw    crd, ra, rb     ; crd = compare ( int32_t)ra with ( int32_t)rb
+    cmpwi   crd, ra, imm16  ; crd = compare ( int32_t)ra with ( int16_t)imm16
+    cmplw   crd, ra, rb     ; crd = compare (uint32_t)ra with (uint32_t)rb
+    cmplwi  crd, ra, imm16  ; crd = compare (uint32_t)ra with (uint16_t)imm16
+</pre>
+<p>You can compare two registers, or you can compare a register with an immediate, and you can choose whether the comparison is signed or unsigned. (Recall that the <code>l</code> stands for <i>logical</i>.) For example: </p>
+<pre>
+    cmpw    cr3, r0, r1     ; cr3 = compare r0 with r1 as signed values
+</pre>
+<p> The <var>lt</var>, <var>gt</var>, and <var>eq</var> bits are set according to the result of the comparison, and the <var>so</var> bit receives a copy of the current summary overflow bit in <var>xer</var>. </p>
+<p>If you do not specify a destination comparison register, it defaults to <var>cr0</var>: </p>
+<pre>
+    cmpw    ra, rb          ; cr0 = compare ( int32_t)ra with ( int32_t)rb
+    cmpwi   ra, imm16       ; cr0 = compare ( int32_t)ra with ( int16_t)imm16
+    cmplw   ra, rb          ; cr0 = compare (uint32_t)ra with (uint32_t)rb
+    cmplwi  ra, imm16       ; cr0 = compare (uint32_t)ra with (uint16_t)imm16
+</pre>
+<p>As we’ll see later, some arithmetic instructions implicitly update <var>cr0</var> by comparing the computed result against zero. (Similarly, some floating point operations implicitly update <var>cr1</var>.) When performed as part of an arithmetic instruction, the comparison is always performed as a signed comparison, even if the instruction’s underlying operation was unsigned. </p>
+<p>If you combine an update of <var>cr0</var> with an arithmetic operation, the <var>so</var> bit is a copy of the summary overflow bit in the <var>xer</var> register at the end of the instruction. That means that if an arithmetic operation requests both <var>cr0</var> and <var>xer</var> to be updated, the <var>xer</var> register is updated first, and then the summary overflow bit from <var>xer</var> is copied to the <var>so</var> bit in <var>cr0</var>. That means that the <var>so</var> bit in <var>cr0</var> captures whether a signed overflow occurred in any overflow-detecting operation up to and including the current one. </p>
+<p>The Microsoft compiler tends to prefer to target <var>cr6</var> and <var>cr7</var> in its comparison instructions. It doesn’t make much difference to the processor, but I suspect the compiler tries to avoid <var>cr0</var>  so that it doesn’t conflict with the use of <var>cr0</var> by the arithmetic instructions. </p>
+<pre>
+    mcrxr  crd              ; crd = first four bits of xer
+</pre>
+<p>The “move to condition register from <var>xer</var>” instruction copies the summary overflow, overflow, and carry bits from the <var>xer</var> register to the specified condition register, and then it clears the bits from <var>xer</var>. </p>
+<p>No, I don’t know why they left the “e” out of the opcode. </p>
+<p>This is how you reset the summary overflow.¹ </p>
+<pre>
+    mtxer  ra               ; xer = ra
+    mfxer  rd               ; rd = xer
+</pre>
+<p>These instructions² move to/from the <var>xer</var> register. They are another way to clear the <var>xer</var> register, or to set it to a particular initial state. </p>
+<p>There are a good number of bitwise operations that combine two condition register bits and store the result into a third condition register bit. These let you build boolean expressions out of condition registers. </p>
+<pre>
+    crand   bd, ba, bb  ; cr[bd] =   cr[ba] &amp;  cr[bb]
+    cror    bd, ba, bb  ; cr[bd] =   cr[ba] |  cr[bb]
+    crxor   bd, ba, bb  ; cr[bd] =   cr[ba] ^  cr[bb]
+    crnand  bd, ba, bb  ; cr[bd] = !(cr[ba] &amp;  cr[bb])
+    crnor   bd, ba, bb  ; cr[bd] = !(cr[ba] |  cr[bb])
+    creqv   bd, ba, bb  ; cr[bd] = !(cr[ba] ^  cr[bb])
+    crandc  bd, ba, bb  ; cr[bd] =   cr[ba] &amp; !cr[bb] "and complement"
+    crorc   bd, ba, bb  ; cr[bd] =   cr[ba] | !cr[bb] "or complement"
+</pre>
+<p>Remember that the PowerPC numbers bits from most significant to least significant, so bit zero is the high-order bit. </p>
+<p>To save you from having to memorize all the bit numbers, the assembler lets you write <var>cr0</var> to mean 0, <var>cr1</var> to mean 1, and so through <var>cr7</var> which means 7. Combined with the constants for the four bits in the condition register, this lets you write </p>
+<pre>
+    crand   4*cr3+eq, 4*cr2+lt, 4*cr6+gt ; cr3[eq] = cr2[lt] &amp; cr6[gt]
+</pre>
+<p>instead of the instruction only a processor’s mother could love: </p>
+<pre>
+    crand   14, 8, 25                    ; cr3[eq] = cr2[lt] &amp; cr6[gt]
+</pre>
+<p>There are also special instruction for transferring between <var>cr</var> and a general-purpose register. </p>
+<pre>
+    mfcr    rt           ; rt = cr
+    mtcrf   mask, ra     ; cr = ra (selected by mask)
+</pre>
+<p>The mask is an 8-bit immediate. If a bit is set, then the corresponding <var>cr#</var> is copied from the corresponding bits of <var>ra</var>. For example, 128 means “Copy the top four bits of <var>ra</var> into <var>cr0</var>, and leave all the other condition registers alone.” Recall that the PowerPC counts bits from most significant to least significant, so <var>cr0</var> is stored in the highest-order four bits. </p>
+<p>The assembler provides synthetic instructions for various special cases of the above operations: </p>
+<pre>
+    creqv   bd, bd, bd  ; crset   bd          ; cr[bd]  = 1
+    crxor   bd, bd, bd  ; crclr   bd          ; cr[bd]  = 0
+    cror    bd, ba, ba  ; crmove  bd, ba      ; cr[bd]  = cr[ba]
+    crnor   bd, ba, ba  ; crnot   bd, ba      ; cr[bd]  = !cr[ba]
+    mtcr    ra          ; mtcrf   255, ra     ; cr = ra
+</pre>
+<p>Here’s an example of how these boolean operations could be used: </p>
+<pre>
+    cmpw    cr2, r4, r5 ; compare r4 with r5, put result in cr2
+    cmpw    cr3, r6, r7 ; compare r6 with r7, put result in cr3
+    crandc  4*cr0+eq, 4*cr2+gt, 4*cr4+eq ; cr0[eq] = cr2[gt] &amp; !cr4[eq]
+    beq     destination ; jump if r4 &gt; r5 &amp;&amp; r6 != r7
+</pre>
+<p>We perform two comparison operations and put the results into <var>cr2</var> and <var>cr3</var>. We then perform a boolean “and not” operation that calculates </p>
+<pre>
+    cr0[eq] = (r4 &gt; r5) &amp; !(r6 == r7)
+            = (r4 &gt; r5) &amp; (r6 != r7)
+</pre>
+<p>The result is placed into the <var>eq</var> position of <var>cr0</var>, which makes it a perfect place to be the branch condition of the <code>beq</code> instruction. </p>
+<p>The traditional way of doing this on processors that don’t have these fancy condition register operations is to perform a test and a conditional branch, then another test and another conditional branch. Combining the results of the test and performing a single branch means that the entire sequence consumes only one slot in the branch predictor. This leaves more slots free to predict other branches, and the single slot this sequence does consume can predict the final result, which might be easier to predict than the individual pieces. (For example, the test might be validating that a parameter is one of two valid values. The parameter is almost always valid, even though one might not be able to predict which of the two valid values it is at any particular time.) </p>
+<p>Fabian Giesen notes that <a href="https://blogs.msdn.microsoft.com/oldnewthing/20170822-00/?p=96865#comment-1306986">in practice, you don’t get to perform this optimization as often as you’d like</a> because of short-circuiting rules in many programming languages. Under those rules, this optimization works only if the second term can be evaluated without any risk of taking any exceptions (or if the language permits you to take an exception anyway, say, because any exception would be the result of undefined behavior). </p>
+<p>I have yet to see the Microsoft C compiler for PowerPC perform this optimization. It just does things the conventional way. But that may just be because I haven’t encountered a situation where the optimization is even possible. (Also, because I’m studying code from Windows NT 3.51, and compiler technology was not as advanced back then.) </p>
+<p>Okay, <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180808-00/?p=99445">next time</a> we’ll start doing some arithmetic. </p>
+<p>¹ You might have noticed that there are only three interesting bits in <var>xer</var> but room for four bits in a condition register. The last bit is undefined. Usually, you don’t care much about the bits that got transferred; the main purpose of the instruction is its side effect of clearing the summary overflow. </p>
+<p>² These instructions are actually special cases of the <code>mtspr</code> and <code>mfspr</code> instructions which move to/from a special register. The <var>xer</var> register is formally register <var>spr1</var>, so the <code>mtxer</code> and <code>mfxer</code> instructions are technically synthetic instructions. </p>
+<pre>
+    mtspr  1, ra            ; spr1 = ra
+    mfspr  1, rd            ; rd = spr1
+</pre>
+
+
+</body>

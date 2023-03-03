@@ -1,0 +1,149 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Changing a loop into a promise or task chain</h1>  <!-- .entry-meta -->
+
+<p>If you are dealing with PPL Tasks in C++ or Promises in JavaScript, you run into the problem of having to rephrase loops in the form of callbacks. (On the other hand, if you’re using Tasks in C#, then you have the wonderful <code>await</code> keyword to do this all for you. If you’re a JavaScript programmer, <a href="http://www.joezimjs.com/javascript/synchronizing-asynchronous-javascript-es7/">you can look at the <code>async</code> keyword coming to ES7</a>. If you are using <a href="http://blogs.msdn.com/b/vcblog/archive/2013/12/20/asynchronous-programming-in-c-using-resumable-functions-and-await.aspx">C++ resumable functions</a>, then you can use <code>__await</code>. <a href="http://blogs.msdn.com/b/vcblog/archive/2014/11/12/resumable-functions-in-c.aspx">More about resumable functions</a>. <a href="http://blogs.msdn.com/b/vcblog/archive/2015/04/29/more-about-resumable-functions-in-c.aspx">Still more</a>. ) </p>
+<p>Let’s convert a loop into a promise/task chain. Here’s the loop: </p>
+<pre>
+std::vector&lt;std::unique_ptr&lt;Thing&gt;&gt; things;
+
+void FrobEachThing()
+{
+    for (auto thing : things) {
+       thing-&gt;FrobAsync();
+    }
+}
+</pre>
+<p>The problem is that the <code>Frob­Async</code> method is asynchronous and returns a task, and we want to perform each frob operation in series, not in parallel. If we were writing in C#, this would be a piece of cake: </p>
+<pre>
+async Task FrobEachThingAsync()
+{
+    foreach (var thing in things) {
+        await thing.FrobAsync();
+    }
+}
+</pre>
+<p>Similarly, if we had resumable functions: </p>
+<pre>
+task&lt;void&gt; FrobEachThingAsync()
+{
+    for (auto thing : things) {
+       __await thing-&gt;FrobAsync();
+    }
+}
+</pre>
+<p>But we don’t have that, so we will need to do the transformation ourselves. </p>
+<p>At this point, you think back to Computer Science class and that stuff you learned about recursion and you wondered when anybody would ever want to do that. Well, we’re going to do that. </p>
+<p>The idea is that we start the asynchronous operation, and pass as a callback a function that knows how to continue the loop. Since this is a loop, the callback may end up passing itself as the next callback, and that’s where we get the appearance of recursion. (It’s not really recursion because the creation of the task returns immediately; the callback runs when the task completes, which is some time later.) </p>
+<p>First, let’s write out what that ranged for loop really means:</p>
+<pre>
+void FrobEachThing()
+{
+    auto first = begin(things);
+    auto last = end(things);
+    while (first != last) {
+        (*first)-&gt;FrobAsync();
+        first++;
+    }
+}
+</pre>
+<p>With this formulation, it’s easier to see how to make it recursive. Actually, the important thing is that you make it <i>tail-recursive</i>. </p>
+<pre>
+typedef decltype(begin(things)) thing_iterator;
+
+void FrobTheRestOfTheThings(
+    thing_iterator first,
+    thing_iterator last)
+{
+    if (first != last) {
+        (*first)-&gt;FrobAsync();
+        FrobTheRestOfTheThings(first + 1, last);
+    }
+}
+
+void FrobEachThing()
+{
+    FrobTheRestOfTheThings(begin(things), end(things));
+}
+</pre>
+<p>Now that we have tail recursion, we can make it into a task chain: </p>
+<pre>
+task&lt;void&gt;
+FrobTheRestOfTheThingsAsync(
+    thing_iterator first,
+    thing_iterator last)
+{
+    if (first != last) {
+        return (*first)-&gt;FrobAsync().then([first, last]() {
+            return FrobTheRestOfTheThingsAsync(first + 1, last);
+        });
+    } else {
+        return create_task([](){}); // null task - base case of recursion
+    }
+}
+
+task&lt;void&gt; FrobEachThingAsync()
+{
+    return FrobTheRestOfTheThingsAsync(begin(things), end(things));
+}
+</pre>
+<p>The same logic applies to JavaScript. Starting with </p>
+<pre>
+function frobEachThing()
+{
+    things.forEach(function(thing) { thing.Frob(); });
+}
+</pre>
+<p>First, do the rewrite into an explicit loop. </p>
+<pre>
+function frobEachThing()
+{
+    var i = 0;
+    while (i &lt; things.length) {
+        things[i].frob();
+        i++;
+    }
+}
+</pre>
+<p>Then apply the same logic as above to convert this into a promise chain: </p>
+<pre>
+function frobTheRestOfTheThingsAsync(array, index, length) {
+    if (index != length) {
+        return array[index].frobAsync().then(function() {
+            return frobTheRestOfTheThingsAsync(array, index + 1, length);
+        });
+    } else {
+        return WinJS.Promise.wrap(); // null task - base case of recursion
+    }
+}
+
+function frobEachThingAsync()
+{
+    return FrobTheRestOfTheThingsAsync(things, 0, things.length);
+}
+</pre>
+<p>JavaScript captures by reference and uses garbage collection, so things are a bit easier. We can make one function local to the other and let the closures capture our state. </p>
+<pre>
+function frobEachThingAsync()
+{
+    var array = things;
+    var length = array.length;
+    var index = 0;
+
+    function rest() {
+        if (index != length) {
+            return array[index].frobAsync().then(function() {
+                index++;
+                rest();
+            });
+        } else {
+            return WinJS.Promise.wrap(); // null task - base case of recursion
+        }
+    }
+
+    return rest();
+}
+</pre>
+<p><b>Bonus reading</b>: <a href="http://blogs.msdn.com/b/nativeconcurrency/archive/2012/05/09/how-to-put-a-ppltasks-continuation-chain-into-a-loop.aspx">How to put a PPLTasks continuation chain into a loop</a>. </p>
+
+
+</body>

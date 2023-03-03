@@ -1,0 +1,17 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Adventures in application compatibility: Following a detour off a cliff</h1>  <!-- .entry-meta -->
+
+<p>The application compatibility team reported that a program was crashing in its installer. Debugging the installer revealed that it actually triggered <i>three</i> exceptions. </p>
+<p>The first exception was due to passing an invalid pointer to the <code>lstrlen</code> function. However, this didn’t crash the installer because the <code>lstrlen</code> function contains an application compatibility mitigation: If you pass a pointer to invalid memory, it handles the access violation exception by reporting that the string length is zero. </p>
+<p>It did this twice, so that is the second exception as well. </p>
+<p>The third exception is the one that crashed the installer: A system function wanted to report a runtime issue. It did this by checking if a debugger was present, and if so, it printed a diagnostic message to the debugger so that the developer could see that there was a problem and get a chance to investigate it. </p>
+<p>The problem is that the call to <code>Is­Debugger­Present</code> was crashing. </p>
+<p>And it was crashing because the installer used <a href="https://sourceforge.net/projects/gplmpgdec/files/">a DLL</a> which detours the <code>Is­Debugger­Present</code> function when it is loaded, presumably to make it harder to reverse-engineer (though since <a href="https://sourceforge.net/projects/gplmpgdec/files/GPL%20MPEG-1_2%20Decoder/GplMpgDec012/">the source code is freely available</a>, it’s not sure why they are so concerned about it). </p>
+<p>But notice that the DLL does not un-detour the function when it is unloaded.¹ </p>
+<p>Therefore, if you load the DLL and then unload it, you leave the <code>Is­Debugger­Present</code> function detoured to a function that no longer exists. And the next person to call the <code>Is­Debugger­Present</code> function will crash. </p>
+<p>(Also curious is that the DLL is licensed under the GPL, yet the product that uses it makes no mention of the GPL in its license agreement.) </p>
+<p>The fix was to remove the debugging message for the particular case that this program’s installer was tripping over. </p>
+<p>¹ Not that un-detouring is a perfect solution either, because it runs into the <a href="https://blogs.msdn.microsoft.com/oldnewthing/20050607-00/?p=35413">What if two programs did this?</a> problem: Suppose another DLLs also detoured the <code>Is­Debugger­Present</code> function. When this DLL unloads, it restores the original function, which also removes the other DLL’s detour. And then when the other DLL unloads, it restores what it thought was the original function, but which was actually the detour installed by this DLL. As a result, this DLL’s detour gets <i>reinstalled</i>. </p>
+
+
+</body>

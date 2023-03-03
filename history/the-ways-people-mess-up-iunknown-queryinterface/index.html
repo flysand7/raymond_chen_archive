@@ -1,0 +1,109 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ways people mess up IUnknown::QueryInterface</h1>  <!-- .entry-meta -->
+
+<p>
+When you’re dealing with application compatibility,
+you discover all sorts of things that worked only by accident.
+Today, I’ll talk about some of the “creative” ways people
+mess up the
+<a href="http://msdn.microsoft.com/library/en-us/com/htm/cmi_q2z_7fvp.asp">
+IUnknown::QueryInterface method</a>.
+</p>
+<p>
+Now, you’d think, “This interface is so critical to COM,
+how could anybody possible mess it up?”
+</p>
+<dl>
+<dt>Forgetting to respond to IUnknown.
+<dd>
+<p>
+Sometimes you get so excited about responding to all these
+great interfaces that you forget to respond to IUnknown itself.
+We have found objects where</p>
+<pre>
+IShellFolder *psf = some object;
+IUnknown *punk;
+psf-&gt;QueryInterface(IID_IUnknown, (void**)&amp;punk);
+</pre>
+<p>fails with E_NOINTERFACE!
+</p>
+<dt>Forgetting to respond to your own interface.
+<dd>
+<p>
+There are some methods which return an object with a specific
+interface. And if you query that object for its own interface,
+its sole reason for existing, it says “Huh?”
+</p>
+<pre>
+IShellFolder *psf = some object;
+IEnumIDList *peidl, *peidl2;
+psf-&gt;EnumObjects(..., &amp;peidl);
+peidl-&gt;QueryInterface(IID_IEnumIDList, (void**)&amp;peidl2);
+</pre>
+<p>
+There are some objects which return E_NOINTERFACE to the QueryInterface
+call, even though you’re asking the object for itself!
+“Sorry, I don’t exist,” it seems they’re trying to say.
+</p>
+<dt>Forgetting to respond to base interfaces.
+<dd>
+<p>
+When you implement a derived interface, you implicitly implement
+the base interfaces, so don’t forget to respond to them, too.</p>
+<pre>
+IShellView *psv = some object;
+IOleView *pow;
+psv-&gt;QueryInterface(IID_IOleView, (void**)&amp;pow);
+</pre>
+<p>Some objects forget and the QueryInterface fails with E_NOINTERFACE.
+</p>
+<dt>Requiring a secret knock.
+<dd>
+<p>
+In principle, the following two code fragments are equivalent:
+</p>
+<pre>
+IShellFolder *psf;
+IUnknown *punk;
+CoCreateInstance(CLSID_xyz, ..., IID_IShellFolder, (void**)&amp;psf);
+psf-&gt;QueryInterface(IID_IUnknown, (void**)&amp;punk);
+CoCreateInstance(CLSID_xyz, ..., IID_IUnknown, (void**)&amp;punk);
+punk-&gt;QueryInterface(IID_IShellFolder, (void**)&amp;psf);
+</pre>
+<p>
+In reality, some implementations mess up and fail the second call
+to CoCreateInstance. The only way to create the object successfully
+is to create it with the IShellFolder interface.
+</p>
+<dt>Forgetting to say “no” properly.
+<dd>
+<p>
+One of the rules for saying “no” is that you have to set the
+output pointer to NULL before returning.  Some people forget to do
+that.
+</p>
+<pre>
+IMumble *pmbl;
+punk-&gt;QueryInterface(IID_IMumble, (void**)&amp;pmbl);
+</pre>
+<p>
+If the QueryInterface succeeds, then pmbl must be non-NULL on return.
+If it fails, then pmbl <strong>must be NULL on return</strong>.
+</p>
+</dd></dt></dd></dt></dd></dt></dd></dt></dd></dt></dl>
+<p>
+The shell has to be compatible with all these buggy objects because
+if it weren’t, customers would get upset and the press would have
+a field day.  Some of the offenders
+are big-name programs. If they broke, people would report,
+“Don’t upgrade to Windows XYZ, it’s not compatible with
+&lt;big-name program&gt;.”
+Conspiracy-minded folks would shout,
+“Microsoft intentionally broke &lt;big-name program&gt;!
+Proof of unfair business tactics!”
+</p>
+<p>
+[Raymond is currently on vacation; this message was pre-recorded.]</p>
+
+
+</body>

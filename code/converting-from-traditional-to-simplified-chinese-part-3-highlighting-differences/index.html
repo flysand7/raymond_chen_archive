@@ -1,0 +1,151 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Converting from traditional to simplified Chinese, part 3: Highlighting differences</h1>  <!-- .entry-meta -->
+
+<p><p>
+One of the things that is interesting to me as a student of the
+Chinese languages is to recognize where the traditional and
+simplified Chinese scripts differ.
+Since this is my program, I’m going to hard-code the color for
+simplified Chinese script:  maroon.
+</p>
+<p>
+To accomplish the highlighting, we take advantage of listview’s
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/commctls/custdraw/custdraw.asp">
+custom-draw</a> feature.
+Custom-draw allows you to make minor changes to the way items
+are displayed on the screen.
+It’s a middle ground between having listview do all the work
+(via default drawing behavior) and having the program do all
+the work (via owner-draw).
+</p>
+<p>
+The custom-draw cycle for shell common controls consists of
+series of
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/commctls/custdraw/messages/nm_customdraw.asp">
+<code>NM_CUSTOMDRAW</code> notifications</a>, starting with
+the most general and getting more specific.
+The reason for the break-down is multi-fold.
+First, it allows the listview control to short-circuit a portion
+of custom-draw behavior if the parent window does not indicate
+that it wishes to customize a particular behavior.
+This reduces message traffic and improves performance when large
+numbers of items are being drawn.
+Second, it allows the parent window to target its customizations
+to the drawing stages it is interested in.
+</p>
+<p>
+Listviews are peculiar among the shell common controls in that
+its items sometimes (but not always) have sub-items.
+This complicates the drawing process since it requires listview
+to accomodate both styles:
+large icon view does not use sub-items, but report view does.
+To address this, the <code>CDDS_ITEMPREPAINT</code>
+stage is entered when an item is about to paint,
+and any changes made by the parent window are considered to
+be effective for the entire item.
+If you want to make changes on a per-subitem basis,
+you have to respond to <code>CDDS_ITEMPREPAINT | CDDS_SUBITEM</code>
+and set your properties (or reset them if you want to return to the
+default) for that sub-item.
+</p>
+<p>
+With those preliminary remarks settled, we can dive in.
+</p>
+<pre>
+class RootWindow : public Window
+{
+ …
+protected:
+ …
+ <font color="blue">LRESULT OnLVCustomDraw(NMLVCUSTOMDRAW* pcd);</font>
+ …
+private:
+ HWND m_hwndLV;
+ <font color="blue">COLORREF m_clrTextNormal;</font>
+ Dictionary m_dict;
+};
+</pre>
+<p>
+We declare our listview custom-draw handler as well as the member
+variable in which we remember the normal text color so that we can
+reset it for columns we do not intend to colorize.
+</p>
+<pre>
+LRESULT RootWindow::OnNotify(NMHDR *pnm)
+{
+ switch (pnm-&gt;code) {
+ case LVN_GETDISPINFO:
+  OnGetDispInfo(CONTAINING_RECORD(pnm, NMLVDISPINFO, hdr));
+  break;
+ case NM_CUSTOMDRAW:
+  if (pnm-&gt;hwndFrom == m_hwndLV) {
+   return OnLVCustomDraw(CONTAINING_RECORD(
+                         CONTAINING_RECORD(pnm, NMCUSTOMDRAW, hdr),
+                                                NMLVCUSTOMDRAW, nmcd));
+  }
+  break;
+ }
+ return 0;
+}
+</pre>
+<p>
+If we receive a
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/commctls/custdraw/messages/nm_customdraw.asp">
+<code>NM_CUSTOMDRAW</code> notification</a>
+from the listview control, we call our new handler.
+The multiple calls to
+<a href="http://msdn.microsoft.com/library/en-us/kmarch/hh/kmarch/k106_6a249de6-d707-421c-9b91-96e1b14dc21b.xml.asp">
+the <code>CONTAINING_RECORD</code> macro</a>
+are necessary because
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/commctls/common/structures/nmhdr.asp">
+the <code>NMHDR</code> structure</a> is nestled
+two levels deep inside
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/commctls/listview/structures/nmlvcustomdraw.asp">
+the <code>NMLVCUSTOMDRAW</code> structure</a>.
+</p>
+<pre>
+<font color="blue">LRESULT RootWindow::OnLVCustomDraw(NMLVCUSTOMDRAW* pcd)
+{
+ switch (pcd-&gt;nmcd.dwDrawStage) {
+ case CDDS_PREPAINT: return CDRF_NOTIFYITEMDRAW;
+ case CDDS_ITEMPREPAINT:
+  m_clrTextNormal = pcd-&gt;clrText;
+  return CDRF_NOTIFYSUBITEMDRAW;
+ case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
+  pcd-&gt;clrText = m_clrTextNormal;
+  if (pcd-&gt;iSubItem == COL_SIMP &amp;&amp;
+    pcd-&gt;nmcd.dwItemSpec &lt; (DWORD)Length()) {
+    const DictionaryEntry&amp; de = Item(pcd-&gt;nmcd.dwItemSpec);
+    if (de.m_pszSimp) {
+      pcd-&gt;clrText = RGB(0x80, 0x00, 0x00);
+    }
+  }
+  break;
+ }
+ return CDRF_DODEFAULT;
+}</font>
+</pre>
+<p>
+During the <code>CDDS_PREPAINT</code> stage, we indicate our
+desire to receive <code>CDDS_ITEMPREPAINT</code> notifications.
+During the <code>CDDS_ITEMPREPAINT</code> stage,
+we save the normal text color and indicate that we want to receive
+sub-item notifications.
+It is in the sub-item notification
+<code>CDDS_ITEMPREPAINT | CDDS_SUBITEM</code> that the real work happens.
+</p>
+<p>
+First, we reset the color to the default on the assumption that we
+will not need to colorize this column.
+But if the column is the simplified Chinese column, if the
+item number is valid, and if the simplified Chinese is different
+from the traditional Chinese, then we set the text color to maroon.
+</p>
+<p>
+That’s enough with the Chinese/English dictionary for now.
+All this time, and we don’t even have search capability yet!
+We’ll work on that next month.
+</p></p>
+
+
+</body>

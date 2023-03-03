@@ -1,0 +1,243 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Appending additional payload to a <code>PROPSHEETPAGE</code> structure</h1>  <!-- .entry-meta -->
+
+<p>A not-well-known feature of the common controls property sheet is that you can append your own custom data to the end of the <code>PROPSHEETPAGE</code> structure, and the system will carry it around for you.</p>
+<p>The traditional way of setting up a <code>PROPSHEETPAGE</code> is to use the <code>lParam</code> member to point to a structure containing additional data that is used by the property sheet:</p>
+<pre>struct WidgetNameData
+{
+    HWIDGET widget;
+    bool uppercaseOnly;
+    int renameCount;
+};
+
+void ShowWidgetProperties(HWIDGET widget, HWND hwndOwner)
+{
+    WidgetNameData nameData;
+    nameData.widget = widget;
+    nameData.uppercaseOnly = IsPolicyEnabled(Policy::UppercaseNames);
+    nameData.renameCount = 0;
+
+    PROPSHEETPAGE pages[1] = {};
+
+    pages[0].dwSize = sizeof(pages[0]);
+    pages[0].hInstance = g_hinstThisDll;
+    pages[0].pszTemplate = MAKEINTRESOURCE(IDD_WIDGETNAMEPROP);
+    pages[0].pfnDlgProc = WidgetNameDlgProc;
+    pages[0].lParam = (LPARAM)&amp;nameData;
+
+    PROPSHEETHEADER psh = { sizeof(psh) };
+    psh.dwFlags = PSH_WIZARD | PSH_PROPSHEETPAGE;
+    psh.hInstance = g_hinstThisDll;
+    psh.hwndParent = hwndOwner;
+    psh.pszCaption = MAKEINTRESOURCE(IDS_WIDGETPROPTITLE);
+    psh.nPages = ARRAYSIZE(pages);
+    psh.ppsp = pages;
+    PropertySheet(&amp;psh);
+}
+</pre>
+<p>For simplicity, this property sheet has only one page. This page needs a <code>WidgetData</code> worth of extra state, so we allocate that state (on the stack, in this case) and put a pointer to int in the <code>PROPSHEETPAGE</code>‘s <code>lParam</code> for the dialog procedure to fish out:</p>
+<pre>INT_PTR CALLBACK WidgetNameDlgProc(
+    HWND hdlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    auto pageData = (WidgetNameData*)GetWindowLongPtr(
+        hdlg, DWLP_USER);
+    switch (uMsg)
+    {
+    case WM_INITDIALOG:
+        {
+            auto page = (PROPSHEETPAGE*)lParam;
+            pageData = (WidgetNameData*)page-&gt;lParam;
+            SetWindowLongPtr(hdlg, DWLP_USER, (LONG_PTR)pageData);
+
+            ... initialize the page ...
+            return TRUE;
+        }
+
+    ... other message handlers ...
+    }
+    return FALSE;
+}
+</pre>
+<p>For a property sheet dialog procedure, the <code>lParam</code> of the <code>WM_<wbr/>INIT­DIALOG</code> points to a <code>PROPSHEETPAGE</code> structure, and you can pull out the <code>lParam</code> to access your private data.</p>
+<p>Now, this gets kind of complicated if the property sheet page was created via <code>Create­Prop­Sheet­Page</code>, say, because it is a plug-in that is added dynamically into an existing widget property sheet.</p>
+<pre>HPROPSHEETPAGE CreateWidgetNamePage(HWIDGET widget)
+{
+    PROPSHEETPAGE page = {};
+
+    page.dwSize = sizeof(page);
+    page.hInstance = g_hinstThisDll;
+    page.pszTemplate = MAKEINTRESOURCE(IDD_WIDGETNAMEPROP);
+    page.pfnDlgProc = WidgetNameDlgProc;
+    page.lParam = (LPARAM)&amp;(what goes here?);
+
+    return CreatePropertySheetPage(&amp;page);
+}
+</pre>
+<p>You can’t use a stack-allocated <code>Widget­Name­Data</code> because that will disappear once the <code>Create­Widget­Name­Page</code> function returns. You probably have to create a separate heap allocation for it, and pass a pointer to the heap allocation as the <code>lParam</code>, but now you also need to add a property sheet callback so you can remember to free the data when you get a <code>PSPCB_<wbr/>RELEASE</code> callback.</p>
+<p><b>Exercise</b>: Why is <code>WM_<wbr/>DESTROY</code> the wrong place to free the data? (Answer below.)</p>
+<p>To avoid this extra hassle, you can use this one weird trick: Append your private data to the <code>PROPSHEETPAGE</code>, and the system will carry it around for you.</p>
+<pre>struct WidgetNameData <span style="color: blue;">: PROPSHEETPAGE</span>
+{
+    HWIDGET widget;
+    bool uppercaseOnly;
+    int renameCount;
+};
+
+HPROPSHEETPAGE CreateWidgetNamePage(HWIDGET widget)
+{
+    <span style="color: blue;">WidgetNameData</span> page = {};
+
+    page.dwSize = sizeof(page);
+    page.hInstance = g_hinstThisDll;
+    page.pszTemplate = MAKEINTRESOURCE(IDD_WIDGETNAMEPROP);
+    page.pfnDlgProc = WidgetNameDlgProc;
+
+    <span style="color: blue;">// store the extra data in the extended page
+    page.widget = widget;
+    page.uppercaseOnly = IsWidgetPolicyEnabled(WidgetPolicy::UppercaseNames);
+    page.renameCount = 0;</span>
+
+    return CreatePropertySheetPage(&amp;page);
+}
+</pre>
+<p>We append the data to the <code>PROPSHEETPAGE</code> by deriving from <code>PROPSHEETPAGE</code> and adding our extra data to it. The trick is that by setting the <code>page.dwSize</code> to the size of the entire larger structure, we tell the property sheet manager that our private data is part of the page. When the property sheet manager creates a page, it copies all of the bytes described by the <code>dwSize</code> member into its private storage (referenced by the returned <code>HPROPSHEETPAGE</code>), and by increasing the value of <code>page.dwSize</code>, we get our data copied there too.</p>
+<p>Recall that the <code>lParam</code> parameter to the <code>WM_<wbr/>INIT­DIALOG</code> message is a pointer to a <code>PROPSHEETPAGE</code>. In our case, it’s a pointer to our custom <code>PROPSHEETPAGE</code> structure, and we can downcast to the specific type to access the extra data.</p>
+<pre>INT_PTR CALLBACK WidgetNameDlgProc(
+    HWND hdlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    auto pageData = (WidgetNameData*)GetWindowLongPtr(
+        hdlg, DWLP_USER);
+    switch (uMsg)
+    {
+    case WM_INITDIALOG:
+        {
+            <span style="color: blue;">// the lParam points to our extended page
+            pageData = (WidgetNameData*)lParam;</span>
+            SetWindowLongPtr(hdlg, DWLP_USER, (LONG_PTR)pageData);
+
+            ... initialize the page ...
+            return TRUE;
+        }
+
+    ... other message handlers ...
+    }
+    return FALSE;
+}
+</pre>
+<p>In pictures: The traditional way creates a separate allocation that the <code>PROPSHEETPAGE</code>‘s <code>lParam</code> points to. When the system copies the <code>PROPSHEETPAGE</code> into private storage, the <code>lParam</code> is copied with it.</p>
+<p><!-- "margin-left: 1px" to work around devblogs.microsoft.com default style sheet --></p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; margin-left: 1px;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" nowrap="nowrap" style="padding: 3px;">passed to <code>Create-</code><br/>
+<code>Prop­Sheet­Page</code></td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td colspan="2" nowrap="nowrap" style="padding: 3px;">copy passed to<br/>
+<code>WM_INITDIALOG</code></td>
+</tr>
+<tr>
+<td rowspan="3" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>dwSize</code></span></td>
+<td> </td>
+<td rowspan="3" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; border-bottom: none; padding: 3px 3px 0 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td rowspan="3" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; border-bottom: none; padding: 3px 3px 0 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮</td>
+<td> </td>
+<td rowspan="3" style="border: solid 1px black; border-left: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>dwSize</code></span></td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: 1px black; border-style: none solid; padding: 0 3px;"><code>lParam</code></td>
+<td>→</td>
+<td style="border: solid 1px black; border-bottom: none; padding: 3px 3px 0 3px;"><code>widget</code></td>
+<td>←</td>
+<td style="border: 1px black; border-style: none solid; padding: 0 3px;"><code>lParam</code></td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; padding: 0 3px 3px 3px;">⋮</td>
+<td> </td>
+<td style="border: 1px black; border-style: none solid; padding: 0 3px;"><code>uppercaseOnly</code></td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; padding: 0 3px 3px 3px;">⋮</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; padding: 0 3px 3px 3px;"><code>renameCount</code></td>
+<td> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>The new way makes the whole thing a giant <code>Widget­Name­Data</code> with a <code>PROPSHEETPAGE</code> at the top and bonus data at the bottom.</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; margin-left: 1px;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" nowrap="nowrap" style="padding: 3px;">passed to <code>Create-</code><br/>
+<code>Prop­Sheet­Page</code></td>
+<td style="width: 2em;"> </td>
+<td colspan="2" nowrap="nowrap" style="padding: 3px;">copy passed to<br/>
+<code>WM_INITDIALOG</code></td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>dwSize</code></span></td>
+<td> </td>
+<td style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; padding: 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮<br/>
+<code>lParam</code><br/>
+⋮</td>
+<td> </td>
+<td style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; padding: 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮<br/>
+<code>lParam</code><br/>
+⋮</td>
+<td> </td>
+<td rowspan="2" style="border: solid 1px black; border-left: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>dwSize</code></span></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;"><code>widget</code><br/>
+<code>uppercaseOnly</code><br/>
+<code>renameCount</code></td>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;"><code>widget</code><br/>
+<code>uppercaseOnly</code><br/>
+<code>renameCount</code></td>
+</tr>
+</tbody>
+</table>
+<p>The catch here is that the bonus data is copied to the internal storage via <code>memcpy</code>, so it must be something like a POD type which can be safely copied byte-by-byte.</p>
+<p>If you didn’t know about this trick, you would wonder why the <code>lParam</code> of the <code>WM_<wbr/>INIT­DIALOG</code> message points to the full <code>PROPSHEETPAGE</code>. After all, without this trick, the only thing you could do with the <code>PROPSHEETPAGE</code> pointer was access the <code>lParam</code>; all the other fields are explicitly documented as off-limits¹ during the handling of the <code>WM_<wbr/>INIT­DIALOG</code> message. Why bother giving you a pointer to a structure where you’re allowed to access only one member? Why not just pass that one member?</p>
+<p>And now you know why: Because you actually can access more than just the <code>lParam</code>. If you hung extra data off the end of the <code>PROPSHEETPAGE</code>, then that data is there for you too.</p>
+<p>Extending the <code>PROPSHEETPAGE</code> structure means that each <code>PROPSHEETPAGE</code> can be a different size, which makes it tricky to pass an array of them, which is something you need to do if you’re using the <code>PSH_<wbr/>PROP­SHEET­PAGE</code> flag. We’ll look at that problem next time.</p>
+<p><b>Bonus chatter</b>: This is an expansion of <a href="/code/you-can-extend-the-propsheetpage-structure-with-your-own-bonus-data" title="You can extend the PROPSHEETPAGE structure with your own bonus data"> a previous discussion of the same topic</a>. In that earlier topic, I said that the array technique requires all of the elements to be the same size. But next time, I’ll show how to create an array of heterogeneous types.</p>
+<p><b>Bonus bonus chatter</b>: This is similar to, but not the same as, the trick of <a href="https://devblogs.microsoft.com/oldnewthing/20101217-00/?p=11983" title="The OVERLAPPED associated with asynchronous I/O is passed by address, and you can take advantage of that"> adding extra information to the end of the <code>OVERLAPPED</code> structure</a>. In the case of overlapped I/O, the same <code>OVERLAPPED</code> pointer is used; there is no copying. You can therefore put arbitrary complex data after the <code>OVERLAPPED</code>; they don’t have to be POD types. Of course, you have to be careful to destruct them properly when the I/O is complete.</p>
+<p>In the case of a <code>PROPSHEETPAGE</code>, the memory is copied, so the data needs to be <code>memcpy</code>-safe. You could still use it to hold non-POD types, though, by treating it as uninitialized memory that the system conveniently preallocates for you. You’ll have to placement-construct the objects in their copied location, and manually destruct them when the property sheet page is destroyed.</p>
+<p><b>Answer to exercise</b>: If the property sheet page is never created (because the user never clicks on the tab for the page), then the dialog is never created, and therefore is never destroyed either. In that case, you don’t get any <code>WM_<wbr/>DESTROY</code> message, and the memory ends up leaked.</p>
+<p>¹ The documentation cheats a bit and says that you cannot modify anything except for the <code>lParam</code>, when what it’s really saying is that you cannot modify any <i>system-defined</i> things except for the <code>lParam</code>. Your private things are yours, and you can modify them at will.</p>
+
+
+</body>

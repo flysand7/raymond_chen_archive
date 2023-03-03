@@ -1,0 +1,217 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I customize how my application windows are grouped in the Taskbar?</h1>  <!-- .entry-meta -->
+
+<p>
+Benjamin Smedberg wants to know
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/07/20/10040074.aspx#10040417">
+how to customize the icon used in the Taskbar</a>
+for applications that are grouped,
+when the application is a runtime for multiple applications.
+(This is the other scenario I hinted at
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/08/17/10340743.aspx">
+last time</a>.)
+</p>
+<p>
+Actually, customizing the icon is only part of what you want to happen
+when your application is a runtime.
+In that case, you really want each inner application to be exposed
+to the user as an entirely separate application.
+In other words,
+if your application is hosting Product A and Product B,
+you want the windows for Product A and
+Product B to group separately,
+have separate icons,
+maintain separate jump lists,
+all that stuff.
+Because from the user’s point of view, they are separate programs.
+It just happens that under the covers, they’re all being driven
+by a single EXE.
+</p>
+<p>
+In Windows, the concept of an application is captured in
+something called an <i>Application User Model ID</i>,
+or <i>AppID</i> for short.
+For backward compatibility, if your application does not provide
+an explicit AppID,
+the shell will autogenerate one based on your EXE name.
+Therefore,
+the starting point for AppIDs is that an AppID maps to an EXE.
+But once you start customizing your AppID, you can play with
+this default correspondence.
+</p>
+<p>
+All the information in this article came from the article
+<a href="http://msdn.microsoft.com/en-us/library/dd378459(v=VS.85).aspx">
+Application User Model IDs (AppUserModelIDs)</a> in MSDN.
+</p>
+<p>
+Okay, so suppose your application is really a runtime for
+other applications.
+What you need to do is assign a different AppID to each of
+the applications you are hosting.
+The mechanism for this is up to you.
+Your applications might explicitly provide a unique ID,
+or you may be able to infer one.
+For example, if you are Internet Explorer and your “applications”
+are
+<a href="http://msdn.microsoft.com/en-us/library/gg131029(v=VS.85).aspx">
+pinned Web sites</a>,
+you can use the URL of the site being pinned as the unique ID.
+</p>
+<p>
+You then get to take your unique IDs and create AppIDs for them.
+<a href="http://msdn.microsoft.com/en-us/library/dd378459(v=VS.85).aspx#how">
+The format of an AppID</a> is
+</p>
+<pre>
+CompanyName.ProductName.SubProduct.VersionInformation
+</pre>
+<p>
+where the Sub­Product is optional,
+and the Version­Information is present only if you want
+different versions of your app to be treated as distinct.
+(If you want an upgraded version to be a replacement for the old
+version, then omit the Version­Information so that the old and
+new versions use the same AppID.)
+</p>
+<p>
+Note that you have to be careful how you auto-generate your AppIDs,
+since the resulting AppID needs to be legal.
+For example, you cannot just take a URL and use it as the Sub­Product
+of an AppID.
+URLs contain embedded periods, which violates the overall format,
+and they can be longer than 128 characters and can contain spaces,
+both of which are also called out in the documentation as prohibited.
+Internet Explorer addresses this problem by using a hash of the URL as
+its Sub­Product rather than the full URL.
+</p>
+<p>
+You then assign this AppID to every window associated with
+the “application”.
+You can do this for an entire process by
+calling
+<code>SetCurrentProcessExplicitAppUserModelID</code>,
+or you can do it on a
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/06/01/10170113.aspx">
+window-by-window basis</a>
+by setting the
+<code>PKEY_AppUserModel_ID</code> property.
+</p>
+<p>
+Okay, let’s write a program that shows how a runtime for other applications
+can use AppIDs to control its treatment in the taskbar.
+Of course,
+our sample won’t actually be a runtime for anything;
+the “applications” that it hosts will simply be icons.
+</p>
+<p>
+Start with the
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make these changes:
+</p>
+<pre>
+<font color="blue">
+#include &lt;shellapi.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;strsafe.h&gt;
+#define HOSTAPPID L"Contoso.Host"
+void SetProcessAppId(LPCWSTR pszTarget)
+{
+  if (pszTarget[0]) {
+    WCHAR szAppId[256];
+    DWORD dwHash = 0;
+    HashData((BYTE*)pszTarget, wcslen(pszTarget) * sizeof(WCHAR),
+             (BYTE*)&amp;dwHash, sizeof(dwHash));
+    StringCchPrintfW(szAppId, ARRAYSIZE(szAppId),
+                     L"%s.hosted-%08x", HOSTAPPID, dwHash);
+    SetCurrentProcessExplicitAppUserModelID(szAppId);
+  } else {
+    StringCchPrintfW(szAppId, ARRAYSIZE(szAppId),
+                     L"%s.main", HOSTAPPID);
+  }
+}</font>
+int WINAPI <font color="blue">wWinMain</font>(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   <font color="blue">LPWSTR</font> lpCmdLine, int nShowCmd)
+{
+  <font color="blue">SetProcessAppId(lpCmdLine);</font>
+    ...
+    ShowWindow(hwnd, SW_NORMAL);
+    <font color="blue">SetWindowText(hwnd, lpCmdLine);
+    if (lpCmdLine[0]) {
+      WCHAR szIcon[256];
+      StringCchCopyW(szIcon, ARRAYSIZE(szIcon), ptszCmdLine);
+      int iIcon = PathParseIconLocation(szIcon);
+      <a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/05/26/422076.aspx">if (iIcon == -1) iIcon = 0;</a>
+      HICON hico = ExtractIcon(hinst, szIcon, iIcon);
+      SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hico);
+    }</font>
+    ...
+}
+</pre>
+<p>
+Our simple host program just hosts an icon.
+The path to the icon is passed on the command line in the form
+“path,id”,
+and for good measure, we put the icon path in the caption so you can
+see how it groups.
+</p>
+<p>
+The real work happens in the
+<code>SetProcessAppId</code> function.
+If there is no command line, then we are running in standalone mode
+and set our Sub­Product to <code>main</code>.
+If we have a command line, then we hash it and use the hash to build
+our Sub­Product.
+I’m just using a four-byte hash with a simple has function;
+depending on how paranoid you are, you could use some other hash
+function, but make sure you can get the resulting AppID to fit
+into 128 characters.
+(This means that hex-encoded SHA512 is too big.)
+</p>
+<p>
+Once we figure out what our AppID is, we set it for the entire
+process by calling
+<code>SetCurrentProcessExplicitAppUserModelID</code>.
+</p>
+<p>
+Okay, let’s take this program out for a spin.
+You can run it with the command lines
+</p>
+<pre>
+scratch %windir%\explorer.exe,0
+scratch %windir%\explorer.exe,0
+scratch %windir%\explorer.exe,1
+scratch %windir%\explorer.exe,1
+</pre>
+<p>
+to see four copies of the program,
+two with one icon and two with another.
+Observe that when they group in the taskbar,
+the icon for the group is preserved,
+and that the two sets of programs group separately.
+</p>
+<p>
+Note also that if you create shortcuts to your host program
+with a command line,
+<a href="http://msdn.microsoft.com/en-us/library/dd378459(v=VS.85).aspx#where">
+you need to set the AppID in your shortcut, too</a>.
+(Otherwise the shell won’t know what the AppID of the
+resulting program will be, since you are setting it at runtime.)
+</p>
+<p>
+Note also that we did not need to
+<a href="http://msdn.microsoft.com/en-us/library/dd378459(v=VS.85).aspx#host">
+register the application as a host process</a>
+because we explicitly set an AppID in our application
+and in our shortcuts.
+(Or at least, we said that we would.
+I didn’t actually do it.)
+</p>
+<p>
+<b>Bonus reading</b>:
+<a href="http://windowsteamblog.com/windows/b/developers/archive/2009/06/18/developing-for-the-windows-7-taskbar-application-id.aspx">
+Developing for the Windows 7 Taskbar — Application ID</a>.</p>
+
+
+</body>

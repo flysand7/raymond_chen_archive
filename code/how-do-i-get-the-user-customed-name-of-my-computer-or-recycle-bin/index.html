@@ -1,0 +1,91 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I get the user-customed name of My Computer or Recycle Bin?</h1>  <!-- .entry-meta -->
+
+<p>Today’s Little Program displays the user-customized name of This PC (the folder formerly known as My Computer) or Recycle Bin. The basic principle here is that if you want to display something the same way that Explorer does, then ask the same data source that Explorer asks: The shell namespace. </p>
+<p>Today’s smart pointer library is (rolls dice) <i>nothing</i>. We’re going to use raw pointers. </p>
+<p>Remember, Little Programs do little to no error checking. </p>
+<pre>
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/24/10387757.aspx">STRICT_TYPED_ITEMIDS</a>
+#define UNICODE
+#define _UNICODE
+#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;stdio.h&gt;
+
+void PrintDisplayName(IShellItem* item, SIGDN sigdn, PCWSTR label)
+{
+  PWSTR name;
+  item-&gt;GetDisplayName(sigdn, &amp;name);
+  printf("%ls = %ls\n", label, name);
+  CoTaskMemFree(name);
+}
+
+void PrintKnownFolderDisplayName(
+    REFKNOWNFOLDERID rfid, SIGDN sigdn, PCWSTR label)
+{
+  IShellItem* item;
+  SHGetKnownFolderItem(rfid, KF_FLAG_DONT_VERIFY,
+                       nullptr, IID_PPV_ARGS(&amp;item));
+  PrintDisplayName(item, sigdn, label);
+  item-&gt;Release();
+}
+
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+  CoInitialize(0);
+  PrintKnownFolderDisplayName(FOLDERID_ComputerFolder,
+    SIGDN_NORMALDISPLAY, L"name");
+  PrintKnownFolderDisplayName(FOLDERID_RecycleBinFolder,
+    SIGDN_NORMALDISPLAY, L"name");
+  CoUninitialize();
+  return 0;
+}
+</pre>
+<p>The <code>Print­Display­Name</code> function obtains the display name of a shell item and prints it. The <code>Print­Known­Folder­Display­Name</code> function gets the item for a known folder and prints its display name. And our main program grabs the This PC and Recycle Bin folders and prints their display names. </p>
+<p>Really not that complicated. </p>
+<p>If you are old-school and prefer to work with shell folders and item ID lists, you can do it the old school way: </p>
+<pre>
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/24/10387757.aspx">STRICT_TYPED_ITEMIDS</a>
+#define UNICODE
+#define _UNICODE
+#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;oleauto.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;shlwapi.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;tchar.h&gt;
+
+void PrintDisplayName(PCIDLIST_ABSOLUTE absolute, SHGDNF shgdn, PCWSTR label)
+{
+  IShellFolder* parentFolder;
+  PCUITEMID_CHILD child;
+  SHBindToParent(absolute, IID_PPV_ARGS(&amp;parentFolder), &amp;child);
+  <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/08/30/10202076.aspx">PrintDisplayName</a>(parentFolder, child, shgdn, label);
+  parentFolder-&gt;Release();
+}
+
+void PrintCsidlDisplayName(int csidl, SHGDNF shgdn, PCWSTR label)
+{
+  PIDLIST_ABSOLUTE absolute;
+  SHGetFolderLocation(nullptr, csidl, nullptr, 0, &amp;absolute);
+  PrintDisplayName(absolute, shgdn, label);
+  CoTaskMemFree(absolute);
+}
+
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+  CoInitialize(0);
+  PrintCsidlDisplayName(CSIDL_DRIVES, SHGDN_NORMAL, L"name");
+  PrintCsidlDisplayName(CSIDL_BITBUCKET, SHGDN_NORMAL, L"name");
+  CoUninitialize();
+  return 0;
+}
+</pre>
+<p>The idea is the same: We bind to the special folder and print its name. Getting the name of an object is done by asking the parent for the name of the child. </p>
+<p>Okay, this isn’t all that exciting, but it still shows that the way to get the name of something the way Explorer shows it is to get the name the way Explorer gets it. </p>
+<p>I’ll play with this a little more next week. </p>
+
+
+</body>

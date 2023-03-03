@@ -1,0 +1,199 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What does INIT_ONCE_CTX_RESERVED_BITS mean?</h1>  <!-- .entry-meta -->
+
+<p>
+Windows Vista adds the
+<a href="http://msdn.microsoft.com/en-us/library/aa363808(v=VS.85).aspx">
+One-Time Initialization</a>
+family of functions
+which address a common coding pattern:
+I want a specific chunk of code to run exactly once,
+even in the face of multiple calls from different threads.
+There are many implementations of this pattern,
+such as the infamous
+<a href="http://en.wikipedia.org/wiki/Double-checked_locking">
+double-checked lock</a>.
+The double-checked lock is very easy to get wrong,
+due to memory ordering and race conditions,
+so
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/04/17/10294294.aspx">
+the kernel folks</a>
+decided to write it for you.
+</p>
+<p>
+The straightforward way of using a one-time-initialization
+object is to have it protect the initialization of some other
+object.
+For example, you might have it protect a static object:
+</p>
+<pre>
+INIT_ONCE GizmoInitOnce = INIT_ONCE_STATIC_INIT;
+Gizmo ProtectedGizmo;
+BOOL CALLBACK InitGizmoOnce(
+    PINIT_ONCE InitOnce,
+    PVOID Parameter,
+    PVOID *Context)
+{
+    Gizmo *pGizmo = reinterpret_cast&lt;Gizmo*&gt;(Parameter);
+    pGizmo-&gt;Initialize();
+    return TRUE;
+}
+SomeFunction(...)
+{
+    // Initialize ProtectedGizmo if not already initialized
+    InitOnceExecuteOnce(&amp;GizmoInitOnce,
+                        InitGizmoOnce,
+                        &amp;ProtectedGizmo,
+                        NULL);
+    // At this point, ProtectedGizmo has been initialized
+    ProtectedGizmo.Something();
+    ...
+}
+</pre>
+<p>
+Or you might have it protect a dynamic object:
+</p>
+<pre>
+class Widget
+{
+    Widget()
+    {
+        InitOnceInitialize(&amp;m_InitOnce);
+    }
+    void Initialize();
+    ...
+    static BOOL CALLBACK InitWidgetOnce(
+        PINIT_ONCE InitOnce,
+        PVOID Parameter,
+        PVOID *Context)
+    {
+        Widget *pWidget = reinterpret_cast&lt;Widget*&gt;(Parameter);
+        pWidget-&gt;Initialize();
+        return TRUE;
+    }
+    SomeMethod(...)
+    {
+        // Initialize ourselves if not already initialized
+        InitOnceExecuteOnce(&amp;InitWidgetOnce,
+                            this,
+                            NULL);
+        // At this point, we have been initialized
+        ... some other stuff ...
+    }
+}
+</pre>
+<p>
+But it so happens that you can also have the <code>INIT_ONCE</code>
+object protect <i>itself</i>.
+</p>
+<p>
+You see, once the <code>INIT_ONCE</code> object has entered the
+“initialization complete” state, the one-time initialization code
+only needs a few bits of state.
+The other bits are unused, so the kernel folks figured,
+“Well, since we’re not using them, maybe the application wants to use them.”
+</p>
+<p>
+That’s where <code>INIT_ONCE_CTX_RESERVED_BITS</code> comes in.
+The
+<code>INIT_ONCE_CTX_RESERVED_BITS</code> value is the number of bits
+that the one-time initialization code uses after initialization is complete;
+the other bits are free for you to use yourself.
+The value of
+<code>INIT_ONCE_CTX_RESERVED_BITS</code> is 2,
+which means that you can store any value that’s a multiple of 4.
+If it’s a pointer, then the pointer must be <code>DWORD</code>-aligned
+or better.
+This requirement is usually easy to meet because heap-allocated objects
+satisfy it, and the pointer you want to store is usually a pointer
+to a heap-allocated object.
+As noted some time ago,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/01/21/358109.aspx">
+kernel object handles are also multiples of four</a>,
+so those can also be safely stored inside the <code>INIT_ONCE</code>
+object.
+(On the other hand, USER and GDI handles are <i>not</i> guaranteed
+to be multiples of four, so you cannot use this trick to store those
+types of handles.)
+</p>
+<p>
+Here’s an example.
+First, the code which uses the traditional method of having the
+<code>INIT_ONCE</code> structure protect another variable:
+</p>
+<pre>
+// using the static object pattern for simplicity
+INIT_ONCE PathInitOnce = INIT_ONCE_STATIC_INIT;
+LPWSTR PathToDatabase = NULL;
+BOOL CALLBACK InitPathOnce(
+    PINIT_ONCE InitOnce,
+    PVOID Parameter,
+    PVOID *Context)
+{
+    LPWSTR Path = (LPWSTR)LocalAlloc(LMEM_FIXED, ...);
+    if (Path == NULL) return FALSE;
+    ... get the path in Path...
+    PathToDatabase = Path;
+    return TRUE;
+}
+SomeFunction(...)
+{
+    // Get the database path (initializing if necessary)
+    if (!InitOnceExecuteOnce(&amp;PathInitOnce,
+                             InitPathOnce,
+                             NULL,
+                             NULL)) {
+        return FALSE; // couldn't get the path for some reason
+    }
+    // The "PathToDatabase" variable now contains the path
+    // computed by InitPathOnce.
+    OtherFunction(PathToDatabase);
+    ...
+}
+</pre>
+<p>
+Since the object being protected is pointer-sized and satisfies
+the necessary alignment constraints,
+we can merge it into the <code>INIT_ONCE</code> structure.
+</p>
+<pre>
+INIT_ONCE PathInitOnce = INIT_ONCE_STATIC_INIT;
+BOOL CALLBACK InitPathOnce(
+    PINIT_ONCE InitOnce,
+    PVOID Parameter,
+    PVOID *Context)
+{
+    LPWSTR Path = (LPWSTR)LocalAlloc(LMEM_FIXED, ...);
+    if (Path == NULL) return FALSE;
+    ... get the path in Path...
+    *Context = Path;
+    return TRUE;
+}
+SomeFunction(...)
+{
+    LPWSTR PathToDatabase;
+    // Get the database path (initializing if necessary)
+    if (!InitOnceExecuteOnce(&amp;PathInitOnce,
+                             InitPathOnce,
+                             NULL,
+                             &amp;PathToDatabase)) {
+        return FALSE; // couldn't get the path for some reason
+    }
+    // The "PathToDatabase" variable now contains the path
+    // computed by InitPathOnce.
+    OtherFunction(PathToDatabase);
+    ...
+}
+</pre>
+<p>
+This may seem like a bunch of extra work to save four bytes
+(or eight bytes on 64-bit Windows),
+but
+if you use the asynchronous initialization model,
+then you have no choice but to use context-based initialization,
+as we learned when we tried to
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/07/10150728.aspx">
+write our own lock-free one-time initialization code</a>.</p>
+
+
+</body>

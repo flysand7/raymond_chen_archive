@@ -1,0 +1,51 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Waiting synchronously for our coroutine to complete</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/c-coroutines-adding-com-context-support-to-our-awaiter" title="C++ coroutines: Adding COM context support to our awaiter"> added an extension point that permitted us to respond differently to the completion of the coroutine</a>. We’re going to put that extension point to good use by adding the ability to wait synchronously for the coroutine to complete.</p>
+<pre>namespace async_helpers::details
+{
+    template&lt;typename T&gt;
+    struct simple_task_base
+    {
+        ...
+
+        <span style="color: blue;">T get() &amp;&amp;
+        {
+            if (!promise-&gt;client_await_ready()) {
+                bool completed = false;
+                if (promise-&gt;client_await_suspend(
+                    &amp;completed, wake_by_address)) {
+                    bool ready = true;
+                    while (!completed) {
+                        WaitOnAddress(&amp;completed, &amp;ready,
+                            sizeof(completed), INFINITE);
+                    }
+                }
+            }
+            return std::exchange(promise, {})-&gt;client_await_resume();
+        }</span>
+
+        ...
+    private:
+        ...
+
+        <span style="color: blue;">static void CALLBACK
+            wake_by_address(void* completed)
+        {
+            *reinterpret_cast&lt;bool*&gt;(completed) = true;
+            WakeByAddressSingle(completed);
+        }</span>
+
+    };
+}
+</pre>
+<p>To wait synchronously for the coroutine to complete, we first check if the coroutine is already finished. If so, then we’re done, and we can skip the waiting step.</p>
+<p>Otherwise, the coroutine is still running, so we register our suspension with a pointer and a callback function. This time, the pointer is a pointer to a variable that we will set when the coroutine is complete, and the callback is a function that sets that variable. In our case, we use <code>Wait­On­Address</code> to create a synchronization object out of nothing.</p>
+<p>If <code>client_<wbr/>await_<wbr/>suspend</code> returns <code>false</code>, then it means that the coroutine has already completed while we were preparing to suspend, so we should skip the suspend and go straight to the resume step.</p>
+<p>Finally, we ask <code>client_<wbr/>await_<wbr/>resume</code> to obtain the completed value and return it. We use <code>std::exchange</code> to cause the <code>promise_ptr</code> to be emptied after we get the completed value, thereby consuming it and freeing the coroutine state.</p>
+<p>Synchronously waiting for a coroutine is always a risky proposition because the coroutine you’re waiting for might need to use the thread that you are waiting on. This is particularly true if you perform the wait from a single-threaded COM apartment, because the coroutine will probably need to get back to the original thread to continue its COM work, which it can’t do because you’ve blocked the original thread in order to wait for the coroutine.</p>
+<p>So don’t do that.</p>
+<p>Next time, we’ll look at task interconvertibility.</p>
+
+
+</body>

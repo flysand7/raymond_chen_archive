@@ -1,0 +1,74 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Loading the dictionary, part 4:  Character conversion redux</h1>  <!-- .entry-meta -->
+
+<p>
+Getting rid of <code>getline</code> was a big help, but 480ms
+is still not quite peppy enough.  You need to respond to user
+actions within a tenth of a second for thing to seem responsive.
+</p>
+<p>
+Profiling the latest endeavor reveals that 40% of our CPU time
+is spent in <code>codecvt::in</code>.  Some debugging reveals
+that <code>codecvt::in</code> ultimately calls
+<code>MultiByteToWideChar</code> but uses it to convert
+only one or two characters at a time, even though we handed it a
+whole line.
+</p>
+<p>
+Let’s get rid of <code>codecvt::in</code> and convert the
+characters ourselves, calling
+<code>MultiByteToWideChar</code> exactly once to convert the
+entire line at a single go.
+</p>
+<pre>
+<font color="blue">#define CP_BIG5 950</font>
+Dictionary::Dictionary()
+{
+ MappedTextFile mtf(TEXT("cedict.b5"));
+ <font color="blue"><strike>// typedef std::codecvt&lt;wchar_t, char, mbstate_t&gt; widecvt;
+ // std::locale l(".950");
+ // const widecvt&amp; cvt = _USE(l, widecvt); // use_facet&lt;widecvt&gt;(l);</strike></font>
+ const CHAR* pchBuf = mtf.Buffer();
+ const CHAR* pchEnd = pchBuf + mtf.Length();
+ while (pchBuf &lt; pchEnd) {
+  const CHAR* pchEOL = std::find(pchBuf, pchEnd, '\n');
+  if (*pchBuf != '#') {
+   size_t cchBuf = pchEOL - pchBuf;
+   wchar_t* buf = new wchar_t[cchBuf];
+   <font color="blue">DWORD cchResult = MultiByteToWideChar(CP_BIG5, 0,
+                          pchBuf, cchBuf, buf, cchBuf);
+   if (cchResult) {</font>
+    wstring line(buf, <font color="blue">cchResult</font>);
+    DictionaryEntry de;
+    if (de.Parse(line)) {
+     v.push_back(de);
+    }
+   }
+   delete[] buf;
+  }
+  pchBuf = pchEOL + 1;
+ }
+}
+</pre>
+<p>
+Instead of using the <code>codecvt::in</code> method to perform
+character conversion, we go straight to the
+<code>MultiByteToWideChar</code> function.
+Notice that we assume that the Big5 string will not generate
+more Unicode characters than its length in bytes.
+This happens to be a safe assumption based on our external knowledge
+of the Big5 encoding.  (If the encoding were something else,
+the assumption may no longer be valid.)
+</p>
+<p>
+With this change, the dictionary load time has dropped to 240ms
+(or 300ms if you include the time it takes to destroy the
+dictionary).  That’s twice as fast the previous version, but still
+not quite close enough to the 100ms goal.
+We still have some work ahead of us.
+</p>
+<p>
+[Raymond is currently on vacation; this message was pre-recorded.]</p>
+
+
+</body>

@@ -1,0 +1,237 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">WM_NCHITTEST is for hit-testing, and hit-testing can happen for reasons other than the mouse being over your window</h1>  <!-- .entry-meta -->
+
+<p>
+The <code>WM_NC­HIT­TEST</code> message is sent to your window
+in order determine what part of the window corresponds to a
+particular point.
+The most common reason for this is that
+the mouse is over your window.</p>
+<ul>
+<li>
+The default <code>WM_SET­CURSOR</code> handler
+uses the result of <code>WM_NC­HIT­TEST</code>
+to figure out what type of cursor to show.
+for example, if you return <code>HT­LEFT</code>,
+then <code>Def­Window­Proc</code>
+will show the <code>IDC_SIZE­WE</code> cursor.
+</li>
+<li>
+If the user clicks the mouse,
+the default <code>WM_NC­LBUTTON­DOWN</code> handler
+uses the result of <code>WM_NC­HIT­TEST</code> to figure out
+where on the window you clicked.
+For example, if you return <code>HT­CLOSE</code>, then it will
+act as if the user clicked on the Close button.
+</li>
+</ul>
+<p>
+Although <code>WM_NC­HIT­TEST</code> triggers most often
+for mouse activity, that is not the only reason why
+somebody might want to ask,
+“What part of the window does this point correspond to?”
+</p>
+<ul>
+<li>
+The <code>Window­From­Point</code> function uses
+<code>WM_NC­HIT­TEST</code> in its quest to figure
+out which window is under the point you passed in.
+If you return <code>HT­TRANSPARENT</code>,
+then it will skip your window and keep looking.
+</li>
+<li>
+Drag/drop operations use the result of
+<code>WM_NC­HIT­TEST</code> to figure out what part of the
+window you are dragging over.
+</li>
+<li>
+Accessibility tools use the result of
+<code>WM_NC­HIT­TEST</code> to help the user understand
+what’s on the screen.
+</li>
+<li>
+Anybody can use the result of
+<code>WM_NC­HIT­TEST</code> to see how your window is laid out.
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/10/27/55461.aspx">
+We used it a few years ago</a>
+to detect a right-click on the caption button.
+</li>
+</ul>
+<p>
+Consider a program that wants to beep
+when the mouse is over the Close button.
+This is an artificial example, but you can use your imagination
+to come up with more realistic ones,
+like showing a custom mouseover animation or
+displaying a balloon tip if the document is unsaved.
+I chose beeping because it requires less code;
+otherwise, all the details of its implementation would distract
+from the point of the example.
+</p>
+<p>
+Start with
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+the scratch program</a>
+and make the following changes:
+</p>
+<pre>
+BOOL g_fInCloseButton = FALSE;
+void EnterCloseButton(HWND hwnd)
+{
+ if (g_fInCloseButton) return;
+ g_fInCloseButton = TRUE;
+ MessageBeep(-1); // obviously something more interesting goes here
+ TRACKMOUSEEVENT tme = { sizeof(tme), TME_NONCLIENT | TME_LEAVE, hwnd };
+ TrackMouseEvent(&amp;tme);
+}
+void LeaveCloseButton(HWND hwnd)
+{
+ if (g_fInCloseButton) {
+  // stop animation, remove balloon, etc.
+  g_fInCloseButton = FALSE;
+ }
+}
+<i>// This code is wrong - see text
+UINT OnNcHitTest(HWND hwnd, int x, int y)
+{
+ UINT ht = FORWARD_WM_NCHITTEST(hwnd, x, y, DefWindowProc);
+ if (ht == HTCLOSE) {
+  EnterCloseButton(hwnd);
+ } else {
+  LeaveCloseButton(hwnd);
+ }
+ return ht;
+}</i>
+HANDLE_MSG(hwnd, WM_NCHITTEST, OnNcHitTest);
+case WM_NCMOUSELEAVE:
+ LeaveCloseButton(hwnd);
+ break;
+</pre>
+<p>
+We keep track of whether or not the mouse is in the close button
+so that we don’t double-start the animation or double-cancel it.
+(For us, this keeps us from beeping
+when the mouse moves around <i>within</i> the Close button.)
+When the mouse leaves the close button—either because it
+moved to another part of the window or because it left the
+window
+entirely—we reset the flag.
+</p>
+<p>
+When you run this program, it pretty much behaves as intended.
+But that’s because we haven’t tried anything interesting yet.
+</p>
+<p>
+Merge in the changes from our
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/12/06/275659.aspx">
+sample drag/drop program</a>,
+so now you have a program that both performs drag/drop and which
+has special Close button behavior.
+</p>
+<p>
+Now things get interesting.
+Run the program and drag out of the client area (triggering
+the drag/drop behavior) and hover the mouse over the Close button.
+</p>
+<p>
+Ow, my ears!
+</p>
+<p>
+What happened here?
+</p>
+<p>
+When the drag/drop loop is in progress, the mouse is captured
+to the drag/drop window.
+Mouse capture means that all mouse messages go to that window
+(for as long as a mouse button is held down).
+“I don’t care what window you think the mouse is over; it’s over me!”
+Another way of looking at this is that the capture window
+logically covers the entire screen
+(for the purpose of determining who gets the mouse message).
+</p>
+<p>
+The drag/drop loop wants to know which window is under the drag cursor
+so it can figure out whose <i>IDropTarget</i> should receive
+the drag/drop notifications.
+This <i>WindowFromPoint</i> call triggers a
+<code>WM_NC­HIT­TEST</code>
+message, which our program incorrectly interprets as a
+“the mouse is now in my window”.
+(Since the mouse is captured,
+the mouse really isn’t in your window;
+it’s in the window that has capture because that window is stealing
+all the mouse input.)
+It then performs its “The mouse is in the Close button”
+activities (BEEP).
+But since the mouse <i>was never in the window to begin with</i>,
+the <code>Track­Mouse­Event</code> call that requests
+“let me know when the mouse leaves my window”
+posts a <code>WM­_NC­MOUSE­LEAVE</code> message immediately.
+The window then cleans up its “mouse is in the Close button”
+behaviors, ready for the next cycle.
+</p>
+<p>
+And the next cycle begins pretty much as soon as the previous
+cycle finished,
+because the mouse
+is still physically (but not logically) in the Close button.
+</p>
+<p>
+Result: Infinite beep loop.
+</p>
+<p>
+(The real-life situation that triggered this article was much more
+complicated than this, involving an animation rather than a beep,
+but the result was effectively the same:
+Under the right circumstances, just moving the mouse over the caption
+resulted in the animation becoming an epileptic-seizure-inducing
+flicker as the animation continuously started and stopped.)
+</p>
+<p>
+As we saw some time ago,
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/10/13/55279.aspx">
+the <code>WM_MOUSE­MOVE</code> message is the way to detect
+that the mouse has entered your window</a>.
+(Though
+some people haven’t figured this out and
+<a href="http://bytes.com/topic/visual-basic-net/answers/385246-code-wm_mouseenter">
+continue on their
+fruitless quest for the <code>WM_MOUSE­ENTER</code> message</a>.)
+</p>
+<p>
+In our case, the applicable message is
+<code>WM_NC­MOUSE­MOVE</code>
+rather than <code>WM_MOUSE­MOVE</code>,
+since we are operating on the nonclient area.
+Therefore, the fix is to move the code that starts the animation from
+<code>WM_NC­HIT­TEST</code>
+to <code>WM_NC­MOUSE­MOVE</code>.
+</p>
+<pre>
+// Delete the old OnNcHitTest function and replace it with this
+void OnNcMouseMove(HWND hwnd, int x, int y, UINT codeHitTest)
+{
+ FORWARD_WM_NCMOUSEMOVE(hwnd, x, y, codeHitTest, DefWindowProc);
+ if (codeHitTest == HTCLOSE) {
+  EnterCloseButton(hwnd);
+ } else {
+  LeaveCloseButton(hwnd);
+ }
+ return ht;
+}
+// delete HANDLE_MSG(hwnd, WM_NCHITTEST, OnNcHitTest);
+HANDLE_MSG(hwnd, WM_NCMOUSEMOVE, OnNcMouseMove);
+</pre>
+<p>
+Remember, if you want to do something when the mouse
+enters your window,
+wait until the mouse actually enters your window.
+The <code>WM_NC­HIT­TEST</code> message doesn’t mean that
+the mouse is in your window;
+it just means that somebody is asking,
+“If the mouse <i>were</i> in your window,
+what would it be doing?”
+</p>
+
+
+</body>

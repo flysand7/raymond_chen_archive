@@ -1,0 +1,179 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The various ways of moving between C++/WinRT and classic COM</h1>  <!-- .entry-meta -->
+
+<p>Windows Runtime language projections create parallel universes with types that correspond to the ABI types, but which are expressed in a projection-specific way. For the C++ projections (C++/WinRT and C++/CX), these projected types go even further: Not only do they correspond to the ABI types, but their internal layouts are identical to the ABI types. This means that you can use reinrepret-casting to convert between them.</p>
+<p>Suppose we have a Windows Runtime <code>Contoso.<wbr/>Widget</code> with its associated default interface <code>Contoso.<wbr/>IWidget</code>.</p>
+<p>C++/WinRT and C++/CX set up parallel universes like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th style="border: solid 1px black;">C++/WinRT</th>
+<th style="border: solid 1px black;">ABI</th>
+<th style="border: solid 1px black;">C++/CX</th>
+</tr>
+<tr>
+<td colspan="3" style="height: .25ex;"> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #eaf7fb;"><code>winrt::Contoso::Widget</code></td>
+<td style="border: solid 1px black; background-color: #eaf7fb;"><code>ABI::Contoso::Widget*</code></td>
+<td style="border: solid 1px black; background-color: #eaf7fb;"><code>Contoso::Widget^</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #eaf7fb;"><code>winrt::Contoso::IWidget</code></td>
+<td style="border: solid 1px black; background-color: #eaf7fb;"><code>ABI::Contoso::IWidget*</code></td>
+<td style="border: solid 1px black; background-color: #eaf7fb;"><code>Contoso::IWidget^</code></td>
+</tr>
+<tr>
+<td colspan="3" style="height: .25ex;"> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #fcfce9;"><code>winrt::Windows::Foundation::IInspectable</code></td>
+<td style="border: solid 1px black; background-color: #fcfce9;"><code>::IInspectable*</code></td>
+<td style="border: solid 1px black; background-color: #fcfce9;"><code>Platform::Object^</code></td>
+</tr>
+<tr>
+<td colspan="3" style="height: .25ex;"> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #ffc8c8;"><code>winrt::Windows::Foundation::IUnknown</code></td>
+<td style="border: solid 1px black; background-color: #ffc8c8;"><code>::IUnknown*</code></td>
+<td style="border: solid 1px black; background-color: #ffc8c8;"> </td>
+</tr>
+<tr>
+<td colspan="3" style="height: .25ex;"> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #ffa4ff;"><code>winrt::hstring</code></td>
+<td style="border: solid 1px black; background-color: #ffa4ff;"><code>::HSTRING</code></td>
+<td style="border: solid 1px black; background-color: #ffa4ff;"><code>Platform::String^</code></td>
+</tr>
+<tr>
+<td colspan="3" style="height: .25ex;"> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #caffd8;"><code>winrt::Contoso::SomeStruct</code></td>
+<td style="border: solid 1px black; background-color: #caffd8;"><code>ABI::Contoso::SomeStruct</code></td>
+<td style="border: solid 1px black; background-color: #caffd8;"><code>Contoso::SomeStruct</code></td>
+</tr>
+<tr>
+<td colspan="3" style="height: .25ex;"> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #eacdc1;"><code>winrt::Contoso::SomeEnum</code></td>
+<td style="border: solid 1px black; background-color: #eacdc1;"><code>ABI::Contoso::SomeEnum</code></td>
+<td style="border: solid 1px black; background-color: #eacdc1;"><code>Contoso::SomeEnum</code></td>
+</tr>
+</tbody>
+</table>
+<p>All of the entities in a block have the same internal representation and are therefore interchangeable at the ABI. They are just wrapped in different types.</p>
+<p>It’s not too difficult to move up and down the columns, since you are staying inside the same family of types. But moving between columns is usually much uglier, since you’re travelling between universes.</p>
+<p>A case where you may find yourself needing to move between columns is when you want to use a classic COM interface exposed by a Windows Runtime object. Classic COM interfaces exist only in the ABI world; there is no corresponding version in C++/WinRT or C++/CX.</p>
+<p>One way to move between the C++/WinRT and ABI columns is to use C++/WinRT ABI-interop functions.</p>
+<p>For getting ABI pointers out of C++/WinRT reference types and strings:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Expression</th>
+<th><code>x</code></th>
+<th><code>v</code> receives</th>
+<th>Notes</th>
+</tr>
+<tr>
+<td><code>v = get_abi(x)</code></td>
+<td>Unchanged</td>
+<td>Non-refcounted pointer</td>
+<td>Lifetime controlled by <code>x</code></td>
+</tr>
+<tr>
+<td><code>copy_to_abi(x, v)</code></td>
+<td>Unchanged</td>
+<td>Refcounted pointer</td>
+<td>New refcount added</td>
+</tr>
+<tr>
+<td><code>v = detach_abi(x)</code></td>
+<td>Emptied</td>
+<td>Refcounted pointer</td>
+<td>Ownership transfer</td>
+</tr>
+</tbody>
+</table>
+<p>And for putting ABI pointers into C++/WinRT reference types and strings:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Expression</th>
+<th><code>x</code>‘s old value</th>
+<th><code>v</code></th>
+<th>Notes</th>
+</tr>
+<tr>
+<td><code>*put_abi(x) = v</code></td>
+<td>Released</td>
+<td>No longer owning</td>
+<td>Ownership transfer</td>
+</tr>
+<tr>
+<td><code>copy_from_abi(x, v)</code></td>
+<td>Released</td>
+<td>Still owning</td>
+<td>Reference-counted copy</td>
+</tr>
+<tr>
+<td><code>attach_abi(x, v)</code></td>
+<td>Released</td>
+<td>No longer owning</td>
+<td>Ownership transfer</td>
+</tr>
+</tbody>
+</table>
+<p>A customer had a C++/WinRT <code>Contoso.<wbr/>Widget</code> and wanted to get the raw ABI <code>::IUnknown*</code> from it, so that they could pass it to <code>Co­Set­Proxy­Blanket</code>. Here’s one way to do it:</p>
+<pre>winrt::check_hresult(
+    CoSetProxyBlanket(
+        <span style="color: blue;">reinterpret_cast&lt;::IUnknown*&gt;(winrt::get_abi(thing))</span>,
+        RPC_C_AUTHN_DEFAULT,
+        RPC_C_AUTHZ_DEFAULT,
+        COLE_DEFAULT_PRINCIPAL,
+        RPC_C_AUTHN_LEVEL_DEFAULT,
+        RPC_C_IMP_LEVEL_IMPERSONATE,
+        nullptr /*pAuthInfo*/,
+        EOAC_NONE));
+</pre>
+<p>Another way to do it is to use <code>winrt::com_ptr</code>, which gives you a little bridge to the classic COM world, provided you include <code>&lt;unknwn.h&gt;</code> before including any C++/WinRT header files.</p>
+<pre>winrt::check_hresult(
+    CoSetProxyBlanket(
+        <span style="color: blue;">thing.as&lt;::IUnknown&gt;().get()</span>,
+        RPC_C_AUTHN_DEFAULT,
+        RPC_C_AUTHZ_DEFAULT,
+        COLE_DEFAULT_PRINCIPAL,
+        RPC_C_AUTHN_LEVEL_DEFAULT,
+        RPC_C_IMP_LEVEL_IMPERSONATE,
+        nullptr /*pAuthInfo*/,
+        EOAC_NONE));
+</pre>
+<p>If you’re the sort of person who worries about such things, do note that <code>as()</code> performs a <code>Query­Interface</code> call, whereas <code>get_abi</code> is basically free because it just reaches in and gives you the embedded pointer.</p>
+<p>Structures and enumerations are simpler to manage, since there is no reference count. You can just <code>reinterpret_cast</code> between the types:</p>
+<pre>winrt::Contoso::SomeStruct s1;
+ABI::Contoso::SomeStruct s2 = reinterpret_cast&lt;ABI::Contoso::SomeStruct&amp;&gt;(s1);
+
+winrt::Contoso::SomeEnum e1;
+ABI::Contoso::SomeEnum e2 = reinterpret_cast&lt;ABI::Contoso::SomeEnum&gt;(e1);
+</pre>
+<p><b>Bonus chatter</b>: Really, you can just <code>reinterpret_cast&lt;T&amp;&gt;</code> to move between columns, even for reference types, since the internal representations are the same.</p>
+<pre>winrt::Anything a1;
+ABI::Anything a2;
+::Anything a3;
+
+a1 = reinterpret_cast&lt;winrt::Anything&amp;&gt;(a2);
+a1 = reinterpret_cast&lt;winrt::Anything&amp;&gt;(a3);
+
+a2 = reinterpret_cast&lt;ABI::Anything&amp;&gt;(a1);
+a2 = reinterpret_cast&lt;ABI::Anything&amp;&gt;(a3);
+
+a3 = reinterpret_cast&lt;::Anything&amp;&gt;(a1);
+a3 = reinterpret_cast&lt;::Anything&amp;&gt;(a2);
+</pre>
+
+
+</body>

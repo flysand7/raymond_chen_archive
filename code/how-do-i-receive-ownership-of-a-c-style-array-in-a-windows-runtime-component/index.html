@@ -1,0 +1,33 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I receive ownership of a C-style array in a Windows Runtime component?</h1>  <!-- .entry-meta -->
+
+<p>Last time, <a href="/code/how-can-i-transfer-ownership-of-a-c-style-array-to-a-windows-runtime-component" title="How can I transfer ownership of a C-style array to a Windows Runtime component?"> we looked at working around the inability to transfer ownership of a C-style array into a Windows Runtime method</a>, and we hit upon the idea of reversing the roles in order to use the <i>ReceiveArray</i> pattern. Last time, we looked at how this reversed method would be called. This time, we’ll implement it on the provider side.</p>
+<pre>namespace winrt::Sample::implementation
+{
+    struct Widget : WidgetT&lt;Widget&gt;
+    {
+        winrt::slim_mutex m_mutex;
+        winrt::com_array&lt;int32_t&gt; m_values;
+
+        void SetIndices(IndexProducer const&amp; producer)
+        {
+            auto values = producer();
+            auto lock = std::lock_guard(m_mutex);
+            m_values = std::move(values);
+        }
+    };
+}
+</pre>
+<p>The consumption is a bit tricky due to having to deal with locking.</p>
+<ul>
+<li>We don’t want to call into external code while holding the lock.</li>
+<li>Modifying the member variables must be done while holding the lock.</li>
+</ul>
+<p>This means that we need to order the operations carefully.</p>
+<p>First, we call the delegate outside the lock. That way, the delegate is free to enter any locks it wishes in order to produce the C-style array, which is then transferred to the <code>com_array</code>.</p>
+<p>Next, we enter the lock to prevent concurrent modification of the <code>Widget</code> object.</p>
+<p>Once safely inside the lock, we move-assign the C-style array into the <code>m_values</code> member, thereby transferring ownership of the data to the member variable. This achieves our goal of getting the data into the <code>m_values</code> without ever being copied.</p>
+<p>Next time, we’ll look at another weird corner case in the Windows Runtime that C-style arrays run up against.</p>
+
+
+</body>

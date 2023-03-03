@@ -1,0 +1,96 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does the compiler turn my conditional loop into an infinite one?</h1>  <!-- .entry-meta -->
+
+<p>A customer asked why the compiler turned their conditional loop into an infinite one. </p>
+<pre>
+#include &lt;windows.h&gt;
+
+int x = 0, y = 1;
+int* ptr;
+
+DWORD CALLBACK ThreadProc(void*)
+{
+  Sleep(1000);
+  ptr = &amp;y;
+  return 0;
+}
+
+int main(int, char**)
+{
+ ptr = &amp;x; // starts out pointing to x
+
+ DWORD id;
+ HANDLE hThread = CreateThread(nullptr, 0, ThreadProc, 0, &amp;id);
+
+ // Wait for the thread to change the ptr
+ // so that it points to a nonzero value
+ while (*ptr == 0) { }
+
+ return 0;
+}
+</pre>
+<p>Translating into standard C++, for those who don’t want to get bogged down in Windows-specific goop: </p>
+<pre>
+#include &lt;chrono&gt;
+#include &lt;thread&gt;
+
+int x = 0, y = 1;
+int* ptr = &amp;x;
+
+void ThreadProc()
+{
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  ptr = &amp;y;
+}
+
+int main(int, char**)
+{
+ ptr = &amp;x; // starts out pointing to x
+
+ std::thread thread(ThreadProc);
+
+ // Wait for the thread to change the ptr
+ // so that it points to a nonzero value
+ while (*ptr == 0) { }
+
+ return 0;
+}
+</pre>
+<p>The customer explained, </p>
+<blockquote class="q">
+<p>The conditional loop becomes an infinite loop. The assembly code loads <code>ptr</code> into a register once (at the start of the loop), and then it compares the value pointed-to by that register against zero. It never reloads the <code>ptr</code> variable, so it never notices that the thread changed the value of <code>ptr</code> to point to a different value. </p>
+<p>We understand that if <code>ptr</code> is declared as <code>volatile int*</code>, then that will force the compiler to reload the <code>ptr</code> variable, which will then load to correct behavior. </p>
+<p>We’d like to understand why the compiler cannot be smart enough to turn off the optimization automatically. Clearly, this global variable will be accessed by more than one thread. So why can’t the compiler do the right thing? </p>
+</blockquote>
+<p>Okay, first the nitpick: The declaration <code>volatile int* ptr</code> does not make the <code>ptr</code> variable volatile. It defines <code>ptr</code> as a non-volatile pointer to a volatile integer. You wanted <code>int* volatile ptr</code>. </p>
+<p>Back to the main question. </p>
+<p>First: What’s going on here? </p>
+<p>Observe that in the loop, there are no accesses to <code>std::atomic</code> variables, nor are there any <code>std::memory_order</code> operations. This means that any changes to <code>ptr</code> or <code>*ptr</code> are a <a href="https://en.cppreference.com/w/cpp/language/memory_model">data race</a> and consequently trigger undefined behavior. </p>
+<p>(An intuitive way of thinking of this rule is “The compiler optimizes as if the program were single-threaded. The only points at which the compiler considers the possibility of multi-threading is when you access a <code>std::atomic</code> or apply a <code>std::memory_order</code>.”) </p>
+<p>That explains why the program doesn’t behave as “expected”. But what about the claim that the compiler should recognize this and disable the optimization? </p>
+<p>Well, it struck me as odd to request that the compiler recognize that perhaps it’s optimizing too much and intentionally “deoptimize” itself. And especially for the compiler to be able to look into the mind of the programmer and conclude, “Oh, this loop must be waiting for that global variable to change.” </p>
+<p>But suppose there’s some rule in the compiler that says “If optimization results in an infinite loop, then go back and recompile the function with optimizations disabled.” (Or maybe “keep turning off optimizations until you get something that isn’t an infinite loop.”) Aside from the surprise this rule might create, would that rule help? </p>
+<p>Notice that in this case, we do not have an infinite loop. The loop will be broken if any thread does <code>x = 1</code> or <code>*ptr = 1</code>. It’s not clear how much analysis the customer expects the compiler to do to scour the entire program to see if that is possible. Would it have to check every integer variable modification and try to see if that could possibly be a variable that <code>ptr</code> could point to? </p>
+<p>Since it’s not practical for the compiler to <a href="https://en.wikipedia.org/wiki/Halting_problem">do a complete flow analysis</a> to determine whether <code>x = 1</code> or <code>*ptr = 1</code> would ever occur, it would have to play it safe and assume it might. </p>
+<p>Which means more generally that any access to global variables or references or pointers to data that could be shared between threads could not be cached because of the possibility that another thread modified the value between the two accesses. </p>
+<pre>
+int limit;
+
+void do_something()
+{
+    ...
+    if (value &gt; limit)
+        value = limit; // would have to re-fetch "limit"
+    ...
+    for (i = 0; i &lt; 10; i++)
+      array[i] = limit; // would have to re-fetch "limit"
+    ...
+}
+</pre>
+<p>You’ve basically declared open season on data races. “Go ahead and modify anything in any order from multiple threads. It’s all good! Data races for you. Data races for you. <span>Data races for everyone</span>!” </p>
+<p> <img height="100" src="https://i.kym-cdn.com/entries/icons/square/000/012/809/oprah-free-car.gif" title="Oprah 'You get a car!' meme." width="100"/> </p>
+<p>But that’s not the direction the C++ standard took. The C++ standard says that if you are going to modify a variable that is also being accessed by another thread, then you must use an atomic operation or enforce a memory order (which usually comes with a synchronization object). </p>
+<p>So please do that. </p>
+
+
+</body>

@@ -1,0 +1,117 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Semaphores don’t have owners</h1>  <!-- .entry-meta -->
+
+<p><p>
+Unlike mutexes and critical sections,
+semaphores don’t have owners.
+They merely have counts.
+</p>
+<p>
+<a href="http://msdn.microsoft.com/library/en-us/dllproc/base/releasesemaphore.asp">
+The <code>ReleaseSemaphore</code> function</a>
+increases the count associated with a semaphore
+by the specified amount.
+(This increase might release waiting threads.)
+But the thread releasing the semaphore need not be the same
+one that claimed it originally.
+This is different from mutexes and critical sections,
+which require that the claiming thread also be the releasing one.
+</p>
+<p>
+<a href="http://groups-beta.google.com/group/microsoft.public.win32.programmer.kernel/msg/1719b379039097fc">
+Some people use semaphores in a mutex-like manner</a>:
+They create a semaphore with initial count 1 and
+use it like this:
+</p>
+<pre>
+WaitForSingleObject(hSemaphore, INFINITE);
+… do stuff ..
+ReleaseSemaphore(hSemaphore, 1, NULL);
+</pre>
+<p>
+If the thread exits (or crashes) before it manages to release the semaphore,
+the semaphore counter is not automatically restored.
+Compare mutexes, where the mutex is released if the owner thread
+terminates while holding it.
+For this pattern of usage, a mutex is therefore preferable.
+</p>
+<p>
+A semaphore is useful if the conceptual ownership of a resource
+can cross threads.
+</p>
+<pre>
+WaitForSingleObject(hSemaphore, INFINITE);
+… do some work ..
+… continue on a background thread …
+HANDLE hThread = CreateThread(NULL, 0, KeepWorking, …);
+if (!hThread) {
+  … abandon work …
+  ReleaseSemaphore(hSemaphore, 1, NULL); // release resources
+}</pre></p>
+<p>DWORD CALLBACK KeepWorking(void* lpParameter)
+{
+  … finish working …
+  ReleaseSemaphore(hSemaphore, 1, NULL);
+  return 0;
+}
+
+<p>
+This trick doesn’t work with a mutex or critical section because
+mutexes and critical sections have owners, and only the owner can
+release the mutex or critical section.
+</p>
+<p>
+Note that if the <code>KeepWorking</code> function exits and
+forgets to release the semaphore, then the counter is not
+automatically restored.  The operating system doesn’t know that
+the semaphore “belongs to” that work item.
+</p>
+<p>
+Another common usage pattern for a semaphore is the opposite of
+the resource-protection pattern: It’s the resource-generation
+pattern.  In this model the semaphore count normally is zero,
+but is incremented when there is work to be done.
+</p>
+<pre>
+… produce some work and add it to a work list …
+ReleaseSemaphore(hSemaphore, 1, NULL);</pre></p>
+<p>// There can be more than one worker thread.
+// Each time a work item is signalled, one thread will
+// be chosen to process it.
+DWORD CALLBACK ProcessWork(void* lpParameter)
+{
+  for (;;) {
+    // wait for work to show up
+    WaitForSingleObject(hSemaphore, INFINITE);
+    … retrieve a work item from the work list …
+    … perform the work …
+  }
+  // NOTREACHED
+}
+
+<p>
+Notice that in this case, there is not even a conceptual
+“owner” of the semaphore, unless you count the work item itself
+(sitting on a work list data structure somewhere)
+as the owner.  If the <code>ProcessWork</code> thread exits,
+you do <strong>not</strong> want the semaphore to be released
+automatically; that would mess up the accounting.
+A semaphore is an appropriate object in this case.
+</p>
+<p>
+(A higher performance version of the producer/consumer semaphore
+is the
+<a href="http://msdn.microsoft.com/library/en-us/fileio/base/i_o_completion_ports.asp">
+I/O completion port</a>.)
+</p>
+<p>
+Armed with this information, see if you can answer
+<a href="http://groups.google.com/groups?selm=5ca11246.0110092312.1a40ca2e@posting.google.com">
+this person’s question</a>.
+</p>
+<p>
+[Raymond is currently away; this message was pre-recorded.]
+</p></p>
+
+
+</body>

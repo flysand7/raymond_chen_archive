@@ -1,0 +1,65 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to get your C++/WinRT asynchronous operations to respond more quickly to cancellation, part 2</h1>  <!-- .entry-meta -->
+
+<p>We saw last time that <a href="/code/how-to-get-your-c-winrt-asynchronous-operations-to-respond-more-quickly-to-cancellation-part-1"> you can hasten the cancellation of your C++/WinRT coroutine by polling for cancellation</a>. But that works only if it’s the top-level coroutine that needs to respond to the cancellation. But often, your coroutine calls out to other coroutines, and if one of those other coroutines takes a long time, your main coroutine won’t get a chance to respond to the cancellation until it regains control.</p>
+<p>Can we get the main coroutine to respond more quickly to cancellation?</p>
+<p>Sure.</p>
+<p>You can pass a custom delegate to the the C++/WinRT cancellation token’s <code>callback</code> method to be notified immediately when the coroutine is cancelled.</p>
+<pre>IAsyncAction ProcessAllWidgetsAsync()
+{
+    auto cancellation = co_await get_cancellation_token();
+
+    <span style="color: blue;">cancellation.callback([] { /* zomg! cancelled! */ });</span>
+
+    auto widgets = co_await GetAllWidgetsAsync();
+    for (auto&amp;&amp; widget : widgets) {
+        if (cancellation()) co_return;
+        ProcessWidget(widget);
+    }
+    co_await ReportStatusAsync(WidgetsProcessed);
+}
+</pre>
+<p>When the coroutine is cancelled, the cancellation callback is called immediately. This is your chance to hasten the death of your coroutine. For example, we could do so by cancelling the <code>Get­All­Widgets­Async</code> call.</p>
+<pre>IAsyncAction ProcessAllWidgetsAsync()
+{
+    auto cancellation = co_await get_cancellation_token();
+
+    <span style="color: blue;">auto operation = GetAllWidgetsAsync();
+    cancellation.callback([operation] { operation.Cancel(); });
+    auto widgets = co_await operation;</span>
+
+    for (auto&amp;&amp; widget : widgets) {
+        if (cancellation()) co_return;
+        ProcessWidget(widget);
+    }
+    co_await ReportStatusAsync(WidgetsProcessed);
+}
+</pre>
+<p>If the <code>Process­All­Widgets­Async</code> is cancelled, we propagate that cancellation to the <code>Get­All­Widgets­Async</code> operation, in the hopes that it will abandon its attempt to get all the widgets and give control back to <code>Process­All­Widgets­Async</code>. The <code>co_await</code> will fail with <code>hresult_canceled</code>, which will then propagate out of the coroutine, causing the entire coroutine to become cancelled.</p>
+<p>This is a common enough pattern that you could write a wrapper for it:</p>
+<pre>template&lt;typename Async, typename Token&gt;
+std::decay_t&lt;Async&gt; MakeCancellable(Async&amp;&amp; async, Token&amp;&amp; token)
+{
+    token.callback([async] { async.Cancel(); });
+    return std::forward&lt;Async&gt;(async);
+}
+</pre>
+<p>Now we just wrap our asynchronous operations inside a <code>Make­Cancellable</code>:</p>
+<pre>IAsyncAction ProcessAllWidgetsAsync()
+{
+    auto cancellation = co_await get_cancellation_token();
+
+    auto widgets = co_await <span style="color: blue;">MakeCancellable(</span>GetAllWidgetsAsync()<span style="color: blue;">, cancellation);</span>
+
+    for (auto&amp;&amp; widget : widgets) {
+        if (cancellation()) co_return;
+        ProcessWidget(widget);
+    }
+    co_await <span style="color: blue;">MakeCancellable(</span>ReportStatusAsync(WidgetsProcessed)<span style="color: blue;">, cancellation);</span>
+}
+</pre>
+<p><b>Exercise</b>: What happens if the <code>Process­All­Widgets­Async</code> is cancelled after <code>Get­All­Widgets</code> has completed?</p>
+<p>Don’t give up yet: There’s <a href="https://devblogs.microsoft.com/oldnewthing/20200923-00/?p=104261" title=""> part 3</a>.</p>
+
+
+</body>

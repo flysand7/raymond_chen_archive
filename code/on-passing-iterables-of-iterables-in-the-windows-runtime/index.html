@@ -1,0 +1,68 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On passing iterables of iterables in the Windows Runtime</h1>  <!-- .entry-meta -->
+
+<p>The Windows Runtime API design guidelines recommend that methods accept iterables rather than specific collections where possible. This allows clients to pass any iterable collection of their choosing, or possibly no collection at all (like a LINQ query).</p>
+<p>The generalization rules are:</p>
+<ul>
+<li>Arrays of T are accepted as <code>IIterable&lt;T&gt;</code>.</li>
+<li>Maps from K to V are accepted as <code>IIterable&lt;IKeyValuePair&lt;K, V&gt;&gt;</code>.</li>
+</ul>
+<p>This works out well in practice because iterable collections support <code>IIterable</code>, so you can just pass the collection, and the language projection will pass the <code>IIterable</code> to the method.</p>
+<p>Things get a little weirder if you want to pass a collection of collections. For example, suppose you have a method which wants to accept an array of maps.</p>
+<pre>void Something(IVector&lt;IMap&lt;String, String&gt;&gt; attributesArray);
+</pre>
+<p>Applying the above guidance means that your method looks like this:</p>
+<pre>void Something(IIterable&lt;IIterable&lt;IKeyValuePair&lt;String, String&gt;&gt;&gt; attributesArray);
+</pre>
+<p>C# supports covariance, but C++ does not. This means that in C#, you can say</p>
+<pre>    var v = new[] {
+            new Dictionary&lt;string, string&gt; { ["foo"] = fooValue },
+            new Dictionary&lt;string, string&gt; { ["bar"] = barValue },
+    };
+    var result = Something(v);
+</pre>
+<p>and the language lets you pass an <code>IEnumerable&lt;Dictionary&lt;string, string&gt;&gt;</code> instead of an <code>IEnumerable&lt;IEnumerable&lt;IKeyValuePair&lt;string, string&gt;&gt;&gt;</code>.</p>
+<p>C++ does not support covariance. If you try the equivalent C++, it fails.</p>
+<pre>// C++/CX
+    using AttributeMap = Map&lt;String^, String^&gt;;
+    AttributeMap^ v[2] = {
+       ref new AttributeMap{ { "foo", fooValue } },
+       ref new AttributeMap( { "bar", barValue } },
+    };
+    auto result = Something(v); // does not compile
+
+// C++/WinRT
+    using AttributeMap = IMap&lt;hstring, hstring&gt;;
+    AttributeMap v[2] = {
+        single_threaded_map(std::map&lt;hstring, hstring&gt;{ { L"foo", fooValue } },
+        single_threaded_map(std::map&lt;hstring, hstring&gt;{ { L"bar", barValue } },
+        };
+    auto result = Something(v); // does not compile
+</pre>
+<p>You have to misdeclare the inner maps as iterables.</p>
+<pre>// C++/CX
+    using AttributeMap = Map&lt;String^, String^&gt;;
+    <span style="color: blue;">using IAttributeIterable = Iiterable&lt;IKeyValuePair&lt;String^, String^&gt;&gt;;</span>
+    auto d1 = ref new AttributeMap{ { "foo", fooValue } };
+    auto d2 = ref new AttributeMap( { "bar", barValue } };
+    auto v = ref new Vector&lt;<span style="color: blue;">IAttributeIterable</span>&gt;({ d1, d2 });
+    auto result = Something(v);
+
+// C++/WinRT
+    <span style="color: blue;">using IAttributeIterable = IIterable&lt;IKeyValuePair&lt;hstring, hstring&gt;&gt;;</span>
+    auto v = std::vector&lt;<span style="color: blue;">IAttributeIterable</span>&gt;({
+        std::map&lt;hstring, hstring&gt;({ { L"foo", fooValue } }),
+        std::map&lt;hstring, hstring&gt;({ { L"bar", barValue } }),
+    });
+    auto result = Something(v);
+</pre>
+<p>Fortunately, C++/WinRT gives you a bit of help. The <code>winrt::params</code> namespace lets you write</p>
+<pre>    auto d1 = std::map&lt;hstring, hstring&gt;({ { L"foo", fooValue } });
+    auto d2 = std::map&lt;hstring, hstring&gt;({ { L"bar", barValue } });
+    auto result = Something({ d1, d2 });
+</pre>
+<p>And the appropriate conversions will happen. So C++/WinRT is roughly on par with C#. C++/CX is kind of awkward though. Sorry, C++/CX.</p>
+<p><b>Bonus chatter</b>: After writing this up, I discovered that I had <a href="/code/an-iterable-of-iterables-c-collections-support-covariance-but-c-collections-do-not"> already written about it, in a different way</a>. So now you have two ways of reading about the same topic.</p>
+
+
+</body>

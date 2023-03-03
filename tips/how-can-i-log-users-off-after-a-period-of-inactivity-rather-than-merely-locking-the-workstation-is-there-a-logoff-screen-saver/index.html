@@ -1,0 +1,26 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I log users off after a period of inactivity, rather than merely locking the workstation? Is there a “logoff” screen saver?</h1>  <!-- .entry-meta -->
+
+<p><a href="https://blogs.msdn.microsoft.com/aaron_margosis/"> Aaron Margosis</a> had a customer who wanted to set up something like a “logoff” screen saver.</p>
+<p>Specifically, they have a large number of machines that are shared by multiple users. By default, when the session goes idle, the workstation locks. If a new user wants to use the computer, that new user logs in, but the previous user’s session continues running. Repeat for a dozen cycles, and the system now has a dozen idle sessions sitting around. They were looking for a way to configure the system so that instead of locking an idle user, the system logs them off.</p>
+<p>The system is special-purpose: Each user is signed in for only a few minutes, fifteen tops. If the user walks away from the computer after starting their task and before completing it, they can just sign back in and start over. Therefore, forcibly logging the user off will not result in significant loss of data.</p>
+<p>One idea that didn’t work was setting up a scheduled task that triggers on idle. This doesn’t work because the definition of “idle” used by the task scheduler requires the system to be close to 0% CPU in order to be considered idle, in addition to the lack of user input.</p>
+<p>Another idea was writing a custom screen saver that logs the user off, but Aaron was hoping for a solution that didn’t involve writing code, because that means somebody has to build it, deploy it, maintain it, recompile it for new architectures, all the stuff that comes with writing code.</p>
+<p>One of my colleagues came up with a solution that relies only on things found lying around the house:</p>
+<ul>
+<li>Use policy to enforce a screen saver with the desired idle timeout. It doesn’t matter what the screen saver is, as long as it’s a screen saver. The <i>Blank</i> screen saver works fine for this purpose.</li>
+<li>In Security Settings, Advanced Audit Policy Configuration, System Audit Policies, Logon/Logoff, configure “Other Logon/Logoff Events” to audit Success events.</li>
+<li>Define a scheduled task as follows:
+<ul>
+<li>When running the task, use the following user account: <b>Users</b>.</li>
+<li>Triggers: Begin the task: <b>On an event</b>; Settings: <b>Basic</b>; Log: <b>Security</b>; Source: <b>Microsoft Windows security auditing</b>; Event ID: <b>4802</b>.</li>
+<li>Actions: <b>Start a program</b>; Program/script: <b>C:\Windows\System32\shutdown.exe</b>; Add arguments: <b>/l /f</b>.</li>
+</ul>
+</li>
+</ul>
+<p>This exploits the ability to trigger a process to run based on an entry in the event log. We specify that we want audit events to be logged for successful <i>Logon/Logoff</i> events. When <a href="https://docs.microsoft.com/en-us/windows/security/threat-protection/auditing/event-4802"> event 4802 (“The screen saver was invoked”)</a> occurs, we launch the <code>shutdown.exe</code> process with the <code>/l /f</code> command line. The <code>/l</code> option triggers a logoff, and the <code>/f</code> option forces the logoff, so the user cannot block the logoff by, say, leaving an unsaved Notepad document on screen.</p>
+<p>I thought this was a really clever solution, exploiting the ability to trigger a program based on events in the event log.</p>
+<p> </p>
+
+
+</body>

@@ -1,0 +1,75 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Is there a problem with <code>Create­Remote­Thread</code> on 64-bit systems?</h1>  <!-- .entry-meta -->
+
+<p>Back in the days when it was still fashionable to talk about the Itanium, a customer reported that the <code>Create­Remote­Thread</code> function didn’t work. The customer explained that any attempt to call the <code>Create­Remote­Thread</code> function results in the target process being terminated. When they attempt to create a remote thread in Explorer, then the Explorer process crashes. When they attempt to create a remote thread in <code>lsass.exe</code>, <code>lsass.exe</code> process crashes, and the system restarts. They included a sample program that demonstrated the problem. </p>
+<pre>
+<i>// Code in italics is wrong.  In fact, this is so wrong
+// I've intentionally introduced compiler errors so you
+// can't possibly use it in production.
+struct UsefulInfo {
+    int <a href="https://www.amazon.com/dp/B00BLS4952?tag=tholneth-20">thing1</a>;
+    int thing2;
+};
+
+DWORD RemoteThreadProc(void* lpParameter)
+{
+  UsefulInfo* info =
+    reinterpret_cast&lt;UsefulInfo*&gt;(lpParameter);
+
+  blah blah blah
+  try {
+    blah blah blah
+  } catch (...) {
+    blah blah blah
+  }
+  return 0;
+}
+
+// This symbol lets us find the end of the RemoteThread function.
+static void EndOfRemoteThreadProc() { }
+
+// Error checking removed for simplicity of exposition.
+void InjectTheThread(
+    UsefulInfo* info,
+    HANDLE targetProcess)
+{
+  // Calculate the size of the function.
+  DWORD codeSize = (DWORD)EndOfRemoteThreadProc - (DWORD)RemoteThreadProc;
+
+  // Allocate an executable buffer in the target process.
+  BYTE* codeBuffer = VirtualAllocEx(targetProcess,
+                     codeSize + sizeof(*info),
+                     PAGE_EXECUTE_READWRITE);
+
+ // Copy the useful information to the target process
+ WriteProcessMemory(targetProcess, codeBuffer,
+                    info, sizeof(*info));
+
+ // Followed by the code
+ WriteProcessMemory(targetProcess, codeBuffer + sizeof(*info),
+                    (void*)RemoteThreadProc, codeSize);
+   
+ // Execute it and pass a pointer to the useful information.
+ CreateRemoteThread(targetProcess,
+                    codeBuffer + sizeof(*info), codeBuffer);
+}</i>
+</pre>
+<p>There is so much wrong with this code it’s hard to say where to start. </p>
+<p>There’s no guarantee that all the code in the <code>Remote­Thread­Proc</code> function is contiguous. The compiler might choose to spread it out into multiple chunks, possibly based on <a href="https://docs.microsoft.com/en-us/cpp/build/reference/profile-guided-optimizations">Profile-Guided Optimizations</a>. </p>
+<p>Similarly, there is no guarantee that the <code>End­Of­Remote­Thread­Proc</code> function will be placed immediately after <code>Remote­Thread­Proc</code> function in memory. </p>
+<p>There is no guarantee that the code in the <code>Remote­Thread­Proc</code> function is position-independent. </p>
+<p>There is no guarantee that the code in the <code>Remote­Thread­Proc</code> function is self-contained. There may be supporting data in the read-only data segment, such as jump tables for switch statements. </p>
+<p>The <code>Remote­Thread­Proc</code> function uses C++ exception handling, but the code didn’t inject the C runtime support library or fix up the references to the runtime library. </p>
+<p>The code didn’t register any exception tables for the dynamically-generated code. x86 is the only architecture that does not require explicit exception vector registration. Everybody else uses table-based exception handling. </p>
+<p>Now some ia64-specific remarks. </p>
+<p>Function pointers on ia64 don’t point to the first byte of code, so subtracting function pointers doesn’t give you any information about the size of the function (whatever that means), and copying data starting at the function pointer does not actually copy any code. </p>
+<p>Conversely, when you take a pointer to a block of memory that contains code and treat it as a function pointer, you are actually causing the first two 8-byte values at that address to be interpreted as a global pointer and a code address. This results in a garbage global pointer, and code executing from a random location. </p>
+<p>The copied code doesn’t start at a multiple of 16. Code on ia64 must be 16-byte-aligned. </p>
+<p>In general the <code>Create­Remote­Thread</code> function requires deep knowledge of the machine architecture. Its intended audience was debugggers, which are already well-versed in the details of the machine architecture. </p>
+<p>We encouraged the customer to avoid the <code>Create­Remote­Thread</code> function entirely. In particular, using it with critical system processes like <code>lsass.exe</code> is a serious issue for system reliability. Faults in that process can bring the whole system down (as the customer observed), or cause other strange behavior like damaging parts of the security infrastructure, which will lead to hard-to-debug authentication problems at best and full-fledged security vulnerabilities at worst. And the system may in the future take stronger steps to prevent code injection and data tampering in critical system processes, so a design based on <code>Create­Remote­Thread</code> is living on borrowed time. It’s not clear what the customer is trying to do, but they should investigate whether there are supported extensibility mechanisms that give them what they want. </p>
+<p>The customer replied that their product contains important functionality that they have constructed out of the <code>Create­Remote­Thread</code> function, and they cannot afford to abandon it at this point. </p>
+<p>Customers like this scare me. </p>
+<p>(The customer liaison never revealed the name of the customer, but I did learn that they develop anti-malware software. So now I’m even more scared. Fortunately, fixing this code to work on Itanium became a moot issue, but I still worry about their x64 version, because many of the issues here also apply to x64.) </p>
+
+
+</body>

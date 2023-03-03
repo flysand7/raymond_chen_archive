@@ -1,0 +1,104 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Filtering the folders that appear in the Browse for Folder dialog</h1>  <!-- .entry-meta -->
+
+<p>Today’s Little Program applies an arbitrary filter to the <i>Browse for Folder</i> dialog: We will filter out drives smaller than 512<a href="/other/why-does-explorer-use-the-term-kb-instead-of-kib">GB</a>. Hey, remember, I said that Little Programs <a href="http://www.guardian.co.uk/film/2009/jan/12/woody-allen-vicky-cristina-barcelona"> do not need motivation</a>.</p>
+<p>Today’s smart pointer class library is… (rolls dice)… WRL!</p>
+<pre>#define STRICT
+#define STRICT_TYPED_ITEMIDS
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;propkey.h&gt;
+#include &lt;propvarutil.h&gt;
+#include &lt;wrl/implements.h&gt;
+using namespace Microsoft::WRL;
+
+struct ComVariant : public VARIANT
+{
+    ComVariant() { VariantInit(this); }
+    ~ComVariant() { VariantClear(this); }
+};
+</pre>
+<p>WRL does not come with a “smart <code>VARIANT</code>” class analogous to ATL’s <code>CComVariant</code>, so we provide our own very simple one.</p>
+<pre>class CFunnyFilter :
+  public RuntimeClass&lt;
+                RuntimeClassFlags&lt;RuntimeClassType::ClassicCom&gt;,
+                IFolderFilter&gt;
+{
+public:
+  // *** IFolderFilter ***
+  IFACEMETHODIMP ShouldShow(
+        IShellFolder* psf,
+        PCIDLIST_ABSOLUTE pidlFolder,
+        PCUITEMID_CHILD pidlItem)
+  {
+    if (!<a href="https://devblogs.microsoft.com/oldnewthing/20130920-00/?p=3173">IsMyComputerFolder</a>(psf)) return S_OK;
+
+    ComPtr&lt;IShellFolder2&gt; spsf2;
+    if (FAILED(ComPtr&lt;IUnknown&gt;(psf).As(&amp;spsf2))) {
+      return S_OK;
+    }
+
+    ComVariant svt;
+    if (FAILED(spsf2-&gt;GetDetailsEx(pidlItem,
+                                   &amp;PKEY_Capacity, &amp;svt))) {
+      return S_OK;
+    }
+
+    if (VariantToUInt64WithDefault(svt, 0) &gt;=
+                             512ULL*1024ULL*1024ULL*1024ULL) {
+      return S_OK;
+    }
+
+    return S_FALSE;
+  }
+
+  IFACEMETHODIMP GetEnumFlags(
+        IShellFolder* psf,
+        PCIDLIST_ABSOLUTE pidlFolder,
+        HWND *phwnd,
+        DWORD *pgrfFlags) { return S_OK; }
+};
+</pre>
+<p>Our custom <code>Should­Show</code> method first checks if we are showing children of <i>My Computer</i>. If not, then we allow the item to pass through the filter.</p>
+<p>Next, we convert the folder to <code>IShell­Folder2</code>. If we can’t, then we allow the item to pass through the filter. (Arbitrary choice.)</p>
+<p>Next, we ask for the capacity of the item. If we can’t (no media in drive, or it’s not a drive in the first place), then we allow the item to pass through the filter. (Arbitrary choice.)</p>
+<p>Next, we look at the capacity, and if it’s at least 512GB, then we allow the item to pass through the filter.</p>
+<p>Otherwise, we have a drive smaller than 512GB, so we filter it out.</p>
+<p>That’s it! Let’s install this filter in the callback function:</p>
+<pre>int CALLBACK BrowseCallbackProc(HWND hwnd,
+    UINT uMsg, LPARAM lParam, LPARAM lpData)
+{
+  switch (uMsg) {
+  case BFFM_IUNKNOWN:
+    if (lParam) {
+      IUnknown *punk = reinterpret_cast&lt;IUnknown*&gt;(lParam);
+      ComPtr&lt;IFolderFilterSite&gt; spFilterSite;
+      if (SUCCEEDED(ComPtr&lt;IUnknown&gt;(punk).As(&amp;spFilterSite))) {
+        spFilterSite-&gt;SetFilter(Make&lt;CFunnyFilter&gt;().Get());
+      }
+    }
+    break;
+  }
+  return 0;
+}
+</pre>
+<p>When we get the <code>BFFM_<wbr/>IUNKNOWN</code> message, we convert the <code>IUnknown</code> (cast to <code>LPARAM</code>) to a <code>IFolder­Filter­Site</code> and tell it to apply our custom filter.</p>
+<p>Okay, let’s plug it in and see if smoke comes out.</p>
+<pre>int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+  <a href="https://devblogs.microsoft.com/oldnewthing/20040520-00/?p=39243">CCoInitialize</a> init;
+  BROWSEINFO bi = { };
+  TCHAR szDisplayName[MAX_PATH];
+  bi.pszDisplayName = szDisplayName;
+  bi.lpfn = BrowseCallbackProc;
+  bi.ulFlags = BIF_NEWDIALOGSTYLE;
+  PIDLIST_ABSOLUTE pidl = SHBrowseForFolder(&amp;bi);
+  CoTaskMemFree(pidl);
+  return 0;
+}
+</pre>
+<p>The tricky part here is that we have to pass the <code>BIF_<wbr/>NEW­DIALOG­STYLE</code> flag because it is the new <i>Browse for Folder</i> dialog that sends the <code>BFFM_<wbr/>IUNKNOWN</code> message.</p>
+
+
+</body>

@@ -1,0 +1,87 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Cancelling a Windows Runtime asynchronous operation, part 2: C++/CX with PPL, explicit continuation style</h1>  <!-- .entry-meta -->
+
+<p>We began our investigation of Windows Runtime cancellation with <a href="/code/cancelling-a-windows-runtime-asynchronous-operation-part-1-c"> how task cancellation is projected in C#</a>. But how about C++/CX with PPL and explicit continuations?</p>
+<p>Okay, let’s do this.</p>
+<pre>auto picker = ref new FileOpenPicker();
+picker-&gt;FileTypeFilter.Append(L".txt");
+
+<span style="color: blue;">cancellation_token_source cts;
+auto do_cancel = std::make_shared&lt;call&lt;bool&gt;&gt;([cts](bool) { cts.cancel(); });
+auto delayed_cancel = std::make_shared&lt;timer&lt;bool&gt;&gt;(3000U, false, do_cancel.get());
+delayed_cancel-&gt;start();</span>
+
+create_task(picker-&gt;PickSingleFileAsync()).
+    then([do_cancel, delayed_cancel](task&lt;StorageFile^&gt; precedingTask)
+    {
+        StorageFile^ file;
+        try {
+            file = precedingTask.get();
+        } <span style="color: blue;">catch (task_canceled const&amp;)</span> {
+            file = nullptr;
+        }
+
+        if (file != nullptr) {
+            DoSomething(file);
+        }
+    });
+</pre>
+<p>Setting up the timer to cancel the task is quite annoying. Both <code>call</code> objects and <code>timer</code> objects are non-copyable, but we need to keep both of the objects alive for the duration of the asynchronous operation, so we need to copy them into the lambda so that they will not be destructed prematurely. But then you run into that whole “non-copyable” business.</p>
+<p>Your next thought would be to initialize the objects directly into the lambda:</p>
+<pre>    then([<span style="color: blue;">do_cancel = call&lt;bool&gt;(...),
+          delayed_cancel = timer&lt;bool&gt;(...)</span>]
+         (task&lt;StorageFile^&gt; precedingTask)
+</pre>
+<p>But that too doesn’t work because the lambda is copied around internally by PPL, so we once again run into the “non-copyable” problem.</p>
+<p>We address the problem by putting both the <code>call</code> and the <code>timer</code> in a <code>shared_ptr</code>. The <code>shared_ptr</code> is copyable, and when the last one destructs, <code>call</code> and <code>timer</code> are destroyed.</p>
+<p>Okay, that was a long and annoying aside.</p>
+<p>When the underlying Windows Runtime asynchronous operation completes, PPL propagates the status into the task. You can see this happen in <code>ppltasks.h</code>. (I’ve simplified the code a bit for expository purposes.)</p>
+<pre>_AsyncOp-&gt;Completed = ref new AsyncOperationCompletedHandler&lt;_ReturnType&gt;(
+              [_OuterTask](auto^ _Operation, AsyncStatus _Status) mutable
+{
+    if (_Status == AsyncStatus::Canceled)
+    {
+        <span style="color: blue;">_OuterTask-&gt;_Cancel(true);</span>
+    }
+    else if (_Status == AsyncStatus::Error)
+    {
+        _OuterTask-&gt;_CancelWithException(
+            std::make_exception_ptr(::ReCreateException(_Operation-&gt;ErrorCode.Value)));
+    }
+    else
+    {
+        _ASSERTE(_Status == AsyncStatus::Completed);
+
+         try
+        {
+            _OuterTask-&gt;_FinalizeAndRunContinuations(_Operation-&gt;GetResults());
+        }
+        catch (...)
+        {
+            // unknown exceptions thrown from GetResult
+            _OuterTask-&gt;_CancelWithException(std::current_exception());
+        }
+}
+</pre>
+<p>When the operation completes, PPL looks at the status code. If the status code says that the operation was canceled, then it cancels the wrapper task. If it says that the operation encountered an error, then it synthesizes an exception object from the error code and puts it in the wrapper task. Otherwise, the operation succeeded, so we get the results from the operation (<code>_Operation-&gt;GetResults()</code>) and set that as the result of the wrapper task. (There’s an extra wrinkle: If <code>GetResults</code> itself throws an exception, then the wrapper task is set into an error state with that exception.)</p>
+<p>Okay, so that’s how the cancellation gets <i>into</i> the wrapper task. How does it come out?</p>
+<p>PPL throws a <code>task_canceled</code> object when you try to get the results of a canceled task. This is <a href="https://docs.microsoft.com/en-us/cpp/parallel/concrt/reference/task-class?view=vs-2019#get"> documented under <code>task.get()</code></a>, and you can see it happen in <code>ppltask.h</code>:</p>
+<pre>_ReturnType get() const
+{
+    if (!_M_Impl)
+    {
+        details::_DefaultTaskHelper::_NoCallOnDefaultTask_ErrorImpl();
+    }
+
+    if (_M_Impl-&gt;_Wait() == canceled)
+    {
+        <span style="color: blue;">_THROW(task_canceled{});</span>
+    }
+
+    return _M_Impl-&gt;_GetResult();
+}
+</pre>
+<p>Next time, we’ll look at PPL with coroutines.</p>
+
+
+</body>

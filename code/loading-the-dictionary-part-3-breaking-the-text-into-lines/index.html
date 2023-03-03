@@ -1,0 +1,121 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Loading the dictionary, part 3:  Breaking the text into lines</h1>  <!-- .entry-meta -->
+
+<p>
+Even after moving the character conversion out of the
+<code>getline</code> function, profiling reveals that
+<code>getline</code> is still taking nearly 50% of our CPU.
+The fastest code is code that isn’t there, so let’s get rid of
+<code>getline</code> altogether.  Oh wait, we still need to break
+the file into lines.
+But maybe we can break the file into lines faster than
+<code>getline</code> did.
+</p>
+<pre>
+<font color="blue">#include &lt;algorithm&gt;
+class MappedTextFile
+{
+public:
+ MappedTextFile(LPCTSTR pszFile);
+ ~MappedTextFile();
+ const CHAR *Buffer() { return m_p; }
+ DWORD Length() const { return m_cb; }
+private:
+ PCHAR   m_p;
+ DWORD   m_cb;
+ HANDLE  m_hf;
+ HANDLE  m_hfm;
+};
+MappedTextFile::MappedTextFile(LPCTSTR pszFile)
+    : m_hfm(NULL), m_p(NULL), m_cb(0)
+{
+ m_hf = CreateFile(pszFile, GENERIC_READ, FILE_SHARE_READ,
+                   NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+ if (m_hf != INVALID_HANDLE_VALUE) {
+  DWORD cb = GetFileSize(m_hf, NULL);
+  m_hfm = CreateFileMapping(m_hf, NULL, PAGE_READONLY, 0, 0, NULL);
+  if (m_hfm != NULL) {
+   m_p = reinterpret_cast&lt;PCHAR&gt;
+                 (MapViewOfFile(m_hfm, FILE_MAP_READ, 0, 0, cb));
+   if (m_p) {
+    m_cb = cb;
+   }
+  }
+ }
+}
+MappedTextFile::~MappedTextFile()
+{
+ if (m_p) UnmapViewOfFile(m_p);
+ if (m_hfm) CloseHandle(m_hfm);
+ if (m_hf != INVALID_HANDLE_VALUE) CloseHandle(m_hf);
+}</font>
+</pre>
+<p>
+This very simple class babysits a read-only memory-mapped file.
+(Yes, there is a bit of oddness with files greater than 4GB,
+but let’s ignore that for now, since it’s a distraction from our
+main point.)
+</p>
+<p>
+Now that the file is memory-mapped, we can just scan it directly.
+</p>
+<pre>
+Dictionary::Dictionary()
+{
+ <font color="blue">MappedTextFile mtf(TEXT("cedict.b5"));</font>
+ typedef std::codecvt&lt;wchar_t, char, mbstate_t&gt; widecvt;
+ std::locale l(".950");
+ const widecvt&amp; cvt = _USE(l, widecvt); // use_facet&lt;widecvt&gt;(l);
+ <font color="blue">const CHAR* pchBuf = mtf.Buffer();
+ const CHAR* pchEnd = pchBuf + mtf.Length();
+ while (pchBuf &lt; pchEnd) {
+  const CHAR* pchEOL = std::find(pchBuf, pchEnd, '\n');
+  if (*pchBuf != '#') {
+   size_t cchBuf = pchEOL - pchBuf;
+   wchar_t* buf = new wchar_t[cchBuf];</font>
+   mbstate_t state = 0;
+   char* nextsrc;
+   wchar_t* nextto;
+   if (cvt.in(state, <font color="blue">pchBuf, pchEOL</font>, nextsrc,
+                   buf, buf + <font color="blue">cchBuf</font>, nextto) == widecvt::ok) {
+    wstring line(buf, nextto - buf);
+    DictionaryEntry de;
+    if (de.Parse(line)) {
+     v.push_back(de);
+    }
+   }
+   delete[] buf;
+  }
+  <font color="blue">pchBuf = pchEOL + 1;</font>
+ }
+}
+</pre>
+<p>
+We simply scan the memory-mapped file for a <code>'\n'</code>
+character, which tells us where the line ends.
+This tells us the location and length of the line,
+which we use to convert it to Unicode and continue our parsing.
+</p>
+<p><strong>Exercise</strong>:Why don’t we have to worry about
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/03/18/91899.aspx">the carriage
+return that comes before the linefeed</a>?
+</p>
+<p>
+<strong>Exercise</strong>:Why don’t we have to worry about
+possibly reading past the end of the file when we check
+<code>*pchBuf != '#'</code>?
+</p>
+<p>
+With this change, the  program now loads the dictionary in 480ms
+(or 550ms if you include the time it takes to destroy the
+dictionary).  That’s over twice as fast as the previous version.</p>
+<p><p>
+But it’s still not fast enough.  A half-second delay between hitting
+<code>Enter</code> and getting the visual feedback is still
+unsatisfying.  We can do better.
+</p>
+<p>
+[Raymond is currently on vacation; this message was pre-recorded.]</p>
+
+
+</p></body>

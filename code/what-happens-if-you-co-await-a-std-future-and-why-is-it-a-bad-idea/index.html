@@ -1,0 +1,106 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What happens if you co_await a std::future, and why is it a bad idea?</h1>  <!-- .entry-meta -->
+
+<p>The C++ standard library introduced <code>std::future</code> in C++11, along with various functions and types that produce futures: <code>std::async</code>, <code>std::packaged_task</code>, and <code>std::promise</code>. The only way to known when the result of a <code>std::future</code> is ready is to poll for it, or simply block until the result is ready.</p>
+<p>When the Visual C++ compiler implemented experimental coroutine support, it added the ability to <code>co_await</code> a <code>std::future</code>: If you do that, the coroutine suspends until the <code>std::future</code> produces a result, and the result of the <code>std::future</code> becomes the result of the <code>co_await</code>.</p>
+<p>That sounds convenient.</p>
+<p>A customer reported that sometimes their program would crash with an out-of-memory error. They sent us some of the crash dumps they received. The crash dumps showed that their program had created <a href="/other/does-windows-have-a-limit-of-2000-threads-per-process"> around 2000 threads</a> before finally succumbing. And most of the threads were waiting on a condition variable.</p>
+<pre>ntdll!ZwWaitForAlertByThreadId+0x14
+ntdll!RtlSleepConditionVariableSRW+0x137
+KERNELBASE!SleepConditionVariableSRW+0x33
+msvcp_win!Concurrency::details::stl_condition_variable_win7::wait_for+0x15
+msvcp_win!Concurrency::details::stl_condition_variable_win7::wait+0x19
+msvcp_win!_Cnd_wait+0x2a
+contoso!std::condition_variable::wait+0x10
+contoso!std::_Associated_state&lt;winrt::hstring&gt;::_Wait+0x3b
+contoso!std::_State_manager&lt;winrt::hstring&gt;::wait+0x42
+contoso!std::experimental::_Future_awaiter&lt;winrt::hstrint&gt;::await_suspend::__l2::&lt;lambda_5f42a2a4a1d632a6517852fe05159fc3&gt;::operator()+0x45
+contoso!std::invoke+0x45
+contoso!std::thread::_Invoke&lt;std::tuple&lt;&lt;lambda_5f42a2a4a1d632a6517852fe05159fc3&gt; &gt;,0&gt;+0x53
+ucrtbase!thread_start&lt;unsigned int (__cdecl*)(void *),1&gt;+0x93
+KERNEL32!BaseThreadInitThunk+0x14
+ntdll!RtlUserThreadStart+0x28
+</pre>
+<p>From the function names on the stack, we can pull out that this code is waiting for a <code>std::future</code> to become ready. (Lots of the names are strong hints, but the giveaway is <code>_Future_awaiter</code>.)</p>
+<p>Let’s look at how <code>operator co_await</code> is implemented for <code>std::future</code>:</p>
+<pre>template &lt;class _Ty&gt;
+struct _Future_awaiter {
+    future&lt;_Ty&gt;&amp; _Fut;
+
+    bool await_ready() const {
+        return _Fut._Is_ready();
+    }
+
+    void await_suspend(
+        experimental::coroutine_handle&lt;&gt; _ResumeCb) {
+        // TRANSITION, change to .then if and when future gets .then
+        thread _WaitingThread(
+            [&amp;_Fut = _Fut, _ResumeCb]() mutable {
+            _Fut.wait();
+            _ResumeCb();
+        });
+        _WaitingThread.detach();
+    }
+
+    decltype(auto) await_resume() {
+        return _Fut.get();
+    }
+};
+</pre>
+<p>To <code>co_await</code> a <code>std::future</code>, the code first checks if the value is already set. If not, then we create a thread and have the thread call <code>future.wait()</code>, which is a blocking wait. When the wait is satisfied, the coroutine resumes.</p>
+<p>The stack is consistent with our analysis. We are on a dedicated thread running the lambda inside <code>await_suspend</code>, and that lambda is waiting for the <code>std::future</code> to produce the result.</p>
+<p>Each <code>co_await</code> of a <code>std::future</code> burns a thread. Checking the customer’s code showed that there’s a <code>std::future&lt;winrt::hstring&gt;</code> that represents some calculation. The calculation itself requires asynchronous work, so each time somebody asks for the value to be calculated, a new <code>std::future</code> is created to represent the calculation, and the caller then <code>co_await</code>s for the result of the calculation.</p>
+<p>What happened is that the calculation for some reason is taking a long time, and a lot of requests have piled up. Under normal conditions, stackless coroutines do not consume a thread while they are suspended; they just sign up to be resumed when the thing they are awaiting finally produced a result. But <code>std::future</code> has no way to register a way to be called back when the result is ready. The only way to find out is to wait for it, and that consumes a thread. (That’s what the “TRANSITION” comment is trying to say: When it becomes possible to register a callback for the readiness of a <code>std::future</code>, we should switch to it.)</p>
+<p>The program is using <code>std::promise</code> as an implementation of a task completion source, unaware that the implementation is very expensive, burning a thread for each outstanding <code>co_await</code>. We advised the customer to switch to something lighter weight, such as the <a href="https://devblogs.microsoft.com/oldnewthing/20210323-00/?p=104987"> task completion source we developed as part of our study of coroutines</a>.</p>
+<p>Or you can build your own quick-and-dirty task completion source that has the limitation that it doesn’t support exceptions. (Because I’m lazy.) For this customer’s purpose, that may be sufficient.</p>
+<pre>template&lt;typename T&gt;
+struct qd_completion_source
+{
+    void set_result(T value) {
+        result = std::move(value);
+        SetEvent(event.get());
+    }
+
+    auto resume_when_ready() {
+        return winrt::resume_on_signal(event.get());
+    }
+
+    T&amp; get_result() { return *result; }
+
+private:
+    std::optional&lt;T&gt; result;
+    winrt::handle event = winrt::check_pointer(CreateEvent(nullptr, TRUE, FALSE, nullptr));
+}
+
+// Produce the qd_completion_source
+std::shared_ptr&lt;qd_completion_source&lt;int&gt;&gt;
+StartSomething()
+{
+    auto source = std::make_shared&lt;
+            qd_completion_source&lt;int&gt;&gt;();
+
+    [](auto source) -&gt; winrt::fire_and_forget {
+        co_await step1();
+        co_await step2();
+        source.set_result(co_await step3());
+    }(source);
+
+    return source;
+}
+
+// Consume the qd_completion_source
+winrt::fire_and_forget GetSomethingResult()
+{
+    auto source = StartSomething();
+
+    co_await source-&gt;resume_when_ready();
+
+    auto result = source-&gt;get_result();
+}
+</pre>
+<p>When the result is ready, our quick-and-dirty completion source saves the answer in the <code>std::optional</code> and then signals the event. To resume when the result is ready, we resume when the event is set.</p>
+<p>If you want to be awaitable more than once, you can return a copy of the result from <code>await_resume</code> rather than moving the result to the caller.</p>
+<p>Like I said, this is a quick-and-dirty version. It still uses a kernel object to synchronize between the producer and consumer, but even so, a kernel event is far lighter than an entire thread! I started writing a version that used <code>coroutine_handle&lt;&gt;</code> but realized that I <a href="https://devblogs.microsoft.com/oldnewthing/20210323-00/?p=104987"> already did that</a>.</p>
+
+
+</body>

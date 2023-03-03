@@ -1,0 +1,43 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What a drag: Dragging a Uniform Resource Locator (URL) and text</h1>  <!-- .entry-meta -->
+
+<p>We’ve learned <a href="/code/what-a-drag-dragging-text" title="What a drag: Dragging text"> how to drag text</a> and <a href="https://devblogs.microsoft.com/oldnewthing/20080312-00/?p=23133" title="What a drag: Dragging a Uniform Resource Locator (URL)"> how to drag a uniform resource locator</a>, but what if want to drag both? Well, it’s actually a simply matter of saying that you have both (and actually producing it on demand).</p>
+<p>Start by extending the enumeration of data types to include both URL and text:</p>
+<pre>  enum {
+    <span style="color: blue;">DATA_URL,
+    DATA_TEXT,</span>
+    DATA_NUM,
+    DATA_INVALID = -1,
+  };
+</pre>
+<p>There is a subtlety in the way we set up this enumeration: We put <code>DATA_URL</code> ahead of <code>DATA_TEXT</code> so that the clipboard formats that are produced by <code>SHCreateStdEnumFormatEtc</code> are generated in priority order (highest quality first). By enumerating URL first, a program that understands both URL and text formats will know to prefer URL. In this particular case, it’s not that critical since most text editors do URL auto-detection (at least if the URL begins with “http:”), but in the more general case, enumerating the formats in priority order can make a big difference. For example, your data object might provide text in both Rich Text Format as well as plain text, and it would probably be better if a program that understood both formats used the rich text version by default rather than the plain text version.</p>
+<p>Once we have both formats available, we need to respond to both of them. In our constructor, we have to describe both of these formats so that <code>GetDataIndex</code> and <code>EnumFormatEtc</code> know about them.</p>
+<pre>CTinyDataObject::CTinyDataObject() : m_cRef(1)
+{
+  <span style="color: blue;">SetFORMATETC(&amp;m_rgfe[DATA_URL],
+               RegisterClipboardFormat(CFSTR_SHELLURL));
+    SetFORMATETC(&amp;m_rgfe[DATA_TEXT], CF_TEXT);</span>
+}
+</pre>
+<p>And then the change to the heart of the data object, the <code>IDataObject::GetData</code> method, is anticlimactic:</p>
+<pre>HRESULT CTinyDataObject::GetData(FORMATETC *pfe, STGMEDIUM *pmed)
+{
+  ZeroMemory(pmed, sizeof(*pmed));
+
+  switch (GetDataIndex(pfe)) {
+  <span style="color: blue;">case DATA_URL:
+  case DATA_TEXT:</span>
+    pmed-&gt;tymed = TYMED_HGLOBAL;
+    return CreateHGlobalFromBlob(c_szURL, sizeof(c_szURL),
+                              GMEM_MOVEABLE, &amp;pmed-&gt;hGlobal);
+  }
+
+  return DV_E_FORMATETC;
+}
+</pre>
+<p>Whether the caller asks for either text or a URL, we give them the same string back.</p>
+<p>When you run this program, observe that it has the combined functionality of the two previous programs. You can drag text into Wordpad, drop an URL onto Firefox, and drop an URL onto Internet Explorer.</p>
+<p>These were all just warm-ups. After a short break, we’ll roll up our sleeves and begin providing more complicated data in our data object.</p>
+
+
+</body>

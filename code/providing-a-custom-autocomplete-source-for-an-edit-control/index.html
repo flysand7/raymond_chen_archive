@@ -1,0 +1,167 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Providing a custom autocomplete source for an edit control</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s Little Program shows a custom source for autocomplete.
+It’s nothing exciting, but at least’s it’s something
+you can use as a starting point for your own customizations.
+</p>
+<p>
+We start with a dialog template,
+whose edit control will be the target of a custom autocomplete.
+</p>
+<pre>
+// scratch.rc
+#include &lt;windows.h&gt;
+1 DIALOGEX DISCARDABLE  32, 32, 200, 56
+STYLE DS_MODALFRAME |  WS_POPUP |
+      WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Sample"
+FONT 8, "MS Shell Dlg"
+BEGIN
+ LTEXT "What is your favorite Seattle restaurant?",-1,7,8,184,10
+ EDITTEXT 100,7,18,184,14
+ PUSHBUTTON "OK",IDOK,146,38,50,14
+END
+</pre>
+<p>
+Just for fun,
+I wrote the program in ATL.
+Instead of complaining that my code is hard
+to understand because I didn’t use an application framework,
+people can
+now complain that my code is hard to understand
+because I used the <i>wrong</i> application framework.
+</p>
+<pre>
+// scratch.cpp
+#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;windowsx.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;atlcom.h&gt;
+CComModule _Module;
+</pre>
+<p>
+To save some typing, I define a shorthand name for
+“the predefined ATL object for enumerating strings via
+<code>IEnum­String</code>.”
+</p>
+<pre>
+typedef CComEnum&lt;IEnumString,
+                 &amp;IID_IEnumString,
+                 LPOLESTR,
+                 _Copy&lt;LPOLESTR&gt; &gt; CComEnumString;
+</pre>
+<p>
+To initialize the dialog,
+we do the following things:
+</p>
+<ul>
+<li>Create a predefined ATL object for implementing
+    <code>IEnum­String</code>.
+<li>Tell the predefined ATL object to enumerate a hard-coded
+    list of restaurant suggestions.
+<li>Create an autocomplete object.
+<li>Connect the autocomplete object to the
+    edit control in the dialog and to
+    the <code>IEnum­String</code>
+    object.
+<li>Just for fun, change some of the default settings
+    for autocomplete.
+</li></li></li></li></li></ul>
+<pre>
+LPOLESTR c_rgpszSuggestions[] = {
+    L"Brave Horse Tavern",
+    L"Cuoco",
+    L"Dahlia Bakery",
+    L"Dahlia Lounge",
+    L"Etta's",
+    L"Lola",
+    L"Palace Kitchen",
+    L"Seatown",
+    L"Serious Pie",
+    L"Ting Momo",
+};
+void OnInitDialog(HWND hdlg)
+{
+  CComPtr&lt;IAutoComplete2&gt; spac;
+  CComObject&lt;CComEnumString&gt; *pes;
+  HRESULT hr = CComObject&lt;CComEnumString&gt;::CreateInstance(&amp;pes);
+  CComPtr&lt;IEnumString&gt; spes(pes);
+  if (SUCCEEDED(hr) &amp;&amp;
+      SUCCEEDED(pes-&gt;Init(&amp;c_rgpszSuggestions[0],
+                          &amp;c_rgpszSuggestions[ARRAYSIZE(c_rgpszSuggestions)],
+                          NULL)) &amp;&amp;
+      SUCCEEDED(spac.CoCreateInstance(CLSID_AutoComplete)) &amp;&amp;
+      SUCCEEDED(spac-&gt;Init(GetDlgItem(hdlg, 100), spes, NULL, NULL)) &amp;&amp;
+      SUCCEEDED(spac-&gt;SetOptions(ACO_AUTOSUGGEST | ACO_UPDOWNKEYDROPSLIST))) {
+  }
+}
+</pre>
+<p>
+The rest is just boilerplate.
+</p>
+<pre>
+INT_PTR CALLBACK DlgProc(HWND hdlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+  switch (uMsg) {
+  case WM_INITDIALOG:
+    OnInitDialog(hdlg);
+    return TRUE;
+  case WM_COMMAND:
+    switch (GET_WM_COMMAND_ID(wParam, lParam)) {
+    case IDOK:
+      EndDialog(hdlg, 0);
+      break;
+    }
+  }
+  return FALSE;
+}
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+  if (SUCCEEDED(CoInitialize(NULL))) {
+    DialogBox(hinst, MAKEINTRESOURCE(1), NULL, DlgProc);
+    CoUninitialize();
+  }
+  return 0;
+}
+</pre>
+<p>
+Now, one of the reasons for using a framework is that it hides
+a lot of details from you.
+But if you are trying to understand how to port code from one
+framework to another, those hidden details become an obstacle
+to progress rather than a convenience.
+You may port the overall structure from one framework to another,
+but if the two frameworks behave differently in the hidden parts,
+your conversion was incorrect.
+</p>
+<p>
+For example, one subtlety hidden in the above code
+is how the strings are returned by the
+<code>IEnum­String::Next</code>
+method.
+Recall that
+<a href="http://msdn.microsoft.com/en-us/library/ms686638.aspx">
+COM interfaces use the task allocator</a>
+<a href="http://msdn.microsoft.com/en-us/library/aa366533.aspx">
+to pass memory between objects</a>,
+so the string returned by
+<code>IEnum­String::Next</code>
+is allocated by <code>Co­Task­Mem­Alloc</code>,
+with the expectation that the caller will call
+<code>Co­Task­Mem­Free</code> to free it.
+</p>
+<p>
+Unless you happen to be familiar with this detail of ATL,
+you would never have guessed it from the code above.
+You might have thought that the enumerator handed out
+the literal string pointers used to initialize it,
+and then you’ll start wondering why your program crashes
+at random times (because you introduced a heap corruption bug).</p>
+
+
+</body>

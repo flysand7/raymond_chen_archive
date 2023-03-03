@@ -1,0 +1,128 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Inside C++/WinRT: <code>IReference&lt;T&gt;</code></h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/in-c-winrt-how-do-i-create-or-consume-an-ireference-t-that-wraps-a-particular-value" title="In C++/WinRT, how do I create or consume an IReference&lt;T&gt; that wraps a particular value?"> how to create an <code>IReference&lt;T&gt;</code> in C++/WinRT</a>. How did I know the answer? By reading the source code and reverse-engineering what operations were valid and what they produced.</p>
+<p>Let’s look at the available constructors:</p>
+<pre>IReference(IReference const&amp; other) = default;
+IReference(IReference&amp;&amp; other) = default;
+</pre>
+<p>The copy and move constructors are implicitly declared, but I’m declaring them explicitly so they show up on the list.</p>
+<pre>IReference(std::nullptr_t = nullptr) noexcept {}
+</pre>
+<p>This constructor serves as a default constructor, or you can construct from <code>nullptr</code>. Either way creates an empty <code>IReference</code>. This constructor exists for all interface types, so it’s nothing surprising.</p>
+<pre>IReference(void* ptr, take_ownership_from_abi_t) noexcept
+    : Windows::Foundation::IInspectable(
+        ptr, take_ownership_from_abi) {}
+</pre>
+<p>The <code>take_<wbr/>ownership_<wbr/>from_<wbr/>abi</code> tag type constructor creates an <code>IReference</code> that takes ownership of an ABI pointer. This constructor also exists for all interface types, so nothing special is happening yet.</p>
+<pre>IReference(T const&amp; value)
+    : IReference&lt;T&gt;(
+        impl::reference_traits&lt;T&gt;::make(value))     
+{}
+</pre>
+<p>This is a conversion constructor which takes the underlying value type, calls the <code>make</code> method from some class we haven’t yet studied, and uses that to initialize the <code>IReference</code>. We’ll look at that class later.</p>
+<p>The last constructor is</p>
+<pre>IReference(std::optional&lt;T&gt; const&amp; value)
+    : IReference(
+        value ? IReference(value.value()) : nullptr)
+{}
+</pre>
+<p>This is a conversion constructor that takes a <code>std::optional&lt;T&gt;</code> and produces the corresponding <code>std::IReference&lt;T&gt;</code>. If the <code>optional</code> has a value, then we wrap it inside an <code>IReference</code> using the value conversion constructor we saw above. Otherwise, we initialize from <code>nullptr</code>, which means “no value”.</p>
+<p>One thing to observe is that these last two constructors work with <a href="https://en.cppreference.com/w/cpp/language/class_template_argument_deduction"> CTAD</a>, so you can omit the template specialization:</p>
+<pre>// compile deduces IReference&lt;double&gt; from double
+double value = 42.0;
+auto ref = IReference(value);
+
+// compile deduces IReference&lt;double&gt; from std::optional&lt;double&gt;
+std::optional&lt;double&gt; value(42.0);
+auto ref = IReference(value);
+</pre>
+<p>The last member function is the <code>std::<wbr/>optional</code> conversion:</p>
+<pre>operator std::optional&lt;T&gt;() const
+{
+    if (*this)
+    {
+        return this-&gt;Value();
+    }
+    else
+    {
+        return std::nullopt;
+    }
+}
+</pre>
+<p>This converts an <code>IReference&lt;T&gt;</code> to a <code>std::<wbr/>optional&lt;T&gt;</code> by producing the value if the wrapped pointer is non-null, or producing an empty <code>optional</code> if the wrapped pointer is null.</p>
+<p>All that’s left is studying the <code>impl::<wbr/>reference_traits</code>.</p>
+<pre>template &lt;typename T&gt;
+struct reference_traits
+{
+    static auto make(T const&amp; value)
+    { return winrt::make&lt;impl::reference&lt;T&gt;&gt;(value); }
+    using itf = Windows::Foundation::IReference&lt;T&gt;;
+};
+</pre>
+<p>This is the unspecialized template traits class which <code>make</code>s an <code>IReference&lt;T&gt;</code> by creating an instance of the private <code>impl::<wbr/>reference</code> class. We’ll make a note to come back to that later.</p>
+<p>What follows is a series of specializations for various fundamental types. For example,</p>
+<pre>template &lt;&gt;
+struct reference_traits&lt;uint8_t&gt;
+{
+    static auto make(uint8_t value)
+    { return Windows::Foundation::PropertyValue::CreateUInt8(value); }
+    using itf = Windows::Foundation::IReference&lt;uint8_t&gt;;
+};
+</pre>
+<p>To create an <code>IReference&lt;uint8_t&gt;</code>, the <code>make()</code> method uses the <code>PropertyValue::<wbr/>CreateUInt8()</code> method. Repeat for the other special-purpose factory methods of <code>PropertyValue</code>.</p>
+<p>Okay, so now we’re left with that <code>impl::<wbr/>reference</code> class:</p>
+<pre>template &lt;typename T&gt;
+struct reference :
+    implements&lt;reference&lt;T&gt;,
+        Windows::Foundation::IReference&lt;T&gt;,
+        Windows::Foundation::IPropertyValue&gt;
+{
+    reference(T const&amp; value) : m_value(value)
+    { }
+
+    T Value() const { return m_value; }
+
+    Windows::Foundation::PropertyType Type() const noexcept
+    {
+        return Windows::Foundation::PropertyType::OtherType;
+    }
+
+    static constexpr bool IsNumericScalar() noexcept
+    {
+        return std::is_arithmetic_v&lt;T&gt; || std::is_enum_v&lt;T&gt;;
+    }
+
+    uint8_t GetUInt8() const
+    {
+        return to_scalar&lt;uint8_t&gt;();
+    }
+
+    〚 repeat for the other Get(IntegralType) methods 〛
+
+    float GetSingle() { throw hresult_not_implemented(); }
+
+    〚 repeat for the other Get(NonIntegralType) methods 〛
+
+private:
+    template &lt;typename To&gt;
+    To to_scalar() const
+    {
+        if constexpr (IsNumericScalar()) {
+            return static_cast&lt;To&gt;(m_value);
+        } else {
+            throw hresult_not_implemented();
+        }
+    }
+
+    T m_value;
+};
+</pre>
+<p>The <code>impl::<wbr/>reference&lt;T&gt;</code> type is used for custom enumerations and custom structures. In both cases, the <code>IReference&lt;T&gt;::<wbr/>Value()</code> produces the wrapped value.</p>
+<p>The remaining methods provide the implementation of <code>IPropertyValue</code>, which we noted last time is one of the hidden requirements of <code>IReference&lt;T&gt;</code>.</p>
+<p>If used for enumerations, <code>Is­Numeric­Scalar()</code> reports <code>true</code>, and all of the <code>Get(IntegralType)</code> methods return the underlying integral value, cast to the requested integral type. On the other hand, for structures, <code>Is­Numeric­Scalar()</code> reports <code>false</code>, and all of the <code>Get(IntegralType)</code> methods throw <code>hresult_<wbr/>not_<wbr/>implemented()</code>.</p>
+<p>For the floating point and other non-integral types, the methods always throw <code>hresult_<wbr/>not_<wbr/>implemented()</code>.</p>
+<p>It’s from reverse-engineering the C++/WinRT implementation of <code>IReference</code> that we inferred the rules for its use. Being able to reverse-engineer the proper use of a library from reading its source code is a key under-appreciated software developer skill. Until you can infer the proper way of working with unfamiliar code, your career growth options will be limited. You’ll be one of those people who can only do things they are taught, without the ability to learn new things on their own.</p>
+
+
+</body>

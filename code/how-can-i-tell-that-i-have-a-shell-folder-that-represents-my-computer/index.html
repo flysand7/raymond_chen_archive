@@ -1,0 +1,87 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I tell that I have a shell folder that represents My Computer?</h1>  <!-- .entry-meta -->
+
+<p>You have in your hands an <code>IShell­Folder</code>, and you want to know whether this is an <code>IShell­Folder</code> that represents <i>My Computer</i>. There are a few ideas that may occur to you.</p>
+<p>One is to ask the folder for its current location and compare it to <code>CSIDL_DRIVES</code>.</p>
+<pre>#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/24/10387757.aspx">STRICT_TYPED_ITEMIDS</a>
+#include &lt;shlobj.h&gt;
+PIDLIST_ABSOLUTE GetIDListViaPersistFolder(IUnknown *punk)
+{
+  PIDLIST_ABSOLUTE pidl = NULL;
+  IPersistFolder2 *ppf;
+  if (SUCCEEDED(punk-&gt;QueryInterface(IID_PPV_ARGS(&amp;ppf)))) {
+    ppf-&gt;GetCurFolder(&amp;pidl);
+    ppf-&gt;Release();
+  }
+  return pidl;
+}
+HRESULT CompareAbsoluteIDLists(
+    LPARAM lParam,
+    PCUIDLIST_ABSOLUTE pidl1,
+    PCUIDLIST_ABSOLUTE pidl2,
+    int *piResult)
+{
+  *piResult = 0;
+  IShellFolder *psfDesktop;
+  HRESULT hr = SHGetDesktopFolder(&amp;psfDesktop);
+  if (SUCCEEDED(hr)) {
+    hr = psfDesktop-&gt;CompareIDs(lParam,
+    reinterpret_cast&lt;PCUIDLIST_RELATIVE&gt;(pidl1),
+    reinterpret_cast&lt;PCUIDLIST_RELATIVE&gt;(pidl2));
+    if (SUCCEEDED(hr)) {
+     *piResult = (short)HRESULT_CODE(hr);
+    }
+    psfDesktop-&gt;Release();
+  }
+  return hr;
+}
+BOOL IsMyComputerFolder(IUnknown *punk)
+{
+  BOOL fIsMyComputer = FALSE;
+  PIDLIST_ABSOLUTE pidl = GetIDListViaPersistFolder(punk);
+  if (pidl) {
+    PIDLIST_ABSOLUTE pidlMyComputer;
+    if (SUCCEEDED(SHGetSpecialFolderLocation(NULL,
+                                 CSIDL_DRIVES, &amp;pidlMyComputer)))
+    {
+      int iCompare;
+      fIsMyComputer = SUCCEEDED(CompareAbsoluteIDLists(
+                               SHCIDS_CANONICALONLY,
+                               pidl, pidlMyComputer, &amp;iCompare)) &amp;&amp;
+                      iCompare == 0;
+      CoTaskMemFree(pidlMyComputer);
+    }
+    CoTaskMemFree(pidl);
+  }
+  return fIsMyComputer;
+}
+</pre>
+<p>Okay, we have a lot of moving parts here. Let’s look at them one at a time.</p>
+<p>The <code>Get­IDList­Via­Persist­Folder</code> function takes an object and asks <code>IPersist­Folder2::Get­Cur­Folder</code> what folder it represents. Since we don’t actually use any methods on the object beyond what is provided by <code>IUnknown</code>, we weaken the parameter requirement to simply <code>IUnknown</code>.</p>
+<p>The <code>Compare­Absolute­IDLists</code> function compares two absolute ID lists according to the criteria specified by the <code>lParam</code>.</p>
+<p>The <code>Is­My­Computer­Folder</code> combines these two function: It takes the object you pass in and gets the ID list it represents. It then gets the ID list for the My Computer folder. And then it compares the two via <code>SHCIDS_CANONICAL­ONLY</code>, which means “I just want to see if they represent the same object. Don’t worry about getting the sort order absolutely right.” And again, since we don’t use any methods on the object other than <code>IUnknown::Query­Interface</code>, we weaken the parameter requirements to simply <code>IUnknown</code>.</p>
+<p>Now, this code could be simplified or at least tweaked to take advantage of <code>IShell­Item</code>. For example, we could use <code>SHGet­Known­Folder­Item</code> to get the <code>FOLDERID_Computer­Folder</code> and then use <code>IShell­Item::Compare</code>.</p>
+<p>But I’m not going to bother, because there is an underlying algorithmic problem with this technique: It is checking whether you have a folder to <i>My Computer</i> specifically at its default location. If somebody creates a <i>My Computer</i> folder at a custom location, say via a folder shortcut, or a folder with <a href="http://www.pctools.com/guides/registry/detail/38/"> a magic name</a>, then this code will not recognize it as <i>My Computer</i> because these alternate locations for <i>My Computer</i> will not match the standard location.</p>
+<p>If you want to identify <i>My Computer</i> no matter where it winds up, then instead of checking the path, you can check its class.</p>
+<pre>HRESULT GetObjectCLSID(IUnknown *punk, CLSID *pclsid)
+{
+  *pclsid = CLSID_NULL;
+  IPersist *pp;
+  HRESULT hr = punk-&gt;QueryInterface(IID_PPV_ARGS(&amp;pp));
+  if (SUCCEEDED(hr)) {
+    hr = pp-&gt;GetClassID(pclsid);
+    pp-&gt;Release();
+  }
+  return hr;
+}
+BOOL IsMyComputerFolder(IUnknown *punk)
+{
+  CLSID clsid;
+  GetObjectCLSID(punk, &amp;clsid);
+  return clsid == CLSID_MyComputer;
+}
+</pre>
+<p>We ask the object directly, “Hey, what’s your CLSID?” and if it replies, “I am <code>CLSID_My­Computer</code>,” then we say, “Pleased to meet you, <i>My Computer</i>.”</p>
+
+
+</body>

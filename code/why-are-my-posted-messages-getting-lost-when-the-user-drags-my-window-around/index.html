@@ -1,0 +1,95 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why are my posted messages getting lost when the user drags my window around?</h1>  <!-- .entry-meta -->
+
+<p>
+This question was inspired by an actual customer question,
+but I changed a lot of it around to make for a more interesting story.
+(Trust me, the original story was <i>even more boring</i>.)
+</p>
+<p>
+A customer’s background thread posted a message to the main UI thread
+to signal something (details not important).
+They found that the posted message was never received if the user was
+in the process of dragging the main window around at the time the message
+was posted.
+Why would dragging a window cause posted messages to be lost?
+“We used to post a thread message, but then we saw that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/04/26/412116.aspx">
+<i>thread messages are eaten by modal loops</i></a>,
+so we switched to posting a message, as you recommended.
+But that didn’t help.”
+</p>
+<p>
+Dragging a window doesn’t cause messages to be lost.
+The modal loop
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/02/21/377337.aspx">
+created by the window dragging code</a>
+calls
+<code>Dispatch­Message</code>
+to deliver the posted message to its target window’s window procedure.
+</p>
+<p>
+“Oh, we don’t handle the message in the window procedure.
+We process it here:
+</p>
+<pre>
+BOOL MyApp::PreTranslateMessage(MSG *pmsg)
+{
+  if (pmsg-&gt;message == OUR_SPECIAL_MESSAGE) {
+    ... special code here ...
+    return TRUE; // handled
+  }
+  return FALSE; // not handled
+}
+</pre>
+<p>
+Could that be the problem?”
+</p>
+<p>
+Yes, that’s the problem.
+</p>
+<p>
+The customer saw the recommendation to use <code>Post­Message</code>
+instead of <code>Post­Thread­Message</code> but simply
+blindly followed the advice rather than
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/11/04/9917052.aspx">
+understanding its rationale</a>
+so they could apply the advice correctly.
+</p>
+<p>
+If you read
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/04/26/412116.aspx">
+the original recommendation</a>,
+you’ll see that the problem is that when a modal loop runs,
+your message loop is no longer in control,
+and therefore any customizations you’ve made to your message loop
+will not be in effect.
+This is normally a good thing.
+For example, if a dialog box calls <code>Message­Box</code>,
+the dialog keyboard shortcuts shouldn’t be active while the message box
+is displayed.
+It would be very strange if hitting <kbd>Enter</kbd> caused the
+dialog box to invoke its default button
+<i>while the modal message box is still on the screen</i>.
+The result would most likely be
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/02/23/378866.aspx">
+a dialog box without underlying support</a>,
+which leads to unhappiness.
+</p>
+<p>
+If there is some sort of message processing you want to happen
+regardless of which message loop is control,
+then you can’t put it in your custom message loop because
+(tautologically)
+your custom message loop is not in control
+when it is not running.
+But message loops will call
+<code>Dispatch­Message</code>,
+and that will deliver the message to your window procedure.
+(Of course, the converse also applies:
+If you <i>want</i> the behavior to be suspended when a modal operation
+is in progress,
+you can put it in your message loop.)</p>
+
+
+</body>

@@ -1,0 +1,81 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why can't I GetProcAddress for CreateWindow?</h1>  <!-- .entry-meta -->
+
+<p>
+Occasionally, I’ll see people having trouble trying to
+<code>GetProcAddress</code> for functions like
+<code>CreateWindow</code> or <code>ExitWindows</code>.
+Usually, it’s coming from people who are
+trying to write p/invoke signatures,
+for p/invoke does a <code>GetProcAddress</code> under the covers.
+Why can’t you <code>GetProcAddress</code> for these functions?
+</p>
+<p>
+Because they’re not really functions.
+They’re function-like macros:
+</p>
+<pre>
+#define CreateWindowA(lpClassName, lpWindowName, dwStyle, x, y,\
+nWidth, nHeight, hWndParent, hMenu, hInstance, lpParam)\
+CreateWindowExA(0L, lpClassName, lpWindowName, dwStyle, x, y,\
+nWidth, nHeight, hWndParent, hMenu, hInstance, lpParam)
+#define CreateWindowW(lpClassName, lpWindowName, dwStyle, x, y,\
+nWidth, nHeight, hWndParent, hMenu, hInstance, lpParam)\
+CreateWindowExW(0L, lpClassName, lpWindowName, dwStyle, x, y,\
+nWidth, nHeight, hWndParent, hMenu, hInstance, lpParam)
+#ifdef UNICODE
+#define CreateWindow  CreateWindowW
+#else
+#define CreateWindow  CreateWindowA
+#endif // !UNICODE
+#define ExitWindows(dwReserved, Code) ExitWindowsEx(EWX_LOGOFF, 0xFFFFFFFF)
+</pre>
+<p>
+In fact, as you can see above <code>CreateWindow</code> is doubly
+a macro.
+First, it’s a redirecting macro
+that expands to either <code>CreateWindowA</code>
+or <code>CreateWindowW</code>, depending on whether or not you are compiling
+<code>UNICODE</code>.
+Those are in turn function-like macros that call the real
+function <code>CreateWindowExA</code> or <code>CreateWindowExW</code>.
+All this is handled by the compiler if you include the
+<code>winuser.h</code> header file,
+but if for some reason you want to <code>GetProcAddress</code>
+for a function-like macro like <code>CreateWindow</code>, you’ll have
+to manually expand the macro to see what the real function is
+and pass that function name to <code>GetProcAddress</code>.
+</p>
+<p>
+Similar remarks apply to inline functions.
+These functions can’t be obtained via <code>GetProcAddress</code>
+because they aren’t exported at all; they are provided to you
+as source code in the header file.
+</p>
+<p>
+Note that whether something is a true function or a function-like
+macro (or an inline function) can depend on your target platform.
+For example, <code>GetWindowLongPtrA</code> is a true exported
+function on 64-bit Windows, but on 32-bit Windows,
+it’s just a macro that resolves
+to <code>GetWindowLongA</code>.
+As another example,
+the <code>Interlocked</code> family of functions are
+exported functions on the x86 version of Windows but are
+inlined functions on all other Windows architectures.
+</p>
+<p>
+How can you figure all this out?
+Read the header files.
+That’ll show you whether the function you want is a
+redirecting macro,
+a function-like macro,
+an inline function,
+an intrinsic function,
+or a proper exported function.
+If you can’t figure it out from the header files, you can always
+just write a program that calls the function you’re interested in
+and then look at the disassembly to see what actually got generated.</p>
+
+
+</body>

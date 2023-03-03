@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When are global objects constructed and destructed by Visual C++?, redux</h1>  <!-- .entry-meta -->
+
+<p>Today we’re going to make some clarifications to this table, which came from <a href="https://blogs.msdn.microsoft.com/oldnewthing/20141017-00/?p=43823">an earlier article</a>: </p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse">
+<tr>
+<td>When does it run?</td>
+<th>Constructor</th>
+<th>Destructor</th>
+</tr>
+<tr>
+<th>Global object in EXE</th>
+<td>C runtime startup code</td>
+<td>C runtime DLL hired lackey</td>
+</tr>
+<tr>
+<th>Global object in DLL</th>
+<td>C runtime <code>DLL_PROCESS_ATTACH</code>     prior to <code>Dll­Main</code></td>
+<td>C runtime <code>DLL_PROCESS_DETACH</code>     after <code>Dll­Main</code> returns</td>
+</tr>
+</table>
+<p>It turns out that the upper right corner of the diagram actually splits into two cases. The table lists what happens if the process terminates by calling <code>Exit­Process</code>. The thing that makes termination with <code>Exit­Process</code> interesting is that the first (and only) time the C runtime library learns about it is when the C runtime library itself receives its <code>DLL_PROCESS_DETACH</code> notification, and we saw last time that by the time this notification arrives, <a href="https://devblogs.microsoft.com/oldnewthing/">it could very well already be too late</a>. </p>
+<p>The escape here is to exit the program not by calling <code>Exit­Process</code> but rather by calling the C runtime <code>exit</code> function. When you do that, the C runtime gets control (by virtue of the fact that you explicitly called it), so it can run down your executable’s global objects right away, before calling the operating system’s <code>Exit­Process</code> function. That way, the global objects are run down while all of the dependent DLLs are still in memory. </p>
+<p>Let’s update our table: </p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse">
+<tr>
+<td rowspan="2">When does it run?</td>
+<th rowspan="2">Constructor</th>
+<th colspan="2">Destructor</th>
+</tr>
+<tr>
+<th>Ends with exit()</th>
+<th>Ends with ExitProcess()</th>
+</tr>
+<tr>
+<th>Global object in EXE</th>
+<td>C runtime startup code</td>
+<td>Prior to ExitProcess</td>
+<td>C runtime DLL hired lackey</td>
+</tr>
+<tr>
+<th>Global object in DLL</th>
+<td>C runtime <code>DLL_PROCESS_ATTACH</code>     prior to <code>Dll­Main</code></td>
+<td colspan="2">C runtime <code>DLL_PROCESS_DETACH</code>     after <code>Dll­Main</code> returns</td>
+</tr>
+</table>
+<p>The C and C++ language standards say nothing about what happens if you exit a process by calling some operating system low-level process termination function. Which makes sense, because the C and C++ language standards deal with the standard, not with operating system-specific stuff. I believe that more recent versions of the C runtime library take advantage of this and say, “You know what? If you exit the process by calling <code>Exit­Process</code>, then I’m simply not going to destruct anything. Serves you right for invoking behavior not covered by the standard.” In those cases, the upper right corner changes from “C runtime DLL hired lackey” to “never”. </p>
+
+
+</body>

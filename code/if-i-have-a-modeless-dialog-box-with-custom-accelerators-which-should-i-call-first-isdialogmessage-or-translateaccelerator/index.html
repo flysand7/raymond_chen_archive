@@ -1,0 +1,55 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If I have a modeless dialog box with custom accelerators, which should I call first: IsDialogMessage or TranslateAccelerator</h1>  <!-- .entry-meta -->
+
+<p>A customer had a modeless dialog box with custom accelerators. </p>
+<p>If their window had been a modeless dialog box without custom accelerators, then their message dispatch would be </p>
+<pre>
+if (!IsDialogMessage(hdlg, &amp;msg)) {
+  TranslateMessage(&amp;msg);
+  DispatchMessage(&amp;msg);
+}
+</pre>
+<p>On the other hand, if their window with accelerators had been a plain window rather than a dialog box, then their message dispatch would be </p>
+<pre>
+if (!TranslateAccelerator(hwnd, hacc, &amp;msg)) {
+  TranslateMessage(&amp;msg);
+  DispatchMessage(&amp;msg);
+}
+</pre>
+<p>But since they have both, the question arises: Which should I do first, the <code>Is­Dialog­Message</code> or the <code>Translate­Accelerator</code>? </p>
+<p>The customer experimented and found that they had to call <code>Translate­Accelerator</code> first: </p>
+<pre>
+if (!TranslateAccelerator(hwnd, hacc, &amp;msg) &amp;&amp;
+    !IsDialogMessage(hdlg, &amp;msg)) {
+  TranslateMessage(&amp;msg);
+  DispatchMessage(&amp;msg);
+}
+</pre>
+<p>If they flipped the order, they found that accelerators were not being translated: </p>
+<pre>
+<i>// Code in italics is wrong.
+if (!IsDialogMessage(hdlg, &amp;msg) &amp;&amp;
+    !TranslateAccelerator(hwnd, hacc, &amp;msg)) {
+  TranslateMessage(&amp;msg);
+  DispatchMessage(&amp;msg);
+}</i>
+</pre>
+<p>The customer empirically determined that you have to translate the accelerator first. (Or they could have <a href="https://blogs.msdn.microsoft.com/oldnewthing/20050408-41/?p=35943">read my article on the subject of custom accelerators in dialog boxes</a> and seen the correct order.) But why is that the correct order? </p>
+<p>The answer goes back to the return values of the two function. The <code>Translate­Accelerator</code> function returns a nonzero value if it recognized the message as an accelerator (and posted a <code>WM_COMMAND</code> message). The <code>Is­Dialog­Message</code> function returns a nonzero value if it recognized the message as a message for the dialog (and dispatched it). </p>
+<p>Now look at what happens if you have a message that is <i>both</i> a message for the dialog <i>and</i> an accelerator. For example, focus is on a button control in the dialog box and you press, say, <kbd>Alt</kbd>+<kbd>F2</kbd>. </p>
+<p>Let’s say you call <code>Is­Dialog­Message</code> first. The <code>Is­Dialog­Message</code> function says, “Why yes, this message is for the dialog box, so I dispatched it to the button control. Mission accomplished. I’m so awesome!” The <code>Is­Dialog­Message</code> function returns a non-zero value, and the <code>Translate­Accelerator</code> never gets a chance to run. </p>
+<p>On the other hand, if you call <code>Translate­Accelerator</code> first, then the <code>Translate­Accelerator</code> function sees the accelerator key and posts the <code>WM_COMMAND</code> function to the dialog window, then it returns a non-zero value to say “Why yes, this message is an accelerator, so I posted a <code>WM_COMMAND</code> message. Mission accomplished. I’m so awesome!” The <code>Translate­Accelerator</code> function returns a non-zero value, and the <code>Is­Dialog­Message</code> never gets a chance to run. </p>
+<p>The question of which one to call first is therefore a matter of priority. If the user presses the accelerator key while focus is on a control in the dialog box, which is more important to you: The fact that it is an accelerator, or the fact that it is a message that targets the dialog box? Whichever is more important to you goes first. </p>
+<p>But wait, that’s not the end of the story. Note that the above code calls <code>Translate­Accelerator</code> unconditionally, which means that the accelerator keys are active even if focus is not on the dialog box at all. For example, focus may be on another window on the same thread (say, the owner of the modeless dialog box). You probably don’t want the modeless dialog box stealing accelerators from the owner. To avoid this problem, you need to translate accelerators for your dialog box only if the focus is somewhere in your dialog box. </p>
+<pre>
+ if (!((hdlg == msg.hwnd || IsChild(hdlg, msg.hwnd)) &amp;&amp;
+       !TranslateAccelerator(hdlg, hacc, &amp;msg)) &amp;&amp;
+     !IsDialogMessage(hdlg, &amp;msg)) {
+  TranslateMessage(&amp;msg);
+  DispatchMessage(&amp;msg);
+ }
+</pre>
+<p>This code should look familiar, since I copied it from <a href="https://blogs.msdn.microsoft.com/oldnewthing/20050408-41/?p=35943">my original article</a>. </p>
+
+
+</body>

@@ -1,0 +1,134 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When the default pushbutton is invoked, the invoke goes to the top-level dialog</h1>  <!-- .entry-meta -->
+
+<p>
+One quirk of nested dialogs lies in what happens when the user
+presses Enter to invoke the default pushbutton:
+The resulting
+<code>WM_COMMAND</code> message
+<i>goes to the top-level dialog</i>,
+even if the default pushbutton belongs to a sub-dialog.
+</p>
+<p>
+Why doesn’t it send the <code>WM_COMMAND</code> to the parent
+of the default pushbutton?
+I mean, the dialog manager knows the handle of the button,
+so it can send the message to the button’s parent, right?
+</p>
+<p>
+Well, the dialog manager knows the handle of <i>a</i> button.
+But not necessarily <i>the</i> button.
+Recall that if focus is not on a pushbutton,
+then the dialog manager sets the default pushbutton
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/06/19/10321772.aspx">
+based on the control ID returned
+by the <code>DM_GET­DEF­ID</code> message</a>,
+and it does this by just searching the dialog for a control with that ID.
+If you have two controls with the same ID, it picks one of them
+arbitrarily.
+So far so bad.
+</p>
+<p>
+It’s like having two John Smiths living in your house,
+one in the second bedroom and one living in the guest
+room.
+The post office is very strict and won’t let you
+write
+“John Smith, Second Bedroom, 1 Main Street”
+and
+“John Smith, Guest Room, 1 Main Street.”
+All you’re allowed to write is a name and an address.
+Therefore, all the mail addressed to
+“John Smith, 1 Main Street” ends up in a single mailbox
+labeled
+“1 Main Street” and now you have to figure out who gets each
+piece of mail.
+</p>
+<p>
+Okay, so we saw that when converting an ID to a window,
+and there are multiple windows with the same ID,
+the dialog manager will just pick one  arbitrarily.
+And if it picks the wrong one,
+it would have sent the <code>WM_COMMAND</code> to the wrong
+dialog procedure entirely!
+At least by sending it to the top-level dialog, it says,
+“Dude, I think it’s this window but I’m not sure, so if you have
+some really clever way of telling which is which, you can try to sort it out.”
+And now that the <code>WM_COMMAND</code> <i>sometimes</i>
+goes to the top-level dialog,
+you’re pretty much stuck having it <i>always</i> go to the top-level
+dialog for consistency.
+It’s better to be consistently wrong in a predictable manner
+(so people can work around it reliably)
+than to be mostly-right and occasionally-completely-wrong.
+</p>
+<p>
+Third rationale:
+Because you’re asking for code to be written to handle a case
+that people shouldn’t have gotten into in the first place.
+(Namely, duplicate control IDs.)
+</p>
+<p>
+Whatever the reason, it’s something you need to be on the lookout for.
+If you did everything right and avoided control ID duplication,
+then the workaround in your
+<code>WM_COMMAND</code> handler is straightforward:
+</p>
+<pre>
+void OnCommand(HWND hwnd, int id, HWND hwndCtl, UINT codeNotify)
+{
+    if (hwndCtl != nullptr)
+    {
+        HWND hwndCtlParent = GetParent(hwndCtl);
+        if (hwndCtlParent != nullptr &amp;&amp;
+            hwndCtlParent != hwnd &amp;&amp;
+            IsChild(hwnd, hwndCtlParent))
+        {
+           FORWARD_WM_COMMAND(hwndCtlParent, id,
+                              hwndCtl, codeNotify, SendMessage);
+           return;
+        }
+    }
+    ... the message was for me after all, so let's handle it...
+    switch (id)
+    {
+    ...
+    }
+}
+</pre>
+<p>
+When we get the <code>WM_COMMAND</code> message,
+we first check that it really came from one of our direct
+children.
+If not, then we forward the message on to the control’s
+actual parent.
+(The window that should have gotten the message in the first place
+in an ideal world.)
+</p>
+<p>
+<b>Exercise</b>:
+Under what circumstances can the above workaround fail?
+(Not counting the scenario we’ve spent the past three days discussing.)
+</p>
+<p>
+Anyway, back to the question from last time:
+How does the property sheet manager deal with multiple property sheets
+pages having conflicting control IDs?
+In addition to what we previously discussed,
+another mitigating factor is that the property sheet manager
+keeps only one child dialog visible at a time.
+This takes the hidden child dialogs out of the running for most
+dialog-related activities, such as dialog navigation,
+since invisible controls cannot be targets of dialog navigation.
+Furthermore, hidden child dialogs are skipped when searching
+for keyboard accelerators,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/06/02/8568490.aspx">
+thereby avoiding the problem of hidden accelerators</a>.
+So as long as the property sheet manager makes sure that focus
+doesn’t stay on a hidden control after a page change,
+there shouldn’t be any notifications coming from a hidden child dialog.
+The only conflicts it needs to worry about are conflicts
+between the page and the frame.</p>
+
+
+</body>

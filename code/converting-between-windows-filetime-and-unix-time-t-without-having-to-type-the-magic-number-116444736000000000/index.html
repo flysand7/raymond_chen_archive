@@ -1,0 +1,71 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Converting between Windows <code>FILETIME</code> and Unix <code>time_t</code> without having to type the magic number 116444736000000000</h1>  <!-- .entry-meta -->
+
+<p>Windows tracks time in 100ns units <a href="/other/why-is-the-win32-epoch-january-1-1601"> since January 1, 1601</a>. Unix tracks time in 1s units <a href="http://en.cppreference.com/w/c/chrono/time_t"> since January 1, 1970</a>. Is there an easy way to convert between them?</p>
+<p>The Windows documentation offers <a href="https://docs.microsoft.com/en-us/windows/win32/sysinfo/converting-a-time-t-value-to-a-file-time"> a helper function</a> to perform the conversion from <code>time_t</code> to <code>FILETIME</code>: It converts the units from seconds to 100ns by multiplying against the magic number 10000000, and then adds the second magic number 116444736000000000.</p>
+<p>Is there a way to do the conversion without having to hard-code these magic numbers? Maybe somebody else has written a conversion that we can use?</p>
+<p>Well, here’s one place: C++/WinRT.</p>
+<p>The <code>winrt::clock</code> class represents the Windows Runtime <code>DateTime</code> clock, and also provides a number of helpers to convert to and from other formats. The Windows Runtime <code>DateTime</code> has the same internal format as a <code>FILETIME</code>, so you can treat them as basically the same thing, just in different wrapping. And since C++/WinRT represents the Windows Runtime <code>DateTime</code> as a C++ <code>std::<wbr/>chrono::<wbr/>time_point</code> object, you have all of the C++ standard library facilities available.</p>
+<pre>// from Unix time to FILETIME
+auto datetime = winrt::clock::from_time_t(unix_time_seconds);
+FILETIME filetime = winrt::clock::to_file_time(datetime);
+
+// or combined into one line
+FILETIME filetime = winrt::clock::to_file_time(
+               winrt::clock::from_time_t(unix_time_seconds));
+</pre>
+<p>And you can just run everything in reverse to go the other way.</p>
+<pre>// from FILETIME to Unix time
+auto datetime = winrt::clock::from_file_time(filetime);
+time_t unix_time_seconds = winrt::clock::to_time_t(datetime);
+
+// or combined into one line
+time_t unix_time_seconds = winrt::clock::to_time_t(
+                     winrt::clock::from_file_time(filetime));
+</pre>
+<p>Of course, once you reach the <code>std::<wbr/>chrono::<wbr/>time_point</code>, you can stop and enjoy the scenery before moving onward to your final destination.</p>
+<pre>auto datetime = winrt::clock::from_file_time(filetime);
+
+// move forward 3 minutes
+datetime += 3min;
+
+time_t unix_time_seconds = winrt::clock::to_time_t(datetime);
+</pre>
+<p>Unix time is represented in the C++ standard library as a <code>std::<wbr/>chrono::<wbr/>system_clock</code>, so you can convert your Unix timestamps into a <code>sys_time&lt;Duration&gt;</code> (or use one of the pre-made types like <code>sys_seconds</code>), and then do your work in the world of C++ <code>std::<wbr/>chrono</code> before converting at the last moment to a Windows <code>FILETIME</code>.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td><code>time_t</code></td>
+</tr>
+<tr>
+<td>⇵</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>sys_time</code> = <code>time_point&lt;system_clock&gt;</code><br/>
+⇵<br/>
+<code>DateTime</code> = <code>time_point&lt;winrt::clock&gt;</code></td>
+<td style="padding-left: 1em;"><code>std::chrono::time_point</code></td>
+</tr>
+<tr>
+<td>⇵</td>
+</tr>
+<tr>
+<td><code>FILETIME</code></td>
+</tr>
+</tbody>
+</table>
+<p>To get in and out of the box through the top:</p>
+<pre>// time_t to sys_seconds
+auto n_seconds = std::chrono::sys_seconds(std::chrono::seconds(N));
+
+// sys_seconds to time_t
+auto unix_ticks = seconds.time_since_epoch().count();
+</pre>
+<p>To convert between <code>sys_time</code> and <code>winrt::clock</code>:</p>
+<pre>auto winrt = winrt::clock::from_sys(sys);
+auto sys = winrt::clock::to_sys(winrt);
+</pre>
+<p>And to get in and out through the bottom, use the <code>to_file_time</code> and <code>from_file_time</code> methods, as noted earlier.</p>
+
+
+</body>

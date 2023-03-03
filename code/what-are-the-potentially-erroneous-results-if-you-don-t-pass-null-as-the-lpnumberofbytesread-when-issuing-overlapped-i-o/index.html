@@ -1,0 +1,58 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What are the potentially-erroneous results if you don’t pass NULL as the lpNumberOfBytesRead when issuing overlapped I/O?</h1>  <!-- .entry-meta -->
+
+<p>The documentation for many I/O functions that read or write bytes recommend that you pass <code>NULL</code> as the <code>lpNumber­Of­Bytes­Read</code> parameter when issuing overlapped I/O to avoid “potentially erroneous results”. What are these potentially erroneous results the documentation is trying to warn against?</p>
+<p>For the purpose of this discussion, let’s use <code>ReadFile</code> as our example, even though the same argument applies to <code>Write­File</code>, <code>WSASend</code>, and other functions which follow the same pattern.</p>
+<p>The race condition here is a race between the code that calls <code>ReadFile</code> and the code that handles the asynchronous completion. If the variable passed as the output for <code>ReadFile</code>‘s <code>lpNumber­Of­Bytes­Read</code> parameter is the same variable used as the output for <code>Get­Overlapped­Result</code>‘s <code>lpNumber­Of­Bytes­Transferred</code> parameter, then there is a race because the completion might run concurrently with the exit out of <code>Read­File</code>.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: 1px gray; border-style: none solid solid none;">Thread 1</td>
+<td style="border-bottom: solid 1px gray;">Thread 2</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"><code>ReadFile(..., &amp;byteCount, ...);</code></td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"><code>ReadFile</code> begins</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">  I/O initiated asynchronously</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>I/O completes asynchronously</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td><code>Get­Overlapped­Result(..., &amp;byteCount, ...)</code></td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td><code>Get­Overlapped­Result</code> sets <code>byteCount = result</code></td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">  set <code>byteCount = 0</code></td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">  <code>SetLastError(ERROR_IO_PENDING);</code></td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">  <code>return FALSE;</code></td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>If the I/O completes very quickly, then the completion routine can run before <code>Read­File</code> returns. And then when <code>Read­File</code> tries to report the fact that the I/O was initiated asynchronously, it overwrites the <code>byteCount</code> that the completion routine had calculated.</p>
+<p>So it’s okay to pass a non-null <code>lpNumberOfBytesRead</code> to <code>Read­File</code>, even when issuing asynchronous I/O, provided that you do so into a different variable from the one that the completion routine uses.</p>
+<p>Normally, however, there’s no reason to pass a non-null <code>lpNumberOfBytesRead</code> because the result of the operation is going to be handled by the completion function. But there’s a case where it is advantageous to use a non-null value, and that’s where you have used <code>Set­File­Completion­Notification­Modes</code> to configure the handle as <code>FILE_<wbr/>SKIP_<wbr/>COMPLETION_<wbr/>PORT_<wbr/>ON_<wbr/>SUCCESS</code>. In that case, a synchronous completion does not queue a call to the completion function on the I/O completion thread. Instead, the code that called <code>Read­File</code> is expected to deal with the synchronous completion inline. And one of the things it probably wants to know is how many bytes were read, so it would normally call <code>Get­Overlapped­Result</code> to find out. You can avoid that extra call to <code>Get­Overlapped­Result</code> by passing a non-null pointer to <code>Read­File</code> so that in the case of a synchronous completion, you have your answer immediately.</p>
+<p>This is admittedly a micro-optimization. One of my colleagues was not aware of this trick and just followed the guidance in the documentation by passing <code>NULL</code> and calling <code>Get­Overlapped­Result</code>, and he says that his code can still stream data at 100Gbps over the network despite doing things “inefficiently”.</p>
+<p>So maybe you’re better off not knowing and just following the simple rule of “Use <code>NULL</code> when issuing asynchronous I/O.” It’s easier to explain and easier to remember.</p>
+
+
+</body>

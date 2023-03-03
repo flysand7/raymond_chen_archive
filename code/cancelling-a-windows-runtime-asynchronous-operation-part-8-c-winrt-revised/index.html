@@ -1,0 +1,52 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Cancelling a Windows Runtime asynchronous operation, part 8: C++/WinRT, revised</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, we observed that <a href="/code/cancelling-a-windows-runtime-asynchronous-operation-part-5-c-winrt"> C++/WinRT relies on the ABI result from the <code>Get­Results()</code> method to report cancellation</a>. This is different from how task cancellation is projected in C# and C++/CX. Furthermore, it’s a leaky abstraction: The awaiting code needs to know how the underlying operation is implemented in order to know what exception will be raised upon cancellation.</p>
+<p>Fortunately, that has been fixed in <a href="https://github.com/microsoft/cppwinrt/pull/643">PR 643</a> (released as <a href="https://github.com/microsoft/cppwinrt/releases/tag/2.0.200601.2"> version 2.0.200601.2</a>) so that C++/WinRT aligns with the other projections in how it handles cancellation: It now detects cancellation by checking the status of the operation.</p>
+<p>Conceptually, it’s a one-line fix:</p>
+<pre>template &lt;typename Async&gt;
+struct await_adapter
+{
+    ...
+
+    auto await_resume() const
+    {
+        <span style="color: blue;">if (async.Status() == AsyncStatus::Canceled) throw hresult_canceled();</span>
+        return async.GetResults();
+    }
+};
+</pre>
+<p>However, this adds the virtual method call <code>async.Status()</code> to a hot code path. Even worse, if this is a remote operation, the virtual method call has to cross a process boundary, which is even more expensive. (If you enable <a href="https://devblogs.microsoft.com/oldnewthing/20190430-00/?p=102460"> Async-Async</a>, then this becomes a local query, but it’s still virtual.)</p>
+<p>The fix is to cache the status reported by the <code>Completed</code> callback:</p>
+<pre><span style="color: blue;">inline void check_status_canceled(AsyncStatus status)
+{
+    if (status == AsyncStatus::Canceled) throw hresult_canceled();
+}</span>
+
+template &lt;typename Async&gt;
+struct await_adapter
+{
+    <span style="color: blue;">AsyncStatus status = AsyncStatus::Started;</span>
+    ...
+
+    void await_suspend(std::experimental::coroutine_handle&lt;&gt; handle)
+    {
+        async.Completed([<span style="color: blue;">this</span>, handler = disconnect_aware_handler{ handle }]
+                        (auto&amp;&amp;, auto&amp;&amp; operation_status)
+        {
+            <span style="color: blue;">status = operation_status;</span>
+            handler();
+        });
+    }
+
+    auto await_resume() const
+    {
+        <span style="color: blue;">check_status_canceled(status);</span>
+        return async.GetResults();
+    }
+};
+</pre>
+<p>The code to convert a <code>Canceled</code> status into an exception was factored out, because similar fixes need to be made to other methods that react to the result of an operation.</p>
+
+
+</body>

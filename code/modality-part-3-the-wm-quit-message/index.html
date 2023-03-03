@@ -1,0 +1,174 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Modality, part 3: The WM_QUIT message</h1>  <!-- .entry-meta -->
+
+<p>
+After
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/02/18/376080.aspx">
+our two quick introductions</a>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/02/21/377337.aspx">
+to modality</a>,
+we’re now going to dig in a little deeper.
+</p>
+<p>
+The trick with modality is that when you call a modal function,
+the responsibility of message dispatch is handled by that function
+rather than by your main program.  Consequently, if you have
+customized your main program’s message pump, those customizations
+are lost once you lose control to a modal loop.
+</p>
+<p>
+The other important thing about modality is that a
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/Windows/WindowReference/WindowMessages/WM_QUIT.asp">
+<code>WM_QUIT</code> message</a> always breaks the modal loop.
+Remember this in your own modal loops!  If ever
+you call
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/MessagesandMessageQueues/MessagesandMessageQueuesReference/MessagesandMessageQueuesFunctions/PeekMessage.asp">
+the <code>PeekMessage</code> function</a>
+or
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/MessagesandMessageQueues/MessagesandMessageQueuesReference/MessagesandMessageQueuesFunctions/GetMessage.asp">
+The [typo fixed 10:30am] <code>GetMessage</code> function</a> and get
+a <code>WM_QUIT</code>
+message, you must not only exit your modal loop, but
+you must also re-generate the <code>WM_QUIT</code> message
+(via
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/MessagesandMessageQueues/MessagesandMessageQueuesReference/MessagesandMessageQueuesFunctions/PostQuitMessage.asp">
+the <code>PostQuitMessage</code> message</a>)
+so the next outer layer will see the <code>WM_QUIT</code> message
+and do its cleanup as well.  If you fail to propagate
+the message, the next outer layer will not know that it
+needs to quit, and the program will seem to “get stuck”
+in its shutdown code, forcing the user to
+terminate the process the hard way.
+</p>
+<p>
+In a later series, we’ll see how this convention surrounding
+the <code>WM_QUIT</code> message is useful.
+But for now, here’s
+the basic idea of how your modal loops should re-post
+the quit message to the next outer layer.
+</p>
+<pre>
+BOOL WaitForSomething(void)
+{
+  MSG msg;
+  BOOL fResult = TRUE; // assume it worked
+  while (!SomethingFinished()) {
+    if (GetMessage(&amp;msg, NULL, 0, 0)) {
+      TranslateMessage(&amp;msg);
+      DispatchMessage(&amp;msg);
+    } else {
+      // We received a WM_QUIT message; bail out!
+      CancelSomething();
+      // Re-post the message that we retrieved
+      PostQuitMessage(msg.wParam);
+      fResult = FALSE; // quit before something finished
+      break;
+    }
+  }
+  return fResult;
+}
+</pre>
+<p>
+Suppose your program starts some operation and then calls
+<code>WaitForSomething()</code>.
+While waiting for something to finish, some other part of your
+program decides that it’s time to exit.
+(Perhaps the user clicked on a “Quit” button.)
+That other part of the program will call
+<code>PostQuitMessage(wParam)</code>
+to indicate that the message loop should terminate.
+</p>
+<p>
+The posted quit message will first be retrieved by the
+<code>GetMessage</code> in the <code>WaitForSomething</code> function.
+The <code>GetMessage</code> function returns <code>FALSE</code> if
+the retrieved message is a <code>WM_QUIT</code> message.
+In that case, the “else” branch of the conditional is taken, which
+cancels the “Something” operation in progress, then posts
+the quit message back into the message queue for the next
+outer message loop to handle.
+</p>
+<p>
+When <code>WaitForSomething</code> returns, control presumably will fall
+back out into the program’s main message pump.  The main message
+pump will then retrieve the <code>WM_QUIT</code> message and do its
+exit processing before finally exiting the program.
+</p>
+<p>
+And if there were additional layers of modality between
+<code>WaitForSomething</code> and the program’s main message pump,
+each of those layers would retrieve the <code>WM_QUIT</code> message,
+do their cleanup, and then re-post the <code>WM_QUIT</code> message
+(again, via <code>PostQuitMessage</code>) before exiting the loop.
+</p>
+<p>
+In this manner, the <code>WM_QUIT</code> message gets handed from modal
+loop to modal loop, until it reaches the outermost loop, which
+terminates the program.
+</p>
+<p>
+“But wait,” I hear you say.  “Why do I have to do all this
+fancy <code>WM_QUIT</code> footwork?  I could just have a private little
+global variable named something like <code>g_fQuitting</code>.  When
+I want the program to quit, I just set this variable, and all
+of my modal loops check this variable and exit prematurely if it
+is set.  Something like this:
+</p>
+<pre>
+<i>BOOL MyWaitForSomething(void) // code in italics is wrong
+{
+  MSG msg;
+  while (!SomethingFinished()) {
+    if (g_fQuitting) {
+    CancelSomething();
+      return FALSE;
+    }
+    if (GetMessage(&amp;msg, NULL, 0, 0)) {
+      TranslateMessage(&amp;msg);
+      DispatchMessage(&amp;msg);
+    }
+  }
+  return TRUE;
+}</i>
+</pre>
+<p>
+And so I can solve the problem of the nested quit without needing
+to do all this <code>PostQuitMessage</code> rigamarole.”
+</p>
+<p>
+And you’d be right, if you controlled every single modal loop in
+your program.
+</p>
+<p>
+But you don’t.
+</p>
+<p>
+For example, when you call
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/dialogboxes/dialogboxreference/dialogboxfunctions/dialogbox.asp">
+the <code>DialogBox</code> function</a>,
+the dialog box code
+runs its own private modal loop to do the dialog box UI until
+you get around to calling
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/dialogboxes/dialogboxreference/dialogboxfunctions/enddialog.asp">
+the <code>EndDialog</code> function</a>.  And whenever the user
+clicks on any of your menus, Windows runs its own private
+modal loop to do the menu UI.  Indeed, even the resizing of
+your application’s window is handled by a Windows modal loop.
+</p>
+<p>
+Windows, of course, has no knowledge of your little
+<code>g_fQuitting</code> variable, so it has no idea that you want
+to quit.  It is the <code>WM_QUIT</code> message that serves this
+purpose of co-ordinating the intention to quit among separate
+parts of the system.
+</p>
+<p>
+Notice that this convention regarding the <code>WM_QUIT</code>
+message cuts both ways.  You can use this convention to cause
+modal loops to exit (we’ll see more of this later), but it also
+obliges you to respect this convention so that
+<strong>other</strong> components (including the window manager itself)
+can get your modal loops to exit.</p>
+
+
+</body>

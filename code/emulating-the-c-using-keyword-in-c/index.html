@@ -1,0 +1,259 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Emulating the C# <code>using</code> keyword in C++</h1>  <!-- .entry-meta -->
+
+<p>C# has a very convenient <code>using</code> statement which ensures that an object is <code>Dispose()</code>d when control exits the block. C++ has a generalization of this concept with RAII types, but things get tricky when you have tasks, lambda capture, and the need to explicitly <code>Close()</code> the hat pointer. </p>
+<p>Here we go. </p>
+<p>Here’s one attempt, for C++/CX hat pointers: </p>
+<pre>
+template&lt;typename T&gt;
+class unique_close
+{
+public:
+  unique_close(T^ t) : m_t(t) { }
+  ~unique_close() { delete m_t; }
+
+  // Disallow copying
+  unique_close(const unique_close&amp; other) = delete;
+  unique_close&amp; operator=(const unique_close&amp; other) = delete;
+
+  // Moving transfers the obligation to Close
+  unique_close(unique_close&amp;&amp; other)
+  {
+    *this = std::move(other);
+  }
+  unique_close&amp; operator=(unique_close&amp;&amp; other)
+  {
+    using std::swap; // enable ADL on the swap
+    swap(m_t, other.m_t);
+    return *this;
+  }
+
+private:
+  T^ m_t;
+};
+
+template&lt;typename T&gt;
+auto make_unique_close(T^ t)
+{
+  return unique_close&lt;T&gt;(t);
+}
+</pre>
+<p>With explicit task chaining, you need to remember to use <code>std::</code><code>move</code> to move the <code>unique_close</code> object into the final task in the chain if you didn’t construct it directly in the capture. If you forget to do this, then the destruction of the <code>unique_close</code> objects in the main function will close the objects prematurely because they are still in control. </p>
+<pre>
+void Scenario1_Render::ViewPage()
+{
+    ...
+
+    if (outfile)
+    {
+        auto page = pdfDocument-&gt;GetPage(pageIndex);
+
+        return create_task(outfile-&gt;OpenTransactedWriteAsync())
+            .then([this, page, <font color="blue">usingPage{make_unique_close(page)}</font>]
+                  (StorageStreamTransaction^ transaction) <font color="blue">mutable</font>
+        {
+            auto options = ref new PdfPageRenderOptions();
+            options-&gt;DestinationHeight = (unsigned)(page-&gt;Size.Height * 2);
+            options-&gt;DestinationWidth = (unsigned)(page-&gt;Size.Width * 2);
+            create_task(page-&gt;RenderToStreamAsync(transaction-&gt;Stream, options))
+                .then([this, <font color="blue">usingPage{std::move(usingPage)},
+                       usingTransaction{make_unique_close(transaction)}</font>]() <font color="blue">mutable</font>
+            {
+                <font color="blue">// destruction of usingPage and usingTransaction
+                // will close the page and transaction.</font>
+            });
+        });
+    }
+    ...
+}
+</pre>
+<p>(Let us ignore the fact that this doesn’t work because <code>task::</code><code>then</code> requires a copyable lambda, and ours is merely movable.) </p>
+<p>One way to address the added cognitive burden of having to remember to <a href="http://tvtropes.org/pmwiki/pmwiki.php/Main/MoveAlongNothingToSeeHere">keep moving</a> the obligation to close is to share that obligation, so that only when the last shared reference is destructed does the object get closed. </p>
+<pre>
+template&lt;typename T&gt;
+class ensure_close
+{
+public:
+  ensure_close(T^ t) : m_t(t) { }
+  ~ensure_close() { delete m_t; }
+
+  // Disallow copying and moving
+  ensure_close(const ensure_close&amp; other) = delete;
+  ensure_close&amp; operator=(const ensure_close&amp; other) = delete;
+  ensure_close(const ensure_close&amp;&amp; other) = delete;
+  ensure_close&amp; operator=(const ensure_close&amp;&amp; other) = delete;
+
+private:
+  T^ m_t;
+};
+
+template&lt;typename T&gt;
+using shared_close = std::shared_ptr&lt;ensure_close&lt;T&gt;&gt;;
+
+template&lt;typename T&gt;
+auto make_shared_close(T^ t)
+{
+  return std::make_shared&lt;ensure_close&lt;T&gt;&gt;(t);
+}
+</pre>
+<p>Now you can copy the <code>shared_close</code> around, and only when the last copy is destructed does the wrapped hat pointer get closed.¹ </p>
+<pre>
+void Scenario1_Render::ViewPage()
+{
+    ...
+
+    if (outfile)
+    {
+        auto page = pdfDocument-&gt;GetPage(pageIndex);
+        <font color="blue">auto usingPage = make_shared_close(page);</font>
+
+        return create_task(outfile-&gt;OpenTransactedWriteAsync())
+            .then([this, page, <font color="blue">usingPage</font>]
+                  (StorageStreamTransaction^ transaction)
+        {
+            <font color="blue">auto usingTransaction = make_shared_close(transaction);</font>
+            auto options = ref new PdfPageRenderOptions();
+            options-&gt;DestinationHeight = (unsigned)(page-&gt;Size.Height * 2);
+            options-&gt;DestinationWidth = (unsigned)(page-&gt;Size.Width * 2);
+            return create_task(page-&gt;RenderToStreamAsync(transaction-&gt;Stream, options))
+                .then([this, <font color="blue">usingPage, usingTransaction</font>]()
+            {
+                <font color="blue">// destruction of the last shared usingPage
+                // and usingTransaction will close the page and transaction.</font>
+            });
+        });
+    }
+    ...
+}
+</pre>
+<p>Still, you have to remember to keep passing the <code>usingPage</code> and <code>usingTransaction</code> around. If you forget, then the object gets closed prematurely. (And if the <code>shared_close</code> is created by one lambda and consumed by a sibling lambda, well you now have <a href="https://en.wikipedia.org/wiki/David_Wheeler_(British_computer_scientist)#Quotes">a <code>shared_ptr</code> to a <code>shared_close</code></a>, which is getting ridiculous.) </p>
+<p>But wait, you can stop the madness. </p>
+<p>Let’s go back to <code>unique_close</code>: This class becomes much more convenient if you use the <code>co_await</code> keyword, because the compiler will do the heavy lifting of cleaning up when the last task has completed.² </p>
+<pre>
+task&lt;void&gt; Scenario1_Render::ViewPageAsync()
+{
+    ...
+
+    if (outfile)
+    {
+        auto page = pdfDocument-&gt;GetPage(pageIndex);
+        <font color="blue">auto usingPage = make_unique_close(page);</font>
+
+        auto transaction =
+            co_await outfile-&gt;OpenTransactedWriteAsync();
+        <font color="blue">auto usingTransaction = make_unique_close(transaction);</font>
+        auto options = ref new PdfPageRenderOptions();
+        options-&gt;DestinationHeight = (unsigned)(page-&gt;Size.Height * 2);
+        options-&gt;DestinationWidth = (unsigned)(page-&gt;Size.Width * 2);
+        co_await page-&gt;RenderToStreamAsync(transaction-&gt;Stream, options);
+        <font color="blue">// destruction of usingPage and usingTransaction
+        // will close the page and transaction.</font>
+    }
+    ...
+}
+</pre>
+<p>We have offloaded all the thinking to the compiler. The compiler will do the work of making sure that the <code>unique_close</code> objects are destructed when control leaves the block. The <code>unique_close</code> objects will remain alive during the <code>co_await</code> statements, which is what we want. </p>
+<p>We could make our <code>unique_close</code> a little fancier by making it a little more <code>unique_ptr</code>y. </p>
+<pre>
+template&lt;typename T&gt;
+class unique_close
+{
+public:
+  unique_close(T^ t) : m_t(t) { }
+  ~unique_close() { delete m_t; }
+
+  <font color="blue">T^ get() { return m_t; }
+  T^ operator*() { return m_t; }
+  T^ operator-&gt;() { return m_t; }</font>
+  ...
+};
+</pre>
+<p>This leaves us with </p>
+<pre>
+task&lt;void&gt; Scenario1_Render::ViewPageAsync()
+{
+    ...
+
+    if (outfile)
+    {
+        auto page = <font color="blue">make_unique_close(</font>
+             pdfDocument-&gt;GetPage(pageIndex)<font color="blue">)</font>;
+        auto transaction = <font color="blue">make_unique_close(</font>
+            co_await outfile-&gt;OpenTransactedWriteAsync()<font color="blue">)</font>;
+        auto options = ref new PdfPageRenderOptions();
+        options-&gt;DestinationHeight = (unsigned)(page-&gt;Size.Height * 2);
+        options-&gt;DestinationWidth = (unsigned)(page-&gt;Size.Width * 2);
+        co_await page-&gt;RenderToStreamAsync(transaction-&gt;Stream, options);
+        <font color="blue">// destruction of page and transaction
+        // will close the page and transaction.</font>
+    }
+    ...
+}
+</pre>
+<p>That doesn’t seem so bad. Pretty close to C# but still in the spirit of C++.³ </p>
+<p>¹ You (and by “you” I mean “me”) would be sorely tempted to write this with a custom deleter instead. </p>
+<pre>
+namespace Details
+{
+  template&lt;typename T&gt;
+  struct close_deleter
+  {
+    void operator()(T^ t) { delete t; }
+  };
+}
+
+template&lt;typename T&gt;
+auto make_shared_close(T^ t)
+{
+    return std::shared_ptr&lt;T&gt;(t, Details::close_deleter&lt;T&gt;());
+}
+</pre>
+<p>Except that this doesn’t work because <code>std::shared_ptr</code> manages raw pointers, not hat pointers. </p>
+<p>² If you are a total crazy person, you might consider adding a boolean conversion operator to the <code>unique_close</code>: </p>
+<pre>
+...
+   operator bool() const { return true; }
+...
+</pre>
+<p>This appears to serve no purpose, but it lets you write this: </p>
+<pre>
+// Oh my goodness what kind of craziness is about to happen?
+#define scope_using__(t, c) \
+    if (auto _scope_using_##c##_ = make_unique_close(t))
+#define scope_using_(t, c) scope_using__(t, c) 
+#define scope_using(t) scope_using(t, __COUNTER__)
+
+task&lt;void&gt; Scenario1_Render::ViewPageAsync()
+{
+    ...
+
+    if (outfile)
+    {
+        auto page = pdfDocument-&gt;GetPage(pageIndex);
+        <font color="blue">scope_using (page)
+        {</font>
+            auto transaction =
+                co_await outfile-&gt;OpenTransactedWriteAsync();
+            <font color="blue">scope_using (transaction)
+            {</font>
+                auto options = ref new PdfPageRenderOptions();
+                options-&gt;DestinationHeight = (unsigned)(page-&gt;Size.Height * 2);
+                        options-&gt;DestinationWidth = (unsigned)(page-&gt;Size.Width * 2);
+                co_await page-&gt;RenderToStreamAsync(transaction-&gt;Stream, options);
+                <font color="blue">// exiting the scope_using will close
+                // the corresponding objcts.</font>
+            }
+        }
+    }
+    ...
+}
+</pre>
+<p>This is a moral outrage. <a href="http://tvtropes.org/pmwiki/pmwiki.php/Main/LetUsNeverSpeakOfThisAgain">Let us never speak of this again</a>. </p>
+<p>³ If you wanted to be cute, you could rename <code>make_unique_close</code> to <code>Using</code>. </p>
+<pre>
+auto page = <font color="blue">Using</font>(pdfDocument-&gt;GetPage(pageIndex));
+auto transaction = <font color="blue">Using</font>(co_await outfile-&gt;OpenTransactedWriteAsync());
+</pre>
+
+
+</body>

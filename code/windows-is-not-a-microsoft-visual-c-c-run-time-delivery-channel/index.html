@@ -1,0 +1,220 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Windows is not a Microsoft Visual C/C++ Run-Time delivery channel</h1>  <!-- .entry-meta -->
+
+<p>
+There’s a DLL in the system directory called
+<code>MSVCRT.DLL</code>,
+and from its name, you might think that it is the
+Microsoft Visual C/C++ Run-Time library.
+That is a perfectly reasonable guess.
+</p>
+<p>
+But it would also be wrong.
+</p>
+<p>
+The Microsoft Visual C/C++ Run-Time libraries go by names
+like
+<code>MSVCR71.DLL</code> or
+<code>MSVCR80.DLL</code> or
+<code>MSVCR90.DLL</code> or
+<code>MSVCR100.DLL</code>,
+and the debugging versions have a <code>D</code> in there, too.
+And
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/01/11/7065021.aspx">
+like MFC</a>,
+these binaries might be on your machine as a side effect
+of the implementation of a particular Windows component,
+but they are not contractual.
+If your program requires the
+Visual C/C++ Run-Time library,
+then your program needs to install the appropriate version.
+(There are redistributable packages you can
+include with your application.)
+</p>
+<p>
+Okay, so what’s with the DLL with the misleading name
+<code>MSVCRT.DLL</code>?
+The unfortunate name is a consequence of history.
+</p>
+<p>
+Back in Windows 95,
+<code>MSVCRT.DLL</code> <i>was</i> the
+Microsoft Visual C/C++ Run-Time library,
+or at least it was the runtime library for Visual C/C++ 4.2.
+As each new version of Visual C/C++ came out, the Windows team
+had to go update their copy of <code>MSVCRT.DLL</code>
+to match.
+And if the Windows team wanted to fix a bug in
+<code>MSVCRT.DLL</code>,
+they had to make sure that the Visual C/C++ team made the corresponding
+change in their version.
+</p>
+<p>
+This high degree of coördination became untenable,
+especially since it required the Windows team to do things like
+push a new version of <code>MSVCRT.DLL</code> to all downlevel
+platforms whenever a new version of Visual C/C++ came out.
+(Good luck doing this in the days before Windows Update!)
+</p>
+<p>
+And sometimes these fixes caused compatibility problems.
+For example, I remember there was a fix for a Y2K problem
+which
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/10/06/10220920.aspx#10222088">
+caused one application to crash</a>
+because the fix
+altered the stack usage in such a way that exposed an
+uninitialized variable bug.
+</p>
+<p>
+One serious problem with the <code>MVSCRT.DLL</code>
+“one runtime to rule them all” model is that
+multiple versions of Visual C++ would all use the same library,
+and keeping one DLL compatible with all versions of Visual C++
+was a maintenance nightmare.
+For example, if a new C++ language feature required a change
+to the <code>ostream</code> class,
+you had to be careful to design your change so that the
+class was still binary-compatible with the older version
+of the class.
+This meant not changing the size of the class (because somebody
+may have derived from it)
+and not changing the offsets of any members,
+and being careful which virtual methods you call.
+This was in practice not done, and the result was that (for example)
+Windows 95 and Windows 98 both had DLLs called
+<code>MSVCRT.DLL</code> that were not compatible with each other.
+</p>
+<p>
+And of course there was the problem of some application installer
+unwittingly overwriting the existing copy of
+<code>MSVCRT.DLL</code> with an older one,
+causing <i>the entire operating system</i> to stop working.
+</p>
+<p>
+At some point, the decision was made to just give up
+and declare it an operating system DLL,
+to be used only by operating system components.
+All newer versions of Visual C/C++ used specifically-numbered
+DLLs for their runtime libraries.
+(Giving different names to each version of the run-time library
+solves the problem of trying to make one DLL service multiple
+versions of clients,
+as well as addressing the <i>accidental downgrade</i> problem.)
+</p>
+<p>
+Although <code>MSVCRT.DLL</code> has been an operating system DLL
+for a long time,
+<a href="http://msdn.microsoft.com/en-us/library/abx4dbyh%28VS.80%29.aspx#sectiontoggle2">
+and has been documented as off-limits to applications</a>,
+there are still
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/08/03/10192225.aspx#10192991">
+a lot of people</a>
+who
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/06/07/10020654.aspx#10020962">
+treat it as a C runtime delivery channel</a>,
+and those programs create a lot of grief for the product team.
+</p>
+<p>
+I remember one change that the runtime library folks made to
+<code>MSVCRT.DLL</code> that had to be backed out and revisited
+because they found an application that not only linked to
+<code>MSVCRT.DLL</code> instead of the runtime library the
+compiler intended,
+but also groveled into an internal array and manipulated
+private members.
+(I was one of the people who investigated this compatibility
+issue, but I was not the one who solved it.)
+</p>
+<pre>
+// Note: The issue has been simplified for expository purposes
+struct SomethingInternal
+{
+    int widget;
+    short widgetFlags;
+    char widgetLevel;
+    int needs_more_time;
+};
+SomethingInternal InternalArray[80];
+</pre>
+<p>
+The runtime library folks added a new member to the structure:
+</p>
+<pre>
+struct SomethingInternal
+{
+    int widget;
+    short widgetFlags;
+    char widgetLevel;
+    int needs_more_time;
+    <font color="blue">int needs_<a href="http://www.nbc.com/saturday-night-live/video/more-cowbell-with-will-ferrell-on-snl--video--saturday-night-live--nbc/n41046" style="color: blue">more_cowbell</a>;</font>
+};
+</pre>
+<p>
+This change increased the size of the
+<code>Something­Internal</code> structure,
+which in turn meant that when the application did
+</p>
+<pre>
+// Redeclare this internal structure in MSVCRT.DLL
+// so we can poke the needs_more_time member to get more time.
+struct SomethingInternal
+{
+    int widget;
+    short widgetFlags;
+    char widgetLevel;
+    int needs_more_time;
+};
+extern SomethingInternal InternalArray[80];
+...
+    InternalArray[i].needs_more_time = 1;
+...
+</pre>
+<p>
+it ended up poking the wrong byte because the structure
+size didn’t match.
+</p>
+<p>
+The runtime library folks had to go back and squeeze the cowbell
+flag into the structure in a way that didn’t alter the size
+of the <code>Something­Internal</code> structure.
+I don’t remember exactly what the fix was,
+but one way they could’ve done it was by squeezing the flag
+into the one byte of padding between
+<code>widgetLevel</code> and
+<code>needs_more_time</code>.
+</p>
+<pre>
+struct SomethingInternal
+{
+    int widget;
+    short widgetFlags;
+    char widgetLevel;
+    <font color="blue">char needs_more_cowbell;</font>
+    int needs_more_time;
+};
+</pre>
+<p>
+<b>Bonus chatter</b>:
+The application had an easy time messing with the internal array
+because the source code to the C runtime library
+is included with the compiler,
+So much for “All these compatibility problems would go away
+if you published the source code.”
+Publishing the source code makes it <i>easier</i> to introduce
+compatibility problems,
+because it lays bare all the internal undocumented behaviors.
+Instead of trying to reverse-engineer the runtime library,
+you can just sit down and read it,
+and if you want to do something sneaky,
+you can just
+copy the
+declaration of the internal array
+and
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/02/11/10498299.aspx">
+party on</a>
+the
+<code>needs_more_time</code> member.</p>
+
+
+</body>

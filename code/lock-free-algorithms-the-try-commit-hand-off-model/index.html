@@ -1,0 +1,387 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Lock-free algorithms: The try/commit/(hand off) model</h1>  <!-- .entry-meta -->
+
+<p>
+The last lock-free pattern for this week isn’t actually lock-free,
+but it does run without blocking.
+</p>
+<p>
+The pattern for what I’ll call try/commit/(hand off) is more complicated
+than the other patterns, so I’ll start off by
+describing it in words rather than in code,
+because the code tends to make things more complicated.
+</p>
+<p>
+First, you take the state variable and chop it up into pieces.
+You need some bits
+to be used as a lock and as a <i>work has been handed off</i> flag.
+And if the work that has been handed off is complicated,
+you may need some more bits to remember the details of the handoff.
+A common way of doing this is to use a pointer-sized state variable,
+require that the objects being pointed to are suitably aligned,
+and reusing the bottom bits as flags.
+For example, if you require that the objects be <code>DWORD</code>-aligned,
+then the two bottom bits will always be zero
+and you can reuse them as flags.
+</p>
+<p>
+To perform an operation, you first try to lock the state variable.
+If you can’t because the state variable is already locked,
+then you record the details of the operation in the state variable
+and update it atomically.
+</p>
+<p>
+If you succeed in locking the state variable, then you perform
+the desired operation, but before you unlock the state variable,
+you look to see if any work has been handed off.
+(This hand-off work is the result of attempts to perform the operation
+while you held the lock.)
+If there is hand-off work, then you perform that work as well.
+Of course, while you’re doing that, more
+hand-off work may arrive.
+You can’t unlock the state variable until you’ve
+drained off all the pent-up hand-off work.
+</p>
+<p>
+The code for this pattern tends to be a tangle of loops since there
+is a lot off backing off and retrying.
+Every atomic operation is its own loop, draining the hand-off work
+is another loop,
+and
+any time an <code>Interlocked­Compare­Exchange</code> fails,
+you have to undo the work you did and retry—another loop.
+</p>
+<p>
+I trust only about five people in the world to write code
+that is this advanced, and I’m not one of them.
+But just to illustrate the principle (although I will certainly
+get the details wrong), here’s an implementation of a synchronization-like
+object which I will call a <code>Group­Wait</code> for lack of any other
+name.
+It has the following operations:
+</p>
+<ul>
+<li><code>Add­Wait</code>:
+    Register an event handle with the group wait.
+</li>
+<li>
+<code>Signal­All</code>:
+    Signals all events that are registered with the group wait.
+    Once an event is signalled, it is automatically unregistered
+    from the group wait.
+    If you want the event to be signalled at the next call to
+    <code>Signal­All</code> you have to re-add it.
+</li>
+</ul>
+<p>
+The group wait object is just a linked list of
+<code>NODE</code>s containing the handles being waited on.
+</p>
+<p>
+Actually, this type of object doesn’t need to use the try/commit/hand off
+model.
+It can be implemented in a much more straightforward manner by
+having <code>Add­Wait</code> atomically prepend the node to a list
+and having <code>Signal­All</code> atomically steal the list.
+There are even
+<a href="http://msdn.microsoft.com/en-us/library/ms684121.aspx">
+prewritten functions to perform these atomic
+linked list operations for you</a>.
+But I’m going to implemented it the complicated way
+for demonstration purposes.
+In real life, the code would be much simpler.
+</p>
+<p>
+Since the bottom two bits of the pointer must be zero due to alignment,
+we repurpose them as a lock bit and a signal bit.
+The lock bit is set when the list is locked,
+and the signal bit is set when a signal was requested but had to be
+handed off because the list was locked.
+</p>
+<pre>
+// WARNING! IF YOU USE THIS CODE YOU ARE AN IDIOT - READ THE TEXT ABOVE
+struct NODE;
+NODE *Node(LONG_PTR key) { return reinterpret_cast&lt;NODE*&gt;(key); }
+enum {
+ Locked = 1,
+ Signalled = 2,
+};
+struct NODE {
+ NODE *pnNext;
+ HANDLE hEvent;
+ LONG_PTR Key() { return reinterpret_cast&lt;LONG_PTR&gt;(this); }
+ NODE *Ptr() { return Node(Key() &amp; ~(Locked | Signalled)); }
+};
+#define NODE_INVALID Node(-1)
+class GroupWait {
+public:
+ GroupWait() : m_pnRoot(NULL) { }
+ ~GroupWait();
+ BOOL AddWait(HANDLE hEvent);
+ void SignalAll();
+private:
+ NODE *m_pnRoot;
+};
+</pre>
+<p>
+Since I will be viewing the <code>NODE*</code> as both a pointer
+and as a bunch of bits (which I call a <i>key</i>),
+I created some helper methods to save typing.
+<code>Node</code> and <code>Key</code> convert back and forth
+between node pointers and keys,
+and <code>Ptr</code> strips off the tag bits and returns a usable
+pointer.
+</p>
+<p>
+For notational purposes, a <code>NODE*</code> will be written as
+the combination <code>p|S|L</code> where <code>p</code> is a
+pointer to the next node, <code>S</code> is the signalled bit,
+and <code>L</code> is the lock bit.
+The signalled bit is set to indicate that
+we need to signal all the nodes in the list
+starting with the <i>next</i> node.
+(Think of the <code>S</code> bit
+as being attached to the outgoing arrow.)
+For example, this linked list:
+</p>
+<pre>
+   m_pnRoot
+  +--------+-+-+
+  |   *    |0|1|
+  +---|----+-+-+
+      |
+      v
+  +--------+-+-+---------+
+A |   *    |1|?| hEvent1 |
+  +---|----+-+-+---------+
+      |
+      v
+  +--------+-+-+---------+
+B |   *    |?|?| hEvent2 |
+  +---|----+-+-+---------+
+      |
+      v
+  +--------+-+-+---------+
+C |  NULL  |?|?| hEvent3 |
+  +--------+-+-+---------+
+</pre>
+<p>
+represents a group wait with three registered event handles.
+The <code>S</code> bit is clear on the root pointer,
+which means that
+nobody has yet requested that <code>hEvent1</code> be signalled.
+On the other hand,
+the <code>S</code> bit is set on node A, which means that
+all the events after node A need to be signaled,
+specifically,
+<code>hEvent2</code> and <code>hEvent3</code>.
+Note that this means that it doesn’t matter whether the <code>S</code>
+bit is set on nodes B or C; those events are
+getting set regardless because the <code>S</code> bit on node A
+already requested it.
+(In particular, the <code>S</code> bit on the last node is meaningless
+since there are no nodes which come after it.)
+</p>
+<p>
+The <code>L</code> bit is meaningless on all pointers
+other than <code>m_pnRoot</code>.
+</p>
+<p>
+Okay, let’s start be adding a handle to the wait list:
+</p>
+<pre>
+BOOL GroupWait::AddWait(HANDLE hEvent)
+{
+ NODE *pnInsert = new(nothrow) NODE;
+ if (pnInsert == NULL) return FALSE;
+ pnInsert-&gt;hEvent = hEvent;
+ NODE *pn;
+ NODE *pnNew;
+ do {
+  pn = <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/12/10152296.aspx">InterlockedReadAcquire</a>(&amp;m_pnRoot, NODE_INVALID);
+  pnInsert-&gt;pnNext = pn;
+  pnNew = Node(pnInsert-&gt;Key() | (pn-&gt;Key() &amp; Locked));
+ } while (InterlockedCompareExchangeRelease(&amp;m_pnRoot, pnNew, pn) != pn);
+ return TRUE;
+}
+</pre>
+<p>
+To add a handle to the wait list, we just prepend it to the linked list,
+being careful to propagate the <code>L</code> bit into the new pointer
+so we don’t accidentally release a lock that somebody else took.
+We add the node with the <code>S</code> bit clear on the
+inbound pointer since nobody has
+yet asked for this handle to be signalled.
+After setting up the node, we attempt to insert it into the head of the
+list, and if we can’t (because somebody else beat us to it),
+then we restart and try again.
+This is a standard try/commit/try again pattern.
+</p>
+<p>
+<b>Exercise</b>: Is there an ABA race condition here?
+</p>
+<p>
+The <code>Add­Wait</code> method illustrates one extreme case of the
+try/commit/hand off model, where there is really nothing to hand off;
+we did it all ourselves.
+Of course, this does make other parts of the code trickier since they
+have to go back and
+deal with nodes that were added while the list was locked.
+</p>
+<p>
+The nasty part of the code is in <code>Signal­All</code>.
+I’ll present it in pieces.
+</p>
+<pre>
+void GroupWait::SignalAll()
+{
+ NODE *pnCapture;
+ NODE *pnNew;
+ do {
+  pnCapture = InterlockedReadAcquire(&amp;m_pnRoot, NODE_INVALID);
+  if (pnCapture-&gt;Key() &amp; Locked) {
+   pnNew = Node(pnCapture-&gt;Key() | Signaled);
+  } else {
+   pnNew = Node(Locked);
+  }
+ } while (InterlockedCompareExchangeAcquire(&amp;m_pnRoot,
+                              pnNew, pnCapture) != pnCapture);
+ if (pnCapture-&gt;Key() &amp; Locked) return;
+ ...
+</pre>
+<p>
+If the list is locked, then all we do is try to set the <code>S</code> bit
+on the root.
+If the list is not locked, then we try to lock it and simultaneously
+detach all the nodes by replacing the root pointer with <code>NULL|0|1</code>.
+Either way, we perform the operation with the try/commit/try again pattern
+until we finally get through.
+</p>
+<p>
+If the list was locked,
+then all we had to do was set the <code>S</code> bit on the root pointer.
+Setting the <code>S</code> bit on the root pointer
+means that all the nodes reachable from this pointer
+(<i>i.e.</i>, all nodes after the root, which is all nodes)
+should be signalled,
+which is exactly what we want.
+Since the list is locked, we leave the actual signalling to the code
+that unlocks the list.
+(This is the <i>hand off</i> part of <i>try/commit/hand off</i>.)
+</p>
+<p>
+<b>Exercise</b>:
+What if the <code>S</code> bit is already set?
+Did we lose a signal?
+</p>
+<p>
+Otherwise, we are the ones to lock the list.
+We also detach the node list, for if another thread calls
+<code>Signal­All</code>,
+we don’t want that signal to affect the nodes that we’re signalling.
+(Otherwise we might end up double-signalling the event.)
+</p>
+<pre>
+ ...
+ NODE *pnNext;
+ NODE *pn;
+ for (pn = pnCapture-&gt;Ptr(); pn; pn = pnNext) {
+  SetEvent(pn-&gt;hEvent);
+  pnNext = pn-&gt;pnNext-&gt;Ptr();
+  delete pn;
+ }
+ ...
+</pre>
+<p>
+That little fragment above is basically what you would do in a
+naïve implementation that didn’t worry about multithreading:
+It walks the list of nodes, signals each event,
+and then frees the node.
+The only trick is sending each node pointer through <code>-&gt;Ptr()</code>
+to strip off the tag bits.
+</p>
+<p>
+Next comes the unlock code.
+First, a preparatory step:</p>
+<pre>
+ ...
+ pnCapture = pnNew;
+ ...
+</pre>
+<p>
+We exchanged <code>pnNew</code> into <code>m_pnRoot</code> up above,
+and if that’s still the value of <code>m_pnRoot</code>, then it
+means that nobody tried to perform any operations while the list
+was locked, and we got off easy.
+</p>
+<pre>
+ ...
+ for (;;) {
+  pnNew = Node(pnCapture-&gt;Key() &amp; ~Locked);
+  if (InterlockedCompareExchangeRelease(&amp;m_pnRoot,
+                      pnNew, pnCapture) == pnCapture) {
+   return;
+  }
+ ...
+</pre>
+<p>
+We start a new loop whose job is to
+drain off all the
+handed-off work items that built up while the list was locked.
+First, we see whether anything has changed since the last time
+we looked; if not, then we unlock and we’re done.
+Otherwise, we proceed to pick up all the handed-off work:
+</p>
+<pre>
+ ...
+  pnCapture = InterlockedReadAcquire(&amp;m_pnRoot, NODE_INVALID);
+  NODE *pnNew = Node(pnCapture-&gt;Key() &amp; ~(Locked | Signaled));
+  NODE **ppn = &amp;pnNew;
+  NODE *pn;
+  NODE *pnNext;
+  BOOL fSignalSeen = FALSE;
+  for (pn = pnNew; pn-&gt;Ptr(); pn = pnNext) {
+   pnNext = pn-&gt;Ptr()-&gt;pnNext;
+   if (fSignalSeen) {
+    SetEvent(pn-&gt;Ptr()-&gt;hEvent);
+    delete pn-&gt;Ptr();
+   } else if (pn-&gt;Key() &amp; Signaled) {
+    fSignalSeen = TRUE;
+    (*ppn) = Node(Locked); // detach but retain lock
+    SetEvent(pn-&gt;Ptr()-&gt;hEvent);
+    delete pn-&gt;Ptr();
+   } else {
+    ppn = &amp;pn-&gt;Ptr()-&gt;pnNext;
+   }
+  }
+ } // retry unlock
+} // end of function
+</pre>
+<p>
+To drain the handed-off work, we walk the list of nodes,
+keeping track of whether we’ve seen an <code>S</code> bit.
+If so, then we signal the event and free the node.
+And the first time we see an <code>S</code> bit, we null out
+the inbound pointer to detach the list from the chain so we
+do not double-signal the event in the future.
+</p>
+<p>
+Once that’s done, we go back and try to unlock again.
+Eventually, there will be no more hand-off work, and we
+can finally return.
+</p>
+<p>
+And that’s it, a demonstration of the try/commit/hand off model.
+The basic idea is simple, but getting all the details right
+is what makes your head hurt.
+</p>
+
+<p>I leave this sort of thing to the kernel folks, who have the
+time and patience and brainpower to work it all through.
+An example of this pattern can be found, for example,
+in this talk that describes the
+<a href="https://channel9.msdn.com/shows/Going+Deep/Arun-Kishan-Farewell-to-the-Windows-Kernel-Dispatcher-Lock/">
+dismantling of the dispatcher spinlock</a>.</p>
+
+
+</body>

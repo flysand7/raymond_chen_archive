@@ -1,0 +1,339 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Querying information from an Explorer window</h1>  <!-- .entry-meta -->
+
+<p>
+Sometimes software development is inventing new stuff.
+But often, it’s just putting together the stuff you already have.
+Today’s puzzle is one of the latter type of problem.
+</p>
+<p>
+Given a window handle, you can you determine (1) whether it is
+an Explorer window, and if so (2) what folder it is viewing, and
+(3) what item is currently focused.
+</p>
+<p>
+This is not an inherently difficult task.
+You just have to put together lots of small pieces.
+</p>
+<p>
+Start with
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/objects/shellwindows/shellwindows.asp">
+the ShellWindows object</a>
+which represents all the open shell windows.
+You can enumerate through them all with
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/objects/shellwindows/item.asp">the Item property</a>.
+This is rather clumsy from C++ because the ShellWindows object
+was designed for use by a scripting language like JScript or Visual Basic.
+</p>
+<pre>
+ IShellWindows *psw;
+ if (SUCCEEDED(CoCreateInstance(CLSID_ShellWindows, NULL, CLSCTX_ALL,
+                                IID_IShellWindows, (void**)&amp;psw))) {
+  VARIANT v;
+  V_VT(&amp;v) = VT_I4;
+  IDispatch  *pdisp;
+  BOOL fFound = FALSE;
+  for (V_I4(&amp;v) = 0; !fFound &amp;&amp; psw-&gt;Item(v, &amp;pdisp) == S_OK;
+       V_I4(&amp;v)++) {
+    ...
+    pdisp-&gt;Release();
+  }
+  psw-&gt;Release();
+ }
+</pre>
+<p>
+From each item, we can ask it for its window handle and see if it’s the one
+we want.</p>
+<pre>
+   IWebBrowserApp *pwba;
+   if (SUCCEEDED(pdisp-&gt;QueryInterface(IID_IWebBrowserApp, (void**)&amp;pwba))) {
+     HWND hwndWBA;
+     if (SUCCEEDED(pwba-&gt;get_HWND((LONG_PTR*)&amp;hwndWBA)) &amp;&amp;
+       hwndWBA == hwndFind) {
+       fFound = TRUE;
+       ...
+     }
+     pwba-&gt;Release();
+   }
+</pre>
+<p>
+Okay, now that we have found the folder via its IWebBrowserApp,
+we need to get to the top shell browser.  This is done by
+querying for the SID_STopLevelBrowser service and asking for
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/IShellBrowser/IShellBrowser.asp">
+the IShellBrowser interface</a>.
+</p>
+<pre>
+       IServiceProvider *psp;
+       if (SUCCEEDED(pwba-&gt;QueryInterface(IID_IServiceProvider, (void**)&amp;psp))) {
+         IShellBrowser *psb;
+         if (SUCCEEDED(psp-&gt;QueryService(SID_STopLevelBrowser,
+                              IID_IShellBrowser, (void**)&amp;psb))) {
+           ...
+           psb-&gt;Release();
+         }
+         psp-&gt;Release();
+       }
+</pre>
+<p>
+From the IShellBrowser, we can ask for the current shell view
+via
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ishellbrowser/queryactiveshellview.asp">
+the QueryActiveShellView method</a>.
+</p>
+<pre>
+           IShellView *psv;
+           if (SUCCEEDED(psb-&gt;QueryActiveShellView(&amp;psv))) {
+             ...
+             psv-&gt;Release();
+           }
+</pre>
+<p>
+Of course, what we really want is
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ifolderview/ifolderview.asp">
+the IFolderView interface</a>,
+which is the automation object that contains all the real goodies.
+</p>
+<pre>
+             IFolderView *pfv;
+             if (SUCCEEDED(psv-&gt;QueryInterface(IID_IFolderView,
+                                               (void**)&amp;pfv))) {
+               ...
+               pfv-&gt;Release();
+             }
+</pre>
+<p>
+Okay, now we’re golden.  What do you want to get from the view?
+How about the location of the IShellFolder being viewed.
+To do that, we need to use
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ipersistfolder2/ipersistfolder2.asp">
+IPersistFolder2</a>::<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ipersistfolder2/getcurfolder.asp">GetCurFolder</a>.
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ifolderview/getfolder.asp">
+The GetFolder method</a> will give us access to the shell folder,
+from which we ask for IPersistFolder2.
+(Most of the time you want the IShellFolder interface,
+since that’s where most of the cool stuff hangs out.)
+</p>
+<pre>
+               IPersistFolder2 *ppf2;
+               if (SUCCEEDED(pfv-&gt;GetFolder(IID_IPersistFolder2,
+                                            (void**)&amp;ppf2))) {
+                 LPITEMIDLIST pidlFolder;
+                 if (SUCCEEDED(ppf2-&gt;GetCurFolder(&amp;pidlFolder))) {
+                   ...
+                   CoTaskMemFree(pidlFolder);
+                 }
+                 ppf2-&gt;Release();
+               }
+</pre>
+<p>
+Let’s convert that <code>pidl</code> into a path, for display purposes.
+</p>
+<pre>
+                   if (!SHGetPathFromIDList(pidlFolder, g_szPath)) {
+                     lstrcpyn(g_szPath, TEXT("&lt;not a directory&gt;"), MAX_PATH);
+                   }
+                   ...
+</pre>
+<p>
+What else can we do with what we’ve got?  Oh right, let’s see what the
+currently-focused object is.
+</p>
+<pre>
+                   int iFocus;
+                   if (SUCCEEDED(pfv-&gt;GetFocusedItem(&amp;iFocus))) {
+                     ...
+                   }
+</pre>
+<p>
+Let’s display the name of the focused item.
+To do that we need the item’s pidl and the IShellFolder.
+(See, I told you the IShellFolder is where the cool stuff is.)
+The item comes from
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ifolderview/item.asp">
+the Item method</a> (surprisingly enough).
+</p>
+<pre>
+                     LPITEMIDLIST pidlItem;
+                     if (SUCCEEDED(pfv-&gt;Item(iFocus, &amp;pidlItem))) {
+                       ...
+                       CoTaskMemFree(pidlItem);
+                     }
+</pre>
+<p>
+(If we had wanted a list of selected items we could have used
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ifolderview/items.asp">
+the Items method</a>, passing SVGIO_SELECTION.)
+</p>
+<p>
+After we get the item’s pidl, we also need the IShellFolder:
+</p>
+<pre>
+                       IShellFolder *psf;
+                       if (SUCCEEDED(ppf2-&gt;QueryInterface(IID_IShellFolder,
+                                                          (void**)&amp;psf))) {
+                         ...
+                         psf-&gt;Release();
+                       }
+</pre>
+<p>
+Then we put the two together to get the item’s display name,
+with the help of
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ishellfolder/getdisplaynameof.asp">
+the GetDisplayNameOf method</a>.
+</p>
+<pre>
+                         STRRET str;
+                         if (SUCCEEDED(psf-&gt;GetDisplayNameOf(pidlItem,
+                                                   SHGDN_INFOLDER,
+                                                   &amp;str))) {
+                           ...
+                         }
+</pre>
+<p>
+We can use the helper function
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/shlwapi/string/strrettobuf.asp">
+StrRetToBuf</a> to convert the kooky
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/structures/strret.asp">
+STRRET structure</a> into
+a boring string buffer.
+(The history of the kooky STRRET structure will have to wait for
+another day.)
+</p>
+<pre>
+                           StrRetToBuf(&amp;str, pidlItem, g_szItem, MAX_PATH);
+</pre>
+<p>
+Okay, let’s put this all together.
+It looks rather ugly because I put everything into one huge
+function instead of breaking them out into subfunctions.
+In “real life” I would have broken things up into little helper
+functions to make things more manageable.
+</p>
+<p>
+Start with
+<a href="http://weblogs.asp.net/oldnewthing/archive/2003/07/23/54576.aspx">the
+scratch program</a> and add this new function:
+</p>
+<pre>
+#include &lt;shlobj.h&gt;
+#include &lt;exdisp.h&gt;
+TCHAR g_szPath[MAX_PATH];
+TCHAR g_szItem[MAX_PATH];
+void CALLBACK RecalcText(HWND hwnd, UINT, UINT_PTR, DWORD)
+{
+ HWND hwndFind = GetForegroundWindow();
+ g_szPath[0] = TEXT('\0');
+ g_szItem[0] = TEXT('\0');
+ IShellWindows *psw;
+ if (SUCCEEDED(CoCreateInstance(CLSID_ShellWindows, NULL, CLSCTX_ALL,
+                                IID_IShellWindows, (void**)&amp;psw))) {
+  VARIANT v;
+  V_VT(&amp;v) = VT_I4;
+  IDispatch  *pdisp;
+  BOOL fFound = FALSE;
+  for (V_I4(&amp;v) = 0; !fFound &amp;&amp; psw-&gt;Item(v, &amp;pdisp) == S_OK;
+       V_I4(&amp;v)++) {
+   IWebBrowserApp *pwba;
+   if (SUCCEEDED(pdisp-&gt;QueryInterface(IID_IWebBrowserApp, (void**)&amp;pwba))) {
+     HWND hwndWBA;
+     if (SUCCEEDED(pwba-&gt;get_HWND((LONG_PTR*)&amp;hwndWBA)) &amp;&amp;
+       hwndWBA == hwndFind) {
+       fFound = TRUE;
+       IServiceProvider *psp;
+       if (SUCCEEDED(pwba-&gt;QueryInterface(IID_IServiceProvider, (void**)&amp;psp))) {
+         IShellBrowser *psb;
+         if (SUCCEEDED(psp-&gt;QueryService(SID_STopLevelBrowser,
+                              IID_IShellBrowser, (void**)&amp;psb))) {
+           IShellView *psv;
+           if (SUCCEEDED(psb-&gt;QueryActiveShellView(&amp;psv))) {
+             IFolderView *pfv;
+             if (SUCCEEDED(psv-&gt;QueryInterface(IID_IFolderView,
+                                               (void**)&amp;pfv))) {
+               IPersistFolder2 *ppf2;
+               if (SUCCEEDED(pfv-&gt;GetFolder(IID_IPersistFolder2,
+                                            (void**)&amp;ppf2))) {
+                 LPITEMIDLIST pidlFolder;
+                 if (SUCCEEDED(ppf2-&gt;GetCurFolder(&amp;pidlFolder))) {
+                   if (!SHGetPathFromIDList(pidlFolder, g_szPath)) {
+                     lstrcpyn(g_szPath, TEXT("&lt;not a directory&gt;"), MAX_PATH);
+                   }
+                   int iFocus;
+                   if (SUCCEEDED(pfv-&gt;GetFocusedItem(&amp;iFocus))) {
+                     LPITEMIDLIST pidlItem;
+                     if (SUCCEEDED(pfv-&gt;Item(iFocus, &amp;pidlItem))) {
+                       IShellFolder *psf;
+                       if (SUCCEEDED(ppf2-&gt;QueryInterface(IID_IShellFolder,
+                                                          (void**)&amp;psf))) {
+                         STRRET str;
+                         if (SUCCEEDED(psf-&gt;GetDisplayNameOf(pidlItem,
+                                                   SHGDN_INFOLDER,
+                                                   &amp;str))) {
+                           StrRetToBuf(&amp;str, pidlItem, g_szItem, MAX_PATH);
+                         }
+                         psf-&gt;Release();
+                       }
+                       CoTaskMemFree(pidlItem);
+                     }
+                   }
+                   CoTaskMemFree(pidlFolder);
+                 }
+                 ppf2-&gt;Release();
+               }
+               pfv-&gt;Release();
+             }
+             psv-&gt;Release();
+           }
+           psb-&gt;Release();
+         }
+         psp-&gt;Release();
+       }
+     }
+     pwba-&gt;Release();
+   }
+    pdisp-&gt;Release();
+  }
+  psw-&gt;Release();
+ }
+ InvalidateRect(hwnd, NULL, TRUE);
+}
+</pre>
+<p>
+Now all we have to do is call this function periodically
+and print the results.
+</p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+    <font color="blue">SetTimer(hwnd, 1, 1000, RecalcText);</font>
+    return TRUE;
+}
+void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+<font color="blue">  TextOut(pps-&gt;hdc, 0, 0, g_szPath, lstrlen(g_szPath));
+  TextOut(pps-&gt;hdc, 0, 20, g_szItem, lstrlen(g_szItem));</font>
+}
+</pre>
+<p>
+We’re ready to roll.  Run this program and set it to the side.
+Then launch an Explorer window and watch the program track the folder
+you’re in and what item you have focused.
+</p>
+<p>
+Okay, so I hope I made my point:
+Often, the pieces you need are already there; you just have to
+figure out how to put them together.  Notice that each of the
+pieces is in itself not very big.  You just had to recognize
+that they could be put together in an interesting way.
+</p>
+<p>
+Exercise: Change this program so it takes the folder and
+switches it to details view.
+</p>
+<p>
+[Raymond is currently on vacation; this message was pre-recorded.]</p>
+
+
+</body>

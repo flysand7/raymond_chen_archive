@@ -1,0 +1,35 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why can’t FindWindowEx find another program’s window by name?</h1>  <!-- .entry-meta -->
+
+<p>A customer had a test app that did something. They then wanted to write a test harness for their test app. The idea is that the test harness launches the test app, finds the test app’s <i>Start</i> button, waits for it to become enabled, and then presses it, and then does some more stuff. The customer was stuck at the second step: Find the <i>Start</i> button. </p>
+<pre>
+  Console.WriteLine($"Main window handle: {hwnd}");
+  IntPtr button = IntPtr.Zero;
+  while (true) {
+    button = FindWindowEx(hwnd, IntPtr.Zero, null, "Start");
+    Console.WriteLine($"Start button window handle: {button}");
+    if (button != IntPtr.Zero) break;
+    Thread.Sleep(TimeSpan.FromSeconds(1));
+  }
+</pre>
+<p>The retry loop is to cover the race condition where the test harness looks for the <i>Start</i> button before the test app creates it. </p>
+<blockquote class="q"><p>The main window handle is the handle we expect from the test app. But even after a minute, with the <i>Start</i> button right there on the screen, the test harness can’t find it. </p></blockquote>
+<p>Okay, so what would prevent <code>Find­Window­Ex</code> from finding a window? Here are some possibilities: </p>
+<ul>
+<li>The thing you want isn’t actually a window.     It could be a     <a href="https://blogs.msdn.microsoft.com/oldnewthing/20050211-00/?p=36473">    windowless control</a>.     (The fact that their test harness is written in C# suggests that     maybe their test app is a WinForms or WPF program, both of which     use windowless controls.)</li>
+<li>The window title isn’t exactly what you specified.     Maybe there’s an accelerator on it: <code>&amp;Start</code>.</li>
+<li>The thing you want isn’t a direct child of that window.     Maybe it’s a grandchild.</li>
+<li>The thing you want isn’t a descendent of that window.     Maybe you’re passing the wrong parent window.</li>
+</ul>
+<p>Basically, all of these options boil down to “<code>Find­Window­Ex</code> is not finding your window because there is in fact no window that meets all the criteria you specified.” <code>Find­Window­Ex</code> is working exactly as defined. You need to check that the window you want really does satisfy the criteria you passed. </p>
+<p>Double-checking with Spy++ showed that the customer was in the last case: The wrong parent window was being passed. They got the main window from the <code>Process.MainWindowHandle</code> property. But that property is synthetic. Windows doesn’t have a formal concept of a “main window”; a program can create multiple top-level visible windows, and as far as Windows is concerned, they are all of equal importance. </p>
+<p>My guess as to what happened is that the test app created a splash screen, and that got detected as “the main window”. Too bad the splash screen doesn’t have a <i>Start</i> button in it. </p>
+<p>The customer updated their test harness to perform an <code>Enum­Windows</code> to find the top-level window of the test app whose title indicates that it is the window with the <i>Start</i> button. </p>
+<p>But this is really a case of answering the question without solving the problem. </p>
+<p>If you have a test harness that wants to communicate with a test app, you’d be better off having a formal mechanism for the test harness to tell the test app what to do, and a formal mechanism for the test app to report results. Because I suspect the customer’s test harness also polls the test app waiting for the phrase <i>Test passed</i> or <i>Test failed</i> to appear. </p>
+<p>For example, the test harness can pass a <code>/auto</code> command line option to the test app, and the test app goes into automated mode, where it auto-presses the <i>Start</i> button, auto-fills in the text boxes with the appropriate test values, and so on. You might even have <code>/auto:config.xml</code> that configures what the test app will do. And then the test app signals whether the test was successful, say by using special exit codes or printing a specific message to <code>stdout</code>. </p>
+<p>Because what’s going to happen sooner or later is that somebody’s going to make changes to the test app, maybe rename or rearrange some buttons, or add a new text box that needs to be filled in, and inadvertently break the test harness. </p>
+<p>The test harness and the test app are in cahoots. Make the most of it. </p>
+
+
+</body>

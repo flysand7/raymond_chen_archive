@@ -1,0 +1,185 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Optimizing code to darken a bitmap, part 2</h1>  <!-- .entry-meta -->
+
+<p>Our investigation into a simple function to darken a bitmap left off with this function:</p>
+<pre>struct Pixel
+{
+    uint8_t c[4]; // four channels: red, green, blue, alpha
+    uint32_t v;   // full pixel value as a 32-bit integer
+};
+
+void darken(Pixel* first, Pixel* last, int darkness)
+{
+  int lightness = 256 - darkness;
+  for (; first &lt; last; ++first) {
+    first-&gt;c[0] = (uint8_t)(first-&gt;c[0] * lightness / 256);
+    first-&gt;c[1] = (uint8_t)(first-&gt;c[1] * lightness / 256);
+    first-&gt;c[2] = (uint8_t)(first-&gt;c[2] * lightness / 256);
+  }
+}
+</pre>
+<p>There’s a lot of multiplication going on here, and multiplication tends to be one of the more expensive CPU instructions. Maybe we can collapse them into a single multiplication operation by running the calculations in parallel.</p>
+<p>The idea here is to break the 32-bit integer into the respective channels, but spread them out so they act like independent lanes of a SIMD register. (This technique goes by the name <a href="https://en.wikipedia.org/wiki/SWAR"> SWAR</a>, short for “SIMD within a register”.) Once they’ve been spread out into lanes, we perform a single multiplication, which acts like a parallel multiplication across all the lanes, thanks to the magic of the distributive law:</p>
+<p>(100²<var>a</var> + 100<var>b</var> + 100<var>c</var>)<var>d</var> = 100²<var>a</var><var>d</var> + 100<var>b</var><var>d</var> + <var>c</var><var>d</var></p>
+<p>If <var>c</var><var>d</var> &lt; 100, then there will be no carry into the hundreds place, and similar, if <var>b</var><var>d</var> &lt; 100, then there will be no carry into the ten thousands place. Under such conditions, you can pluck out the individual products by extracting the corresponding pairs of digits from the final product.</p>
+<p>It so happens that my program uses only three darkness values: 8, 16, and 24, corresponding to lightness factors 248, 240, and 232, respectively. The application of the lightness factor can therefore be simplified to</p>
+<pre>newPixel = oldPixel * (lightness / 8) / 32;
+</pre>
+<p>which can be rewritten as</p>
+<pre>newPixel = oldPixel - ceil(oldPixel * (darkness / 8) / 32);
+</pre>
+<p>The truncation toward zero in the lightness calculation becomes a ceiling calculation when viewed as darkness.</p>
+<p>Reinterpreting it as a darkness calculation is helpful because the value of <code>darkness / 8</code> is limited to the values 1, 2, and 3. The factor is at most two bits.</p>
+<p>Multiplying an 8-bit value with a 2-bit value produces a 10-bit result. And we can squeeze three 10-bit fields inside a 32-bit integer.</p>
+<p>A quick mental check confirms that rounding up any fractional portion won’t take us into 11 bits:</p>
+<p>255 × 3 &lt; 256 × 3 = 256 × 4 − 256 &lt; 256 × 4 − 32 = 10¹¹ − 32.</p>
+<p>The idea therefore is that we take our three channel values and arrange them inside a 32-bit integer like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr style="font-size: 50%; text-align: center;">
+<td>3<br/>
+1</td>
+<td>3<br/>
+0</td>
+<td>2<br/>
+9</td>
+<td>2<br/>
+8</td>
+<td>2<br/>
+7</td>
+<td>2<br/>
+6</td>
+<td>2<br/>
+5</td>
+<td>2<br/>
+4</td>
+<td>2<br/>
+3</td>
+<td>2<br/>
+2</td>
+<td>2<br/>
+1</td>
+<td>2<br/>
+0</td>
+<td>1<br/>
+9</td>
+<td>1<br/>
+8</td>
+<td>1<br/>
+7</td>
+<td>1<br/>
+6</td>
+<td>1<br/>
+5</td>
+<td>1<br/>
+4</td>
+<td>1<br/>
+3</td>
+<td>1<br/>
+2</td>
+<td>1<br/>
+1</td>
+<td>1<br/>
+0</td>
+<td>
+9</td>
+<td>
+8</td>
+<td>
+7</td>
+<td>
+6</td>
+<td>
+5</td>
+<td>
+4</td>
+<td>
+3</td>
+<td>
+2</td>
+<td>
+1</td>
+<td>
+0</td>
+</tr>
+<tr style="text-align: right;">
+<td colspan="2" style="border: solid 1px black; width: 2ex;"> </td>
+<td colspan="10" style="border: solid 1px black; width: 10ex;">b</td>
+<td colspan="10" style="border: solid 1px black; width: 10ex;">g</td>
+<td colspan="10" style="border: solid 1px black; width: 10ex;">r</td>
+</tr>
+</tbody>
+</table>
+<p>In other words,</p>
+<ul>
+<li><code>value[ 0: 9] = r;</code></li>
+<li><code>value[10:19] = g;</code></li>
+<li><code>value[20:29] = b;</code></li>
+<li><code>value[30:31]</code> are unused</li>
+</ul>
+<p>The lanes are 10 bits wide, so multiplying the entire integer by 1, 2, or 3 will not trigger any carries across lanes.</p>
+<p>After the multiply, we reinterpret the integer as a fixed-point value, by applying an implied scale of 32 = 2⁵. Rounding up the fixed-point value to the next integer is the same as rounding up the original integer to the next multiple of 32.</p>
+<p>Once the multiplication and rounding is done, we extract the integer portion of the fixed-point fields (which means we take the top five bits of each field) and subtract them from our starting value.</p>
+<pre>constexpr unsigned pack_fields(uint8_t r, uint8_t g, uint8_t b)
+{
+  return r | (g &lt;&lt; 10) | (b &lt;&lt; 20);
+}
+
+void darken(Pixel* first, Pixel* last, int darkness)
+{
+  int factor = darkness / 8;
+  for (; first &lt; last; ++first) {
+    uint32_t fields = pack_fields(
+        first-&gt;c[0], first-&gt;c[1], first-&gt;c[2]);
+    fields *= factor;
+    fields += pack_fields(31, 31, 31);
+    first-&gt;c[0] -= (fields &gt;&gt;  5) &amp; 31;
+    first-&gt;c[1] -= (fields &gt;&gt; 15) &amp; 31;
+    first-&gt;c[2] -= (fields &gt;&gt; 25) &amp; 31;
+  }
+}
+</pre>
+<p>Unfortunately, this benchmarks at 2.9× <i>slower</i> than the non-parallel version.</p>
+<p>Okay, so maybe it’s the byte access that is killing us. Let’s load and store entire pixels at a time.</p>
+<pre>void darken(Pixel* first, Pixel* last, int darkness)
+{
+  int factor = darkness / 8;
+  for (; first &lt; last; ++first) {
+    <span style="color: blue;">uint32_t v = first-&gt;v;
+    uint32_t fields = (v &amp; 0xFF) |
+                     ((v &amp; 0xFF00) &lt;&lt; 2) |
+                     ((v &amp; 0xFF0000) &lt;&lt; 4);</span>
+    fields *= factor;
+    fields += pack_fields(31, 31, 31);
+    <span style="color: blue;">uint32_t diff = ((fields &gt;&gt; 5) &amp; 0x1F) |
+                    ((fields &gt;&gt; 7) &amp; 0x1F00) |
+                    ((fields &gt;&gt; 9) &amp; 0x1F0000) |
+    first-&gt;v = v - diff;</span>
+  }
+}
+</pre>
+<p>Still 2.1× slower than the non-parallel version. A tiny improvement but still way behind.</p>
+<p>Some micro-tweaking here won’t help much: We waste our time building up the difference fields, when we can just subtract each of the pieces as we calculate them.</p>
+<pre>void darken(Pixel* first, Pixel* last, int darkness)
+{
+  int factor = darkness / 8;
+  for (; first &lt; last; ++first) {
+    uint32_t v = first-&gt;v;
+    uint32_t fields = (v &amp; 0xFF) |
+                     ((v &amp; 0xFF00) &lt;&lt; 2) |
+                     ((v &amp; 0xFF0000) &lt;&lt; 4);
+    fields *= factor;
+    fields += pack_fields(31, 31, 31);
+    <span style="color: blue;">v -= (fields &gt;&gt; 5) &amp; 0x1F;
+    v -= (fields &gt;&gt; 7) &amp; 0x1F00;
+    v -= (fields &gt;&gt; 9) &amp; 0x1F0000;
+    first-&gt;v = v;</span>
+  }
+}
+</pre>
+<p>As expected, this doesn’t really help. Still 2.1× slower than the non-parallel version.</p>
+<p>Part of the problem might be that I’m running the benchmarks on an x86-64 system, and the x86-64 does not have dedicated bitfield manipulation instructions, unlike other processors like PowerPC, ARM, and AArch64.</p>
+<p>Or maybe the problem is that I’m doing a multiply. Since I know that the darkness factor is going to be 1, 2, or 3, I can strength-reduce that to an addition. We’ll look at how to do that jumplessly next time.</p>
+
+
+</body>

@@ -1,0 +1,492 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How are <code>BitBlt</code> raster opcodes calculated?</h1>  <!-- .entry-meta -->
+
+<p>Commenter R P asks  <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180209-00/?p=97995#comment-1325265">what the low-order 16 bits of the <code>BitBlt</code> raster opcodes mean</a>. </p>
+<p><a href="https://msdn.microsoft.com/en-us/library/windows/desktop/dd145130(v=vs.85).aspx">The documentation explains</a> that the high-order 16 bits of the raster opcode are the zero-extended 8-bit value that represents the result of the raster operation  given the 8 combinations of three binary inputs (pattern, source, and destination). This is the easy part to understand. </p>
+<p>The documentation also says that the low-order 16 bits are an operation code, but gives no information as to how the operation code is determined. </p>
+<p>Okay, let’s dig through the history. </p>
+<p>Initially, the <code>BitBlt</code> raster opcodes were only 16-bit values, consisting of the operation codes. The higher-order 16 bits were added later because it turns out that people preferred table lookups to parsing operation codes. </p>
+<p>Okay, that’s enough beating around the bush. How do I parse the operation codes? </p>
+<p>The operation code is interpreted as follows: </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse;text-align: center">
+<tr>
+<th style="width: 10pt">15</th>
+<th style="width: 10pt">14</th>
+<th style="width: 10pt">13</th>
+<th style="width: 10pt">12</th>
+<th style="width: 10pt">11</th>
+<th style="width: 10pt">10</th>
+<th style="width: 10pt"> 9</th>
+<th style="width: 10pt"> 8</th>
+<th style="width: 10pt"> 7</th>
+<th style="width: 10pt"> 6</th>
+<th style="width: 20pt"> 5</th>
+<th style="width: 10pt"> 4</th>
+<th style="width: 10pt"> 3</th>
+<th style="width: 10pt"> 2</th>
+<th style="width: 10pt"> 1</th>
+<th style="width: 10pt"> 0</th>
+</tr>
+<tr>
+<td colspan="2">op5</td>
+<td colspan="2">op4</td>
+<td colspan="2">op3</td>
+<td colspan="2">op2</td>
+<td colspan="2">op1</td>
+<td>op6</td>
+<td colspan="3">template</td>
+<td colspan="2">bias</td>
+</tr>
+</table>
+<p>Operations 1 through 5 select one of the following logical operations: </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Value</th>
+<th>Operation</th>
+<th>Abbreviation</th>
+</tr>
+<tr>
+<td>0</td>
+<td>not</td>
+<td>n</td>
+</tr>
+<tr>
+<td>1</td>
+<td>exclusive or</td>
+<td>x</td>
+</tr>
+<tr>
+<td>2</td>
+<td>or</td>
+<td>o</td>
+</tr>
+<tr>
+<td>3</td>
+<td>and</td>
+<td>a</td>
+</tr>
+</table>
+<p>Operation 6 encodes an optional final <i>not</i> operation. </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Value</th>
+<th>Operation</th>
+<th>Abbreviation</th>
+</tr>
+<tr>
+<td>0</td>
+<td>no operation</td>
+<td> </td>
+</tr>
+<tr>
+<td>1</td>
+<td>not</td>
+<td>n</td>
+</tr>
+</table>
+<p>The operations imply the number of input parameters required. Each binary operation pops two arguments off the stack and pushes the result back onto the stack, for a net reduction of one. The unary <i>not</i> operation pops one argument off the stack and pushes the result back onto the stack, for no net change. And when we’re finished, we want one final result on the stack. Therefore, the number of items that need to be placed onto the stack is one more than the number of binary operations. </p>
+<p>The template and bias tell you what those parameters are. First, the template selects one of the following sequences of elements. </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Value</th>
+<th>Template</th>
+</tr>
+<tr>
+<td>0</td>
+<td>SPDD</td>
+</tr>
+<tr>
+<td>1</td>
+<td>SPD</td>
+</tr>
+<tr>
+<td>2</td>
+<td>SDP</td>
+</tr>
+<tr>
+<td>3</td>
+<td>(not used)</td>
+</tr>
+<tr>
+<td>4</td>
+<td>(not used)</td>
+</tr>
+<tr>
+<td>5</td>
+<td>SSP*DS</td>
+</tr>
+<tr>
+<td>6</td>
+<td>SSP*PDS</td>
+</tr>
+<tr>
+<td>7</td>
+<td>SSD*PDS</td>
+</tr>
+</table>
+<p>Two of the templates are not currently used and are reserved for future expansion. </p>
+<p>The bias specifies how many initial template elements to ignore. After that, take the template elements until you have consumed one more than the number of binary operations. Also take the asterisk, if you encounter one. And if you run out of template elements, then start over from the beginning. </p>
+<p>Okay, now we put all the pieces together. </p>
+<ul>
+<li>For each template element:</li>
+<ul>
+<li>If it is a letter, then push that input onto the stack.</li>
+<li>If it is an asterisk, then perform the next operation.</li>
+</ul>
+<li>After you have used up all the template elements,     perform all of the remaining operations.</li>
+<li>When you’re done, there should be one value left on the stack.     That is the result of the <code>BitBlt</code> operation.</li>
+</ul>
+<p>Consider the raster opcode <code>0x00010289</code>. The operation index is 1, which decodes as follows: </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>P</th>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<th>S</th>
+<td>1</td>
+<td>1</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+<td>1</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<th>D</th>
+<td>1</td>
+<td>0</td>
+<td>1</td>
+<td>0</td>
+<td>1</td>
+<td>0</td>
+<td>1</td>
+<td>0</td>
+</tr>
+<tr style="border-top: solid 2px black">
+<th>Result</th>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+</tr>
+</table>
+<p>The operation code is <code>0x0289</code>, which decodes as follows: </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse;text-align: center">
+<tr>
+<th style="width: 10pt">15</th>
+<th style="width: 10pt">14</th>
+<th style="width: 10pt">13</th>
+<th style="width: 10pt">12</th>
+<th style="width: 10pt">11</th>
+<th style="width: 10pt">10</th>
+<th style="width: 10pt"> 9</th>
+<th style="width: 10pt"> 8</th>
+<th style="width: 10pt"> 7</th>
+<th style="width: 10pt"> 6</th>
+<th style="width: 20pt"> 5</th>
+<th style="width: 10pt"> 4</th>
+<th style="width: 10pt"> 3</th>
+<th style="width: 10pt"> 2</th>
+<th style="width: 10pt"> 1</th>
+<th style="width: 10pt"> 0</th>
+</tr>
+<tr>
+<td colspan="2">op5</td>
+<td colspan="2">op4</td>
+<td colspan="2">op3</td>
+<td colspan="2">op2</td>
+<td colspan="2">op1</td>
+<td>op6</td>
+<td colspan="3">template</td>
+<td colspan="2">bias</td>
+</tr>
+<tr>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+<td>0</td>
+<td>1</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+</tr>
+<tr>
+<td colspan="2">0</td>
+<td colspan="2">0</td>
+<td colspan="2">0</td>
+<td colspan="2">2</td>
+<td colspan="2">2</td>
+<td>0</td>
+<td colspan="3">2</td>
+<td colspan="2">1</td>
+</tr>
+<tr>
+<td colspan="2">n</td>
+<td colspan="2">n</td>
+<td colspan="2">n</td>
+<td colspan="2">o</td>
+<td colspan="2">o</td>
+<td> </td>
+<td colspan="3">SDP</td>
+<td colspan="2">1</td>
+</tr>
+</table>
+<p>There are two binary operation codes (the two <i>or</i> operations), so we will need three parameters. </p>
+<ul>
+<li>The bias tells us to skip the first template element,     so we skip the S.</li>
+<li>The next element in the template is a D, so we push the destination.</li>
+<li>The next element in the template is a P, so we push the pattern.</li>
+<li>We have run out of template elements, so we wrap around and     see that we have an S, so we push the source.</li>
+<li>Now to use up the remaining operations, in order:</li>
+<li>Operation 1 tells us to pop the top two values from the stack,     <i>or</i> them together, and push the result back onto the stack.</li>
+<li>Operation 2 tells us to pop the top two values from the stack,     <i>or</i> them together, and push the result back onto the stack.</li>
+<li>Operation 3 tells us to pop the top value from the stack,     <i>bitwise-not</i> it, and push the result back onto the stack.</li>
+<li>Operation 4 tells us to pop the top value from the stack,     <i>bitwise-not</i> it, and push the result back onto the stack.</li>
+<li>Operation 5 tells us to pop the top value from the stack,     <i>bitwise-not</i> it, and push the result back onto the stack.</li>
+<li>Operation 6 tells us to do nothing.</li>
+<li>The final value on the stack is the result of the <code>BitBlt</code>     operation.</li>
+</ul>
+<p>In RPN, this encodes compactly as <code>DPSoonnn</code> </p>
+<p>It looks like a lot of work, but that’s because I spelled it out in painstaking detail. A shorter version would be </p>
+<ul>
+<li>The template says SDP, and the bias is 1, so we start at the D     and take three parameters (wrapping around if necessary),     which gives us <code>DPS</code>.</li>
+<li>Then we append the operations, which is <code>oonnn</code>. </li></ul>
+<p>Observe that <code>nn</code> bitwise-negates the top item on the stack, and then bitwise-negates it again. The two operations cancel out, which means that any <code>nn</code> sequence can be optimized out. In practice, these <code>nn</code> operations will appear at the end. If you’re encoding operations, and you have an even number of leftover operation slots, then you pad out the unused operations with <i>not</i>. If you have an odd number of leftover operation slots, then you put <i>not</i> in all but the last slot. (Operation 6 is the only one that can be left empty.) </p>
+<p>Removing the redundant nn leaves us with <code>DPSoon</code>, which matches the value given in <a href="https://msdn.microsoft.com/en-us/library/dd145130(v=vs.85).aspx">the table</a>. </p>
+<p>Let’s try one of the more complicated operations. Operation index <code>0xD4</code> is <code>0x00D41D78</code>. The operation code is <code>0x1D78</code>: </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse;text-align: center">
+<tr>
+<th style="width: 10pt">15</th>
+<th style="width: 10pt">14</th>
+<th style="width: 10pt">13</th>
+<th style="width: 10pt">12</th>
+<th style="width: 10pt">11</th>
+<th style="width: 10pt">10</th>
+<th style="width: 10pt"> 9</th>
+<th style="width: 10pt"> 8</th>
+<th style="width: 10pt"> 7</th>
+<th style="width: 10pt"> 6</th>
+<th style="width: 20pt"> 5</th>
+<th style="width: 10pt"> 4</th>
+<th style="width: 10pt"> 3</th>
+<th style="width: 10pt"> 2</th>
+<th style="width: 10pt"> 1</th>
+<th style="width: 10pt"> 0</th>
+</tr>
+<tr>
+<td colspan="2">op5</td>
+<td colspan="2">op4</td>
+<td colspan="2">op3</td>
+<td colspan="2">op2</td>
+<td colspan="2">op1</td>
+<td>op6</td>
+<td colspan="3">template</td>
+<td colspan="2">bias</td>
+</tr>
+<tr>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+<td>0</td>
+<td>1</td>
+<td>0</td>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td colspan="2">0</td>
+<td colspan="2">1</td>
+<td colspan="2">3</td>
+<td colspan="2">1</td>
+<td colspan="2">1</td>
+<td>1</td>
+<td colspan="3">6</td>
+<td colspan="2">0</td>
+</tr>
+<tr>
+<td colspan="2">n</td>
+<td colspan="2">x</td>
+<td colspan="2">a</td>
+<td colspan="2">x</td>
+<td colspan="2">x</td>
+<td>n</td>
+<td colspan="3">SSP*PD</td>
+<td colspan="2">0</td>
+</tr>
+</table>
+<p>There are four binary operations, so we need five parameters. There is no bias, so we start at the beginning with <code>SSP</code>. Next is an asterisk, so we replace it with the first operation, which is <code>x</code>. Then we continue with the template, which gives us <code>PD</code>. And then we perform the leftover operations, which are <code>xaxnn</code>. The resulting RPN is <code>SSPxPDxaxnn</code>, which after canceling out the <code>nn</code> leaves <code>SSPxPDxax</code>. And this matches the value in the table. </p>
+<p>If you write a program to apply this algorithm to all of the raster operations, you’ll find that decoding the operation code results in the published RPN, with the exception of operation indices 0 and 255. </p>
+<p>Let’s decode operation index 0, whose operation code is <code>0x0042</code>. </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse;text-align: center">
+<tr>
+<th style="width: 10pt">15</th>
+<th style="width: 10pt">14</th>
+<th style="width: 10pt">13</th>
+<th style="width: 10pt">12</th>
+<th style="width: 10pt">11</th>
+<th style="width: 10pt">10</th>
+<th style="width: 10pt"> 9</th>
+<th style="width: 10pt"> 8</th>
+<th style="width: 10pt"> 7</th>
+<th style="width: 10pt"> 6</th>
+<th style="width: 20pt"> 5</th>
+<th style="width: 10pt"> 4</th>
+<th style="width: 10pt"> 3</th>
+<th style="width: 10pt"> 2</th>
+<th style="width: 10pt"> 1</th>
+<th style="width: 10pt"> 0</th>
+</tr>
+<tr>
+<td colspan="2">op5</td>
+<td colspan="2">op4</td>
+<td colspan="2">op3</td>
+<td colspan="2">op2</td>
+<td colspan="2">op1</td>
+<td>op6</td>
+<td colspan="3">template</td>
+<td colspan="2">bias</td>
+</tr>
+<tr>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+<td>0</td>
+</tr>
+<tr>
+<td colspan="2">0</td>
+<td colspan="2">0</td>
+<td colspan="2">0</td>
+<td colspan="2">0</td>
+<td colspan="2">1</td>
+<td>0</td>
+<td colspan="3">0</td>
+<td colspan="2">2</td>
+</tr>
+<tr>
+<td colspan="2">n</td>
+<td colspan="2">n</td>
+<td colspan="2">n</td>
+<td colspan="2">n</td>
+<td colspan="2">x</td>
+<td> </td>
+<td colspan="3">SPDD</td>
+<td colspan="2">2</td>
+</tr>
+</table>
+<p>This decodes as <code>DDxnnnn</code>, which simplifies to <code>DDx</code>, but the published RPN is just <code>0</code>. Aha, but we also know that anything <i>xor</i>‘d with itself is zero, so <code>DDx</code> simplifies further to <code>0</code>. </p>
+<p>Similarly, operation index 255 has operation code <code>0x0062</code> which decodes as follows: </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse;text-align: center">
+<tr>
+<th style="width: 10pt">15</th>
+<th style="width: 10pt">14</th>
+<th style="width: 10pt">13</th>
+<th style="width: 10pt">12</th>
+<th style="width: 10pt">11</th>
+<th style="width: 10pt">10</th>
+<th style="width: 10pt"> 9</th>
+<th style="width: 10pt"> 8</th>
+<th style="width: 10pt"> 7</th>
+<th style="width: 10pt"> 6</th>
+<th style="width: 20pt"> 5</th>
+<th style="width: 10pt"> 4</th>
+<th style="width: 10pt"> 3</th>
+<th style="width: 10pt"> 2</th>
+<th style="width: 10pt"> 1</th>
+<th style="width: 10pt"> 0</th>
+</tr>
+<tr>
+<td colspan="2">op5</td>
+<td colspan="2">op4</td>
+<td colspan="2">op3</td>
+<td colspan="2">op2</td>
+<td colspan="2">op1</td>
+<td>op6</td>
+<td colspan="3">template</td>
+<td colspan="2">bias</td>
+</tr>
+<tr>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+<td>1</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>1</td>
+<td>0</td>
+</tr>
+<tr>
+<td colspan="2">0</td>
+<td colspan="2">0</td>
+<td colspan="2">0</td>
+<td colspan="2">0</td>
+<td colspan="2">1</td>
+<td>1</td>
+<td colspan="3">0</td>
+<td colspan="2">2</td>
+</tr>
+<tr>
+<td colspan="2">n</td>
+<td colspan="2">n</td>
+<td colspan="2">n</td>
+<td colspan="2">n</td>
+<td colspan="2">x</td>
+<td>n</td>
+<td colspan="3">SPDD</td>
+<td colspan="2">2</td>
+</tr>
+</table>
+<p>This decodes as <code>DDxnnnnn</code>, which simplifies to <code>DDxn</code>, and since we learned that <code>DDx</code> is <code>0</code>, this gives us <code>0n</code>, which simplifies further to just <code>1</code>, which matches the published RPN. </p>
+<p>Back to history: As I noted earlier, the raster opcodes were initially 16-bit values, and the idea was that <code>BitBlt</code> implementations would parse and execute the expressions encoded in the operation code. In practice, people just looked up the value in a table of precomputed operation codes and used that to decide how to perform the operation. As a result, the operation index was added to the raster opcode, so that implementations who want to use a table lookup have a single byte to look up instead of having to do a binary search on the 16-bit operation code. Both the operation index and operation code are present so that the values work both with drivers that use lookup tables and drivers which parse the operation code and execute the miniature expression language. </p>
+<p>Over time, the drivers that executed the miniature expression language died out. All anybody cares about nowadays is the operation index. </p>
+
+
+</body>

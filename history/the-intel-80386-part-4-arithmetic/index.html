@@ -1,0 +1,107 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Intel 80386, part 4: Arithmetic</h1>  <!-- .entry-meta -->
+
+<p>Okay, we’ve laid enough groundwork that we can start looking at instructions. </p>
+<p>Whereas arithmetic operations on most modern processors are three-operand (two sources and a destination), on the 80386, the arithmetic operations have only a single source and a single destination. The operations are performed in place, with the destination providing one of the source values, which is then overwritten by the result. </p>
+<p>The general pattern for computation instructions is </p>
+<pre>
+    OP      r/m, r/m/i      ; d op= s,     set flags
+</pre>
+<p>As is generally the case, the two operands must be the same size, and they cannot both be memory. Unary operations do not take a second operand. </p>
+<p>Note that these computation instructions destroy one of their inputs. If you need that value later, you’ll have to remember to save it somewhere before you destroy it with the computation instruction. </p>
+<p>The number of bits involved in the operation is implied by the operand sizes. For example: </p>
+<pre>
+    OP     DWORD PTR [eax], ebx ; *(int32_t)eax op= ebx
+</pre>
+<p>This is a 32-bit operation because the source and destination operands are both 32-bit values. The destination is a 32-bit memory value, and the source is a 32-bit register value. </p>
+<p>You don’t have to know the legal combinations of source and destination in order to read disassembly. You can assume the compiler generated valid code. </p>
+<p>Okay, let’s start doing some math. </p>
+<pre>
+    ADD     r/m, r/m/i      ; d += s,      set flags
+    ADC     r/m, r/m/i      ; d += s + CF, set flags
+
+    SUB     r/m, r/m/i      ; d -= s,      set flags
+    SBB     r/m, r/m/i      ; d -= s + CF, set flags
+
+    CMP     r/m, r/m/i      ; set flags for d - s, but do not update d
+
+    NEG     r/m             ; d = 0 - d,   set flags
+</pre>
+<p>The <code>ADD</code> instruction adds the source to the destination. The <code>ADC</code> instruction also adds in the carry flag. </p>
+<p>The <code>SUB</code> instruction subtracts the source from the destination. The <code>SBB</code> instruction also subtracts the carry flag. </p>
+<p>The <code>CMP</code> instruction is the same as <code>SUB</code>, except that the result is thrown away rather than being stored back into the destination. </p>
+<p>The <code>NEG</code> instruction negates its argument in place by subtracting it from zero. (Therefore, the carry flag is set if and only if the original value was nozero.) </p>
+<pre>
+    INC     r/m             ; d += 1, set flags except leave CF unchanged
+    DEC     r/m             ; d -= 1, set flags except leave CF unchanged
+</pre>
+<p>The <code>INC</code> and <code>DEC</code> instructions increment and decrement the destination, respectively. They set flags based on the result, except that the carry flag is left unchanged.¹ </p>
+<p>The multiplication and division instructions require some more groundwork to understand. </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Operand size</th>
+<th>Hi</th>
+<th>Lo</th>
+</tr>
+<tr>
+<td>byte</td>
+<td><code>AH</code></td>
+<td><code>AL</code></td>
+</tr>
+<tr>
+<td>word</td>
+<td><code>DX</code></td>
+<td><code>AX</code></td>
+</tr>
+<tr>
+<td>dword</td>
+<td><code>EDX</code></td>
+<td><code>EAX</code></td>
+</tr>
+</table>
+<pre>
+    MUL     r/m         ; hi:lo = lo * s (unsigned)
+    IMUL    r/m         ; hi:lo = lo * s (signed)
+</pre>
+<p>The <code>MUL</code> instruction performs an unsigned multiplication. The <code>IMUL</code> instruction performs a signed multiplication. The sole operand is a source because the destination is implied: The source is multiplied by the <var>lo</var> register in the table above, and the double-precision result is stored in the <var>hi:lo</var> register pair, with the <var>hi</var> register receiving the most significant bits of the result, and the <var>lo</var> register receiving the least significant bits of the result. </p>
+<p>Division is similar, but going from large to small. </p>
+<pre>
+    DIV     r/m         ; lo = hi:lo / s (unsigned)
+                        ; hi = hi:lo % s (unsigned)
+    IDIV    r/m         ; lo = hi:lo / s (signed)
+                        ; hi = hi:lo % s (signed)
+</pre>
+<p>The double-width value in the <var>hi:lo</var> register pair is divided by the source, with the quotient going into <var>lo</var>, and the remainder going in <var>hi</var>. </p>
+<p>These forms of the the multiplication and division operations do not permit an immediate as a source parameter. The source must be memory or a register. </p>
+<p>In practice, you will pretty much always see 32-bit operands (thanks to the C language integer promotion rules), so all you really need to remember for these instructions are </p>
+<pre>
+    MUL     r/m32       ; edx:eax = eax * s (unsigned)
+    IMUL    r/m32       ; edx:eax = eax * s (signed)
+    DIV     r/m32       ; eax = edx:eax / source32 (unsigned)
+                        ; edx = edx:eax % source32 (unsigned)
+    IDIV    r/m32       ; eax = edx:eax / source32 (signed)
+                        ; edx = edx:eax % source32 (signed)
+</pre>
+<p>The multiplication instructions set carry and overflow if the result is larger than the small value register. The division instructions trap to kernel mode if you try to divide by zero, or if the result does not fit in the output registers. </p>
+<p>There are two additional forms for the <code>IMUL</code> instruction which do not fit the above pattern. The first is a two-operand version that follows the pattern for <code>ADD</code>: </p>
+<pre>
+    IMUL    r, r/m      ; d *= s (signed)
+</pre>
+<p>This is a more traditional-looking two-operand instruction² that updates the destination register in place. </p>
+<p>There is even a (gasp) three-operand version similar to what you see in other processors. </p>
+<pre>
+    IMUL  r, r/m, i     ; d = s * t (signed)
+</pre>
+<p>This three-operand version accepts an immediate as the third operand, and it’s the one the compiler typically generates. For example, </p>
+<pre>
+    IMUL  EAX, ECX, 212 ; EAX = ECX * 212 (signed)
+</pre>
+<p>These additional forms produce only single-precision results, but that’s what the C and C++ languages produce, so it fits well with those languages. If you need a double-precision result, then you can use the single-operand <code>MUL</code> and <code>IMUL</code> instructions. </p>
+<p>Note that there is no unsigned version of these additional forms. Fortunately, you can use the signed version for unsigned multiplication because the single-precision result is the same for both signed and unsigned multiplication. However, the flags are always set according to the signed result, so you cannot use them to detect unsigned overflow. </p>
+<p>In practice, this is not a problem because the C language doesn’t give you access to the overflow flags anyway. </p>
+<p>Okay, that’s arithmetic. <a href="http://devblogs.microsoft.com/oldnewthing/20190125-00/?p=100795">Next time</a>, we’ll look at the bitwise logical operations. </p>
+<p>¹ This quirk of the <code>INC</code> and <code>DEC</code> instructions later came back to haunt the architecture. Although the 80386 does not perform out-of-order execution, later revisions of the processor do, Leaving the carry flag unchanged creates a register dependency: You cannot execute an <code>INC</code> out of order with respect to another arithmetic instruction because the result of the <code>INC</code> and <code>DEC</code> instruction is dependent on the incoming carry flag from the arithmetic instruction. Compilers will sometimes replace <code>INC dest</code> with <code>ADD dest, 1</code> (and similarly <code>DEC</code> with <code>SUB</code>) to avoid the dependency. Even though it seems to do more work (it also has to compute carry), it actually has the potential to run faster because the dependency is removed. </p>
+<p>² It looks more traditional, but it’s actually the old <code>IMUL</code> that came first and therefore is more properly the traditional instruction. </p>
+
+
+</body>

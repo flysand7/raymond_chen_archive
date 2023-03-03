@@ -1,0 +1,101 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When you open a securable object, make sure you pass the security mask you actually want (no more, no less)</h1>  <!-- .entry-meta -->
+
+<p>There are two categories of “Access denied” errors. One occurs when you attempt to create the handle, and the other occurs when you attempt to use the handle. </p>
+<pre>
+HANDLE hEvent = OpenEvent(SYNCHRONIZE, FALSE, TEXT("<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/10/01/10561544.aspx">MyEvent</a>"));
+</pre>
+<p>If this call fails with <i>Access denied</i>, then it means that you don’t have access to the object to the level you requested. In the above example, it means that you don’t have <code>SYNCHRONIZE</code> access to the event. </p>
+<p>A common reason for getting an <i>Access denied</i> when trying to create a handle is that you asked for too much access. For example, you might write </p>
+<pre>
+<i>HKEY hkey;
+LONG lError = RegOpenKeyEx(
+    hkeyRoot, subkeyName, 0, KEY_ALL_ACCESS, &amp;hkey);
+if (lError == ERROR_SUCCESS) {
+ DWORD dwType;
+ DWORD dwData;
+ DWORD cbData = sizeof(dwData);
+ lError = RegQueryValueEx(hkey, TEXT("ValueName"), nullptr,
+                          &amp;dwType, &amp;dwData, &amp;cbData);
+ if (lError == ERROR_SUCCESS &amp;&amp; dwType == REG_DWORD &amp;&amp;
+     cbData == sizeof(dwData)) {
+  .. do something with dwData ..
+ }
+ RegCloseKey(hkey);
+}</i>
+</pre>
+<p>The call to <code>Reg­Open­Key­Ex</code> fails with <i>Access denied</i>. The proximate reason is that you don’t have <code>KEY_ALL_ACCESS</code> permission on the registry key, which makes sense because <code>KEY_ALL_ACCESS</code> asks for <a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/02/27/7912126.aspx">permission to do <i>everything imaginable</i> to the registry key</a>, including crazy things like “Change the permissions of the key to deny access to the rightful owner.” </p>
+<p>But why are you asking for full access to the key if all you’re going to do is read from it? </p>
+<pre>
+HKEY hkey;
+LONG lError = RegOpenKeyEx(
+    hkeyRoot, subkeyName, 0, <font color="blue">KEY_READ</font>, &amp;hkey);
+if (lError == ERROR_SUCCESS) {
+ DWORD dwType;
+ DWORD dwData;
+ DWORD cbData = sizeof(dwData);
+ lError = RegQueryValueEx(hkey, TEXT("ValueName"), nullptr,
+                          &amp;dwType, &amp;dwData, &amp;cbData);
+ if (lError == ERROR_SUCCESS &amp;&amp; dwType == REG_DWORD &amp;&amp;
+     cbData == sizeof(dwData)) {
+  .. do something with dwData ..
+ }
+ RegCloseKey(hkey);
+}
+</pre>
+<p>If you want to go for bonus points, ask for <code>KEY_QUERY_VALUE</code> instead of <code>KEY_READ</code>, since all you are going to do with the key is read a value. </p>
+<blockquote class="m"><p>When requesting access to an object, it’s best to ask for the minimum access required to get the job done. </p></blockquote>
+<p>This is like the old principle of mathematics: After you’ve proved something, try to weaken the hypothesis as much as possible and strengthen the conclusions as much as possible. In other words, once you’ve solved a problem, figure out the absolute minimum requirements for your solution to work, and figure out the largest amount of information your solution produces. </p>
+<p>On the other hand, if you get an <i>Access denied</i> error when trying to <u>use</u> a handle, then the problem is that you didn’t open the handle with <i>enough</i> access. </p>
+<pre>
+<i>HKEY hkey;
+LONG lError = RegOpenKeyEx(
+    hkeyRoot, subkeyName, 0, KEY_READ, &amp;hkey);
+if (lError == ERROR_SUCCESS) {
+ DWORD dwData = 1;
+ lError = RegSetValueEx(hkey, TEXT("ValueName"), nullptr,
+             REG_DWORD, (const BYTE*&gt;)&amp;dwData, sizeof(dwData));
+ if (lError == ERROR_SUCCESS &amp;&amp; dwType == REG_DWORD &amp;&amp;
+     cbData == sizeof(dwData)) {
+  .. do something with dwData ..
+ }
+ RegCloseKey(hkey);
+}</i>
+</pre>
+<p>Here, the <code>Reg­Open­Key­Ex</code> succeeds, but the <code>Reg­Set­Value­Ex</code> fails. That’s because the registry key was opened for <code>KEY_READ</code> access, but the <code>Reg­Set­Value­Ex</code> operation requires <code>KEY_SET_VALUE</code> access. To fix this, you need to open the key with the access you actually want: </p>
+<pre>
+HKEY hkey;
+LONG lError = RegOpenKeyEx(
+    hkeyRoot, subkeyName, 0, <font color="blue">KEY_SET_VALUE</font>, &amp;hkey);
+if (lError == ERROR_SUCCESS) {
+ DWORD dwData = 1;
+ lError = RegSetValueEx(hkey, TEXT("ValueName"), nullptr,
+             REG_DWORD, (const BYTE*&gt;)&amp;dwData, sizeof(dwData));
+ if (lError == ERROR_SUCCESS &amp;&amp; dwType == REG_DWORD &amp;&amp;
+     cbData == sizeof(dwData)) {
+  .. do something with dwData ..
+ }
+ RegCloseKey(hkey);
+}
+</pre>
+<blockquote class="m"><p>When requesting access to an object, it’s best to ask for the minimum access required to get the job done, <u>but no less</u>. </p></blockquote>
+<p>Armed with this information, you can solve this problem: </p>
+<blockquote class="q">
+<p>In the main thread, we create an event like this: </p>
+<pre>
+TheEvent = CreateEvent(NULL, TRUE, FALSE, name);
+</pre>
+<p>A worker thread opens the event like this: </p>
+<pre>
+EventHandle = OpenEvent(SYNCHRONIZE, FALSE, name);
+</pre>
+<p>The <code>Open­Event</code> succeeds, but we try to use the handle, we get <i>Access denied</i>: </p>
+<pre>
+SetEvent(EventHandle);
+</pre>
+<p>On the other hand, if the worker thread uses the <code>Create­Event</code> function to get the handle, then the <code>Set­Event</code> succeeds. </p>
+<p>What are we doing wrong? </p>
+</blockquote>
+
+
+</body>

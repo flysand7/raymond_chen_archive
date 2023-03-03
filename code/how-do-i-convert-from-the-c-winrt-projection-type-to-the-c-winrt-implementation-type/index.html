@@ -1,0 +1,84 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I convert from the C++/WinRT projection type to the C++/WinRT implementation type?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/how-do-i-convert-from-the-c-winrt-implementation-type-to-the-c-winrt-projection-type" title="How do I convert from the C++/WinRT implementation type to the C++/WinRT projection type?"> converting from the C++/WinRT implementation type to the corresponding C++/WinRT projection type</a>. Going from the projection back to the implementation is a little trickier and relies on your own vigilance. There’s no a priori guarantee that the projected pointer actually refers to your implementation. For example, if all you have is an <code>IInspectable</code>, that could be anybody. Even if you have a concrete <code>Sample::Class</code>, the projected type could have been implemented by somebody else.¹</p>
+<p>But assume that you have other ways of knowing that the <code>IInspectable</code> or other projected type really is backed by the implementation you claim. Typically, it’s because you put it there yourself originally.</p>
+<pre>// Go from the projection to the implementation.
+implementation::Class*p = get_self&lt;implementation::Class&gt;(o);
+</pre>
+<p>The <code>get_self</code> function assumes that the thing you’re providing is backed by the implementation you specify, and it returns a pointer to the that implementation type. The lifetime of the pointer is controlled by the projected object you obtained the pointer from, so you now have to keep both <code>o</code> and <code>p</code> around, which can be a hassle.</p>
+<p>There’s a nasty gotcha with <code>get_self</code> beyond the fact that you had better have the right implementation: You also have to have the right interface!</p>
+<p>If the object you pass is an interface, then the implementation cannot implement that interface multiple times, or there will be an ambiguity over how to convert from that interface to the implementation. This is a problem in standard C++ as well:</p>
+<pre>struct B {};
+struct D1 : B {};
+struct D2 : B {};
+struct C : D1, D2 {};
+
+C* c;
+B* b = c; // error: 'B' is an ambiguous base of 'C'
+</pre>
+<p>The C++/WinRT <code>get_self</code> function is more restrictive than C++ casts, because it’s a conversion, not a cast. The thing you’re converting from must be listed as one of the implemented interfaces.</p>
+<pre>struct C : implements&lt;C, ISomething&gt;
+{
+};
+
+IInspectable something;
+C* p = get_self&lt;C&gt;(something);
+// error: 'static_cast': cannot convert from
+// winrt::impl::producer&lt;D, I, void&gt; *' to 'D *'
+// with D = C, I = IInspectable
+</pre>
+<p>You can’t convert from <code>IInspectable</code> since the class <code>C</code> doesn’t list <code>IInspectable</code> as one of its explicitly-implemented interfaces. (It is an implicitly-implemented interface because <code>IInspectable</code> is the base of all Windows Runtime interfaces.)</p>
+<p>You can avoid this problem by converting the <code>IInspectable</code> to an explicitly-implemented interface first.</p>
+<pre>C* p = get_self&lt;C&gt;(something.as&lt;ISomething&gt;());
+</pre>
+<p>To avoid having to remember what interfaces your object implements, you can use the <code>default_interface</code> helper template type.</p>
+<pre>C* p = get_self&lt;C&gt;(something.as&lt;winrt::default_interface&lt;C&gt;&gt;());
+</pre>
+<p>But wait, you’re not out of the woods yet.</p>
+<p>If you mistakenly implement <code>IInspectable</code> as well as a Windows Runtime interface, then you run into another ambiguity: If recovering the object from an <code>IInspectable</code>, is the <code>IInspectable</code> the explicitly-implemented <code>IInspectable</code> or the implicitly-implemented <code>IInspectable</code> that came along for the ride as a base class of the Windows Runtime interface?</p>
+<pre>struct C : implements&lt;C, ISomething, IInspectable&gt;
+{
+};
+
+IInspectable something;
+C* p = get_self&lt;C&gt;(something); // 50% chance of working
+</pre>
+<p>C++/WinRT assumes that you gave it the <code>IInspectable</code> that came from the explicitly-implemented interface, which has a 50% chance of being correct. If it’s incorrect, you will get the wrong pointer back and corrupt memory and be very sad.</p>
+<p>The best way to fix is to “stop holding it wrong”. Remove the redundant <code>IInspectable</code> from your list of explicitly-implemented interfaces.</p>
+<p>A less-good (but still effective) fix is to use the default interface trick we saw above.</p>
+<pre>C* p = get_self&lt;C&gt;(something.as&lt;winrt::default_interface&lt;C&gt;&gt;());
+</pre>
+<p>Note that the value returned by <code>get_self</code> is a raw pointer. The lifetime of the object is still controlled by whatever you passed to <code>get_self</code>. This can get annoying, since you now have to carry two things around: You need to carry the raw pointer so you can access your implementation, and you need to carry the original object that manages the lifetime. Here’s a helper function which converts the projected type into a reference-counted <code>com_ptr</code>. That way, you don’t have to carry two objects around. While I’m at it, I’ll fix the nasty gotcha (though really, you should just fix it by removing the redundant <code>IInspectable</code>).</p>
+<pre>template&lt;typename D, typename T&gt;
+winrt::com_ptr&lt;D&gt; as_self(T&amp;&amp; o)
+{
+    winrt::com_ptr&lt;D&gt; result;
+    if constexpr (std::is_same_v&lt;std::remove_reference_t&lt;T&gt;,
+                                 winrt::Windows::Foundation::IInspectable&gt;)
+    {
+        auto temp = o.as&lt;winrt::default_interface&lt;D&gt;&gt;();
+        result.attach(winrt::get_self&lt;D&gt;(temp));
+        winrt::detach_abi(temp);
+    }
+    else if constexpr (std::is_rvalue_reference_v&lt;T&amp;&amp;&gt;)
+    {
+        result.attach(winrt::get_self&lt;D&gt;(o));
+        winrt::detach_abi(o);
+    }
+    else
+    {
+        result.copy_from(winrt::get_self&lt;D&gt;(o));
+    }
+
+    return result;
+}
+</pre>
+<p>The basic idea is to use <code>get_self</code> to obtain the raw pointer and use that pointer to initialize the resulting <code>com_ptr</code>. Depending on the circumstances, we might steal the reference count associated with the pointer, or we might just copy it.</p>
+<p>If the inbound parameter is an <code>IInspectable</code> (either lvalue or rvalue reference), then we are in the gotcha case, and we will make an explicit conversion to the default interface before calling <code>get_self</code>. We can use attach/detach semantics because the temporary default interface is going out of scope soon, so we can steal its reference.</p>
+<p>Otherwise, the inbound parameter is something other than <code>IInspectable</code>, so we are not in the gotcha case. For rvalue references, we can use use attach/detach semantics because the rvalue reference allows us to steal its reference. For lvalue references, we use copy semantics because the original retains its reference.</p>
+<p>¹ It is legal for a projected type to have multiple implementations. This actually happens on occasion. For example there are different implementations of <code>Pointer­Point</code> depending on which kind of device the point came from. The <code>Pointer­Point</code> itself is a smart pointer to an unknown implementation.</p>
+<p>If you aren’t sure whether the implementation is yours, you can create a private marker interface to identify your own objects.</p>
+
+
+</body>

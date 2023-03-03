@@ -1,0 +1,120 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Rescuing thread messages from modal loops via message filters</h1>  <!-- .entry-meta -->
+
+<p>
+As we have seen recently, thread messages are eaten by modal loops
+because they have nowhere to go when dispatched.
+However, there is a way to see them before they vanish,
+provided the modal loop is cooperative.
+</p>
+<p>
+The WH_MSGFILTER message hook allows you to receive messages
+passed to
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/hooks/hookreference/hookfunctions/callmsgfilter.asp">
+the <code>CallMsgFilter</code> function</a>.
+Fortunately, all the modal loops in the window manager use
+<code>CallMsgFilter</code> to allow the thread to capture thread
+messages before they are lost.
+Therefore, this gives you a way to snoop
+on messages as they travel through modal loops.
+</p>
+<p>
+Let’s add a message filter to the program we wrote last time to
+see how messages pass through a message filter.
+Note that <strong>this is the wrong way to solve the problem</strong>.
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/04/27/412565.aspx">
+The correct solution was illustrated last time</a>.
+I’m doing it the wrong way
+to illustrate message filters since they are not
+well-understood.  (For example, a valid reason for a message
+filter would to
+prevent the menu loop from seeing certain input.)
+</p>
+<p>
+Start with the program from last the before we changed the
+<code>PostThreadMessage</code> to a <code>PostMessage</code>,
+then make the following changes:
+</p>
+<pre>
+<font color="blue">HHOOK g_hhkMSGF;
+LRESULT CALLBACK MsgFilterProc(int code, WPARAM wParam, LPARAM lParam)
+{
+ MSG* pmsg = (MSG*)lParam;
+ if (code &gt;= 0 &amp;&amp; IsThreadMessage(pmsg)) return TRUE;
+ return CallNextHookEx(g_hhkMSGF, code, wParam, lParam);
+}</font>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+<font color="blue"> g_hhkMSGF = SetWindowsHookEx(WH_MSGFILTER, MsgFilterProc,
+    NULL, GetCurrentThreadId());
+ if (!g_hhkMSGF) return FALSE;</font>
+ DWORD dwThread;
+ HANDLE hThread = CreateThread(NULL, 0, ThreadProc,
+       UintToPtr(GetCurrentThreadId()), 0, &amp;dwThread);
+ ...
+</pre>
+<p>
+Here, we installed a message filter hook on our thread so that we can seem
+messages as they pass through modal loops.  The <code>code</code>
+parameter tells us what type of modal loop retrieved the message;
+we ignore it here since we want to do our filtering for all modal loops.
+</p>
+<p>
+Run this program and observe that the beeps are no longer lost
+because our message filter is getting a chance to see them and
+react to them.
+</p>
+<p>
+The message filter trick relies on all modal loops sending the
+messages they retrieve through a message filter before dispatching
+them.  If you are writing code that is going into a library,
+and you have a modal loop, then you too should call the message filter
+before dispatching messages you’ve retrieved, in case the program
+using your library wants to do something with the message.
+</p>
+<pre>
+MSG msg;
+while (GetMessage(&amp;msg, NULL, 0, 0)) {
+ <font color="blue">if (!CallMsgFilter(&amp;msg, MSGF_MYLIBRARY)) {</font>
+  TranslateMessage(&amp;msg);
+  DispatchMessage(&amp;msg);
+ <font color="blue">}</font>
+}
+</pre>
+<p>
+The value <code>MSGF_MYLIBRARY</code> is an arbitrary positive value
+you can choose and document in your library’s header file.
+You can see examples of this in the <code>commctrl.h</code> header
+file:
+</p>
+<pre>
+#define MSGF_COMMCTRL_BEGINDRAG     0x4200
+#define MSGF_COMMCTRL_SIZEHEADER    0x4201
+#define MSGF_COMMCTRL_DRAGSELECT    0x4202
+#define MSGF_COMMCTRL_TOOLBARCUST   0x4203
+</pre>
+<p>
+These are the message filters called by the modal loops in the
+shell common controls library.
+</p>
+<p>
+One question you might ask is, “Why use a message filter hook
+instead of a <code>GetMessage</code> hook?”
+</p>
+<p>
+Message filter hooks are less expensive than <code>GetMessage</code>
+hooks because they are called only upon request, as opposed to
+a <code>GetMessage</code> hook
+which is called for every retrieved message.
+Message filter hooks also tell you <strong>which</strong> modal loop
+is doing the filtering, in case you want to adjust your behavior
+accordingly.
+</p>
+<p>
+The downside of message filter hooks is that all modal loops need
+to remember to call <code>CallMsgFilter</code> as part of their
+dispatch loop.</p>
+
+
+</body>

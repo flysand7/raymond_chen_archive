@@ -1,0 +1,177 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On awaiting a task with a timeout in C#</h1>  <!-- .entry-meta -->
+
+<p>Say you have an awaitable object, and you want to await it, but with a timeout. How would you build that?</p>
+<p>What you can do is use a <code>when_any</code>-like function in combination with a timeout coroutine. For C# this would be something like</p>
+<pre>await Task.WhenAny(
+    DoSomethingAsync(),
+    Task.Delay(TimeSpan.FromSeconds(1)));
+</pre>
+<p>The <code>WhenAny</code> method completes as soon as any of the passed-in tasks completes. It returns the winner, which you can use to detect whether the operation completed or timed out:</p>
+<pre>var somethingTask = DoSomethingAsync();
+var winner = await Task.WhenAny(
+    somethingTask,
+    Task.Delay(TimeSpan.FromSeconds(1)));
+if (winner == somethingTask)
+{
+    // hooray it worked
+}
+else
+{
+    // sad, it timed out
+}
+</pre>
+<p>If the operation produced a result, you’ll have to create a timeout task that completes with the same result type, even if you never actually use that result.</p>
+<pre>static async Task&lt;T&gt;
+DelayedDummyResultTask&lt;T&gt;(TimeSpan delay)
+{
+    await Task.Delay(delay);
+    return default(T);
+}
+
+var somethingTask = GetSomethingAsync();
+var winner = await Task.WhenAny(
+    somethingTask,
+    DelayedDummyResultTask&lt;Something&gt;(TimeSpan.FromSeconds(1)));
+if (winner == somethingTask)
+{
+    // hooray it worked
+}
+else
+{
+    // sad, it timed out
+}
+</pre>
+<p>The purpose of the <code>Delayed­Dummy­Result­Task</code> is not to produce a result, but rather to provide a delay.</p>
+<p>We can wrap this up in a helper:</p>
+<pre>static async Task&lt;(bool, Task&lt;T&gt;)&gt;
+TaskWithTimeout&lt;T&gt;(
+    Task&lt;T&gt; task,
+    TimeSpan timeout)
+{
+    var winner = await Task.WhenAny(
+        task, DelayedDummyResultTask&lt;T&gt;(timeout));
+    return (winner == task, winner);
+}
+
+var (succeeded, task) = await TaskWithTimeout(
+    GetProgramAsync(), TimeSpan.FromSeconds(1));
+if (succeeded) {
+    UseIt(task.Result);
+} else {
+    // Timed out
+}
+</pre>
+<p>The usage pattern here is still rather clunky, though.</p>
+<p>One common pattern is to call the method, but abandon it and return some fallback value instead (typically <code>false</code> or <code>null</code>):</p>
+<pre>static async Task&lt;T&gt;
+DelayedResultTask&lt;T&gt;(TimeSpan delay, T result = default(T))
+{
+    await Task.Delay(delay);
+    return result;
+}
+
+static async Task&lt;T&gt;
+TaskWithTimeoutAndFallback&lt;T&gt;(
+    Task&lt;T&gt; task,
+    TimeSpan timeout,
+    T fallback = default(T))
+{
+    return (await Task.WhenAny(
+        task, DelayedResultTask&lt;T&gt;(timeout, fallback))).Result;
+}
+</pre>
+<p>This time, our delayed dummy result is no longer a dummy result. If the task times out, then the result of <code>Task.<wbr/>WhenAny</code> is the timeout task, and <i>its</i> result is what becomes the result of the <code>Task­With­Timeout­AndFallback</code>.</p>
+<p>Another way of writing the above would be</p>
+<pre>static async Task&lt;T&gt;
+TaskWithTimeoutAndFallback&lt;T&gt;(
+    Task&lt;T&gt; task,
+    TimeSpan timeout,
+    T fallback = default(T))
+{
+    return await await Task.WhenAny(
+        task, DelayedResultTask&lt;T&gt;(timeout, fallback));
+}
+</pre>
+<p>which you might choose if only because it give you a rare opportunity to write <code>await await</code>.</p>
+<p>You could call the function like this:</p>
+<pre>var something = TaskWithTimeoutAndFallback(
+    GetSomethingAsync(), TimeSpan.FromSeconds(1));
+</pre>
+<p>The value in <code>something</code> is the result of <code>Get­Something­Async()</code> or <code>null</code>.</p>
+<p>It might be that the fallback result is expensive to calculate. For example, it <code>Get­Something­Async</code> times out, maybe you want to query some alternate database to get the fallback value. So maybe we could have a version where the fallback value is generated lazily.</p>
+<pre>static async Task&lt;T&gt;
+DelayedResultTask&lt;T&gt;(TimeSpan delay, Func&lt;T&gt; fallbackMaker)
+{
+    await Task.Delay(delay);
+    return fallbackMaker();
+}
+
+static async Task&lt;T&gt;
+TaskWithTimeoutAndFallback&lt;T&gt;(
+    Task&lt;T&gt; task,
+    TimeSpan timeout,
+    Func&lt;T&gt; fallbackMaker)
+{
+    return await await Task.WhenAny(
+        task, DelayedResultTask&lt;T&gt;(timeout, fallbackMaker));
+}
+
+var something = TaskWithTimeoutAndFallback(
+    GetSomethingAsync(), TimeSpan.FromSeconds(1),
+    () =&gt; LookupSomethingFromDatabase());
+</pre>
+<p>As a special case, you might want to raise a <code>Timeout­Exception</code> instead of a fallback value. You could do that by passing a lambda that just throws the <code>Timeout­Exception</code> instead of producing a fallback value.</p>
+<pre>var something = TaskWithTimeoutAndFallback(
+    GetSomethingAsync(), TimeSpan.FromSeconds(1),
+    () =&gt; throw TimeoutException());
+</pre>
+<p>This is probably a common enough pattern that we could provide a special helper for it.</p>
+<pre>static async Task&lt;T&gt;
+DelayedTimeoutExceptionTask&lt;T&gt;(TimeSpan delay)
+{
+    await Task.Delay(delay);
+    throw new TimeoutException();
+}
+
+static async Task&lt;T&gt;
+TaskWithTimeoutAndException&lt;T&gt;(
+    Task&lt;T&gt; task,
+    TimeSpan timeout)
+{
+    return await await Task.WhenAny(
+        task, DelayedTimeoutExceptionTask&lt;T&gt;(timeout));
+}
+
+// throws TimeoutException on timeout
+var something = TaskWithTimeoutAndFallback(
+    GetSomethingAsync(), TimeSpan.FromSeconds(1));
+</pre>
+<p>Note that in all of this, the task that timed out continues to run to completion. It’s just that we’re not paying attention to it any more. If you want to cancel the abandoned task, you need to hook up a task cancellation source when you create it, assuming that’s even possible.</p>
+<p>In the special case where the <code>Task</code> came from a Windows Runtime asynchronous action or operation, you can hook up the cancellation token yourself:</p>
+<pre>var source = new CancellationTokenSource();
+var something = TaskWithTimeoutAndFallback(
+    o.GetSomethingAsync().AsTask(source.token),
+    TimeSpan.FromSeconds(1));
+source.Cancel();
+source.Dispose();
+
+// see what's in the "something"
+</pre>
+<p>If you prefer to exit with an exception, then you need to cancel the operation in your timeout handler:</p>
+<pre>var source = new CancellationTokenSource();
+try {
+    var something = TaskWithTimeoutAndException(
+        o.GetSomethingAsync().AsTask(source.token),
+        TimeSpan.FromSeconds(1));
+} catch (TimeoutException) {
+    source.Cancel();
+} finally {
+    source.Dispose();
+}
+</pre>
+<p>That was a very long discussion, and I haven’t even gotten to the original purpose of writing about task cancellation with timeouts, which is to talk about how to do all of this in C++/WinRT. I’m tired, so we’ll pick this up next time.</p>
+<p><b>Bonus reading</b>: <a href="https://devblogs.microsoft.com/pfxteam/crafting-a-task-timeoutafter-method/"> Crafting a Task.TimeoutAfter Method</a>.</p>
+
+
+</body>

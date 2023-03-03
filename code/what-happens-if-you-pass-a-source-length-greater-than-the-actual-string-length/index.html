@@ -1,0 +1,98 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What happens if you pass a source length greater than the actual string length?</h1>  <!-- .entry-meta -->
+
+<p>
+Many functions accept a source string that consists of both a pointer
+and a length.
+And if you pass a length that is greater than the length of the string,
+the result depends on the function itself.
+</p>
+<p>
+Some of those functions, when given a string and a length, will stop
+either when the length is exhausted or a null terminator is reached
+<i>whichever comes first</i>.
+For example, if you pass a <code>cchSrc</code> greater than the
+length of the string to the
+<code>StringCchCopyN</code> function, it will stop at the null
+terminator.
+</p>
+<p>
+On the other hand, many other functions (particularly those in the
+NLS family)
+<i>will cheerfully operate past a null character if you
+ask them to</i>.
+The idea here is that since you passed an explicit size,
+you’re consciously operating on a buffer which might
+contain embedded null characters.
+Because, after all, if you passed an explicit source size,
+you really meant it, right?
+(Maybe you’re operating on a <code>BSTR</code>, which supports
+embedded nulls; to get the size of a <code>BSTR</code> you must
+use a function like <code>SysStringLen</code>.)
+For example, if you call
+<code>CharUpperBuff(psz, 20)</code>, then the function
+really will convert to uppercase 20 <code>TCHAR</code>s
+starting at <code>psz</code>.
+If there happens to be a null character at <code>psz[10]</code>,
+the function will convert the null to uppercase and continue
+converting the next ten <code>TCHAR</code>s as well.
+</p>
+<p>
+I’ve seen programs crash because they thought that functions
+like <code>CharUpperBuff</code> and
+<code>MultiByteToWideChar</code>
+stopped when they encountered a null.
+For example, somebody might write
+</p>
+<pre>
+<i>// buggy code - see discussion
+void someFunction(char *pszFile)
+{
+ CharUpperBuff(pszFile, MAX_PATH);
+ ... do something with pszFile ...
+}
+void Caller()
+{
+ char buffer[80];
+ sprintf(buffer, "file%d", get_fileNumber());
+ someFunction(buffer);
+}
+</i></pre>
+<p>
+The intent here was for <code>someFunction</code>
+to convert the string to uppercase
+before operating on it, up to <code>MAX_PATH</code> characters’ worth,
+but instead what happens is that the <code>MAX_PATH</code> characters
+starting at <code>pszFile</code> are converted, even though the
+actual buffer is shorter!
+As a result, <code>MAX_PATH</code> − 80 = 220
+characters beyond the end of <code>buffer</code> are also converted.
+And since that’s a stack buffer,
+those bytes are likely to include the return address.
+Result: Crash-o-rama.
+Things get even more interesting if the short buffer had been allocated
+on the heap instead.
+Then instead of corrupting your return address (which you would
+probably notice as soon as the function returned),
+you corrupt the heap,
+which typically doesn’t manifest itself in a crash until long after
+the offending function has left the scene of the crime.
+</p>
+<p>
+Critique, then, this replacement function:
+</p>
+<pre>
+<i>//  buggy code - do not use
+int invariant_strnicmp(char *s1, char *s2, size_t n)
+{
+ // [Update: 9:30am - typo fixed]
+ return CompareStringA(LOCALE_INVARIANT, NORM_IGNORECASE,
+                       s1, n, s2, n) - CSTR_EQUAL;
+}</i>
+</pre>
+<p>
+(<a href="http://blogs.msdn.com/michkap/archive/2006/07/09/658454.aspx">Michael Kaplan has one answer</a>
+different from the one I was looking for.)</p>
+
+
+</body>

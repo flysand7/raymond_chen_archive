@@ -1,0 +1,111 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ARM processor (Thumb-2), part 5: Arithmetic</h1>  <!-- .entry-meta -->
+
+<p>The general format of three-register instructions in Thumb-2 goes like this:¹</p>
+<pre>    op      Rd, Rn, #imm12      ; Rd = Rn op decode(imm12)
+    op      Rd, Rn, Rm          ; Rd = Rn op Rm
+    op      Rd, Rn, Rm, shift   ; Rd = Rn op (Rm with shift applied)
+                                ; shift can be LSL, LSR, ASR, ROR
+</pre>
+<p>The <code>#imm12</code> is a constant <a href="/history/the-arm-processor-thumb-2-part-4-single-instruction-constants" title="The ARM processor (Thumb-2), part 4: Single-instruction constants"> in a form we discussed last time</a>.</p>
+<p>For notational convenience, let’s call this</p>
+<pre>    op      Rd, Rn, op2         ; op2 can be #imm12, Rm, or Rm with a shift
+</pre>
+<p>Sometimes you’ll see a two-register version, which is shorthand for (and often a more compact encoding than) the three-register version:</p>
+<pre>    op      Rd, Rn              ; shorthand for op Rd, Rd, Rn
+</pre>
+<p><a href="https://devblogs.microsoft.com/oldnewthing/20180808-00/?p=99445"> Like the PowerPC</a>, the ARM uses true carry. This means that for subtraction, the carry is clear when a borrow occurs, and subtract with carry subtracts an additional unit if inbound carry is clear.</p>
+<p>With that said, here are the basic arithmetic operations:</p>
+<pre>    ; add
+    add     Rd, Rn, op2         ; Rd = Rn + op2
+
+    ; add with carry
+    adc     Rd, Rn, op2         ; Rd = Rn + op2 + carry
+
+    ; subtract
+    sub     Rd, Rn, op2         ; Rd = Rn - op2
+
+    ; subtract with carry
+    sbc     Rd, Rn, op2         ; Rd = Rn - op2 - !carry
+
+    ; reverse subtract
+    rsb     Rd, Rn, op2         ; Rd = op2 - Rn
+
+    ; reverse subtract with carry
+    rsc     Rd, Rn, op2         ; Rd = op2 - Rn - !carry
+
+    ; copy register from constant, register, or generalized op2
+    mov     Rd, #imm8           ; Rd = imm8 (0 to 255)
+    mov     Rd, Rm              ; Rd = Rm
+    mov     Rd, op2             ; Rd = op2
+
+    ; copy register from bitwise NOT of register or generalized op2
+    mvn     Rd, Rm              ; Rd = ~Rm
+    mvn     Rd, op2             ; rd = ~op2
+
+    ; all support the S suffix
+</pre>
+<p>I noted earlier that in traditional RISC, there is no need for an architectural <code>MOV</code> instruction because you can treat it as a pseudo-instruction formed by adding zero to a register. Thumb-2 does include it as a special instruction because it has a 16-bit encoding in the case where you are loading a small positive constant, or if you are copying to a low register (even if the source register is high). There’s also a more traditional <code>op2</code> format that takes decoded 12-bit immediates or shifted registers.</p>
+<p>The most valuable part of reverse subtraction is that you can use it to subtract from a constant. In particular, you can negate a register by subtracting it from zero.</p>
+<p>There are also discarding versions of the subtraction instructions, where the sole purpose is setting flags.</p>
+<pre>    ; compare (compare Rn with op2)
+    cmp     Rn, op2             ; Set flags for Rn - op2
+
+    ; compare negative (compare Rn with -op2)
+    cmn     Rn, op2             ; Set flags for Rn + op2
+</pre>
+<p>The ARM processor designers are pulling a fast one here. In the <code>MVN</code> instruction, the <code>N</code> stands for <i>not</i>, meaning that it moved the bitwise negation of the <code>op2</code>. But in <code>CMN</code>, the <code>N</code> stands for <i>negative</i>, meaning that it compares the arithmetic negative of the <code>op2</code>.</p>
+<p>There’s an even more devious trap hiding in the <code>CMN</code> instruction, which I will discuss next time.</p>
+<p>Multiplication has a few variations. These are the 32 × 32 → 32 multiplies:</p>
+<pre>    ; multiply
+    mul     Rd, Rn, Rm          ; Rd = Rn * Rm
+    muls    Rd, Rn, Rm          ; Rd = Rn * Rm, set partial flags
+
+    ; multiply accumulate
+    mla     Rd, Rm, Rs, Rn      ; Rd = (Rm * Rs) + Rn
+
+    ; multiply subtract
+    mls     Rd, Rm, Rs, Rn      ; Rd = Rn - (Rm * Rs)
+</pre>
+<p>The only multiply or divide instruction that has the option to set flags is <code>MULS</code>. It updates the negative (N) and zero (Z) flags to match the result, but the carry (C) and overflow (V) flags are unmodified.</p>
+<p>And here are the 32 × 32 → 64 multiplies:</p>
+<pre>    ; unsigned multiply long
+    umull   Rdlo, Rdhi, Rm, Rs  ; Rdhi:Rdlo = Rm * Rs (unsigned)
+
+    ; signed multiply long
+    smull   Rdlo, Rdhi, Rm, Rs  ; Rdhi:Rdlo = Rm * Rs (signed)
+
+    ; unsigned multiply accumulate long
+    umlal   Rdlo, Rdhi, Rm, Rs  ; Rdhi:Rdlo = Rdhi:Rdlo + Rm * Rs (unsigned)
+
+    ; signed multiply accumulate long
+    smlal   Rdlo, Rdhi, Rm, Rs  ; Rdhi:Rdlo = Rdhi:Rdlo + Rm * Rs (signed)
+
+    ; unsigned multiply accumulate accumulate long
+    umaal   Rdlo, Rdhi, Rm, Rs  ; Rdhi:Rdlo = Rdhi + Rdlo + Rm * Rs (unsigned)
+</pre>
+<p>The “unsigned multiply accumulate accumulate long” instruction is a bit of an oddball. Its funny name reflects the fact that the registers of the output register pair are treated as separate integer inputs.</p>
+<p>Of the multiply instructions, I’ve seen the compiler use <code>MUL</code>, <code>MLA</code>, <code>UMULL</code> and <code>SMULL</code>. I have yet to see it use <code>UMLAL</code>, <code>SMLAL</code>, or <code>UMAAL</code>.</p>
+<p>There are also division instructions, but they are architecturally optional and raise an “invalid instruction” on processors that don’t support them.</p>
+<pre>    ; unsigned divide
+    udiv    Rd, Rn, Rm          ; Rd = Rn / Rm (unsigned)
+
+    ; signed divide
+    sdiv    Rd, Rn, Rm          ; Rd = Rn / Rm (signed)
+</pre>
+<p>The division instructions perform integer unsigned or signed division, with the result rounded toward zero. In the special case of signed division of <code>0x80000000 ÷ 0xFFFFFFFF</code>, the processor produces a result of <code>0x80000000</code> without trapping. By default, division by zero does not trap; it just returns zero. However, some revisions allow the operating system to enable trapping on division by zero. Windows enables trapping when the processor supports it.²</p>
+<p>If hardware support for division is not present, the instructions trap into the kernel, where the operation is emulated. Operating system code generally does not assume hardware division support, and division will call out to a helper function to perform the division.</p>
+<p>I’m skipping over the SIMD and multimedia instructions, like saturating arithmetic and parallel arithmetic. I have yet to see them in compiler-generated code.</p>
+<p>Next time, we’ll look at the lie hiding inside the <code>CMN</code> instruction.</p>
+<p><b>Bonus chatter</b>: Commenter Petteri Aimonen points out that even though the division operation does not produce the remainder, you can recover the remainder with just one additional instruction, thanks to the “multiply and subtract” instruction:</p>
+<pre>    sdiv    Rq, Rn, Rm          ; Rq = Rn / Rm (signed)
+    mls     Rr, Rq, Rm, Rn      ; Rr = Rn - (Rq * Rm) = Rn % Rm
+</pre>
+<p>In practice, the MSVC, gcc and clang compilers default to assuming that <code>sdiv</code> is an emulated instruction and performing the division manually rather than risking a trap. The emulated version produces the remainder for free as a by-product. If you tell them to assume armv7ve, then they will enable the native division instruction. The gcc and clang compilers will use <code>mls</code> to calculate the remainder. MSVC breaks it into separate <code>mul</code> and <code>subs</code> instructions.</p>
+<p>¹ Classic ARM also supports shifting by an amount provided by a fourth register, leading to instructions like</p>
+<pre>    ADD     Rd, Rn, Rm, LSL Rs  ; Rd = Rn + (Rm &lt;&lt; Rs)
+</pre>
+<p>² There is no dedicated “divide by zero” trap. Instead, if division by zero is attempted, the processor raises an “invalid instruction” trap. The trap handler is expected to parse the faulting instruction, identify it as a valid division instruction, and then realize that the divisor is zero.</p>
+
+
+</body>

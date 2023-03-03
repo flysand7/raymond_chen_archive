@@ -1,0 +1,162 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The mystery of the crash that seems to be on a <code>std::move</code> operation</h1>  <!-- .entry-meta -->
+
+<p>A customer was encountering a crash that appeared only on the ARM version of their program. Here’s a simplified version:</p>
+<pre>void polarity_test(std::shared_ptr&lt;Test&gt; test)
+{
+    test-&gt;harness-&gt;callAndReport([test2 = std::move(test)]() mutable
+    {
+        test2-&gt;reverse_polarity();
+        ::resume_on_main_thread([test3 = std::move(test2)]()
+        {
+            test3-&gt;reverse_polarity();
+        });
+    });
+}
+</pre>
+<p>They reported that the first line was crashing on the <code>std::move</code>:</p>
+<pre>    test-&gt;harness-&gt;callAndReport([test2 = <span style="border: solid 1px black;">std::move</span>(test)]() mutable
+</pre>
+<p>Now, <code>std::move</code> doesn’t actually generate any code. It just changes the reference from an lvalue reference to an rvalue reference, which is an operation that takes place entirely in the computer’s mind. There is no code generation to accompany it.</p>
+<p>The problem is somewhere else.</p>
+<p>Since the problem occurred only on one CPU architecture, it’s possible that there was a bug in the back-end code generator. But just to be safe, they contacted the compiler front-end team, the back-end team (for code generation), and the libraries team (for <code>shared_ptr</code>).</p>
+<p>I stepped in and pointed out that there was an order-of-evaluation dependency.</p>
+<pre>    <span style="border: solid 1px black;">test</span>-&gt;harness-&gt;callAndReport([<span style="border: solid 1px black;">test2 = std::move(test)</span>]() mutable
+</pre>
+<p>The left part of the statement reads from <code>test</code>. The lambda capture modifies <code>test</code> (by moving it to the captured variable <code>test2</code>).</p>
+<p>Historically, the order of evaluation of subexpressions is left unspecified for the most part, although a handful of operations define an order, most notably that short-circuiting expressions evaluate the first operand before the second (if at all).¹</p>
+<p>The traditional expression ordering rules do not require that deciding which function to call must occur before evaluating the parameters.</p>
+<p>The traditional dependency chart looks like this:²</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid 1px black;"><code>test</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>operator-&gt;</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>harness</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>operator-&gt;</code></td>
+<td> </td>
+<td style="border: solid 1px black;"><code>test2 = std::move(test)</code></td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>callAndReport</code></td>
+<td> </td>
+<td style="border: solid 1px black;">lambda constructed</td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+</tr>
+<tr>
+<td colspan="5" style="border: solid 1px black;">function call</td>
+</tr>
+</tbody>
+</table>
+<p>Since there is no dependency between the read of <code>test</code> on the left hand side and the modification of <code>test</code> on the right hand side, the operations could occur in either order.</p>
+<p>And then C++17 happened.</p>
+<p>C++17 added <a href="http://open-std.org/JTC1/SC22/WG21/docs/papers/2016/p0145r3.pdf"> additional order-of-evaluation rules beyond the traditional ones</a>: In the below expressions, <code>a</code> is evaluated before <code>b</code>:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Operation</th>
+<th>Description</th>
+</tr>
+<tr>
+<td><code>a(b)</code></td>
+<td>Function call</td>
+</tr>
+<tr>
+<td><code>a[b]</code></td>
+<td>Subscript operator</td>
+</tr>
+<tr>
+<td><code>a.*b</code><br/>
+<code>a-&gt;*b</code></td>
+<td>Pointer to member</td>
+</tr>
+<tr>
+<td><code>a &lt;&lt; b</code><br/>
+<code>a &gt;&gt; b</code></td>
+<td>Shifting</td>
+</tr>
+<tr>
+<td><code>b = a</code><br/>
+<code>b op= a</code></td>
+<td>Assignment<br/>
+(note: right to left)</td>
+</tr>
+</tbody>
+</table>
+<p>Personally, I find it interesting that the standard chose to evaluate the function before the arguments. In practice, it is more convenient to calculate the arguments first if the function is identified via pointer-chasing, since that can be done without disturbing many registers.</p>
+<p>Anyway, since function calls now evaluate the function before arguments, the order of evaluation starting in C++17 now requires that the <code>test</code> on the left hand side be evaluated before the <code>test2 = std::move(test)</code> in the lambda.</p>
+<p>So the question came down to what version of the language the customer is compiling with.</p>
+<p>The customer came back and said that they were using Visual Studio 2019, but in C++14 mode.</p>
+<p>So that explains it.</p>
+<p>Next time, we’ll look at potential fixes (beyond “upgrade to C++17”).</p>
+<p>¹ The compiler’s freedom to evaluate function arguments in any order leads to a case where the underlying architecture influences the order of operations. Stack-based parameters are more likely to be evaluated before register-based parameters: Once you evaluate the value of a register-based parameter, you have to find a place to keep it while you evaluate the other parameters. You can try to keep it in the register that will be used to pass the parameter (good), or you can try to keep it in another register temporarily (okay), or you can spill it and reload it just before the call (bad). If the other parameters are complicated to calculate, you may be forced to spill. On the other hand, a stack-based parameter is going to be spilled to the stack <i>anyway</i>, so you may as well just calculate it and spill it, and you’re done. You don’t have to burn a register to hold the parameter until the call.</p>
+<p>This means that even if the only thing you take into account is the calling convention, the optimal order of evaluation can vary between x86-32 (no register parameters, except possibly for <code>this</code>), x86-64/arm (four register parameters), and arm64 (eight register parameters).</p>
+<p>² Even though I showed <code>harness</code> as coming after the preceding <code>operator-&gt;</code> in the traditional ordering, that is not really a rule of the language, but rather an artifact of mental inlining. What really happened is</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid 1px black;"><code>test</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>operator-&gt;</code></td>
+<td> </td>
+<td style="border: solid 1px black;"><code>&amp;Test::harness</code></td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+</tr>
+<tr>
+<td colspan="3" style="border: solid 1px black;"><code>operator-&gt;*</code><br/>
+(produces <code>harness</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>But <code>&amp;Test::harness</code> has no dependencies on anything,</p>
+
+
+</body>

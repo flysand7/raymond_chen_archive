@@ -1,0 +1,109 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a co_await awaitable signal that can be awaited multiple times, part 5</h1>  <!-- .entry-meta -->
+
+<p>So far, we’ve been <a href="/code/creating-a-co-await-awaitable-signal-that-can-be-awaited-multiple-times-part-4" title="Creating a co_await awaitable signal that can be awaited multiple times, part 4"> creating an awaitable signal that can be awaited multiple times</a>.</p>
+<p>In the most recent incarnation, we reversed the list in order to approximate FIFO resume. Doing this at resume time means that the list of nodes gets walked twice, once when reversing, and once when resuming. Let’s fix this by keeping a separate pointer to the last pointer, so we can append nodes to the end of the list in <var>O</var>(1). This adds an extra pointer to the size of the <code>awaitable_<wbr/>event</code>, but we will earn that memory back by overloading the <code>last</code> pointer to indicate whether the event is signaled: Once the event is signaled, we will never append any nodes, so we will set <code>last</code> to <code>nullptr</code> to indicate that the event is signaled.</p>
+<p>The <code>last</code> member is a <code>std::atomic</code> because we access it outside the lock while another thread is potentially mutating it. The default accessors for <code>std::atomic</code> use <code>std::memory_<wbr/>order_<wbr/>seq_<wbr/>cst</code>, but we want <code>std::memory_<wbr/>order_<wbr/>relaxed</code>, since we don’t really mind the data race, as long as the read isn’t torn. To avoid having to write out <code>std::memory_<wbr/>order_<wbr/>relaxed</code> all the time, I’ll introduce a <code>relaxed_<wbr/>atomic</code> helper class.</p>
+<pre><span style="color: blue;">// new
+template&lt;typename T&gt;
+struct relaxed_atomic : std::atomic&lt;T&gt;
+{
+  using atomic = std::atomic&lt;T&gt;;
+  using atomic::atomic;
+  using atomic::load;
+  using atomic::store;
+
+  T load() const noexcept
+  { return atomic::load(std::memory_order_relaxed); }
+  void store(T value) noexcept 
+  { atomic::store(value, std::memory_order_relaxed); }
+
+  operator T() const noexcept { return load(); }
+  relaxed_atomic&amp; operator=(T value) noexcept
+  { store(value); return *this; }
+};</span>
+
+struct awaitable_event
+{
+  void set() const
+  { shared-&gt;set(); }
+
+  auto operator co_await() const noexcept
+  { return awaiter{ *shared }; }
+
+private:
+  struct node
+  {
+    node* next;
+    std::experimental::coroutine_handle&lt;&gt; handle;
+  };
+
+  struct state
+  {
+    <span style="color: red;">// <span style="text-decoration: line-through;">std::atomic_bool signaled =false;</span></span>
+    winrt::slim_mutex mutex;
+    node* head = nullptr;
+    <span style="color: blue;">relaxed_atomic&lt;node**&gt; last = &amp;head; // new</span>
+
+    void set()
+    {
+      node* rest = nullptr;
+      {
+        auto guard = winrt::slim_lock_guard(mutex);
+        <span style="color: blue;">last.store(nullptr, std::memory_order_relaxed); // new</span>
+        rest = std::exchange(head, nullptr);
+      }
+      <span style="color: red;">// <span style="text-decoration: line-through;">while (lifo) {</span></span>
+      <span style="color: red;">// <span style="text-decoration: line-through;">    auto n = lifo;</span></span>
+      <span style="color: red;">// <span style="text-decoration: line-through;">    lifo = std::exchange(n-&gt;next, fifo);</span></span>
+      <span style="color: red;">// <span style="text-decoration: line-through;">    fifo = n;</span></span>
+      <span style="color: red;">// <span style="text-decoration: line-through;">}</span></span>
+      while (rest) {
+        auto handle = rest-&gt;handle;
+        rest = rest-&gt;next;
+        handle();
+      }
+    }
+
+    bool await_ready() const noexcept
+    {
+      return <span style="color: blue;">!last.load(); // new</span>
+    }
+
+    bool await_suspend(node&amp; n) noexcept
+    {
+      auto guard = winrt::slim_lock_guard(mutex);
+      <span style="color: blue;">auto p = last.load();</span>
+      if (<span style="color: blue;">!p</span>) return false;
+      <span style="color: blue;">*p = &amp;n;
+      last = &amp;n.next;
+      n.next = nullptr;</span>
+      return true;
+    }
+
+    void await_resume() const noexcept { }
+  };
+
+  struct awaiter
+  {
+    state&amp; s;
+    node n;
+
+    bool await_ready() const noexcept { return s.await_ready(); }
+    bool await_suspend(
+      std::experimental::coroutine_handle&lt;&gt; handle) noexcept
+    {
+      n.handle = handle;
+      return s.await_suspend(n);
+    }
+
+    void await_resume() const noexcept { return s.await_resume(); }
+  };
+
+  std::shared_ptr&lt;state&gt; shared = std::make_shared&lt;state&gt;();
+};
+</pre>
+<p>There’s still a lot to say about this implementation (and the other implementations we’ve been looking at so far). We’ll take up some of the topics <a href="https://devblogs.microsoft.com/oldnewthing/20210308-00/?p=104938" title="Creating a co_await awaitable signal that can be awaited multiple times, part 6"> next time</a>.</p>
+
+
+</body>

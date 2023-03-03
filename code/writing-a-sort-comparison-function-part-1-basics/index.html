@@ -1,0 +1,106 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Writing a sort comparison function, part 1: basics</h1>  <!-- .entry-meta -->
+
+<p>I’ve noted in the past that <a href="/code/writing-a-sort-comparison-function" title="Writing a sort comparison function"> a sort comparison function must follow certain rules</a>, and if you violate those rules, <a href="/code/writing-a-sort-comparison-function-redux" title="Writing a sort comparison function, redux"> very strange things happen</a>. So what are some patterns for writing sort comparison functions that don’t break the rules?</p>
+<p>Most of the time, sorting can be reduced to key comparison:¹ From each element being sorted, you generate a <i>sort key</i>, and those sort keys are compared against each other.²</p>
+<p><b>Related reading</b>: <a href="/code/sorting-by-indices-part-2-the-schwartzian-transform" title="Sorting by indices, part 2: The Schwartzian transform"> Sorting by indices, part 2: The Schwartzian transform</a>.</p>
+<p>The easiest way to write a sort comparison function is to generate the sort keys, and then compare the keys.</p>
+<pre>// Assume some function called "key" that produces
+// the sort key from an object.
+
+// three-way comparison
+int compare_3way_for_sorting(T const&amp; a, T const&amp; b)
+{
+    int a_key = key(a);
+    ant b_key = key(b);
+
+    if (a_key &lt; b_key) return -1;
+    if (a_key &gt; b_key) return +1;
+    return 0;
+}
+
+// less-than comparison
+bool compare_less_for_sorting(T const&amp; a, T const&amp; b)
+{
+    return key(a) &lt; key(b);
+}
+</pre>
+<p>This reduces the problem to writing a sort key. Here’s an example:</p>
+<pre>// Key generator: Sort by total cost (price + tax)
+auto key(T const&amp; t)
+{
+    return t.price + t.tax;
+}
+</pre>
+<p>For a multi-level sort, you can return a <code>std::pair</code> or <code>std::tuple</code> with the most significant key as the first element.</p>
+<pre>// Key generator: Sort by length, then by width
+auto key(T const&amp; t)
+{
+    return std::make_pair(t.length, t.width);
+}
+
+// Key generator: Sort by length, then by width,
+// then by weight
+auto key(T const&amp; t)
+{
+    return std::make_tuple(t.size, t.width, t.weight);
+}
+</pre>
+<p>The <code>make_tuple</code> function copies its arguments, which you may want to avoid if the members are expensive to copy. One solution is to wrap the member in a <code>std::ref</code>:</p>
+<pre>// Key generator: Sort by name, then age
+auto key(T const&amp; t)
+{
+    return std::make_tuple(std::ref(t.name), t.age);
+}
+</pre>
+<p>Another is to use <code>std::forward_<wbr/>as_<wbr/>tuple</code> to make everything a reference.</p>
+<pre>// Key generator: Sort by name, then age
+auto key(T const&amp; t)
+{
+    return std::forward_as_tuple(t.name, t.age);
+}
+</pre>
+<p>The <code>std::forward_<wbr/>as_<wbr/>tuple</code> approach is dangerous, however, if a portion of the key comes from a temporary:</p>
+<pre>// Key generator: Sort by name, then area
+auto key(T const&amp; t)
+{
+    // Don't do this!
+    <i>return std::forward_as_tuple(t.name, t.height * t.width);</i>
+}
+</pre>
+<p>We saw some time ago that <a href="/code/what-s-up-with-std-piecewise-construct-and-std-forward-as-tuple" title="What's up with std::piecewise_construct and std::forward_as_tuple?"> <code>std::forward_<wbr/>as_<wbr/>tuple</code> captures everything as a reference</a>, so it will capture the second component as a reference to a temporary integer, and that temporary integer will be destroyed at the end of the full expression, leaving the reference dangling.</p>
+<p>If you inline the call to <code>std::forward_<wbr/>as_<wbr/>tuple</code> into <code>compare_<wbr/>less_<wbr/>for_<wbr/>sorting</code>, then the temporary will survive past the comparison:</p>
+<pre>bool compare_less_for_sorting(T const&amp; a, T const&amp; b)
+{
+    return std::forward_as_tuple(a.name, a.height * a.width) &lt;
+    return std::forward_as_tuple(b.name, b.height * b.width);
+}
+</pre>
+<p>But this is itself a violation of the principle of Don’t Repeat Yourself (DRY). So I guess that means <code>make_<wbr/>tuple</code> with judicious use of <code>std::ref</code> is the way to go.</p>
+<p>To avoid making the key generator visible outside the scope of the comparison function, you can declare it as a local captureless lambda:</p>
+<pre>bool compare_less_for_sorting(T const&amp; a, T const&amp; b)
+{
+    auto key = [](auto&amp;&amp; t) {
+        return std::make_tuple(std::ref(t.name), t.height * t.width);
+    };
+    return key(a) &lt; key(b);
+}
+</pre>
+<p>And then you can lambda-ize the comparison function, too:</p>
+<pre>void f(std::vector&lt;T&gt;&amp; v)
+{
+    auto key = [](auto&amp;&amp; t) {
+        return std::make_tuple(std::ref(t.name), t.height * t.width);
+    };
+    std::sort(v.begin(), v.end(), [key](auto&amp;&amp; t, auto&amp;&amp; b) {
+        return key(a) &lt; key(b);
+    });
+}
+</pre>
+<p>Note that even if you limit your use of <code>forward_<wbr/>as_<wbr/>tuple</code> to references to members of the objects being sorted, you have to consume the forwarded tuple immediately. Sorting may move the object, and once that happens, your forwarded references become invalid.</p>
+<p>Next time, we’ll look at what we could do if one of the sort keys is expensive to calculate.</p>
+<p>¹ And in fact, if your sorting does <i>not</i> reduce to key comparison, then it’s a clue that your sort function might not be valid.</p>
+<p>² Indeed, in the Python programming language, this is the <i>only</i> way to sort. The ability to provide a custom comparison function was removed in Python 3. Instead, you pass a function that produces a sort key, and the sort occurs on the keys.</p>
+
+
+</body>

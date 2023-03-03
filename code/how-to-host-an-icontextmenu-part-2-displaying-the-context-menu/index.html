@@ -1,0 +1,113 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to host an IContextMenu, part 2 – Displaying the context menu</h1>  <!-- .entry-meta -->
+
+<p><p>
+Instead of
+<a href="/oldnewthing/archive/2004/09/20/231739.aspx">
+invoking a fixed verb</a>,
+we’ll ask the user to choose
+from the context menu and invoke the result.
+</p>
+<p>
+Make these changes to the OnContextMenu function:
+</p>
+<pre>
+#define SCRATCH_QCM_FIRST 1
+#define SCRATCH_QCM_LAST  0x7FFF</pre></p>
+<p><font color="blue">#undef HANDLE_WM_CONTEXTMENU
+#define HANDLE_WM_CONTEXTMENU(hwnd, wParam, lParam, fn) \
+    ((fn)((hwnd), (HWND)(wParam), <font color="blue">GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)</font>), 0L)</font></p>
+<p><font color="blue">// WARNING! Incomplete and buggy! See discussion</font>
+void OnContextMenu(HWND hwnd, HWND hwndContext, <font color="blue">int</font> xPos, <font color="blue">int</font> yPos)
+{
+<font color="blue">  POINT pt = { xPos, yPos };
+  if (pt.x == -1 &amp;&amp; pt.y == -1) {
+    pt.x = pt.y = 0;
+    ClientToScreen(hwnd, &amp;pt);
+  }
+</font>
+  IContextMenu *pcm;
+  if (SUCCEEDED(GetUIObjectOfFile(hwnd, L”C:\\Windows\\clock.avi”,
+                   IID_IContextMenu, (void**)&amp;pcm))) {
+    HMENU hmenu = CreatePopupMenu();
+    if (hmenu) {
+      if (SUCCEEDED(pcm-&gt;QueryContextMenu(hmenu, 0,
+                             SCRATCH_QCM_FIRST, SCRATCH_QCM_LAST,
+                             CMF_NORMAL))) {
+        <font color="blue">int iCmd = TrackPopupMenuEx(hmenu, TPM_RETURNCMD,
+                                    pt.x, pt.y, hwnd, NULL);
+        if (iCmd &gt; 0) {
+          CMINVOKECOMMANDINFOEX info = { 0 };
+          info.cbSize = sizeof(info);
+          info.fMask = CMIC_MASK_UNICODE;
+          info.hwnd = hwnd;
+          info.lpVerb  = MAKEINTRESOURCEA(iCmd – SCRATCH_QCM_FIRST);
+          info.lpVerbW = MAKEINTRESOURCEW(iCmd – SCRATCH_QCM_FIRST);
+          info.nShow = SW_SHOWNORMAL;
+          pcm-&gt;InvokeCommand((LPCMINVOKECOMMANDINFO)&amp;info);
+        }</font>
+      }
+      DestroyMenu(hmenu);
+    }
+    pcm-&gt;Release();
+  }
+}
+
+<p>
+The first change addresses the first issue brought up in the
+<a href="/oldnewthing/archive/2004/09/21/232369.aspx">
+discussion of the WM_CONTEXTMENU message</a>
+and fixes the HANDLE_WM_CONTEXTMENU message.
+</p>
+<p>
+The second change addresses the second issue, and that’s the
+special handling of keyboard-invoked context menus.
+When we receive a keyboard-invoked context menu, we move it to
+the (0, 0) position of our client area.  This keeps the context
+menu displayed in a vaguely sane position.
+(If we were a container with objects, it would have been better
+to display the context menu over the selected sub-object.)
+</p>
+<p>
+The third change actually does what we’re talking about:
+Displaying the context menu to the user, collecting the result,
+and acting on it.
+</p>
+<p>
+You are certainly familiar with
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/resources/menus/menureference/menufunctions/trackpopupmenuex.asp">
+the TrackPopupMenuEx function</a>.
+Here we use the TPS_RETURNCMD flag to indicate that the item the
+user selected should be returned by the function instead of being
+posted as a WM_COMMAND to our window.
+</p>
+<p>
+This highlights the importance of the fact that
+SCRATCH_QCM_FIRST is 1 and not zero.
+If it were zero, then we wouldn’t be able to distinguish
+between the user selecting item zero and the user cancelling the menu.
+</p>
+<p>
+Once we are confident that the user has selected an item
+from the menu, we fill out a
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/structures/cminvokecommandinfoex.asp">
+CMINVOKECOMMANDEX structure</a>,
+specifying the user’s selection in the two verb fields and
+indicating the invocation point via the ptInvoke member.
+</p>
+<p>
+Note that when you invoke a command by menu ID, you must
+specify the <strong>offset</strong> of the menu item
+relative to the starting point passed to
+IContextMenu::QueryContextMenu.
+That’s why we subtracted SCRATCH_QCM_FIRST.
+</p>
+<p>
+When you run this program, you may notice that some things
+don’t quite work.  Most obviously, the Open With and Send To submenus
+don’t work, but there are more subtle bugs too.
+We’ll address them over the next few days.
+</p></p>
+
+
+</body>

@@ -1,0 +1,142 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Itanium processor, part 1: Warming up</h1>  <!-- .entry-meta -->
+
+<p>The Itanium may not have been much of a commercial success, but it is interesting as a processor architecture because it is different from anything else commonly seen today. It’s like learning a foreign language: It gives you an insight into how others view the world. </p>
+<p>The next two weeks will be devoted to an introduction to the Itanium processor architecture, as employed by Win32. (Depending on the reaction to this series, I might also do a series on the Alpha AXP.) </p>
+<p>I originally learned this information in order to be able to debug user-mode code as part of the <a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/12/18/10378851.aspx">massive port of several million lines of code from 32-bit to 64-bit Windows</a>, so the focus will be on being able to read, understand, and debug user-mode code. I won’t cover kernel-mode features since I never had to learn them. </p>
+<p><b>Introduction</b> </p>
+<p>The Itanium is a 64-bit EPIC architecture. EPIC stands for Explicitly Parallel Instruction Computing, a design in which work is offloaded from the processor to the compiler. For example, the compiler decides which operations can be safely performed in parallel and which memory fetches can be productively speculated. This relieves the processor from having to make these decisions on the fly, thereby allowing it to focus on the real work of processing. </p>
+<p><b>Registers overview</b> </p>
+<p>There are a lot of registers. </p>
+<ul>
+<li>128 general-purpose integer registers <var>r0</var> through <var>r127</var>,     each carrying 64 value bits and a trap bit.     We’ll learn more about the trap bit later. </li>
+<li>128 floating point registers <var>f0</var> through <var>f127</var>. </li>
+<li>64 predicate registers <var>p0</var> through <var>p63</var>. </li>
+<li>8 branch registers <var>b0</var> through <var>b7</var>. </li>
+<li>An instruction pointer, which the     <a href="http://msdn.microsoft.com/en-us/windows/hardware/gg463009.aspx">    Windows debugging engine</a>     for some reason calls <var>iip</var>.     (The extra “i” is for “insane”?) </li>
+<li>128 special-purpose registers, not all of which have been given meanings.     These are called “application registers” (<var>ar</var>) for some reason.     I will cover selected register as they arise during the discussion. </li>
+<li>Other miscellaneous registers we will not cover in this series. </li>
+</ul>
+<p>Some of these registers are further subdivided into categories like <i>static</i>, <i>stacked</i>, and <i>rotating</i>. </p>
+<p>Note that if you want to retrieve the value of a register with the Windows debugging engine, you need to prefix it with an at-sign. For example <code>? @r32</code> will print the contents of the <var>r32</var> register. If you omit the at-sign, then the debugger will look for a variable called <var>r32</var>. </p>
+<p>A notational note: I am using the register names assigned by the Windows debugging engine. The formal names for the registers are <var>gr#</var> for integer registers, <var>fr#</var> for floating point registers, <var>pr#</var> for predicate registers, and <var>br#</var> for branch registers. </p>
+<p><b>Static, stacked, and rotating registers</b> </p>
+<p>These terms describe how the registers participate in register renumbering. </p>
+<p><i>Static</i> registers are never renumbered. </p>
+<p><i>Stacked</i> registers are pushed onto a register stack when control transfers into a function, and they pop off the register stack when control transfers out. We’ll see more about this when we study the calling convention. </p>
+<p><i>Rotating</i> registers can be cyclically renumbered during the execution of a function. They revert to being stacked when the function ends (and are then popped off the register stack). We’ll see more about this when we study register rotation. </p>
+<p><b>Integer registers</b> </p>
+<p>Of the 128 integer registers, registers <var>r0</var> through <var>r31</var> are static, and <var>r32</var> through <var>r127</var> are stacked (but they can be converted to rotating). </p>
+<p>Of the static registers, Win32 assigns them the following mnemonics which correspond to their use in the Win32 calling convention. </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Mnemonic</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td><var>r0</var></td>
+<td></td>
+<td>Reads as zero (writes will fault)</td>
+</tr>
+<tr>
+<td><var>r1</var></td>
+<td><var>gp</var></td>
+<td>Global pointer</td>
+</tr>
+<tr>
+<td><var>r8</var>…<var>r11</var></td>
+<td><var>ret0</var>…<var>ret3</var></td>
+<td>Return values</td>
+</tr>
+<tr>
+<td><var>r12</var></td>
+<td><var>sp</var></td>
+<td>Stack pointer</td>
+</tr>
+<tr>
+<td><var>r13</var></td>
+<td></td>
+<td>TEB</td>
+</tr>
+</table>
+<p>Registers <var>r4</var> through <var>r7</var> are preserved across function calls. Well, okay, you should also preserve the stack pointer and the TEB if you know what’s good for you, and there are special rules for <var>gp</var> which we will discuss later. The other static variables are scratch (may be modified by the function). </p>
+<p>Register <var>r0</var> is a register that always contains the value zero. Writes to <var>r0</var> trigger a processor exception. </p>
+<p>The <var>gp</var> register points to the current function’s global variables. The Itanium has no absolute addressing mode. In order to access a global variable, you need to load it indirectly through a register, and the <var>gp</var> register points to the global variables associated with the current function. The <var>gp</var> register is kept up to date when code transfers between DLLs by means we’ll discuss later. (This is sort of a throwback to <!-- backref: MAKEPROCINSTANCE -->the old days of <code>MAKEPROCINSTANCE</code>.) </p>
+<p>Every integer register contains 64 value bits and one trap bit, known as not-a-thing, or <i>NaT</i>. The NaT bit is used by speculative execution to indicate that the register values are not valid. <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/01/19/60162.aspx">We learned a little about NaT some time ago</a>; we’ll discuss it further when we reach the topic of control speculation. The important thing to know about NaT right now is that if you take a register which is tagged as NaT and try to do arithmetic with it, then the NaT bit is set on the output register. Most other operations on registers tagged as NaT will raise an exception. </p>
+<p>The NaT bit means that accessing an uninitialized variable can <i>crash</i>. </p>
+<pre>
+void bad_idea(int *p)
+{
+ int uninitialized;
+ *p = uninitialized; // can crash here!
+}
+</pre>
+<p>Since the variable <var>uninitialized</var> is uninitialized, the register assigned to it might happen to have the NaT bit set, left over from previous execution, at which point trying to save it into memory raises an exception. </p>
+<p>You may have noticed that there are four return value registers, which means that you can return up to 32 bytes of data in registers. </p>
+<p><b>Floating point registers</b> </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td><var>f0</var></td>
+<td>Reads as 0.0 (writes will fault)</td>
+</tr>
+<tr>
+<td><var>f1</var></td>
+<td>Reads as 1.0 (writes will fault)</td>
+</tr>
+</table>
+<p>Registers <var>f0</var> through <var>f31</var> are static, and <var>f32</var> through <var>f127</var> are rotating. </p>
+<p>By convention, registers <var>f0</var> through <var>f5</var> and <var>f16</var> through <var>f31</var> are preserved across calls. The others are scratch. </p>
+<p>That’s about all I’m going to say about floating point registers, since they aren’t really where the Itanium architecture is exciting. </p>
+<p><b>Predicate registers</b> </p>
+<p>Instead of a flags register, the Itanium records the state of previous comparison operations in dedicated registers known as <i>predicates</i>. Each comparison operation indicates which predicates should hold the comparison result, and future instructions can test the predicate. </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td><var>p0</var></td>
+<td>Reads as <var>true</var> (writes are ignored)</td>
+</tr>
+</table>
+<p>Predicate registers <var>p0</var> through <var>p15</var> are static, and <var>p16</var> through <var>p63</var> are rotating. </p>
+<p>You can predicate almost any instruction, and the instruction will execute only if the predicate register is <var>true</var>. For example: </p>
+<pre>
+(p1) add ret0 = r32, r33
+</pre>
+<p>means, “If predicate <var>p1</var> is <var>true</var>, then set register <var>ret0</var> equal to the sum of <var>r32</var> and <var>r33</var>. If not, then do nothing.” The thing inside the parentheses is called the <i>qualifying predicate</i> (abbreviated <i>qp</i>). </p>
+<p>Instructions which execute unconditionally are internally represented as being conditional upon predicate register <var>p0</var>, since that register is always <var>true</var>. </p>
+<p>Actually, I lied when I said that the instruction will execute only if the qualifying predicate is <var>true</var>. There is one class of instructions which execute regardless of the state of the qualifying predicate; more on that later. </p>
+<p>The Win32 calling convention specifies that predicate registers <var>p0</var> through <var>p5</var> are preserved across calls, and <var>p6</var> through <var>p63</var> are scratch. </p>
+<p>There is a special pseudo-register called <var>preds</var> by the Windows debugging engine which consists of the 64 predicate registers combined into a single 64-bit value. This pseudo-register is used when code needs to save and restore the state of the predicate registers. </p>
+<p><b>Branch registers</b> </p>
+<p>The branch registers are used for indirect jump instructions. The only things you can do with branch registers are load them from an integer register, copy them to an integer register, and jump to them. In particular, you cannot load them directly from memory or do arithmetic on them. If you want to do any of those things, you need to do it with an integer register, then transfer it to a branch register. </p>
+<p>The Win32 calling convention assigns the following meanings to the branch registers: </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Mnemonic</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td><var>b0</var></td>
+<td><var>rp</var></td>
+<td>Return address</td>
+</tr>
+</table>
+<p>The return address register is sometimes called <var>br</var>, but the disassembler calls it <var>rp</var>, so that’s what we’ll call it. </p>
+<p>The return address register is set automatically by the processor when a <code>br.call</code> instruction is executed. </p>
+<p>By convention, registers <var>b1</var> through <var>b5</var> are preserved across calls, while <var>b6</var> and <var>b7</var> are scratch. (Exercise: Is <var>b0</var> preserved across calls?) </p>
+<p><b>Application registers</b> </p>
+<p>There are a large number of application registers, most of which are not useful to user-mode code. We’ll introduce the interesting ones as they arise. I’ve already mentioned one of them already: <a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/04/21/410397.aspx"><code>bsp</code> is the ia64’s second stack pointer</a>. </p>
+<p><b>Break</b> </p>
+<p>Okay, this was a whirlwind tour of the Itanium register set. I bet your head hurts already, and we haven’t even started coding yet! </p>
+<p>In fact, we’re not going to be coding for quite some time. <a href="https://blogs.msdn.microsoft.com/oldnewthing/20150728-00/?p=90811">Next time</a>, we’ll look at the instruction format. </p>
+
+
+</body>

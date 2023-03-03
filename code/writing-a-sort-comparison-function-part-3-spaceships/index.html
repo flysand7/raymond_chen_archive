@@ -1,0 +1,178 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Writing a sort comparison function, part 3: spaceships</h1>  <!-- .entry-meta -->
+
+<p>Last time, we wrote <a href="/code/writing-a-sort-comparison-function-part-2-avoid-unnecessary-expense" title="Writing a sort comparison function, part 2: avoid unnecessary expense"> a multi-level sort with deferred calculation of secondary keys</a>. Having to compare everything twice got cumbersome. We can do better with the C++20 spaceship operator.</p>
+<pre>// three-way comparison
+std::weak_ordering
+compare_3way_for_sorting(T const&amp; a, T const&amp; b)
+{
+    // First compare by name
+    std::weak_ordering cmp = a.name &lt;=&gt; b.name;
+    if (cmp != 0) return cmp;
+
+    // Names are equal, check connector names
+    cmp = a.GetConnector() &lt;=&gt; b.GetConnector();
+    if (cmp != 0) return cmp;
+
+    // Names and connector names are equal,
+    // manufacturing date is the last check.
+    cmp = LookupManufacturingDate(a.part_number) &lt;=&gt;
+          LookupManufacturingDate(b.part_number);
+    return cmp;
+}
+
+// less-than comparison
+bool compare_less_for_sorting(T const&amp; a, T const&amp; b)
+{
+    // First compare by name
+    std::weak_ordering cmp = a.name &lt;=&gt; b.name;
+    if (cmp != 0) return cmp &lt; 0;
+
+    // Names are equal, check connector names
+    cmp = a.GetConnector() &lt;=&gt; b.GetConnector();
+    if (cmp != 0) return cmp &lt; 0;
+
+    // Names and connector names are equal,
+    // manufacturing date is the last check.
+    cmp = LookupManufacturingDate(a.part_number) &lt;=&gt;
+          LookupManufacturingDate(b.part_number);
+    return cmp &lt; 0;
+}
+</pre>
+<p>Another way of writing this is</p>
+<pre>// three-way comparison
+std::weak_ordering
+compare_3way_for_sorting(T const&amp; a, T const&amp; b)
+{
+    std::weak_ordering cmp = a.name &lt;=&gt; b.name;
+    if (cmp == 0) cmp = a.GetConnector() &lt;=&gt; b.GetConnector();
+    if (cmp == 0) cmp = LookupManufacturingDate(a.part_number) &lt;=&gt;
+                        LookupManufacturingDate(b.part_number);
+    return cmp;
+}
+
+// less-than comparison
+bool compare_less_for_sorting(T const&amp; a, T const&amp; b)
+{
+    // First compare by name
+    std::weak_ordering cmp = a.name &lt;=&gt; b.name;
+    if (cmp == 0) cmp = a.GetConnector() &lt;=&gt; b.GetConnector();
+    if (cmp == 0) cmp = LookupManufacturingDate(a.part_number) &lt;=&gt;
+                        LookupManufacturingDate(b.part_number);
+    return cmp &lt; 0;
+}
+</pre>
+<p>And then we can use the <code>std::<wbr/>compare_<wbr/>weak_<wbr/>order_<wbr/>fallback</code> function to synthesize a missing three-way comparison:</p>
+<pre>std::weak_ordering
+compare_3way_for_sorting(T const&amp; a, T const&amp; b)
+{
+    auto cmp = std::compare_weak_order_fallback(a.name, b.name);
+    if (cmp == 0) cmp = std::compare_weak_order_fallback(a.GetConnector(), b.GetConnector());
+    if (cmp == 0) cmp = std::compare_weak_order_fallback(LookupManufacturingDate(a.part_number),
+                                                         LookupManufacturingDate(b.part_number));
+    return cmp;
+}
+
+// less-than comparison
+bool compare_less_for_sorting(T const&amp; a, T const&amp; b)
+{
+    auto cmp = std::compare_weak_order_fallback(a.name, b.name);
+    if (cmp == 0) cmp = std::compare_weak_order_fallback(a.GetConnector(), b.GetConnector());
+    if (cmp == 0) cmp = std::compare_weak_order_fallback(LookupManufacturingDate(a.part_number),
+                                                         LookupManufacturingDate(b.part_number));
+    return cmp &lt; 0;
+}
+</pre>
+<p>Next time, we’ll look at descending sorts.</p>
+<p><b>Bonus chatter</b>: There is high copy/pasta error risk because the left and right of the <code>&lt;=&gt;</code> operator differ only by the choice of <code>a</code> or <code>b</code>. Maybe we could use this helper:</p>
+<pre>template&lt;typename T, typename U = T&gt;
+struct successive_comparisons
+{
+    successive_comparisons(T&amp;&amp; left, U&amp;&amp; right) :
+        a(left), b(right) {}
+    T&amp;&amp; a;
+    U&amp;&amp; b;
+
+    template&lt;typename Lambda&gt;
+    auto compare(Lambda&amp;&amp; lambda)
+    { return lambda(a) &lt;=&gt; lambda(b); }
+};
+
+// I don't know why these deduction guides are necessary, but
+// it doesn't work if I omit them.
+template&lt;typename T, typename U = T&gt;
+successive_comparisons(T&amp;, U&amp;) -&gt; successive_comparisons&lt;T&amp;, U&amp;&gt;;
+
+template&lt;typename T, typename U = T&gt;
+successive_comparisons(T&amp;&amp;, U&amp;) -&gt; successive_comparisons&lt;T&amp;, U&gt;;
+
+template&lt;typename T, typename U = T&gt;
+successive_comparisons(T&amp;, U&amp;&amp;) -&gt; successive_comparisons&lt;T, U&amp;&gt;;
+
+template&lt;typename T, typename U = T&gt;
+successive_comparisons(T&amp;&amp;, U&amp;&amp;) -&gt; successive_comparisons&lt;T, U&gt;;
+
+// Avoid copy/pasta risk.
+std::weak_ordering
+compare_3way_for_sorting(T const&amp; a, T const&amp; b)
+{
+    auto s = successive_comparisons(a, b);
+
+    std::weak_ordering
+        cmp = s.compare([](auto&amp;&amp; v) { return v.name; });
+    if (cmp == 0)
+        cmp = s.compare([](auto&amp;&amp; v) { return v.GetConnector(); });
+    if (cmp == 0)
+        cmp = s.compare([](auto&amp;&amp; v) { return LookupManufacturingDate(v.part_number); });
+    return cmp;
+}
+</pre>
+<p>Unfortunately, this copies the <code>v.name</code> unnecessarily since the deduced lambda return type is as if by <code>auto</code>, which is a copy, not a reference. To avoid the copy, you must ask for a reference return, which is either by naming the type explicitly or by using <code>decltype(auto)</code> with a parenthesized return value.</p>
+<pre>std::weak_ordering
+compare_3way_for_sorting(T const&amp; a, T const&amp; b)
+{
+    auto s = successive_comparisons(a, b);
+
+    std::weak_ordering
+        cmp = s.compare([](auto&amp;&amp; v) <span style="color: blue;">-&gt; decltype(auto)</span> { return <span style="color: blue;">(v.name)</span>; });
+    if (cmp == 0)
+        cmp = s.compare([](auto&amp;&amp; v) { return v.GetConnector(); });
+    if (cmp == 0)
+        cmp = s.compare([](auto&amp;&amp; v) { return LookupManufacturingDate(v.part_number); });
+    return cmp;
+}
+</pre>
+<p>I’m not sure this is an improvement. It just replaces one copy/pasta risk for another.</p>
+<p>Also, this helper class prevents you from reusing intermediates from previous comparison steps.</p>
+<pre>std::weak_ordering
+compare_3way_for_sorting(T const&amp; a, T const&amp; b)
+{
+    auto s = successive_comparisons(a, b);
+
+    std::weak_ordering
+        cmp = s.compare([](auto&amp;&amp; v) -&gt; decltype(auto) { return (v.name); });
+    if (cmp == 0)
+        cmp = s.compare([](auto&amp;&amp; v) { return v.GetConnector(); });
+    if (cmp == 0)
+        cmp = s.compare([](auto&amp;&amp; v) { return v.GetConnector().InstallDate(); });
+    return cmp;
+}
+</pre>
+<p>We have to call <code>GetConnector()</code> a second time in order to look up its installation date, even though we had already done so earlier. With the explicit cascading version, we could reuse the results of the previous lookup:</p>
+<pre>std::weak_ordering
+compare_3way_for_sorting(T const&amp; a, T const&amp; b)
+{
+    std::weak_ordering cmp = a.name &lt;=&gt; b.name;
+    if (cmp != 0) return cmp;
+
+    auto connectorA = a.GetConnector();
+    auto connectorB = b.GetConnector();
+    cmp = connectorA &lt;=&gt; connectorB;
+    if (cmp != 0) return cmp;
+ 
+    return connectorA.InstallDate() &lt;=&gt; connectorB.InstallDate();
+}
+</pre>
+
+
+</body>

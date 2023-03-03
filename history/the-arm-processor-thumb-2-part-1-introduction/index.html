@@ -1,0 +1,260 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ARM processor (Thumb-2), part 1: Introduction</h1>  <!-- .entry-meta -->
+
+<p>I’ve run out of historical processors that Windows supported, so I’m moving on to processors that are still in support. First up in this series is 32-bit ARM.</p>
+<p>As with all of these series, I’m focusing on how Windows 10¹ uses the processor in user mode, with particular focus on the instructions you are most likely to encounter in compiler-generated code.</p>
+<p>The classic ARM processor generally follows the principles of Reduced Instruction Set Computing (RISC): It has fixed-length instructions, a large uniform register set, and the only operations on memory are loading and storing. However, Windows doesn’t use the ARM processor in classic mode, so some of the above statements aren’t true any more.</p>
+<p>Windows uses the ARM in a mode known as Thumb-2 mode.² In Thumb-2 mode, some classic features are not available, such as most forms of predication. The Thumb-2 mode instruction encoding is variable-length, with a mix of 16-bit instructions and 32-bit instructions. Every instruction is required to begin on an even address, but 32-bit instructions are permitted to straddle a 4-byte boundary.</p>
+<p>In addition to classic ARM mode, Thumb mode, and Thumb-2 mode, there are also <a href="https://en.wikipedia.org/wiki/Jazelle"> Jazelle</a> mode (which executes Java bytecode) and ThumbEE mode. I’m not going to cover them at all in this series, since Windows doesn’t use them. <b>From now on, I’m talking only about Thumb-2 mode</b>.</p>
+<p>The ARM architecture permits little-endian or big-endian operation. Windows runs the processor in little-endian mode and disables the <code>SETEND</code> instruction, so you can’t switch to big-endian even if you tried.</p>
+<p>The architectural terms for data sizes are</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Term</th>
+<th>Size</th>
+</tr>
+<tr>
+<td>byte</td>
+<td> 8 bits</td>
+</tr>
+<tr>
+<td>halfword</td>
+<td>16 bits</td>
+</tr>
+<tr>
+<td>word</td>
+<td>32 bits</td>
+</tr>
+<tr>
+<td>doubleword</td>
+<td>64 bits</td>
+</tr>
+</tbody>
+</table>
+<p>The ARM instruction set has 16 general-purpose integer registers, each 32 bits wide, and formally named <var>r0</var> through <var>r15</var>. They are conventionally used as follows:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Register</th>
+<th>Mnemonic</th>
+<th>Meaning</th>
+<th>Preserved?</th>
+</tr>
+<tr>
+<td><var>r0</var></td>
+<td>(<var>a1</var>)</td>
+<td>argument 1 and return value</td>
+<td>No</td>
+</tr>
+<tr>
+<td><var>r1</var></td>
+<td>(<var>a2</var>)</td>
+<td>argument 2 and second return value</td>
+<td>No</td>
+</tr>
+<tr>
+<td><var>r2</var></td>
+<td>(<var>a3</var>)</td>
+<td>argument 3</td>
+<td>No</td>
+</tr>
+<tr>
+<td><var>r3</var></td>
+<td>(<var>a4</var>)</td>
+<td>argument 4</td>
+<td>No</td>
+</tr>
+<tr>
+<td><var>r4</var></td>
+<td>(<var>v1</var>)</td>
+<td> </td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>r5</var></td>
+<td>(<var>v2</var>)</td>
+<td> </td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>r6</var></td>
+<td>(<var>v3</var>)</td>
+<td> </td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>r7</var></td>
+<td>(<var>v4</var>)</td>
+<td> </td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>r8</var></td>
+<td>(<var>v5</var>)</td>
+<td> </td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>r9</var></td>
+<td>(<var>v6</var>)</td>
+<td> </td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>r10</var></td>
+<td>(<var>v7</var>)</td>
+<td> </td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>r11</var></td>
+<td><var>fp</var> (<var>v8</var>)</td>
+<td>frame pointer</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>r12</var></td>
+<td>(<var>ip</var>)</td>
+<td>intraprocedure call scratch</td>
+<td>Volatile</td>
+</tr>
+<tr>
+<td><var>r13</var></td>
+<td><var>sp</var></td>
+<td>stack pointer</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><var>r14</var></td>
+<td><var>lr</var></td>
+<td>link register</td>
+<td>No</td>
+</tr>
+<tr>
+<td><var>r15</var></td>
+<td><var>pc</var></td>
+<td>program counter</td>
+<td>N/A</td>
+</tr>
+</tbody>
+</table>
+<p>The names in parentheses are used by some assemblers, but Microsoft’s toolchain doesn’t use those names. Some operating systems use <var>r9</var> for special purposes (usually as a table of contents/gp or a thread-local pointer), but Windows does not assign it any special meaning. On Windows, it is available for general use, as long as the value is preserved across calls.</p>
+<p>The meanings of the last three registers (<var>sp</var>, <var>lr</var>, <var>pc</var>) are architectural.³ The rest are convention. We’ll learn more about register conventions later.</p>
+<p>The processor enforces 4-byte alignment for the <var>sp</var> register. Operations which misalign the stack result in unpredictable behavior.⁴ Windows requires further that the stack be 8-byte aligned at function call boundaries.</p>
+<p>The ARM is notable for putting the program counter in the general-purpose register category, a feature which has been called “<a href="https://groups.google.com/g/comp.arch/c/xf7eQ0e8TZQ/m/cLFC_uYiWkcJ">overly uniform</a>” by noted processor architect <a href="https://www.linkedin.com/in/mitch-alsup-8691537"> Mitch Alsup</a>. The program counter register reads as the address of the current instruction plus four: The +4 is due to the pipelining of the original ARM implementation: By the time the pipeline gets to fetching the value of the register, the CPU has already advanced the instruction pointer four bytes. Even though later implementations of ARM have deeper pipelining, they continue to emulate the original pipelining for the purpose of reading from the program counter.⁵ Writing to the program counter acts like a jump instruction: The next instruction to be executed is the one at the address you wrote.</p>
+<p>This magic treatment of the program counter register is a bit mind-blowing when you first encounter it.</p>
+<p>Floating point and SIMD support (Neon) is optional in the ARM architecture, but Windows requires both. This means that you also have 32 double-precision (64-bit) floating point registers, which can also be split into 64 single-precision (32-bit) floating point registers.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<th colspan="2">Registers</th>
+<th>Preserved?</th>
+</tr>
+<tr>
+<td><var>s0 </var> + <var>s1 </var></td>
+<td><var>d0 </var></td>
+<td rowspan="4" valign="center">No</td>
+</tr>
+<tr>
+<td><var>s2 </var> + <var>s3 </var></td>
+<td><var>d1 </var></td>
+</tr>
+<tr>
+<td>⋮</td>
+<td>⋮</td>
+</tr>
+<tr>
+<td><var>s14</var> + <var>s15</var></td>
+<td><var>d7 </var></td>
+</tr>
+<tr>
+<td><var>s16</var> + <var>s17</var></td>
+<td><var>d8 </var></td>
+<td rowspan="3" valign="center">Yes</td>
+</tr>
+<tr>
+<td>⋮</td>
+<td>⋮</td>
+</tr>
+<tr>
+<td><var>s30</var> + <var>s31</var></td>
+<td><var>d15</var></td>
+</tr>
+<tr>
+<td><var>s32</var> + <var>s33</var></td>
+<td><var>d16</var></td>
+<td rowspan="3" valign="center">No</td>
+</tr>
+<tr>
+<td>⋮</td>
+<td>⋮</td>
+</tr>
+<tr>
+<td><var>s62</var> + <var>s63</var></td>
+<td><var>d31</var></td>
+</tr>
+</tbody>
+</table>
+<p>The ARM does not have branch delay slots. You can breathe a sigh of relief.</p>
+<p>The flags register is formally known as the Application Program Status Register (APSR). These flags are available to user mode:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Mnemonic</th>
+<th>Meaning</th>
+<th>Notes</th>
+</tr>
+<tr>
+<td>N</td>
+<td>Negative</td>
+<td>Set if the result is negative</td>
+</tr>
+<tr>
+<td>Z</td>
+<td>Zero</td>
+<td>Set if the result is zero</td>
+</tr>
+<tr>
+<td>C</td>
+<td>Carry</td>
+<td>Multiple purposes</td>
+</tr>
+<tr>
+<td>V</td>
+<td>Overflow</td>
+<td>Signed overflow</td>
+</tr>
+<tr>
+<td>Q</td>
+<td>Saturation</td>
+<td>Accumulated overflow</td>
+</tr>
+<tr>
+<td>GE[n]</td>
+<td>Greater than or equal to</td>
+<td>4 flags (SIMD)</td>
+</tr>
+</tbody>
+</table>
+<p>The overflow flag records whether the most recent operation resulted in signed overflow. The saturation flag is used by multimedia instructions to accumulate whether any overflow occurred since it was last cleared. The GE flags record the result of SIMD operations. Flags are not preserved across calls.</p>
+<p>Under the Windows ABI, there is an 8-byte red zone beneath the stack pointer. However, you’ll never see the compiler using it because the red zone is reserved. It’s there for intrusive profilers.</p>
+<p>Intrusive profilers inject code into your binary to update hit counts. The ARM does not have an absolute addressing mode; access to memory is always indirect through registers. Therefore, the profiler needs to be able to “borrow” a register in order to access memory, and it does so by saving the current contents of two temporary registers to the red zone. This frees up just enough registers to be able to update profiling information.</p>
+<pre>    str     r12, [sp, #-4]  ; save r12 into the red zone
+    str     r0,  [sp, #-8]  ; save r0  into the red zone
+
+    ; We can now use r12 and r0 to update profiling statistics.
+    ... do profiling stuff with r12 and r0 ...
+
+    ; All done. Restore the registers we borrowed.
+    ldr     r0,  [sp, #-8]  ; recover r0  from the red zone
+    ldr     r12, [sp, #-4]  ; recover r12 from the red zone
+</pre>
+<p>¹ Windows CE also supported ARM, it supported both Thumb-2 mode and classic ARM, so <a href="https://docs.microsoft.com/en-us/previous-versions/windows/embedded/ms933779(v=msdn.10)" title="ARM Calling Sequence Specification (Windows CE 5.0)"> its ABI was different</a>. This series covers the Windows 10 ABI.</p>
+<p>² Thumb-2 is an expansion of an earlier instruction set known unsurprisingly as Thumb. (Exercise: Why didn’t they call it Thumb-1?) The idea of using a 16-bit instruction set <a href="https://devblogs.microsoft.com/oldnewthing/20190805-00/?p=102749"> came from the SuperH</a>, and ARM licensed it from Hitachi for use in Thumb mode.</p>
+<p>³ The use of <var>r13</var> as the stack pointer is not architectural in classic ARM, but it is architectural in Thumb-2. Doing so frees up space in the tight 16-bit instruction encoding space.</p>
+<p>⁴ In processor-speak, <i>unpredictable</i> means that the processor can perform any operations it likes, provided they are permissible at the current privilege level. For example, an <i>unpredictable</i> operation in user mode can set all registers to 42. But it cannot perform privileged operations, and the result cannot be dependent upon state that is not visible to user mode.</p>
+<p>⁵ As with branch delay slots, the +4 effect of reading from the program counter is another example of how a clever hack in a processor’s original architecture turns into a compatibility constraint for future implementations.</p>
+
+
+</body>

@@ -1,0 +1,115 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The dangers of playing focus games when handling a WM_KILLFOCUS message</h1>  <!-- .entry-meta -->
+
+<p><p>
+I had noted last year that
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/04/19/115912.aspx">
+<code>WM_KILLFOCUS</code> is the wrong time to do field validation</a>.
+Here’s another example of how messing with the focus during a
+<code>WM_KILLFOCUS</code> message can create confusion.
+</p>
+<p>
+Consider an edit control that displays feedback via a balloon tip.
+For example, password edit controls often warn you if you’re typing
+your password while CapsLock is in effect.
+One of the things you probably want to do is to remove the balloon
+tip if the user moves focus to another control, since there’s no
+point telling the user about a problem with something they aren’t
+using.
+You might be tempted to subclass the edit control and do
+something like this:
+</p>
+<pre>
+LRESULT CALLBACK EditSubclass(
+    HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+  switch (uMsg) {
+  …
+  case WM_KILLFOCUS:
+    if (hwndBalloonTip) {
+      DestroyWindow(hwndBalloonTip);
+      hwndBalloonTip = NULL;
+    }
+    break;
+  …
+  }
+  return CallWindowProc(prevWndProc, hwnd, uMsg, wParam, lParam);
+}
+</pre>
+<p>
+When you give this code a shot, it works great…
+unless the user clicks <strong>on the balloon tip itself</strong>
+the edit control’s caret (the blinking insertion point thingie) disappears.
+What happened?
+</p>
+<p>
+What happened is that you gummed up the focus change process by
+destroying the window that focus was going to!
+The focus change process goes like this:
+</p>
+<ul>
+<li>Put focus on new focus window.
+<li>Send WM_KILLFOCUS to old focus window (if any).
+<li>Send WM_SETFOCUS to new focus window (if any).
+</li></li></li></ul>
+<p>
+But in the second step, we <strong>destroyed the new focus window</strong>.
+When the focus window is destroyed, the window manager tries to find a new
+focus window, and it settles upon the edit control itself.
+This starts a recursive focus change cycle,
+telling the edit control that it now has focus again.
+</p>
+<p>
+Let’s look at the flow in this nested focus change scenario
+when the user clicks on the tooltip window.
+</p>
+<ul>
+<li>Put focus on tooltip.
+<li>Send WM_KILLFOCUS to edit control.
+    <ul>
+<li>EditSubclass destroys the tooltip.
+        <ul>
+<li>Window manager puts focus on the edit control.
+        <li>Nobody to send WM_KILLFOCUS to.
+        <li>Send WM_SETFOCUS to edit control.
+            <ul>
+<li>EditSubclass passes WM_SETFOCUS to the original window procedure.
+            </li></ul>
+</li></li></li></ul>
+<li>EditSubclass passes WM_KILLFOCUS to the original window procedure.
+    </li></li></ul>
+<li>Send WM_SETFOCUS to tooltip – fails (tooltip was destroyed).
+</li></li></li></ul>
+<p>
+Do you see the problem yet?
+</p>
+<p>
+Look at the message traffic as it reaches the original edit control window
+procedure:
+</p>
+<ul>
+<li>WM_SETFOCUS (from the nested focus change)
+<li>WM_KILLFOCUS (from the original focus change)
+</li></li></ul>
+<p>
+As far as the edit control is concerned, it gained focus then lost it.
+Therefore, no caret, since the edit control displays a caret only when
+it has focus, and your recursive focus changing has resulted in the
+edit control thinking it doesn’t have focus even though it does.
+</p>
+<p>
+There are many ways out of this mess.
+</p>
+<p>
+First, notice that you don’t need to subclass the edit control;
+you can just react to the <code>EN_KILLFOCUS</code> notification.
+Second, you can respond to the <code>EN_KILLFOCUS</code> by
+posting yourself a message and destroying the tooltip on receipt
+of that posted message.
+By doing it via a posted message,
+you avoid the recursive focus change since your work is now being
+done outside a focus change cycle.
+</p></p>
+
+
+</body>

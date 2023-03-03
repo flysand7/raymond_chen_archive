@@ -1,0 +1,33 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What does it mean when I get an access violation at a very low address when entering a critical section?</h1>  <!-- .entry-meta -->
+
+<p><b>Warning</b>: This article talks about implementation details which can change at any time. The information provided is for debugging and diagnostic purposes only. </p>
+<p>A customer found that their server program occasionally crashes in the internal function <code>Rtlp­Wait­On­Critical­Section</code> trying to dereference the address <code>0x00000014</code>. </p>
+<pre>
+7789dde3 ff4014          inc     dword ptr [eax+14h]
+</pre>
+<p>The dereference was due to a null pointer in the <code>EAX</code> register. This was particularly difficult to debug because the problem usually didn’t surface until the program had been running continuously for a week or more. </p>
+<p>The customer chased the null pointer backwards and found that it came from the <code>Debug­Info</code> field of the <code>RTL_</code><code>CRITICAL_</code><code>SECTION</code> structure. </p>
+<pre>
+typedef struct _RTL_CRITICAL_SECTION
+{
+                                             // value in memory:
+     PRTL_CRITICAL_SECTION_DEBUG DebugInfo;  // 0x00000000
+     LONG LockCount;                         // 0xFFFFFFFC
+     LONG RecursionCount;                    // 0x00000000
+     PVOID OwningThread;                     // 0x00000000
+     PVOID LockSemaphore;                    // 0x00005CDC
+     ULONG SpinCount;                        // 0x00000000
+} RTL_CRITICAL_SECTION, *PRTL_CRITICAL_SECTION;
+</pre>
+<p>The customer confirmed that, yes, the <code>Debug­Info</code> of the critical section they were trying to enter was indeed null. </p>
+<p>Although the customer didn’t do it in their application (at least not knowingly), they did try a test application which passed the <code>CRITICAL_</code><code>SECTION_</code><code>NO_</code><code>DEBUG_</code><code>INFO</code> flag to the <code>Initialize­Critical­Section­Ex</code> function, in the hopes of inducing a null pointer for the <code>Debug­Info</code>, but it didn’t work. When initialized in that way, the <code>Debug­Info</code> was set to <code>0xFFFFFFFF</code>. </p>
+<p>Is it possible that this is a critical section that was initialized with the traditional <code>Initialize­Critical­Section</code> function, but the attempt to allocate the debug info failed, so the kernel left it null? </p>
+<p>No, that’s not why the the <code>Debug­Info</code> is null. If a critical section has no debug info (either explicitly requested as such with the <code>CRITICAL_</code><code>SECTION_</code><code>NO_</code><code>DEBUG_</code><code>INFO</code> flag, or because the system couldn’t allocate any debug info), then the <code>Debug­Info</code> is set to the special value <code>0xFFFFFFFF</code>. The <code>Debug­Info</code> for a valid initialized critical section is never null. </p>
+<p>So what does it mean when the <code>Debug­Info</code> is null? The most likely reason is that you are using an uninitialized critical section. Either you never initialized it, or you deleted an initialized critical section (which resets it back to the uninitialized state). </p>
+<p>Other evidence that you have an uninitialized critical section is that the critical section is locked, yet has no owner. Furthermore, the spin count is zero, which occurs only on uniprocessor systems. I suspect the server they are running the program on has more than one core. (Heck, my <i>phone</i> has more than one core.) </p>
+<p><b>Bonus reading</b>: <a href="https://docs.microsoft.com/en-us/windows-hardware/drivers/debugger/displaying-a-critical-section">Displaying a critical section in the debugger</a>. </p>
+<p><b>Related</b>: <a href="https://blogs.msdn.microsoft.com/oldnewthing/20050701-11/?p=35123">I hope you werent using those undocumented critical section fields</a>. </p>
+
+
+</body>

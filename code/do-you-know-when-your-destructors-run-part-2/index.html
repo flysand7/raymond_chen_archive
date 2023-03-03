@@ -1,0 +1,63 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Do you know when your destructors run? Part 2.</h1>  <!-- .entry-meta -->
+
+<p>
+Continuing from
+<a href="http://weblogs.asp.net/oldnewthing/archive/2004/05/20/135841.aspx">yesterday</a>,
+here’s another case where you have to watch your destructors.
+Yesterday’s theme was destructors that run at the wrong time.
+Today, we’re going to see destructors that don’t run at all!
+</p>
+<p>
+Assume there’s an ObjectLock class which
+takes a lock in its constructor
+and releases it in its destructor.</p>
+<pre>
+DWORD ThreadProc(LPVOID p)
+{
+  ... do stuff ...
+  ObjectLock lock(p);
+  ... do stuff ...
+  return 0;
+}
+</pre>
+<p>
+Pretty standard stuff.
+The first batch of stuff is done without the lock,
+and the second batch is done inside the lock.
+When the function returns, the lock is automatically released.
+</p>
+<p>
+But suppose somebody adds a little code to this function like this:</p>
+<pre>
+DWORD ThreadProc(LPVOID p)
+{
+  ... do stuff ...
+  ObjectLock lock(p);
+  ...
+  if (p-&gt;cancelled) ExitThread(1);
+  ...
+  return 0;
+}
+</pre>
+<p>
+The code change was just to add an early exit if the object was
+cancelled.
+</p>
+<p>
+But when does that ObjectLock destructor run?
+</p>
+<p>
+It runs at the <code>return</code> statement, since that’s when the
+<code>lock</code> goes out of scope.  In particular, it is
+<strong>not</strong> run before you call <code>ExitThread</code>.
+</p>
+<p>
+Result: You left an object locked permanently.
+</p>
+<p>
+You can imagine how variations on this code could lead to
+resource leaks or other problems.</p>
+
+
+</body>

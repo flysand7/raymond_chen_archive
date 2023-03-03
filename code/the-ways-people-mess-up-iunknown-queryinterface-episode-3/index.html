@@ -1,0 +1,76 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ways people mess up IUnknown::QueryInterface, episode 3</h1>  <!-- .entry-meta -->
+
+<p>
+Today we’ll
+combine information you already know,
+some of which I covered in
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/03/26/96777.aspx">
+The ways people mess up IUnknown::QueryInterface</a>
+with additional clues from
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/02/05/68017.aspx">
+The layout of a COM object</a>.
+There’s still not enough information for you to solve the problem
+entirely on your own,
+but maybe you can demonstrate your nascent
+psychic debugging powers and solve the problem.
+</p>
+<p>
+A customer contacted the shell team because their shell extension
+was causing the shell to crash.
+Perhaps they were doing something wrong, but they couldn’t see what.
+The crash looked like this:
+</p>
+<pre>
+eax=cccccccc ebx=02b31798 ecx=0008db64 edx=02b26348 esi=001ea7fc edi=02b26348
+eip=76381427 esp=0008db28 ebp=0008db30 iopl=0         nv up ei pl nz na pe nc
+cs=001b  ss=0023  ds=0023  es=0023  fs=003b  gs=0000             efl=00000206
+76381427 8b08            mov     ecx,dword ptr [eax]  ds:0023:cccccccc=????????
+</pre>
+<p>
+Your next hint is that the crash takes place while the shell
+is trying to invoke a COM method.
+</p>
+<p>
+What you should recognize is that this is either at the fetch
+of a COM object’s vtable or at the fetch of the pointer to
+the <code>IUnknown::QueryInterface</code> method
+(which is the first function in the vtable of any COM object).
+</p>
+<p>
+Either way, we obviously have a bad COM object pointer.
+The next hint is that the pointer was the result of a call
+to <code>IUnknown::QueryInterface</code>:
+</p>
+<pre>
+ISomeInterface* psi;
+punkObj-&gt;QueryInterface(IID_ISomeInterface, (void**)&amp;psi);
+...
+</pre>
+<p>
+If you prefer to speak ATL, it would be something like
+</p>
+<pre>
+CComQIPtr&lt;ISomeInterface&gt; spsi(punkObj);
+...
+</pre>
+<p>
+Either way, the problem is that the <code>punkObj</code>
+responded to <code>IUnknown::QueryInterface</code>
+by putting the special debugging value <code>0xCCCCCCCC</code>
+into the output pointer rather than following the rules for
+<code>IUnknown::QueryInterface</code> which require you either
+to succeed and produce a valid object pointer
+or to fail and set the output pointer to <code>NULL</code>.
+</p>
+<p>
+The object in question came from the customer’s shell extension.
+After we pointed out to the customer that their
+<code>IUnknown::QueryInterface</code> implementation did not adhere
+to the interface contract,
+all further communication ceased.
+We never did get any acknowledgement or even a word of thanks.
+Maybe they were too embarrassed.</p>
+
+
+</body>

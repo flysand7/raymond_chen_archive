@@ -1,0 +1,33 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why do property sheets sometimes take a first-chance exception?</h1>  <!-- .entry-meta -->
+
+<p>Reader cmonachan asked <a href="http://blogs.msdn.com/oldnewthing/pages/407234.aspx#409986"> why <code>CPropertySheet::DoModal</code> can cause a first-chance exception</a>. This is mentioned in <a href="http://support.microsoft.com/kb/q158552/"> Knowledge Base article 158552</a>. But why take the exception in the first place?
+ First off, let’s take MFC out of the picture. The first-chance exception is coming from the property sheet manager. MFC is just the middle-man.
+ Okay, so why the first-chance exception? It’s not obviously backwards compatibility, since property sheets were new for Windows 95; there was no old property sheet manager to be compatible with.
+ But yes, it was for compatibility. Not with an imaginary “earlier version” of the property sheet manager, but with real honest-to-goodness dialog box editing tools.
+ Property sheets are <a href="http://blogs.msdn.com/oldnewthing/archive/2004/07/30/201988.aspx"> nested dialogs</a>. The styles for nested dialogs must include <code>DS_CONTROL</code> and <code>WS_CHILD</code>. What’s more, it can’t contain styles like <code>DS_ABSALIGN</code> and <code>WS_CAPTION</code> which make no sense for child windows. Most of those styles you can convince your dialog box editing tool to add or remove, but <code>DS_CONTROL</code> is a different story. Since this flag was new for Windows 95, no existing dialog box editing tool supported it.
+ Okay, so now you’re designing a property sheet manager. What do you do with dialog box templates that have the wrong style?
+ <b>Proposal 1</b>: Don’t write any special code. Just create the dialog box on the assumption that the caller set the styles correctly.
+ The upside of this proposal is that it’s the least amount of work. The downside is that if the caller messes up, they just get bizarre behavior (property sheet pages that pop out of the frame, for example) and have no real clue what they did wrong, much less how they can go about fixing it.
+ <b>Proposal 2</b>: Write special code to detect incorrect dialog boxes and reject them. Okay, well instead of bizarre behavior, the caller just gets nothing. Still not much help.
+ There’s a serious problem with the first two proposals: How do you get people to set the styles correctly if their tools aren’t capable of doing it? Fire up the dialog box editing tool you’ve been using and it won’t have a check-box for <code>DS_CONTROL</code> because your dialog box editing tool was written for Windows 3.1, and <code>DS_CONTROL</code> didn’t exist then.
+ You might say, “Well, those people will have to upgrade their dialog box editing tools in order to write programs for Windows 95.” The problem with that position is that it creates a chicken-and-egg problem. It’s 1994. Windows 95 Beta 1 has just come out. A company wants to “catch the wave” and have a Windows 95 version of their program ready on the day that Windows 95 hits the shelves, so they anxiously install the beta, install the beta SDK, they see this cool new property sheet thing so they sit down to give it a shot and… they’re stuck. They can’t use property sheets because they need the Windows 95 version of Microsoft Visual C++ or Delphi or Turbo Pascal. But those products don’t exist yet because Windows 95 isn’t out yet. And it’s not just the development tools that would need to be upgraded. It’s also the translation tools and all the other tools that manipulate dialog box templates.
+ This isn’t an imaginary scenario. The Windows 95 team faced this very problem! In order to use these cool property sheet things, they needed to add the <code>DS_CONTROL</code> style to their dialog boxes, but Visual C++ didn’t support this style since that style existed only in an operating system that hadn’t been released yet.
+ <b>Proposal 3</b>: Write special code to detect incorrect dialog boxes and fix them so that people can start writing Windows 95 programs <i>now</i>.
+ To fix the dialog box requires modifying the styles, which means modifying the dialog template, and that’s where the first-chance exception comes from. When the property sheet manager writes to the dialog template to fix the style, a first-chance exception is raised because resources start out as read-only pages. The kernel catches this exception and write-enables the page, then returns <code>EXCEPTION_CONTINUE_EXECUTION</code> to say, “I fixed the problem, try it again.”
+ That’s where the first-chance exception comes from.</p>
+<p> How do you avoid this first-chance exception? Easy. Get your dialog box styles right in the first place. If you get the styles right, then the property sheet manager won’t have to fix them. For the record, here are the style requirements for property sheets: </p>
+<table border="1">
+<tr>
+<th>Must have</th>
+<th>Optional</th>
+</tr>
+<tr>
+<td valign="baseline"><code>DS_3DLOOK<br/>               DS_CONTROL<br/>               WS_CHILD<br/>               WS_TABSTOP</code></td>
+<td valign="baseline"><code>DS_SHELLFONT<br/>               DS_LOCALEDIT<br/>               WS_CLIPCHILDREN</code></td>
+</tr>
+</table>
+<p> Any other <code>WS_*</code> and <code>DS_*</code> styles not listed above are forbidden. (Note that I’m talking about styles and not extended styles.) </p>
+
+
+</body>

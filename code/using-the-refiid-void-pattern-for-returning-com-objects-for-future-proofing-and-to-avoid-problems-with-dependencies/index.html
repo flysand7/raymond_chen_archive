@@ -1,0 +1,191 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using the REFIID/void** pattern for returning COM objects for future-proofing and to avoid problems with dependencies</h1>  <!-- .entry-meta -->
+
+<p>
+Suppose you have a function that creates a reference to a COM object:
+</p>
+<pre>
+// pixie.h
+STDAPI CreateShellItemFromPixieDust(
+    const PIXIEDUST *ppd,
+    IShellItem **ppsi);
+</pre>
+<p>
+There are a few issues with this design.
+</p>
+<p>
+First of all, it requires that whoever uses your header file
+must have included <code>shlobj.h</code> first,
+since that’s where <code>IShell­Item</code> is defined.
+You could solve that problem by putting
+<code>#include &lt;shlobj.h&gt;</code> at the top of
+<code>pixie.h</code>,
+but that creates its own problems.
+For example, many header files alter their behavior based
+on symbols that have been <code>#define</code>d,
+and including that other header file as part of
+<code>pixie.h</code> means that it’s going to use the settings
+that were active at the time <code>pixie.h</code> was included
+(which may not be what the clients of your header file are expecting).
+For example:
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;pixie.h&gt;
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/24/10387757.aspx">STRICT_TYPED_ITEMIDS</a>
+#include &lt;shlobj.h&gt;
+</pre>
+<p>
+This program wants to use strict typed item IDs,
+so it defines the magic symbol before including
+<code>shlobj.h</code>.
+Unfortunately, that request is ignored because
+the <code>pixie.h</code> header file secretly included
+<code>shlobj.h</code> prematurely.
+</p>
+<p>
+This can get particularly messy if somebody wants to
+include <code>shlobj.h</code> with particular preprocessor
+tricks temporarily active.
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;pixie.h&gt;
+// The WINDOWDATA structure added in Windows Vista conflicts
+// with the one we defined back in 2000, so rename it to
+// WINDOWDATA_WINDOWS.
+#define WINDOWDATA WINDOWDATA_WINDOWS
+#include &lt;shlobj.h&gt;
+#undef WINDOWDATA
+// Here's our version of WINDOWDATA
+#include &lt;contosotypes.h&gt;
+</pre>
+<p>
+This code works around a naming conflict that was created
+when Windows Vista added a structure called
+<code>WINDOW­DATA</code> to <code>shlobj.h</code>.
+The application already had a structure with the same name,
+so it has to rename the one in <code>shlobj.h</code> to
+some other name to avoid a redefinition error.
+</p>
+<p>
+If you made <code>pixie.h</code> include
+<code>shlobj.h</code> on its own,
+it would do so without this fancy renaming, and the
+developers of that code will curse and say something like this:
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+// The WINDOWDATA structure added in Windows Vista conflicts
+// with the one we defined back in 2000, so rename it to
+// WINDOWDATA_WINDOWS.
+#define WINDOWDATA WINDOWDATA_WINDOWS
+<font color="blue">// pixie.h secretly includes shlobj.h so we have to put its #include
+// under WINDOWDATA protection.
+#include &lt;pixie.h&gt;</font>
+#include &lt;shlobj.h&gt;
+#undef WINDOWDATA
+// Here's our version of WINDOWDATA
+#include &lt;contosotypes.h&gt;
+</pre>
+<p>
+Another problem with the
+<code>Create­Shell­Item­From­Pixie­Dust</code>
+function is that it hard-codes the output interface to
+<code>IShell­Item</code>.
+When everybody moves on to
+<code>IShell­Item2</code>,
+all the callers will have to
+follow the
+<code>Create­Shell­Item­From­Pixie­Dust</code>
+call with a <code>Query­Interface</code> to get the interface
+they really want.
+(Which, if your object is out-of-process,
+could mean another round trip to the server.)
+</p>
+<p>
+The solution to both of these problems is to simply make the
+caller specify what type of object they want.
+</p>
+<pre>
+// pixie.h
+STDAPI CreateShellItemFromPixieDust(
+    const PIXIEDUST *ppd,
+    REFIID riid,
+    void **ppv);
+</pre>
+<p>
+Now that we are no longer mentioning
+<code>IShell­Item</code> explicitly,
+we don’t need to include <code>shlobj.h</code> any more.
+And if the caller wants <code>IShell­Item2</code>,
+they can just ask for it.
+</p>
+<p>
+Your creation function used to look like this:
+</p>
+<pre>
+STDAPI CreateShellItemFromPixieDust(
+    const PIXIEDUST *ppd,
+    IShellItem **ppsi)
+{
+    *ppsi = nullptr;
+    IShellItem *psiResult;
+    HRESULT hr = ... do whatever ...;
+    if (SUCCEEDED(hr))
+    {
+       *ppsi = psiResult;
+    }
+    return hr;
+}
+</pre>
+<p>
+You simply have to tweak the way you return the pointer:
+</p>
+<pre>
+STDAPI CreateShellItemFromPixieDust(
+    const PIXIEDUST *ppd,
+    <font color="blue">REFIID riid,
+    void **ppv</font>)
+{
+    *ppv = nullptr;
+    IShellItem *psiResult;
+    HRESULT hr = ... do whatever ...;
+    if (SUCCEEDED(hr))
+    {
+       <font color="blue">hr = psiResult-&gt;QueryInterface(riid, ppv);
+       psiResult-&gt;Release();</font>
+    }
+    return hr;
+}
+</pre>
+<p>
+Callers of your function would go from
+</p>
+<pre>
+IShellItem *psi;
+hr = CreateShellItemFromPixieDust(ppd, &amp;psi);
+</pre>
+<p>
+to
+</p>
+<pre>
+IShellItem *psi;
+hr = CreateShellItemFromPixieDust(ppd, <font color="blue">IID_PPV_ARGS(&amp;psi)</font>);
+</pre>
+<p>
+If the caller decides that they really want an
+<code>IShell­Item2</code>,
+they merely have to change their variable declaration;
+the call to the creation function is unchanged.
+</p>
+<pre>
+<font color="blue">IShellItem2 *psi;</font>
+hr = CreateShellItemFromPixieDust(ppd, IID_PPV_ARGS(&amp;psi));
+</pre>
+
+
+</body>

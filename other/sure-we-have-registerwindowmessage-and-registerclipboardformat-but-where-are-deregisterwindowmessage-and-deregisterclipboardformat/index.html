@@ -1,0 +1,27 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Sure, we have RegisterWindowMessage and RegisterClipboardFormat, but where are DeregisterWindowMessage and DeregisterClipboardFormat?</h1>  <!-- .entry-meta -->
+
+<p>The <code>Register­Window­Message</code> function lets you create your own custom messages that are globally unique. But how do you free the message format when you’re done, so that the number can be reused for another message? (Similarly, <code>Register­Clipboard­Format</code> and clipboard formats.) </p>
+<p>You don’t. There is no <code>Deregister­Window­Message</code> function or <code>Deregister­Clipboard­Format</code> function. Once allocated, a registered window message and registered clipboard format hangs around until you log off. </p>
+<p>There is room for around 16,000 registered window messages and registered clipboard formats, and in practice exhaustion of these pools of numbers is not an issue. Even if every program registers 100 custom messages, you can run 160 unique programs before running into a problem. And most people don’t even have 160 different programs installed in the first place. (And if you do, you almost certainly don’t run all of them!) In practice, the number of registered window messages is well under 1000. </p>
+<p>A customer had a problem with exhaustion of registered window messages. “We are using a component that uses the <code>Register­Window­Message</code> function to register a large number of unique messages which are constantly changing. Since there is no way to unregister them, the registered window message table eventually fills up and things start failing. Should we use <code>Global­Add­Atom</code> and <code>Global­Delete­Atom</code> instead of <code>Register­Window­Message</code>? Or can we use <code>Global­Delete­Atom</code> to delete the message registered by <code>Register­Window­Message</code>?” </p>
+<p>No, you should not use <code>Global­Add­Atom</code> to create window messages. The atom that comes back from <code>Global­Add­Atom</code> comes from the global atom table, which is different from the registered window message table. The only way to get registered window messages is to call <code>Register­Window­Message</code>. Say you call <code>Global­Add­Atom("X")</code> and you get atom 49443 from the global atom table. Somebody else calls <code>Register­Window­Message("Y")</code> and they get registered window message number 49443. You then post message 49443 to a window, and it thinks that it is message Y, and bad things happen. </p>
+<p>And you definitely should not use <code>Global­Delete­Atom</code> in a misguided attempt to deregister a window message. You’re going to end up deleting some unrelated atom, and things will start going downhill. </p>
+<p>What you need to do is fix the component so it does not register a lot of window messages with constantly-changing names. Instead, encode the uniqueness in some other way. For example, instead of registering a hundred messages of the form <code>Contoso user N logged on</code>, just register a single <code>Contoso user logged on</code> message and encode the user number in the <code>wParam</code> and <code>lParam</code> payloads. Most likely, one or the other parameter is already being used to carry nontrivial payload information, so you can just add the user number to that payload. (And this also means that your program won’t have to keep a huge table of users and corresponding window messages.) </p>
+<p><b>Bonus chatter</b>: It is the case that properties added to a window via <code>Set­Prop</code> use global atoms, as indicated by the documentation. This is an implementation detail that got exposed, so now it’s contractual. And it was a bad idea, <a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/05/02/8447913.aspx">as I discussed earlier</a>. </p>
+<p>Sometimes, people try to get clever and manually manage the atoms used for storing properties. They manually add the atom, then access the property by atom, then remove the properties, then delete the atom. This is a high-risk maneuver because there are so many things that can go wrong. For example, you might delete the atom prematurely (unaware that it was still being used by some other window), then the atom gets reused, and now you have a property conflict. Or you may have a bug that calls <code>Global­Delete­Atom</code> for an atom that was not obtained via <code>Global­Add­Atom</code>. (Maybe you got it via <code>Global­Find­Atom</code> or <code>Enum­Props</code>.) </p>
+<p>I’ve even seen code that does this: </p>
+<pre>
+atom = GlobalAddAtom(name);
+
+// Some apps are delete-happy and run around deleting atoms they shouldn't.
+// If they happen to delete ours by accident, things go bad really fast.
+// Prevent this from happening by bumping the atom refcount a few extra
+// times so accidental deletes won't destroy it.
+GlobalAddAtom(name);
+GlobalAddAtom(name);
+</pre>
+<p>So we’ve come full circle. There is a way to delete an unused atom, but people end up deleting them incorrectly, so this code tries to make the atom undeletable. <a href="http://blogs.msdn.com/oldnewthing/archive/2008/04/16/8398400.aspx">Le Chatelier’s Principle strikes again</a>. </p>
+
+
+</body>

@@ -1,0 +1,86 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Writing a compound marshaler</h1>  <!-- .entry-meta -->
+
+<p>We left off our discussion of marshaling with a discussion of the recursive nature of marshaling. Let’s demonstrate with a simple object that in turn contains other objects.</p>
+<pre>class CompoundObject : public IMarshal /* ... and other interfaces */
+{
+public:
+  // QueryInterface, AddRef, and Release left as an exercise
+
+private:
+  int32_t m_value;
+  ComPtr&lt;IThing&gt; thing;
+};
+</pre>
+<p>Maybe you decide that this object should be marshaled by shallow copy, so you want to copy the <code>int32_t</code> and copy the reference to the <code>thing</code>. Therefore, the marshal size is <code>sizeof(m_value)</code> plus whatever the marshal size of <code>thing</code> turns out to be.¹</p>
+<pre>  STDMETHODIMP GetMarshalSizeMax(
+    REFIID riid, void* pv, DWORD dwDestContext,
+    void* pvDestContext, DWORD mshlflags,
+    LPDWORD size)
+  {
+    if (ShouldMarshalByValue(dwDestContext)) {
+      <span style="color: blue;">DWORD thingSize;
+      RETURN_IF_FAILED(CoGetMarshalSizeMax(&amp;thingSize, __uuidof(thing.Get()), thing.Get(),
+                                           dwDestContext, pvDestContext, mshlflags));
+      *size = sizeof(m_value) + thingSize;</span>
+      return S_OK;
+    }
+
+    ComPtr&lt;IMarshal&gt; marshal;
+    RETURN_IF_FAILED(CoGetStandardMarshal(riid, CastToUnknown(), dwDestContext,
+                                          pvDestContext, mshlflags, &amp;marshal));
+    RETURN_IF_FAILED(marshal-&gt;GetMarshalSizeMax(riid, pv, dwDestContext,
+                                          pvDestContext, mshlflags, size));
+    return S_OK;
+  }
+</pre>
+<p>Marshaling the interface copies the integer and then marshals the <code>thing</code>:</p>
+<pre>  STDMETHODIMP MarshalInterface(
+    IStream* pstm,
+    REFIID riid, void* pv, DWORD dwDestContext,
+    void* pvDestContext, DWORD mshlflags)
+  {
+    if (ShouldMarshalByValue(dwDestContext)) {
+      RETURN_IF_FAILED(pstm-&gt;Write(&amp;m_value, sizeof(m_value), nullptr));
+      <span style="color: blue;">return CoMarshalInterface(pstm, __uuidof(thing.Get()), thing.Get(),
+                                dwDestContext, pvDestContext, mshlflags);</span>
+    }
+
+    ComPtr&lt;IMarshal&gt; marshal;
+    RETURN_IF_FAILED(CoGetStandardMarshal(riid, CastToUnknown(), dwDestContext,
+                                          pvDestContext, mshlflags, &amp;marshal));
+    RETURN_IF_FAILED(marshal-&gt;MarshalInterface(pstm, riid, pv, dwDestContext,
+                                          pvDestContext, mshlflags));
+    return S_OK;
+  }
+</pre>
+<p>Unmarshaling the interface recovers the integer and then unmarshals the <code>thing</code>:</p>
+<pre>  STDMETHODIMP UnmarshalInterface(IStream* pstm, REFIID riid, void** ppv)
+  {
+    *ppv = nullptr;
+    ULONG actual;
+    RETURN_IF_FAILED(pstm-&gt;Read(&amp;m_value, sizeof(m_value), &amp;actual));
+    RETURN_HR_IF(E_FAIL, actual != sizeof(m_value));
+    <span style="color: blue;">RETURN_IF_FAILED(CoUnmarshalInterface(IID_PPV_ARGS(&amp;thing));</span>
+    return QueryInterface(riid, ppv);
+  }
+</pre>
+<p>And releasing the marshal data skips over the integer and then releases the marshal data for the <code>thing</code>:</p>
+<pre>  STDMETHODIMP ReleaseMarshalData(IStream* pstm)
+  {
+    RETURN_IF_FAILED(pstm-&gt;Seek({ sizeof(m_value), 0 }, STREAM_SEEK_CUR, nullptr);
+    <span style="color: blue;">RETURN_IF_FAILED(CoReleaseMarshalData(pstm));</span>
+    return S_OK;
+  }
+</pre>
+<p>Each of the methods that operate on the marshal data must leave the stream pointer at the end of the current marshaler’s data, so that the next method can resume where the previous one left off.</p>
+<p>So far, we haven’t been using the <code>mshlflags</code>. That will come into play when our marshal data requires cleanup. We’ll investigate that next time.</p>
+<p>¹ In practice, I probably would have avoided the temporary variable:</p>
+<pre>      RETURN_IF_FAILED(CoGetMarshalSizeMax(size, __uuidof(thing.Get()), thing.Get(),
+                                           dwDestContext, pvDestContext, mshlflags));
+      *size += sizeof(m_value);
+</pre>
+<p>For expository purposes, I calculated the size by calculate the size of each piece separately and adding them together at the end. This makes the code look a bit more consistent with the other cases that marshal and unmarshal the integer before the inner object.</p>
+
+
+</body>

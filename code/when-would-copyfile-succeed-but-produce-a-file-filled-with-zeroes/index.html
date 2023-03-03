@@ -1,0 +1,18 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When would CopyFile succeed but produce a file filled with zeroes?</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that they very rarely encounter cases where they used the <code>Copy­File</code> function to copy a file from a network location to the local system, the function reports success, but when they go to look at the file, it’s filled with zeroes instead of actual file data. They were wondering what could cause this situation. They suspected that the computer may have rebooted and wanted to know whether file contents are flushed to disk under those conditions.</p>
+<p>When the <code>Copy­File</code> function returns success, it does not mean that the data has reached physical media. It means that the data was written to the cache. The customer didn’t specify whether the reboot was a crash or an organized restart. If the system crashed, then any unwritten data in the cache is lost. On the other hand, if the reboots through the normal shutdown-and-reboot process, then the cache will be written out as part of the shutdown.</p>
+<p>The customer wondered whether passing the <code>COPY_</code><code>FILE_</code><code>NO_</code><code>BUFFERING</code> would cover the crash scenario.</p>
+<p>A member of the file system team explained that the <code>COPY_</code><code>FILE_</code><code>NO_</code><code>BUFFERING</code> flag tells the system not to keep data in memory, but rather send it straight to the device. This flag was recommended for large files (which don’t fit in RAM anyway), but it’s a bad idea for small files, since every file will have to wait for the device to respond before the system can move on to the next file. You’ll have to experiment to find the breakeven point for your specific data set and device.</p>
+<p>Note, however, that the <code>COPY_</code><code>FILE_</code><code>NO_</code><code>BUFFERING</code> doesn’t solve the problem.</p>
+<p>For example, the system might crash while the file copy is still in progress. The <code>Copy­File</code> function creates a 4GB file (say), but manages to copy only 1GB of data into it before crashing. The other 3GB was never copied even though the file claims to be 4GB in size.</p>
+<p>Another possibility is that all the file data makes it to the device, but the metadata does not get written to the device before the crash. The <code>Copy­File</code> returned success, but all of the bookkeeping didn’t make it to the device.</p>
+<p>Even if you call <code>Flush­File­Buffers</code>, the system could crash before <code>Flush­File­Buffers</code> returns.</p>
+<p>One possible way to address these problems is to copy the file to a temporary name, flush the file buffers, and then rename the file to its final name. The downside of this is that it forces synchronous writes to the device, which slows down your overall workflow, so it’s not a cheap algorithm to use.</p>
+<p>But let’s step back. Is there a way to avoid slowing down the common case just because there’s a rare problem case?¹</p>
+<p>A higher-level solution may be in order: The next time your program runs, you can detect that it did not shut down properly. When that happens, hash the file contents and compare it to the expected value. This moves the expensive operation to the rare case, allowing the file copy to proceed at normal speed.</p>
+<p>¹ We’re assuming that system crashes are rare. If they’re not rare, then I think you have bigger problems.</p>
+
+
+</body>

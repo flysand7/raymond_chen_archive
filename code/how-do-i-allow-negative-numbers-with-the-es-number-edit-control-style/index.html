@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I allow negative numbers with the <code>ES_NUMBER</code> edit control style?</h1>  <!-- .entry-meta -->
+
+<p>The <code>ES_</code><code>NUMBER</code> edit control style limits typed input to digits, but what if you also want to accept negative numbers? How can we extend¹ <code>ES_</code><code>NUMBER</code> to accept the minus sign? </p>
+<p>The <code>ES_</code><code>NUMBER</code> edit control style works by altering the behavior of the edit control when it receives a <code>WM_</code><code>CHAR</code>. You can do that too! </p>
+<p>Subclass the edit control and handle the <code>WM_</code><code>CHAR</code> message by checking whether the character is a digit or a minus sign. If not, then beep and return. Otherwise, let the message through. </p>
+<pre>
+LRESULT CALLBACK SignedIntegerSubclassProc(
+    HWND hwnd,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR uIdSubclass,
+    DWORD_PTR dwRefData)
+{
+ switch (uMsg) {
+ case WM_NCDESTROY:
+  RemoveWindowSubclass(hwnd, SignedIntegerSubclassProc, uIdSubclass);
+  break;
+
+ <font color="blue">case WM_CHAR:
+  {
+   wchar_t ch = (wchar_t)wParam;
+   if (ch &lt; L' ') break;                // let control character through
+   else if (ch == L'-') break;          // let hyphen-minus through
+   else if (ch == L'\x2212') break;     // let Unicode minus sign through
+   else if (<!-- backref: How can I check in Win32 whether a Unicode character is any kind of digit? -->IsUnicodeDigit(ch)) break;  // let digit through
+   MessageBeep(0);                      // otherwise invalid
+   return 0;
+  }</font>
+ }
+
+ return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+}
+
+BOOL EnforceSignedIntegerEdit(HWND hwnd)
+{
+ return SetWindowSubclass(hwnd, SignedIntegerSubclassProc, 0, 0);
+}
+</pre>
+<p>If the user entered a character, then we let it through if it is one of the following: </p>
+<ul>
+<li>A control character, to permit <kbd>Ctrl+A</kbd>,     <kbd>Ctrl+C</kbd>, <kbd>Bksp</kbd>, <kbd>Tab</kbd>,     and so on.</li>
+<li>Unicode character U+002D HYPHEN-MINUS, which is what     most people think of as a minus sign.</li>
+<li>Unicode character U+2212 MINUS SIGN, which is a true     minus sign.</li>
+</ul>
+<p>¹ As noted in the documentation, the <code>ES_</code><code>NUMBER</code> edit control style doesn’t prevent the user from putting non-digits into the edit control by other means, like pasting with <kbd>Ctrl</kbd>+<kbd>V</kbd>. The exercise is to extend the existing behavior of the <code>ES_</code><code>NUMBER</code> style, not to fix it to cover all the other scenarios. Our technique has the same defects as <code>ES_</code><code>NUMBER</code>, but at least it’s the same defects. </p>
+
+
+</body>

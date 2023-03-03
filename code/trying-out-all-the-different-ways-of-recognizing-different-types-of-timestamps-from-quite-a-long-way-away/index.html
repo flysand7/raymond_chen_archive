@@ -1,0 +1,72 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Trying out all the different ways of recognizing different types of timestamps from quite a long way away</h1>  <!-- .entry-meta -->
+
+<p>Today’s Little Program takes a 64-bit integer and tries to interpret it <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/09/05/54806.aspx">in all the various timestamp formats</a>. This comes in handy when you have extracted a timestamp from a crash dump and want to see it in a friendly format. </p>
+<pre>
+using System;
+
+class Program
+{
+ static void TryFormat(string format, Func&lt;DateTime&gt; func)
+ {
+  try
+  {
+   DateTime d = func();
+   Console.WriteLine("{0} {1}", format, d);
+  }
+  catch (ArgumentException)
+  {
+   Console.WriteLine("{0} - invalid", format);
+  }
+ }
+</pre>
+<p>The <code>Try­Format</code> method executes the passed-in function inside a try/catch block. If the function executes successfully, then we print the result. If it raises an argument exception, then we declare the value as invalid. </p>
+<pre>
+ static DateTime DateTimeFromDosDateTime(long value)
+ {
+  if ((ulong)value &gt; 0x00000000FFFFFFFF) {
+   throw new ArgumentOutOfRangeException();
+  }
+  int intValue = (int)value;
+  int year = (intValue &gt;&gt; 25) &amp; 127;
+  int month = (intValue &gt;&gt; 21) &amp; 15;
+  int day = (intValue &gt;&gt; 16) &amp; 31;
+  int hour = (intValue &gt;&gt; 11) &amp; 31;
+  int minute = (intValue &gt;&gt; 5) &amp; 63;
+  int second = (intValue &lt;&lt; 1) &amp; 63;
+  return new DateTime(1980 + year, month, day, hour, minute, second);
+ }
+</pre>
+<p>The <code>Date­Time­From­Dos­Date­Time</code> function treats the 64-bit value as a 32-bit date/time stamp in MS-DOS format. Assuming the value fits in a 32-bit integer, we extract the bitfields corresponding to the year, month, day, hour, minute, and second, and construct a <code>Date­Time</code> from it. </p>
+<pre>
+ public static void Main(string[] args)
+ {
+  if (args.Length &lt; 1) return;
+
+  long value = <!-- backref: Parsing a string as a 64-bit integer, somehow -->ParseLongSomehow(args[0]);
+
+  Console.WriteLine("Timestamp {0} (0x{0:X}) could mean", value);
+
+  TryFormat("Unix time",
+    () =&gt; DateTime.FromFileTimeUtc(<a href="http://blogs.msdn.com/b/brada/archive/2003/07/30/50205.aspx">10000000 * value + 116444736000000000</a>));
+  TryFormat("UTC FILETIME",
+    () =&gt; DateTime.FromFileTimeUtc(value));
+  TryFormat("Local FILETIME",
+    () =&gt; DateTime.FromFileTime(value));
+  TryFormat("UTC DateTime",
+    () =&gt; new DateTime(value, DateTimeKind.Utc));
+  TryFormat("Local DateTime",
+    () =&gt; new DateTime(value, DateTimeKind.Local));
+  TryFormat("Binary DateTime",
+    () =&gt; DateTime.FromBinary(value));
+  TryFormat("MS-DOS Date/Time",
+    () =&gt; DateTimeFromDosDateTime(value));
+  TryFormat("OLE Automation Date/Time",
+    () =&gt; DateTime.FromOADate(<a href="http://blogs.msdn.com/b/oldnewthing/archive/2015/06/22/10623021.aspx">BitConverter.Int64BitsToDouble</a>(value)));
+ }
+}
+</pre>
+<p>Once we have parsed out the command line, we pump the value through all the different conversion functions. Most of them are natively supported by the <code>Date­Time</code> structure, but we had to create a few of them manually. </p>
+
+
+</body>

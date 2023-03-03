@@ -1,0 +1,149 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why doesn't the "Automatically move pointer to the default button in a dialog box" work for nonstandard dialog boxes, and how do I add it to my own nonstandard dialog boxes?</h1>  <!-- .entry-meta -->
+
+<p>
+The Mouse control panel has a setting called
+<i>Automatically move pointer to the default button in a dialog box</i>,
+known informally as <i>Snap to default button</i>
+or simply <i>Snap To</i>.
+You may have discovered that it doesn’t work for all dialog boxes.
+Why not?
+</p>
+<p>
+The <i>Snap To</i> feature
+is implemented by the dialog manager.
+When the window is shown and the setting is enabled,
+it will center the pointer on the default button.
+If your application does not use the dialog manager
+but instead creates its own custom dialog-like windows,
+then naturally the code in the standard dialog manager will not run.
+</p>
+<p>
+If you want your nonstandard dialog box to support the
+<i>Snap To</i> feature,
+you get to implement it yourself.
+</p>
+<p>
+Here’s a Little Program that creates a window with a default pushbutton
+inside it,
+and which centers the mouse on the button when the window is shown.
+Start with our
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make these changes:
+</p>
+<pre>
+POINT GetRectCenter(LPCRECT prc)
+{
+  POINT pt = {
+    prc-&gt;left + (prc-&gt;right - prc-&gt;left) / 2,
+    prc-&gt;top + (prc-&gt;bottom - prc-&gt;top) / 2
+  };
+  return pt;
+}
+</pre>
+<p>
+The
+<code>Get­Rect­Center</code> helper function
+calculates center of a rectangle.
+</p>
+<pre>
+BOOL OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  CreateWindow(TEXT("button"),
+               TEXT("Button 1"),
+               WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+               0, 0, 200, 50,
+               hwnd,
+               (HMENU)1,
+               g_hinst,
+               0);
+  return TRUE;
+}
+</pre>
+<p>
+When our main window is created,
+we put a default button inside it.
+</p>
+<pre>
+#define WM_CHECKSNAPDEFBUTTON WM_APP
+void OnShowWindow(HWND hwnd, BOOL fShow, UINT status)
+{
+  if (fShow &amp;&amp; status == 0)
+  {
+    PostMessage(hwnd, WM_CHECKSNAPDEFBUTTON, 0, 0);
+  }
+}
+void OnCheckSnapDefButton(HWND hwnd)
+{
+  BOOL fSnapToDefButton;
+  if (SystemParametersInfo(SPI_GETSNAPTODEFBUTTON, 0,
+                           &amp;fSnapToDefButton, 0) &amp;&amp;
+                           fSnapToDefButton &amp;&amp;
+                           hwnd == GetForegroundWindow())
+  {
+    RECT rcButton;
+    GetWindowRect(GetDlgItem(hwnd, 1), &amp;rcButton);
+    POINT ptCenter = GetRectCenter(&amp;rcButton);
+    SetCursorPos(ptCenter.x, ptCenter.y);
+  }
+}
+</pre>
+<p>
+When the window is shown, we post a message to check the
+<i>Snap To</i> setting after things have settled down.
+Once things settle down,
+we check the <i>Snap To</i> setting,
+and if it’s enabled,
+and if our window is still the foreground window,
+then we center the cursor on our button.
+</p>
+<p>
+It’s important to check that our window is still the foreground
+window,
+because it would be rude to move the cursor to our button
+even if we opened in the background.
+</p>
+<p>
+That’s why we need to post a message to perform the check later.
+The
+<code>WM_SHOW­WINDOW</code> message is sent
+early in the <code>Show­Window</code> calculations,
+before the activation actually changes.
+If we performed the check then, the answer would always be,
+“No, you’re not the foreground window,”
+and we would always back off.
+</p>
+<p>
+Naturally, we need to hook up our new messages.
+</p>
+<pre>
+  HANDLE_MSG(hwnd, WM_SHOWWINDOW, OnShowWindow);
+  case WM_CHECKSNAPDEFBUTTON: OnCheckSnapDefButton(hwnd); break;
+</pre>
+<p>
+And there you have it,
+a program that honors the
+<i>Automatically move pointer to the default button in a dialog box</i>
+setting in its custom nonstandard dialog.
+</p>
+<p>
+<b>Exercise</b>:
+What assumptions are made about the rectangle
+by the <code>Get­Rect­Center</code> function?
+How do they differ from the assumptions made by this
+alternate version:
+</p>
+<pre>
+POINT GetRectCenter(LPCRECT prc)
+{
+  POINT pt = {
+    (prc-&gt;left + prc-&gt;right) / 2,
+    (prc-&gt;top + prc-&gt;bottom) / 2
+  };
+  return pt;
+}
+</pre>
+
+
+</body>

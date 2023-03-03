@@ -1,0 +1,17 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A subtle way your await_suspend can access the coroutine frame when it shouldn’t</h1>  <!-- .entry-meta -->
+
+<p>As we learned in the very start of the series on coroutines, <a href="/code/c-coroutines-getting-started-with-awaitable-objects" title="C++ coroutines: Getting started with awaitable objects"> the <code>await_<wbr/>suspend</code> method cannot access the coroutine frame once it arranges for the coroutine to resume</a> because that creates a race condition where the coroutine might already be resumed and possibly even run to completion before <code>await_<wbr/>suspend</code> finishes.</p>
+<p>There’s a subtle way your <code>await_<wbr/>suspend</code> can access the coroutine frame that doesn’t immediately look like it’s accessing the coroutine frame.</p>
+<p>That would be by throwing an exception.</p>
+<p>The coroutine transformation <a href="https://devblogs.microsoft.com/oldnewthing/20210331-00/?p=105028" title="C++ coroutines: The initial and final suspend, and improving our return_value method"> puts the function body inside a giant <code>try</code>/<code>catch</code> block</a>, and if any exception occurs, the coroutine regains control and hands the exception to the promise’s <code>unhandled_<wbr/>exception</code> method.</p>
+<p>This includes the case where an exception is thrown from <code>await_<wbr/>suspend</code>.</p>
+<p>If the exception is thrown before the <code>await_<wbr/>suspend</code> arranges for the coroutine to be resumed, then everything works as expected: The coroutine catches the exception, saves it in the promise, and then goes to its <code>final_<wbr/>suspend</code>. Note that the coroutine <i>has resumed</i>.</p>
+<p>If the exception is thrown after the <code>await_<wbr/>suspend</code> arranges for the coroutine to be resumed, then you have a problem. Because now the coroutine is going to be resumed <i>twice</i>: once by the coroutine machinery that caught the exception and saved it in the promise, and again by whatever mechanism you used to arrange for the coroutine to be resumed.</p>
+<p>That’s not good.</p>
+<p>Furthermore, the <code>await_<wbr/>suspend</code> is racing against the resumption, and if the resumption occurs first, then the coroutine might run all the way to completion and be destroyed, and now you’re trying to save the exception into an already-destructed promise.</p>
+<p>That’s also not good.</p>
+<p>So don’t do that.</p>
+
+
+</body>

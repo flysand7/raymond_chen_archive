@@ -1,0 +1,271 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Is there a way to change the minimum size for large pages?</h1>  <!-- .entry-meta -->
+
+<p>We discussed <a href="https://msdn.microsoft.com/library/windows/desktop/aa366720(v=vs.85).aspx">Large Page Support</a> <a href="https://devblogs.microsoft.com/oldnewthing/">a few years ago</a>. In practice, the large page minimum size is 2<a href="https://blogs.msdn.microsoft.com/oldnewthing/20090611-00/?p=17933">MB</a>. A customer wanted to know if there was a configuration setting to change the minimum size for a large page. </p>
+<p>The large page minimum size isn’t chosen by Windows. It’s chosen by the processor. </p>
+<p>Recall that the paging structure is hierarchical. The x86 and x64 use a three-level page table;¹ ARM uses a two-level page table. For concreteness, we’ll talk about the x86 page table structure, and let’s assume that all pages are present. </p>
+<p>When the processor tries to access a linear address, the address is broken down into four pieces: </p>
+<ul>
+<li>Bits 30 and 31 form a two-bit value that selects a page directory     from the page directory pointer table. 
+<li>Bits 21 through 29 form a nine-bit value that selects a page table     within the page directory. 
+<li>Bits 12 through 20 form a nine-bit value that selects a page     within the page table. 
+<li>Bits 0 through 11 form a twelve-bit value that selects a byte     within the page. </li></li></li></li></ul>
+<p>In pseudo-C++, it goes something like this: </p>
+<pre>
+byte&amp; FindPhysicalAddress(intptr_t linearAddress)
+{
+  // assuming all pages are present and there are no funny games.
+  return cr3[(linearAddress &gt;&gt; 30) &amp; 0x003]
+            [(linearAddress &gt;&gt; 21) &amp; 0x1FF]
+            [(linearAddress &gt;&gt; 12) &amp; 0x1FF]
+            [(linearAddress      ) &amp; 0xFFF];
+}
+</pre>
+<p>At the bottom of the hierarchy are pages. Each page is 4KB of data, and the bottom 12 bits of the address are an offset into the page. </p>
+<p>The next level up is a <i>page table</i>. Each page table is one 4KB page in size, broken down into entries called <i>page table entries</i> which are each 8 bytes in size. A little math tells you, therefore, that each page table contains 512 page table entries. Since each page table entry describes one 4KB page, an entire page table describes 512 × 4KB = 2MB. </p>
+<p>The next level up is a <i>page directory</i>, which is filled with 512 <i>page directory entries</i>. Each page directory entry describes one page table. </p>
+<p>The top of the hierarchy is a <i>page directory pointer table</i>, which holds four <i>page directory pointers</i>. </p>
+<p>Here’s a diagram. </p>
+<table border="0" style="border-collapse: collapse">
+<tr>
+<td>PDPT</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">PDP</td>
+<td></td>
+<td>PD</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">PDP ●</td>
+<td>→</td>
+<td style="border: solid 1px black">PDE</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">PDP</td>
+<td></td>
+<td style="border: solid 1px black">PDE</td>
+<td></td>
+<td>PT</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">PDP</td>
+<td></td>
+<td style="border: solid 1px black">PDE ●</td>
+<td>→</td>
+<td style="border: solid 1px black">PTE</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">PDE</td>
+<td></td>
+<td style="border: solid 1px black">PTE</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">&amp;vellip;</td>
+<td></td>
+<td style="border: solid 1px black">PTE</td>
+<td></td>
+<td colspan="2">Physical memory</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">PTE ●</td>
+<td>→</td>
+<td>Page <var>N</var>: </td>
+<td style="border: solid 1px black">00 01 02 03 04 05 …</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">PTE</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">&amp;vellip;</td>
+</tr>
+</table>
+<p>You can see how the hierarchy can be extended further if necessary. Basically, each level of the hierarchy describes some number of objects one level down, until you finally reach pages, which contain the actual data. </p>
+<p>The trick with large pages is that instead of having a page table filled with 512 entries that say “Entry 0 is page <var>N</var>; entry 1 is page <var>N</var> + 1; entry 2 is page <var>N</var> + 2; … and entry 511 is page <var>N</var> + 511,” you say “Hey, let’s just save everybody some trouble and I’ll just say “Pretend you have a full page table of contiguous pages starting at page <var>N</var>.” </p>
+<p>In other words, we start with this: </p>
+<table border="0" style="border-collapse: collapse">
+<tr>
+<td>PDPT</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">PDP</td>
+<td></td>
+<td>PD</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">PDP ●</td>
+<td>→</td>
+<td style="border: solid 1px black">PDE</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">PDP</td>
+<td></td>
+<td style="border: solid 1px black">PDE</td>
+<td></td>
+<td>PT</td>
+<td></td>
+<td colspan="2">Physical memory (contiguous)</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">PDP</td>
+<td></td>
+<td style="border: solid 1px black">PDE ●</td>
+<td>→</td>
+<td style="border: solid 1px black">PTE ●</td>
+<td>→</td>
+<td>Page <var>N</var>: </td>
+<td style="border: solid 1px black">00 01 02 03 04 05 …</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">PDE</td>
+<td></td>
+<td style="border: solid 1px black">PTE ●</td>
+<td>→</td>
+<td>Page <var>N</var>+1: </td>
+<td style="border: solid 1px black">00 01 02 03 04 05 …</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">&amp;vellip;</td>
+<td></td>
+<td style="border: solid 1px black">PTE ●</td>
+<td>→</td>
+<td>Page <var>N</var>+2: </td>
+<td style="border: solid 1px black">00 01 02 03 04 05 …</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">PTE ●</td>
+<td>→</td>
+<td>Page <var>N</var>+3: </td>
+<td style="border: solid 1px black">00 01 02 03 04 05 …</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">PTE ●</td>
+<td>→</td>
+<td>Page <var>N</var>+4: </td>
+<td style="border: solid 1px black">00 01 02 03 04 05 …</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">&amp;vellip;</td>
+</tr>
+</table>
+<p>and we create a special page directory entry that says “Hey, let’s just pretend there’s a full page table of contiguous pages starting at page <var>N</var>“: </p>
+<table border="0" style="border-collapse: collapse">
+<tr>
+<td>PDPT</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">PDP</td>
+<td></td>
+<td>PD</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">PDP ●</td>
+<td>→</td>
+<td style="border: solid 1px black">PDE</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">PDP</td>
+<td></td>
+<td style="border: solid 1px black">PDE</td>
+<td></td>
+<td>Imaginary PT</td>
+<td></td>
+<td colspan="2">Physical memory (contiguous)</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">PDP</td>
+<td></td>
+<td style="border: solid 1px black">Page <var>N</var> through <var>N</var>+511 ●</td>
+<td>→</td>
+<td style="border: dashed 1px black">Imaginary PTE ●</td>
+<td>→</td>
+<td>Page <var>N</var>: </td>
+<td style="border: solid 1px black">00 01 02 03 04 05 …</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">PDE</td>
+<td></td>
+<td style="border: dashed 1px black">Imaginary PTE ●</td>
+<td>→</td>
+<td>Page <var>N</var>+1: </td>
+<td style="border: solid 1px black">00 01 02 03 04 05 …</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">&amp;vellip;</td>
+<td></td>
+<td style="border: dashed 1px black">Imaginary PTE ●</td>
+<td>→</td>
+<td>Page <var>N</var>+2: </td>
+<td style="border: solid 1px black">00 01 02 03 04 05 …</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td style="border: dashed 1px black">Imaginary PTE ●</td>
+<td>→</td>
+<td>Page <var>N</var>+3: </td>
+<td style="border: solid 1px black">00 01 02 03 04 05 …</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td style="border: dashed 1px black">Imaginary PTE ●</td>
+<td>→</td>
+<td>Page <var>N</var>+4: </td>
+<td style="border: solid 1px black">00 01 02 03 04 05 …</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td style="border: dashed 1px black">&amp;vellip;</td>
+</tr>
+</table>
+<p>This special “understanding between friends” is known as a <i>large page</i>. Instead of filling out an entire page table and referencing it from a page directory entry, we just put a shorthand entry in the page directory entry that says “Pretend there’s a page table full of contiguous pages.” This saves memory because you don’t have to spend 4KB of memory on a page table, and it saves the processor some work because it doesn’t have to walk a page table and therefore doesn’t need to spend TLB slots to remember the contents of that page table.² </p>
+<p>Since a page table describes 512 × 4KB = 2MB of memory, each large page is 2MB in size. </p>
+<p>There isn’t anything that can be done to customize this value. It’s a consequence of the way the processor is designed. So if you want to have custom sizes for large pages, you need to start by asking the processor manufacturers. </p>
+<p>¹In the dark ages before PAE, the x86 had a two-level page table. Windows uses PAE even on machines with less than 4GB of physical memory because NX requires PAE. If you don’t understand what that means, don’t worry. </p>
+<p>² TLB slots are another one of those <a href="https://blogs.msdn.microsoft.com/oldnewthing/20041216-00/?p=36973">hidden variables</a> in the processor. TLB stands for <i>translation lookaside buffer</i>, which is a cache that remembers mappings between linear addresses and pages. </p>
+
+
+</body>

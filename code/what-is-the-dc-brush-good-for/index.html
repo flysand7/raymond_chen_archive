@@ -1,0 +1,108 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is the DC brush good for?</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="http://msdn.microsoft.com/library/en-us/gdi/devcons_1vl1.asp">
+The DC brush</a>
+<code>GetStockObject(DC_BRUSH)</code>
+is a stock brush associated with the device context.
+Like
+<a href="http://msdn.microsoft.com/library/en-us/gdi/brushes_1mlk.asp">
+the system color brushes</a>,
+the color of the DC brush changes dynamically,
+but whereas the system color brushes change color based
+on the system colors, the color of the DC brush changes at your command.
+</p>
+<p>
+The DC brush is handy when you need a solid color brush for
+a very short time, since it always exists and doesn’t need to be
+created or destroyed.  Normally, you have to create a solid color brush,
+draw with it, then destroy it.  With the DC brush, you set its color and
+start drawing.
+But it works only for a short time, because the moment somebody else
+calls
+<a href="http://msdn.microsoft.com/library/en-us/gdi/devcons_0gj6.asp">
+the <code>SetDCBrushColor</code> function</a>
+on your DC, the DC brush color will be overwritten.
+In practice, this means that the DC brush color is not trustworthy
+once you relinquish control to other code.
+(Note, however, that each DC has its own DC brush color,
+so you need only worry about somebody on another thread messing with
+your DC simultaneously, which doesn’t happen under any of the painting models
+I am familiar with.)
+</p>
+<p>
+The DC brush is amazingly useful when handling
+<a href="http://msdn.microsoft.com/library/en-us/devnotes/winprog/wm_ctlcolor_.asp">
+the various WM_CTLCOLOR messages</a>.
+These messages require you to return a brush that will be used
+to draw the control background.
+If you need a solid color brush, this usually means creating the
+solid color brush and caching it for the lifetime of the window,
+then destroying it when the window is destroyed.
+(<a href="http://groups.google.com/groups?selm=388C1662.71CE6F75@sirma.bg">Some people cache the brush in a static variable</a>, which works great
+until somebody creates two copies of the dialog/window.
+Then you get a big mess.)
+</p>
+<p>
+Let’s use the DC brush to customize the colors of a static control.
+The program is not interesting as a program; it’s just an illustration
+of one way you can use the DC brush.
+</p>
+<p>
+Start, as always, with our
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>, and making the following changes.
+</p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  <font color="blue">g_hwndChild = CreateWindow(TEXT("static"), NULL,
+        WS_VISIBLE | WS_CHILD, 0, 0, 0, 0,
+        hwnd, NULL, g_hinst, 0);
+ if (!g_hwndChild) return FALSE;</font>
+ return TRUE;
+}
+<font color="blue">HBRUSH OnCtlColor(HWND hwnd, HDC hdc, HWND hwndChild, int type)
+{
+  FORWARD_WM_CTLCOLORSTATIC(hwnd, hdc, hwndChild, DefWindowProc);
+  SetDCBrushColor(hdc, RGB(255,0,0));
+  return GetStockBrush(DC_BRUSH);
+}
+    HANDLE_MSG(hwnd, WM_CTLCOLORSTATIC, OnCtlColor);</font>
+</pre>
+<p>
+Run this program and observe that we changed the background color
+of the static window to red.
+</p>
+<p>
+The work happens inside the <code>OnCtlColor</code> function.
+When asked to customize the colors, we first forward the message
+to
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/windowprocedures/windowprocedurereference/windowprocedurefunctions/defwindowproc.asp">
+the <code>DefWindowProc</code> function</a>
+so that the default foreground and background text colors are set.
+(Not relevant here since we draw no text, but a good thing to do
+on principle.)
+Since we want to override the background brush color,
+we set the DC brush color to red and then return the DC brush
+as our desired background brush.
+</p>
+<p>
+The static control then takes the brush we returned (the DC brush)
+and uses it to draw the background, which draws in red because
+that’s the color we set it to.
+</p>
+<p>
+Normally, when customizing the background brush, we have to create
+a brush, return it from the WM_CTLCOLORSTATIC message, then destroy
+it when the parent window is destroyed.
+But by using the DC brush, we avoided having to do all that bookkeeping.
+</p>
+<p>
+There is also a DC pen <code>GetStockObject(DC_PEN)</code> which behaves
+in an entirely analogous manner.</p>
+
+
+</body>

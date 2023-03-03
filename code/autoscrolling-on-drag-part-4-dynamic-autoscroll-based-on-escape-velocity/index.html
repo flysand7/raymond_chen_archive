@@ -1,0 +1,90 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Autoscrolling on drag, part 4: Dynamic autoscroll based on escape velocity</h1>  <!-- .entry-meta -->
+
+<p>Last time, we noted some problems with <a href="/code/autoscrolling-on-drag-part-3-dynamic-autoscroll-based-on-mouse-position" title="Autoscrolling on drag, part 3: Dynamic autoscroll based on mouse position"> autoscroll based on the distance from the mouse to the window</a>. An alternate design is to use the speed with which the mouse exited the window to establish the autoscroll speed. This no longer penalizes people with small screens or windows near the edge of the screen. Anybody can just slam the mouse into the edge of the screen, and it will scroll quickly.</p>
+<p>It so happens that this is the algorithm recommended by the Windows 95 User Interface Guidelines, but in practice nobody ever implemented it.</p>
+<p>Let’s try to implement it.</p>
+<p>The trick here is to use <code>Get­Mouse­Move­Points­Ex</code> to read the mouse position history prior to the mouse motion that caused the mouse to exit the window.¹</p>
+<pre>int g_dyAutoScroll = 0; // nonzero when autoscrolling
+
+void CancelAutoScroll(HWND hwnd)
+{
+    KillTimer(hwnd, IDT_AUTOSCROLL);
+    <span style="color: blue;">g_dyAutoScroll = 0;</span>
+}
+</pre>
+<p>When we cancel autoscrolling, we set the autoscroll amount to zero so we know that autoscrolling isn’t happening any more.</p>
+<pre>int DetectAutoScroll(POINT pt)
+{
+    if (pt.y &lt;= g_cyLine) return -1;
+    if (pt.y &gt;= g_cyWindow - g_cyLine) return +1;
+    return 0;
+}
+</pre>
+<p>We replace <code>Try­Auto­Scroll</code> with this function that detects whether the mouse is in a place that can trigger autoscroll, and if so, whether the user is trying to scroll backward or forward. Note that we tweak the formula so that there is a band inside the client area at the top and bottom which are considered trigger locations. That allows us to autoscroll maximized windows.</p>
+<pre>void HandleDragMouseMove(HWND hwnd, POINT pt)
+{
+    if (DetectAutoScroll(pt)) {
+        ScrollDelta(hwnd, g_dyAutoScroll);
+    } else {
+        CancelAutoScroll(hwnd);
+    }
+}
+</pre>
+<p>The new version of <code>Handle­Drag­Mouse­Move</code> checks if the mouse is still in a place that activates autoscroll. If so, then we continue the autoscroll. Otherwise, we cancel it.</p>
+<p>The fancy stuff happens when we detect that we should start autoscrolling:</p>
+<pre>void OnMouseMove(HWND hwnd, int x, int y, UINT keyFlags)
+{
+    if (g_fDragging) {
+        if (g_dyAutoScroll == 0) {
+            int direction = DetectAutoScroll({ x, y });
+            if (direction) {
+                DWORD tmTimer = GetDoubleClickTime() / 5;
+                auto [distance, time] = GetMouseVelocity(hwnd, { x, y });
+                if (time != 0) {
+                    g_dyAutoScroll = MulDiv(distance, tmTimer, time);
+                } else {
+                    g_dyAutoScroll = 0;
+                }
+                if (g_dyAutoScroll &gt; -g_cyLine &amp;&amp; g_dyAutoScroll &lt; g_cyLine) {
+                    g_dyAutoScroll = direction * g_cyLine;
+                }
+                SetTimer(hwnd, IDT_AUTOSCROLL, tmTimer, OnAutoScroll);
+            }
+        } else {
+            if (!DetectAutoScroll({ x, y })) {
+                CancelAutoScroll(hwnd);
+            }
+        }
+    }
+}
+</pre>
+<p>When we are dragging and autoscroll is not yet active (<code>g_dyAutoScroll</code> is zero), then we see if autoscroll should start. If so, we calculate the mouse velocity and convert it to the same velocity relative to the autoscroll timer rate. If something goes wrong while calculating the mouse velocity, or if the resulting velocity is too tiny, then we use some minimum velocity.</p>
+<p>On the other hand, if autoscroll is active, but the mouse is no longer in a place that can trigger autoscroll, then we cancel autoscroll.</p>
+<p>The last missing piece is calculating the mouse velocity.</p>
+<pre>std::pair&lt;int, DWORDgt;
+GetMouseVelocity(HWND hwnd, POINT pt)
+{
+    ClientToScreen(hwnd, &amp;pt);
+    MOUSEMOVEPOINT lastPoint{ LOWORD(pt.x), LOWORD(pt.y),
+                              (DWORD)GetMessageTime(), 0 };
+    MOUSEMOVEPOINT recentPoints[3];
+    int count = GetMouseMovePointsEx(sizeof(lastPoint), &amp;lastPoint,
+                    recentPoints, ARRAYSIZE(recentPoints),
+                    GMMP_USE_DISPLAY_POINTS);
+    if (count &gt;= 3) {
+        return { (short)recentPoints[0].y - (short)recentPoints[2].y,
+                  recentPoints[0].time - recentPoints[2].time };
+    }
+    return { 0, 0 };
+}
+</pre>
+<p>We take the mouse position and ask <code>Get­Mouse­Move­Points</code> to look up the two points that led to the current mouse position (a total of three points). If successful, then we calculate the average mouse velocity over those last three points. Otherwise, we return <code>{ 0, 0 }</code> to say that we don’t know what the mouse velocity is, and the caller should just use some default values.</p>
+<p>And that’s it. This version of autoscroll uses the exit velocity of the mouse to decide how fast to scroll, and scrolling continues at that speed until the mouse moves back into the client area. This lets you control the speed of scrolling even if the window is right against the edge of the screen: To scroll faster, just slam the mouse into the edge of the screen harder.</p>
+<p>But you know what’s missing?</p>
+<p>Scrolling faster by wiggling the mouse.</p>
+<p>Recall that scrolling faster by wiggling the mouse is <a href="https://devblogs.microsoft.com/oldnewthing/20210126-00/?p=104759" title="Autoscrolling on drag, part 2: Why does scrolling go faster if I wiggle the mouse?"> a bug that turned into a feature because people discovered it and began to rely on it</a>. We’ll bring that back next time.</p>
+<p>¹ The <code>Get­Mouse­Move­Points­Ex</code> function didn’t exist in Windows 95. To get this algorithm to work on Windows 95, you would have to emulate the function yourself by recording mouse position history manually.</p>
+
+
+</body>

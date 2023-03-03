@@ -1,0 +1,139 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Inside C++/WinRT: Coroutine completion handlers: Disconnection</h1>  <!-- .entry-meta -->
+
+<p>C++/WinRT relies on the <code>Completed</code> delegate to tell it when a Windows Runtime asynchronous operation is complete. However, it’s possible that the <code>IAsyncAction</code> or <code>IAsyncOperation</code> provider tears itself down without ever calling the <code>Completed</code> handler. This typically happens when the provider is running in another process that crashes (or at least <a href="/none/yo-dawg-i-hear-you-like-com-apartments-so-i-put-a-com-apartment-in-your-com-apartment-so-you-can-com-apartment-while-you-com-apartment" title="Yo dawg, I hear you like COM apartments, so I put a COM apartment in your COM apartment so you can COM apartment while you COM apartment"> disconnects from you</a>). It never calls its completion handler, and the coroutine simple gets leaked.</p>
+<p>Here’s what you see in the debugger:</p>
+<pre style="white-space: pre-wrap;">contoso!winrt::impl::implements_delegate&lt;AsyncActionCompletedHandler,lambda_xxxx&gt;::Release+0x64
+combase!&lt;lambda_yyy&gt;::operator()+0xd7
+combase!ObjectMethodExceptionHandlingAction&lt;&lt;lambda_yyy&gt; &gt;+0xe
+combase!CStdIdentity::ReleaseCtrlUnk+0x64
+combase!CStdMarshal::DisconnectWorker_ReleasesLock+0x6e7
+combase!CStdMarshal::DisconnectAndReleaseWorker_ReleasesLock+0x35
+combase!CStdMarshal::DisconnectForRundownIfAppropriate+0xc9
+combase!CRemoteUnknown::RundownOidWorker+0x241
+combase!CRemoteUnknown::RundownOid+0x65
+RPCRT4!Invoke+0x73
+RPCRT4!NdrStubCall2+0x3db
+RPCRT4!NdrStubCall3+0xee
+combase!CStdStubBuffer_Invoke+0x6f
+combase!InvokeStubWithExceptionPolicyAndTracing::__l6::&lt;lambda_zzz&gt;::operator()+0x22
+combase!ObjectMethodExceptionHandlingAction&lt;&lt;lambda_zzz&gt; &gt;+0x4d
+combase!InvokeStubWithExceptionPolicyAndTracing+0xe1
+combase!DefaultStubInvoke+0x268
+combase!SyncServerCall::StubInvoke+0x41
+combase!StubInvoke+0x303
+combase!ServerCall::ContextInvoke+0x517
+combase!ComInvokeWithLockAndIPID+0x9a9
+combase!ThreadInvokeReturnHresult+0x17b
+combase!ThreadInvoke+0x193
+RPCRT4!DispatchToStubInCNoAvrf+0x22
+RPCRT4!RPC_INTERFACE::DispatchToStubWorker+0x1b4
+RPCRT4!RPC_INTERFACE::DispatchToStub+0xb3
+RPCRT4!RPC_INTERFACE::DispatchToStubWithObject+0x188
+RPCRT4!LRPC_SBINDING::DispatchToStubWithObject+0x23
+RPCRT4!LRPC_SCALL::DispatchRequest+0x14c
+RPCRT4!LRPC_SCALL::QueueOrDispatchCall+0x253
+RPCRT4!LRPC_SCALL::HandleRequest+0x996
+RPCRT4!LRPC_SASSOCIATION::HandleRequest+0x2c3
+RPCRT4!LRPC_ADDRESS::HandleRequest+0x17c
+RPCRT4!LRPC_ADDRESS::ProcessIO+0x939
+RPCRT4!LrpcIoComplete+0x109
+ntdll!TppAlpcpExecuteCallback+0x157
+ntdll!TppWorkerThread+0x72c
+KERNEL32!BaseThreadInitThunk+0x1d
+ntdll!RtlUserThreadStart+0x28
+</pre>
+<p>The way we address this is to have the completion handler detect that it was never invoked. If that happens, then it simply invokes itself. On resumption, the coroutine will call <code>GetResults()</code> on the asynchronous operation, and that will throw the appropriate RPC error.</p>
+<p>Keeping track of whether the handler was invoked requires a custom destructor, so we’ll convert the lambda to a C++ class first, so that we can add a destructor. This conversion is mechanical.</p>
+<pre>// Original lambda
+[
+    handle,
+    this,
+    context = resume_apartment_context()
+](auto&amp;&amp; ...)
+{
+    resume_apartment(context.context, handle,
+        &amp;failure);
+});
+
+// Converted to explicit class
+
+template&lt;typename Awaiter&gt;
+struct disconnect_aware_handler
+{
+    disconnect_aware_handler(Awaiter* awaiter,
+        coroutine_handle&lt;&gt; handle) noexcept
+        m_awaiter(awaiter), m_handle(handle) {}
+
+    template&lt;typename...Args&gt;
+    void operator()(Args&amp;&amp;...)
+    {
+        resume_apartment(m_context.context, m_handle,
+            &amp;m_awaiter-&gt;failure);
+    }
+
+private:
+    Awaiter* m_awaiter;
+    coroutine_handle&lt;&gt; m_handle;
+    resume_apartment_context m_context;
+};
+
+template&lt;typename Async&gt;
+struct await_adapter
+{
+    〚 ... 〛
+
+    void await_suspend(coroutine_handle&lt;&gt; handle) const
+    {
+        auto extend_lifetime = async;
+        async.Completed(
+            <span style="color: #08f;">disconnect_aware_handler(this, handle)</span>);
+    }
+
+    〚 ... 〛
+};
+</pre>
+<p>Okay, now we can add a destructor that calls the <code>operator()</code> if it had never been called. We’ll factor the body into a method <code>Complete()</code> and use the null-ness of the <code>m_handle</code> to tell us whether the operator has been invoked yet.</p>
+<pre>template&lt;typename Awaiter&gt;
+struct disconnect_aware_handler
+{
+    disconnect_aware_handler(Awaiter* awaiter,
+        coroutine_handle&lt;&gt; handle) noexcept
+        m_awaiter(awaiter), m_handle(handle) {}
+
+    <span style="color: #08f;">~disconnect_aware_handler()
+    {
+        if (m_handle) Complete();
+    }</span>
+
+    template&lt;typename...Args&gt;
+    void operator()(Args&amp;&amp;...)
+    {
+        <span style="color: #08f;">Complete();</span>
+    }
+
+private:
+    Awaiter* m_awaiter;
+    coroutine_handle&lt;&gt; m_handle;
+    resume_apartment_context m_context;
+
+    <span style="color: #08f;">void Complete()
+    {</span>
+        resume_apartment(m_context.context,
+            <span style="color: #08f;">std::exchange(m_handle, {})</span>,
+            &amp;m_awaiter-&gt;failure);
+    <span style="color: #08f;">}</span>
+};
+</pre>
+<p>If you try this, though, it fails miserably: The delegate constructor moves the functor into the newly-constructed delegate, but <code>coroutine_<wbr/>handle</code>‘s move constructor simply copies the coroutine handle. This means that when the delegate constructor moves the functor, the temporary functor destructs and says, “Oh no, I was never invoked! I must have been disconnected!”, and it resumes the coroutine. And then when the coroutine completes for real, the invoke occurs a second time, and we have resumed a running coroutine, which is illegal.</p>
+<p>We need custom move operators that null out the coroutine handle in the moved-from object. This is another case where we could have used the <a href="/code/making-c-primitive-types-meaningfully-movable-when-they-have-sentinel-values" title="Making C++ primitive types meaningfully movable when they have sentinel values"> <code>movable_primitive</code> template type</a>, but C++/WinRT just writes it out by hand.</p>
+<pre>    disconnect_aware_handler(disconnect_aware_handler&amp;&amp; other) noexcept
+        : m_context(std::move(other.m_context))
+        , m_awaiter(std::exchange(other.m_awaiter, {}))
+        , m_handle(std::exchange(other.m_handle, {})) { }
+</pre>
+<p>We null out the <code>m_awaiter</code> just for good measure.</p>
+<p>If you see a coroutine resumption from <code>disconnect_<wbr/>aware_<wbr/>handler</code>‘s destructor when debugging, then that is a sign that the coroutine is resuming due to a disconnection from the Windows Runtime asynchronous operation provider.</p>
+
+
+</body>

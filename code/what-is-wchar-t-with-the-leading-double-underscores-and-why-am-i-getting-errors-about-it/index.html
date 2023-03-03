@@ -1,0 +1,52 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is __wchar_t (with the leading double underscores) and why am I getting errors about it?</h1>  <!-- .entry-meta -->
+
+<p>The Microsoft Visual C++ compiler has a compiler option called <code>/Zc:wchar_t</code> which lets you control what the symbol <code>wchar_t</code> means. </p>
+<p>According to the C++ standard, <code>wchar_t</code> is a distinct native type, and that’s what the Visual C++ compiler defaults to. However, you can set <code>/Zc:wchar_t-</code>, and that suppresses the intrinsic definition of <code>wchar_t</code>, allowing you to define it to whatever you like. And for Windows, this historically means </p>
+<pre>
+typedef unsigned short wchar_t;
+</pre>
+<p>because Windows predates the versions of the C and C++ standards that introduced <code>wchar_t</code> as a native type. </p>
+<p>So now you have a problem if you are writing a library that will be consumed both by old-school code written with <code>wchar_t</code> defined as an alias for <code>unsigned short</code> and by new-school code written with <code>wchar_t</code> as an intrinsic type. What data type do you use for your string parameters? </p>
+<p>Well, if your library uses C linkage, then you’re in luck. Since the intrinsic <code>wchar_t</code> is a 16-bit unsigned integer in Visual C++, it is binary-compatible with <code>unsigned short</code>, so you can declare your function as accepting <code>wchar_t</code> in the header file, and each client will interpret it through their own <code>wchar_t</code>-colored glasses: Code that is wearing the <code>/Zc:wchar_t</code> glasses will see the native <code>wchar_t</code> Type. Code that is wearing the <code>/Zc:wchar_t-</code> glasses will see an <code>unsigned short</code>. And since C linkage is not decorated, you can export one function that accepts a <code>wchar_t</code>, and it will interoperate with either definition. </p>
+<p>That works for undecorated functions, but what about languages like C++ that use decoration to encode the types of the parameters? Which decoration do you use? </p>
+<p><a href="http://dilbert.com/strip/1996-01-27">Let’s do both</a>. </p>
+<p>What you do is write two versions of your function, one that takes an <code>unsigned short</code> and one that takes a <code>__wchar_t</code>. That double-underscore version represents “The native type for <code>wchar_t</code> that is used by <code>/Zc:wchar_t</code>.” </p>
+<p>In other words, <code>/Zc:wchar_t</code> results in the compiler internally doing the equivalent of </p>
+<pre>
+typedef __wchar_t wchar_t;
+</pre>
+<p>It makes the symbol <code>wchar_t</code> an alias for the internal <code>__wchar_t</code> type. </p>
+<p>So let’s say you have a function called <code>DoSomething</code> that takes a wide string, and you want to accept clients compiled with either setting for <code>/Zc:wchar_t</code>. </p>
+<pre>
+// Something.h
+
+bool DoSomething(const __wchar_t* s);
+bool DoSomething(const unsigned short* s);
+</pre>
+<p>This declares two versions of the function. The first will be matched by code compiled with <code>/Zc:wchar_t</code>. The second will be matched by code compiled with <code>/Zc:wchar_t-</code>. </p>
+<p>Your implementation goes like this: </p>
+<pre>
+// Something.cpp
+#include &lt;Something.h&gt;
+
+bool DoSomethingWorker(const wchar_t* s)
+{
+ ... implementation ...
+}
+
+bool DoSomething(const __wchar_t* s)
+{
+    return DoSomethingWorker(reinterpret_cast&lt;const wchar_t*&gt;(s));
+}
+
+bool DoSomething(const unsigned short* s)
+{
+    return DoSomethingWorker(reinterpret_cast&lt;const wchar_t*&gt;(s));
+}
+</pre>
+<p>As noted earlier, callers who compile with <code>/Zc:wchar_t</code> will match the first version of <code>Do­Something</code>; callers who compile with <code>/Zc:wchar_t-</code> will match the second. But both of them funnel into a common implementation, which we declare with <code>wchar_t</code>, so that it matches the <code>/Zc:wchar_t</code> setting used by the library itself. </p>
+<p>Okay, so to answer the opening question: <code>__wchar_t</code> is the name for the intrinsic data type for wide strings. If you compile with <code>/Zc:wchar_t</code>, then that’s the data type that <code>wchar_t</code> maps to. The funny name exists so that code compiled with <code>/Zc:wchar_t-</code> can access it too, and so that code which wants to be <code>/Zc:wchar_t</code>-agnostic can explicitly refer to the internal native type. </p>
+
+
+</body>

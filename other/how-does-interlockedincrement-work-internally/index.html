@@ -1,0 +1,116 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How does InterlockedIncrement work internally?</h1>  <!-- .entry-meta -->
+
+<p>
+The
+<a href="http://msdn.microsoft.com/en-us/library/ms684122.aspx">
+Interlocked</a>
+family of functions perform atomic operations
+on memory.
+How do they do it?
+</p>
+<p>
+It depends on the underlying CPU architecture.
+For some CPUs, it’s easy:
+The x86, for example, has direct support for many interlocked operations
+by means of the
+<a href="http://www.cs.ucla.edu/~kohler/class/04f-aos/ref/i386/LOCK.htm">
+<code>LOCK</code> prefix</a>
+(with the bonus feature that <code>LOCK</code> is implied for the
+<code>XCHG</code> opcode.)
+The ia64 and x64 also have
+direct support for atomic load-modify-store operations.
+</p>
+<p>
+Most other architectures break the operation into two parts,
+known as
+<a href="http://en.wikipedia.org/wiki/Load-Link/Store-Conditional">
+Load-link/store-conditional</a>.
+The first part (load-link) reads a value from memory and instructions
+the processor to monitor the memory address to see if any other
+processors modify that same memory.
+The second part (store-conditional) stores a value to memory
+provided that no other processors have written to the memory
+in the meantime.
+An atomic load-modify-store operation is therefore performed by
+reading the value via load-link,
+performing the desired computation,
+then
+attempting a store-conditional.
+If the store-conditional fails,
+then start all over again.
+</p>
+<pre>
+LONG InterlockedIncrement(LONG volatile *value)
+{
+  LONG lOriginal, lNewValue;
+  do {
+    // Read the current value via load-link so we will know if
+    // somebody has modified it while we weren't looking.
+    lOriginal = load_link(value);
+    // Calculate the new value
+    lNewValue = lOriginal + 1;
+    // Store the value conditionally. This will fail if somebody
+    // has updated the value in the meantime.
+  } while (!store_conditional(value, lNewValue));
+  return lNewValue;
+}
+</pre>
+<p>
+(If this looks familiar, it should.
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/09/15/229915.aspx">
+You’ve seen this pattern before</a>.)
+</p>
+<p>
+Now, asking the CPU to monitor a memory address comes with its own
+gotchas.
+For one thing, the CPU can monitor only one memory address at a time,
+and its memory is very short-term.
+If your code gets pre-empted or if a hardware interrupt comes in
+after your <code>load_link</code>, then your
+<code>store_conditional</code> will fail because the CPU got distracted
+by the shiny object known as <i>hardware interrupt</i> and totally
+forgot about that memory address it was supposed to be monitoring.
+(Even if it managed to remember it, it won’t remember it for long,
+because the hardware interrupt will almost certainly execute its own
+<code>load_link</code> instruction, thereby replacing the monitored
+address with its own.)
+</p>
+<p>
+Furthermore, the CPU might be a little sloppy in its monitoring
+and monitor not the address itself but
+<a href="http://drdobbs.com/go-parallel/article/showArticle.jhtml?articleID=217500206">
+the cache line</a>.
+If somebody modifies a different memory location which happens to
+reside in the same cache line, the <code>store_conditional</code>
+might fail even though you would expect it to succeed.
+The ARM architecture allows a processor to be so sloppy that
+any write in the same block of 2048 bytes can cause a
+<code>store_conditional</code> to fail.
+</p>
+<p>
+What this means for you, the assembly-language coder who is
+implementing an interlocked operation, is that you need to minimize
+the number of instructions between the
+<code>load_link</code> and <code>store_conditional</code>.
+For example,
+<code>InterlockedIncrement</code> merely adds 1 to the value.
+The more instructions you insert between the
+<code>load_link</code> and <code>store_conditional</code>,
+the greater the chance that your <code>store_conditional</code> will fail
+and you will have to retry.
+And if you put too much code in between, your
+<code>store_conditional</code> will <i>never</i> succeed.
+As an extreme example, if you put code that
+takes five seconds to calculate the new value,
+you will certainly receive several hardware interrupts during those
+five seconds, and your
+<code>store_conditional</code> will always fail.
+</p>
+<p>
+<b>Bonus reading</b>:
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/06/127141.aspx">
+Why did InterlockedIncrement/Decrement only return the sign of the result</a>?</p>
+
+
+</body>

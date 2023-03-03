@@ -1,0 +1,146 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Additional notes on the various patterns for passing C-style arrays across the Windows Runtime boundary</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, I wrote about <a href="/code/the-various-patterns-for-passing-c-style-arrays-across-the-windows-runtime-abi-boundary"> the various patterns for passing C-style arrays across the Windows Runtime boundary</a>. A customer had some questions about that table: Who owns the data? Is it passed by value or by copy? Who is responsible for freeing the data?</p>
+<p>Let’s look at that table again, but in little pieces:</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th> </th>
+<th>PassArray</th>
+<th>FillArray</th>
+</tr>
+<tr>
+<th>Allocated by</th>
+<td>Caller</td>
+<td>Caller</td>
+</tr>
+<tr>
+<th>Size</th>
+<td>Caller decides</td>
+<td>Caller decides</td>
+</tr>
+<tr>
+<th>Policy</th>
+<td>Read-only</td>
+<td>Write-only</td>
+</tr>
+<tr>
+<th>IDL</th>
+<td><code>void M(T[] value);</code></td>
+<td><code>void M(<br/>
+  ref T[] value);</code></td>
+</tr>
+<tr>
+<th>ABI</th>
+<td><code>HRESULT M(<br/>
+                UINT32 size,<br/>
+                _In_reads_(size)<br/>
+                T* value);</code></td>
+<td><code>HRESULT M(<br/>
+                UINT32 size,<br/>
+                _Out_writes_all_(<br/>
+                  size) T* value);</code></td>
+</tr>
+</tbody>
+</table>
+<p>In the case of PassArray and FillArray, the memory is allocated by the caller, and a pointer to it is passed to the callee. This a non-owning pointer. The callee can use the pointer for the duration of the function, but not after the function returns. The caller retains ownership of the data, and therefore the caller retains responsibility for freeing the data in whatever manner it sees fit.</p>
+<p>If you think about it, there’s no choice in the matter for FillArray, since the caller still needs to be able to access the data after the function returns. In theory, you could use ownership transfer semantics for PassArray, but that would just be a pessimization: Why introduce extra copies into a scenario that doesn’t need to? Besides, <a href="https://devblogs.microsoft.com/oldnewthing/20151023-00/?p=91291"> ownership transfer semantics for inbound parameters does not mix with smart pointers</a>.</p>
+<p>At the ABI level, the array is passed by reference, since it’s a pointer and a length. Of course, if the calling language’s semantics are that arrays are passed by value, then for PassArray, the language projection will probably make a copy of the array and pass a reference to the copy. But that’s the projection’s decision, not the ABI’s.</p>
+<p>The other two columns are for ReceiveArray:</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th rowspan="2"> </th>
+<th colspan="2">ReceiveArray</th>
+</tr>
+<tr>
+<th>Parameter</th>
+<th>Return value</th>
+</tr>
+<tr>
+<th>Allocated by</th>
+<td>Callee</td>
+<td>Callee</td>
+</tr>
+<tr>
+<th>Size</th>
+<td>Callee decides</td>
+<td>Callee decides</td>
+</tr>
+<tr>
+<th>Policy</th>
+<td>Write-only</td>
+<td>Write-only</td>
+</tr>
+<tr>
+<th>IDL</th>
+<td><code>void M(<br/>
+  out T[] value);</code></td>
+<td><code>T[] M();</code></td>
+</tr>
+<tr>
+<th>ABI</th>
+<td colspan="2"><code>HRESULT M(<br/>
+                _Out_ UINT32* size,<br/>
+                _Outptr_result_buffer_all_(<br/>
+                  *size) T** value);</code></td>
+</tr>
+</tbody>
+</table>
+<p>For ReceiveArray, the result is allocated by the callee. If you think about it, there’s no choice in the matter, because only the callee knows the size of the result.</p>
+<p>The memory is then passed back to the caller, who assumes responsibility for the memory. If you think about it, there’s no choice in the matter here either, because the callee has no opportunity to free the memory after it returns. The memory must be freed with <code>Co­Task­Mem­Free</code>, which is the standard allocator for COM methods.</p>
+<p>I didn’t bother calling out these details because they are direct consequences of COM memory rules. Memory that is allocated by one component and freed by another component must use the COM task allocator: <code>Co­Task­Mem­Alloc</code> / <code>Co­Task­Mem­Free</code>. If the allocating and freeing all happens on the same side of the function boundary, then that side of the boundary controls the lifetime.</p>
+<p>To make things a bit more complete, I retroactively went back and added two more rows to the table:</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th rowspan="2"> </th>
+<th rowspan="2">PassArray</th>
+<th rowspan="2">FillArray</th>
+<th colspan="2">ReceiveArray</th>
+</tr>
+<tr>
+<th>Parameter</th>
+<th>Return value</th>
+</tr>
+<tr>
+<th>Allocated by</th>
+<td>Caller</td>
+<td>Caller</td>
+<td>Callee</td>
+<td>Callee</td>
+</tr>
+<tr>
+<th>Size</th>
+<td>Caller decides</td>
+<td>Caller decides</td>
+<td>Callee decides</td>
+<td>Callee decides</td>
+</tr>
+<tr style="background-color: #90ee90">
+<th>Freed by</th>
+<td>Caller</td>
+<td>Caller</td>
+<td>Caller</td>
+<td>Caller</td>
+</tr>
+<tr style="background-color: #90ee90">
+<th>Allocator</th>
+<td>Caller decides</td>
+<td>Caller decides</td>
+<td>COM allocator</td>
+<td>COM allocator</td>
+</tr>
+<tr>
+<th>Policy</th>
+<td>Read-only</td>
+<td>Write-only</td>
+<td>Write-only</td>
+<td>Write-only</td>
+</tr>
+</tbody>
+</table>
+
+
+</body>

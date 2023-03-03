@@ -1,0 +1,143 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Making it impossible to co_await a task twice</h1>  <!-- .entry-meta -->
+
+<p>One design limitation of <a href="/code/c-coroutines-basic-implementation-of-a-promise-type" title="C++ coroutines: Basic implementation of a promise type"> the coroutine implementation we’ve been developing</a> is that it supports only one <code>co_await</code> client. We enforce this with a runtime assertion, but what if the problem occurs in the release build?</p>
+<p>If the two <code>co_await</code> clients are concurrent, then the second one overwrites the <code>m_waiting</code> member that was set by the first. When the coroutine completes, only the second one is woken, and the first one remains suspended forever.</p>
+<p>If the two <code>co_await</code> clients are sequential, so that the second call occurs after the coroutine has completed, then the second call bypasses the suspend and goes straight to <code>await_<wbr/>return</code>, where it receives the contents of a moved-from variable. Depending on what kind of object that variable represents, it could mean that the second caller gets a copy (if the object doesn’t have a move copy constructor), or it could mean that the second caller gets an empty object (if the moved-from object is left empty), or it could mean that the second caller gets some sort of garbage (unlikely for move copy constructor, but technically legal).</p>
+<p>Both of these errors are hard to diagnose. In the first case, one of the tasks just stops and makes no further progress. In the second case, one of the tasks gets unreliable results.</p>
+<p>So let’s make it easier to diagnose.</p>
+<p>We made the mistake of making the task copyable. It wraps a reference-counted pointer, and copying increases the reference count. But really, when some code has a task and it passes the task to another component, it needs to coordinate ownership of the task with the other component so that only one <code>co_await</code> is ultimately peformed.</p>
+<p>In C++, ownership is typically represented by a move-only object like a <code>unique_ptr</code>. If you want to transfer ownership, you <code>std::move</code> the object to the recipient.</p>
+<p>So let’s make our task a move-object object. This makes it impossible to have two references to the same promise, which would otherwise tempt you to <code>co_await</code> twice. What’s more, let’s make the <code>co_await</code> operation a destructive operation by having it consumes the move-only object, leaving it empty. Once you await the task, the task object becomes null, and a subsequent <code>co_await</code> on the same task object will crash immediately.</p>
+<p>First, let’s fix our definition of <code>promise_ptr</code>. As a nice side-effect, it involves deleting a lot of code because our custom <code>promise_ptr</code> disappears.</p>
+<pre>    struct promise_deleter
+    {
+        void operator()(simple_promise_base&lt;T&gt;* promise) const noexcept
+        {
+            promise-&gt;decrement_ref();
+        }
+    };
+
+    template&lt;typename T&gt;
+    using promise_ptr = std::unique_ptr&lt;simple_promise_base&lt;T&gt;, promise_deleter&lt;T&gt;&gt;;
+</pre>
+<p>Our <code>promise_ptr</code> is now just a <code>unique_ptr</code> with a custom deleter which calls <code>decrement_ref</code>.</p>
+<p>Making <code>promise_ptr</code> a move-only object causes the <code>simple_task</code> to become a move-only object since contains a <code>promise_ptr</code> as a member.</p>
+<p>And then we make the <code>co_await</code> operator require an rvalue reference, so that it consumes the promise rather than merely referencing it.</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_task
+    {
+        ...
+
+        <span style="color: blue;">auto operator co_await &amp;&amp;</span>
+        {
+            ...
+        }
+        ...
+    };
+</pre>
+<p>Suffixing the function declaration with <code>&amp;&amp;</code> means that it applies only to rvalue references.</p>
+<pre>simple_task&lt;Result&gt; task = SomeFunctionReturningSimpleTask();
+DoSomethingElseInTheMeantime();
+co_await task; // does not compile
+</pre>
+<p>The error message is the somewhat baffling</p>
+<pre style="white-space: pre-wrap;">error C3312: no callable 'await_resume' function found for type 'simple_task&lt;Result&gt;'
+</pre>
+<p>And that’s if you’re lucky. If you are performing the <code>co_await</code> from a coroutine provided by some other library, then the error message will depend on the library (for reasons we will learn later). For example, if you are doing this from a C++/WinRT <code>IAsync­Action</code> or <code>IAsync­Operation</code>, you get</p>
+<pre>error C2672: 'get_awaiter': no matching overloaded function found
+</pre>
+<p>The compiler is trying to figure out how to <code>co_await</code> a <code>simple_task</code> lvalue, and it can’t find anything.</p>
+<p>We once again enter the weird world of compiler error message metaprogramming.</p>
+<p>I came up with this:</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_task
+    {
+        ...
+        <span style="color: blue;">struct cannot_await_lvalue_use_std_move {};
+        cannot_await_lvalue_use_std_move operator co_await() &amp; = delete;</span>
+        ...
+    };
+</pre>
+<p>If we provide no way to await an lvalue, then the compiler will report an error based on where in the evaluation process it finally got stuck. So let’s make it get stuck at a predictable place, with a name we get to control.</p>
+<pre style="white-space: pre-wrap;">error C3312: no callable 'await_resume' function found for type 'simple_task&lt;Result&gt;::<wbr/>cannot_await_lvalue_use_std_move'
+</pre>
+<p>The C++/WinRT custom awaiter error message remains, however. We can hack around this by fooling C++/WinRT into thinking that we are awaitable, and then get the compiler to generate the error message that contains our custom error message disguised as a class name.</p>
+<pre>        struct cannot_await_lvalue_use_std_move { <span style="color: blue;">void await_ready() {}</span> };
+</pre>
+<p>The error message is now</p>
+<pre style="white-space: pre-wrap;">error C2039: 'await_resume': is not a member of 'simple_task&lt;Result&gt;::<wbr/>cannot_await_lvalue_use_std_move'
+</pre>
+<p>That’s a little better.</p>
+<p>Okay, so I left a bunch of <code>...</code> inside the body of <code>operator co_await &amp;&amp;</code>. We need to move the <code>promise_ptr</code> into the awaiter, and that means having to do some restructuring of the promise’s awaiter code. Nothing essential has changed; we just need to appease the compiler.</p>
+<p>To avoid a circular reference between the <code>simple_<wbr/>promise</code> and the <code>promise_<wbr/>ptr</code>, I’ll pull the awaiter out into a separate class and have it forward its methods back into the promise. The order of declaration is</p>
+<ul>
+<li><code>simple_promise_base</code></li>
+<li><code>promise_ptr</code></li>
+<li><code>promise_awaiter</code></li>
+</ul>
+<pre>    template&lt;typename T&gt;
+    struct simple_promise_base
+    {
+        ...
+
+        <span style="color: red;">// <span style="text-decoration: line-through;">auto get_awaiter()</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">{ ... }</span></span>
+
+        ...
+    };
+
+    struct promise_deleter
+    {
+        void operator()(simple_promise_base&lt;T&gt;* promise) const noexcept
+        {
+            promise-&gt;decrement_ref();
+        }
+    };
+
+    <span style="color: blue;">template&lt;typename T&gt;
+    struct promise_awaiter
+    {
+        promise_ptr&lt;T&gt; self;
+
+        bool await_ready()
+        {
+            return self-&gt;client_await_ready();
+        }
+
+        auto await_suspend(std::experimental::coroutine_handle&lt;&gt; handle)
+        {
+            return self-&gt;client_await_suspend(handle);
+        }
+
+        T await_resume()
+        {
+            return self-&gt;client_await_resume();
+        }
+    };</span>
+</pre>
+<p>We take the <code>get_awaiter</code> anonymous awaiter and give it a name: <code>promise_awaiter</code>. This <code>promise_awaiter</code> is a separate class (avoiding the circular reference), and it retains its <code>self</code> in the form of a <code>promise_ptr</code>. This causes the promise to be released when the awaiter destructs at the end of the <code>co_await</code>.</p>
+<p>Now we can fill in those missing dots.</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_task
+    {
+        ...
+
+        auto operator co_await &amp;&amp;
+        {
+            <span style="color: blue;">return details::promise_awaiter&lt;T&gt;
+                { std::move(promise) };</span>
+        }
+        ...
+    };
+</pre>
+<p>We can now write</p>
+<pre>simple_task&lt;Result&gt; task = SomeFunctionReturningSimpleTask();
+DoSomethingElseInTheMeantime();
+co_await std::move(task); // explicit move
+</pre>
+<p>The explicit <code>std::move</code> makes it clear that you are giving the task to <code>co_await</code>, and that the task is no longer usable after that point. Furthermore, if you try to <code>co_await</code> it, you will take a null pointer exception since the task is now empty. We used to have a mysterious bug where <code>co_await</code> sometimes seemed to hang, or sometimes produced incorrect results. Now we have an immediate crash, which is much easier to diagnose.</p>
+<p>Next time, we’ll get rid of the mutex that protects the <code>coroutine_handle&lt;&gt;</code> which records the continuation.</p>
+
+
+</body>

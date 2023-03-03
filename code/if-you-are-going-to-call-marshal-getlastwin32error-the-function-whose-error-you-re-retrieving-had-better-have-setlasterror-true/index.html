@@ -1,0 +1,68 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you are going to call Marshal.GetLastWin32Error, the function whose error you’re retrieving had better have SetLastError=true</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that their p/invoke to a custom DLL was failing, and the error code made no sense. <span id="more-91791"></span></p>
+<pre>
+// C#
+using System;
+using System.Runtime.InteropServices;
+using System.Diagnostics;
+
+class Program
+{
+  [DllImport("contoso.dll", CallingConvention=CallingConvention.Cdecl)]
+  public static extern int Fribble();
+
+  public static void Main()
+  {
+    Console.WriteLine("About to call Fribble");
+
+    var result = Fribble();
+    if (result &gt;= 0) {
+      Console.WriteLine("succeeded {0}", result);
+    } else {
+      Console.WriteLine("failed {0}, last error = {1}",
+                        result, Marshal.GetLastWin32Error());
+    }
+  }
+}
+
+// C++
+
+int __cdecl Fribble()
+{
+ HANDLE hEvent = OpenEvent(EVENT_MODIFY_STATE, FALSE,
+                           TEXT("FribbleEvent"));
+ if (hEvent == nullptr)
+  return -1;
+ }
+
+ if (!SetEvent(hEvent)) {
+  CloseHandle(hEvent);
+  return -2;
+ }
+
+ CloseHandle(hEvent);
+ return 1;
+}
+</pre>
+<p>The customer reported that their <code>Fribble</code> function was returning −1, indicating a failure to open the event, but the error code returned by <code>Marshal.Get­Last­Win32­Error</code> is 87, “The parameter is incorrect.” But all of the parameters to <code>Open­Event</code> look correct. Why are we getting this strange error code? </p>
+<p>My psychic powers tell me that if the customer had taken the time to troubleshoot their problem by writing a C++ program that calls the <code>Fribble</code> function, <code>Get­Last­Error</code> would have returned the more reasonable <a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/01/27/9953807.aspx">error 2</a>, meaning that the event does not exist. </p>
+<p>That’s because <code>Get­Last­Error</code> is working fine. The last error code is 2. </p>
+<p>The problem is with the p/invoke declaration. </p>
+<p>The documentation for the <code>Marshal.Get­Last­Win32­Error</code> function says as its very first line </p>
+<blockquote class="q"><p>Returns the error code returned by the last unmanaged function that was called using platform invoke <i>that has the DllImportAttribute.SetLastError flag set</i>. </p></blockquote>
+<p>(Emphasis mine.) </p>
+<p>This reminder about <code>Dll­Import­Attribute.Set­Last­Error</code> is repeated in the Remarks. </p>
+<blockquote class="q"><p>You can use this method to obtain error codes only if you apply the System.Runtime.Interop­Services.Dll­Import­Attribute to the method signature and set the <code>Set­Last­Error</code> field to <b>true</b>. </p></blockquote>
+<p>Observe that the <code>Set­Last­Error</code> field was not set in the p/invoke declaration. Therefore, what you are actually getting when you call <code>Marshal.Get­Last­Win32­Error</code> is whatever error was lying around after the previous call to a p/invoke function that <i>did</i> specify <code>Set­Last­Error = true</code>. </p>
+<p>Changing the p/invoke to </p>
+<pre>
+[DllImport("contoso.dll", <font color="blue">SetLastError=true</font>,
+           CallingConvention=CallingConvention.Cdecl)]
+public static extern int Fribble();
+</pre>
+<p>fixed the problem. </p>
+
+
+</body>

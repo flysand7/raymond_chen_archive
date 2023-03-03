@@ -1,0 +1,37 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Further refinements to the attempt to create a type-dependent expression that is always false</h1>  <!-- .entry-meta -->
+
+<p>A little while ago, I discussed <a href="https://devblogs.microsoft.com/oldnewthing/20200311-00/?p=103553/"> creating a type-dependent expression that is always false</a>, and I settled upon this:</p>
+<pre>    static_assert(!sizeof(Op*), "message");
+</pre>
+<p>This covers the cases where <code>Op</code> is an incomplete type or <code>void</code>. <a href="https://twitter.com/MalwareMinigun"> Billy O’Neal</a> pointed out to me that there are a few cases where this doesn’t work.</p>
+<p>One case is if <code>Op</code> is a reference type. You are not allowed to create pointers to reference types, so the attempt to generate a <code>false</code> expression will fail with</p>
+<pre>// MSVC
+error C2528: 'abstract declarator': pointer to reference is illegal
+
+// gcc
+error: forming pointer to reference type
+
+// clang
+error: 'type name' declared as pointer to a reference
+</pre>
+<p>This can be repaired by wrapping <code>Op</code> in a <code>std::</code><code>decay_t</code>:</p>
+<pre> static_assert(<span style="color: blue;">!sizeof(std::decay_t&lt;Op&gt;*)</span>,
+               "Don't know what you are asking me to do.");
+</pre>
+<p>But the next part is worse: The <code>Op</code> could be an <i>abominable function</i>.</p>
+<p>I was previously not aware of abominable functions, but upon reading up on them, I’ve concluded that they are fully deserving of their name. It’s like hot lava, fatal poison, and supernatural malfeasance all rolled up into one.</p>
+<p><a href="http://www.open-std.org/JTC1/SC22/WG21/docs/papers/2015/p0172r0.html"> Read up on abominable function types</a> and see if you agree.</p>
+<p>The only way to win the game with abominable functions is not to play, so let’s just hand it off to <code>std::void_t</code> to be neutralized into a <code>void</code>. This also solves the problem with references, since <code>std::void_t</code> simply sucks up everything it is given and spits out a <code>void</code>.</p>
+<p>That leaves us with this:</p>
+<pre> static_assert(<span style="color: blue;">!sizeof(std::void_t&lt;Op&gt;*)</span>,
+               "Don't know what you are asking me to do.");
+</pre>
+<p>At this point, since we know that the only thing that can come out of <code>std::void_t</code> is <code>void</code> itself, we can tweak the expression to make a false statement a bit more directly:</p>
+<pre> static_assert(<span style="color: blue;">std::is_same_v&lt;std::void_t&lt;Op&gt;, int&gt;</span>,
+               "Don't know what you are asking me to do.");
+</pre>
+<p> </p>
+
+
+</body>

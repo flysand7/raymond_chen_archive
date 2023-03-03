@@ -1,0 +1,33 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The subtleties of <code>Create­Stream­On­HGlobal</code>, part 1: Introduction and basic usage</h1>  <!-- .entry-meta -->
+
+<p>The <code>Create­Stream­On­HGlobal</code> function lets you create a COM <code>IStream</code> that uses an <code>HGLOBAL</code> memory block as its backing store. It takes two input parameters: an optional <code>HGLOBAL</code> that represents the memory block to use, and a flag called <code>fDelete­On­Release = FALSE</code> that controls whether the stream object frees the <code>HGLOBAL</code> when it is destroyed. The initial contents and size of the stream correspond to the initial contents and size of the <code>HGLOBAL</code>; if you don’t pass one, then then the function will create its own from scratch and start with an empty stream.</p>
+<p>Sounds simple, right?</p>
+<p>It stops being simple when you start exploring the dark corners.</p>
+<p>But let’s start in the brightly-lit area: The normal case where you pass <code>fDelete­On­Release = TRUE</code>.</p>
+<p>Passing <code>fDelete­On­Release = TRUE</code> represents an ownership transfer. The stream assumes ownership of the <code>HGLOBAL</code> you pass in (assuming you passed one at all), and it is free to do with it whatever it likes. When the stream is destroyed, it frees the <code>HGLOBAL</code>, too.</p>
+<p>The rule in this case is simple: Once you give an <code>HGLOBAL</code> to the <code>Create­Stream­On­HGlobal</code> function, it’s not yours any more. Correct usage would be something like this:</p>
+<pre>HGLOBAL hglobal = CreateInitialContents();
+
+IStream* stream = NULL;
+if (SUCCEEDED(CreateStreamOnHGlobal(
+        hglobal, TRUE, &amp;stream))) {
+    hglobal = NULL;     // Not our HGLOBAL any more
+}
+</pre>
+<p>If you’re using a smart pointer library, you would perform what is commonly known in Windows as a <code>Detach</code> operation, but which the C++ standard library calls <code>release</code>, which is not the same as a COM Release, so don’t get confused.</p>
+<pre>wil::unique_hglobal hglobal = CreateInitialContents();
+
+wil::com_ptr&lt;IStream&gt; stream;
+if (SUCCEEDED(CreateStreamOnHGlobal(
+        hglobal.get(), TRUE, &amp;stream))) {
+    hglobal.release();     // Not our HGLOBAL any more
+}
+</pre>
+<p>The stream object assumes ownership of the <code>HGLOBAL</code> and will treat it as its own personal property. If somebody writes to the stream, it will write to the <code>HGLOBAL</code>. If the write extends beyond the end of the <code>HGLOBAL</code>, or if somebody calls <code>IStream::SetSize</code> to change the size of the stream, then it will resize the <code>HGLOBAL</code> correspondingly. But that’s okay, because you gave up that <code>HGLOBAL</code> back when you created the stream. Whatever the stream does with the <code>HGLOBAL</code> is no longer your business.</p>
+<p>That’s the easy case.</p>
+<p>Next time, we’ll start looking at the hard case where you pass <code>fDelete­On­Release = FALSE</code>.</p>
+<p><b>Bonus chatter</b>: Why does the <code>Create­Stream­On­HGlobal</code> function have such dark and shady corners? This function dates back to Windows 3.1, back when a powerful computer had 4MB of memory, and your typical computer had much less. Software development kits cost thousands of dollars, and the expectation was that if you bought one, it was because you were a professional developer who understood how the system worked down to a very low level. Programming was hard because nobody expected it to be easy.</p>
+
+
+</body>

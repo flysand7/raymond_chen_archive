@@ -1,0 +1,94 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Beware the C++ implicit conversion</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s topic was inspired by a question from a customer:
+</p>
+<blockquote class="q"><p>
+I am working on a stack overflow bug.
+To reduce the size of the stack frame,
+I removed as many local variables as I could,
+but there’s still a a lot of stack space that I can’t
+account for.
+What else lives on the stack aside from local variables,
+parameters, saved registers, and the return address?
+</p></blockquote>
+<p>
+Well, there’s also structured exception handling information,
+but that’s typically not too much and therefore wouldn’t
+be the source of “a lot” of mysterious stack usage.
+</p>
+<p>
+My guess is that the code is generating lots of large C++ temporaries.
+Consider the following program fragment:
+</p>
+<pre>
+class BigBuffer
+{
+public:
+ BigBuffer(int initialValue)
+   { memset(buffer, initialValue, sizeof(buffer)); }
+private:
+ char buffer[65536];
+};
+extern void Foo(const BigBuffer&amp; o);
+void oops()
+{
+ Foo(3);
+}
+</pre>
+<p>
+“How does this code even compile?
+The function <code>Foo</code> wants a <code>BigBuffer</code>,
+not an integer!”
+Yet compile it does.
+</p>
+<p>
+That’s because the compiler is using the <code>BigBuffer</code>
+constructor as a converter.
+In other words, the compiler inserted the following temporary
+variable:
+</p>
+<pre>
+void oops()
+{
+ BigBuffer temp(3);
+ Foo(temp);
+}
+</pre>
+<p>
+It did this because a constructor that takes exactly one argument
+serves two purposes:
+It can be used as a traditional constructor (as we saw with
+<code>BigBuffer temp(3)</code>)
+or it can be used to provide an implicit conversion from the
+argument type to the constructed type.
+In this case, the <code>BigBuffer(int)</code> constructor is
+being used as a conversion from <code>int</code> to <code>BigBuffer</code>.
+</p>
+<p>
+To prevent this from happening, use the <code>explicit</code> keyword:
+</p>
+<pre>
+class BigBuffer
+{
+public:
+ <font color="blue">explicit</font> BigBuffer(int initialValue)
+   { memset(buffer, initialValue, sizeof(buffer)); }
+private:
+ char buffer[65536];
+};
+</pre>
+<p>
+With this change, the call to <code>Foo(3)</code> raises a
+compiler error:
+</p>
+<pre>
+sample.cpp: error C2664: 'Foo' : cannot convert parameter 1 from
+     'int' to 'const BigBuffer &amp;'
+     Reason: cannot convert from 'int' to 'const BigBuffer'
+     Constructor for class 'BigBuffer' is declared 'explicit'
+</pre>
+
+
+</body>

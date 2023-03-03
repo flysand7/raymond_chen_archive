@@ -1,0 +1,246 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">BeginBufferedPaint: It's not just for buffered painting any more</h1>  <!-- .entry-meta -->
+
+<p>
+I covered the <code>BeginBufferedPaint</code> function in
+<a href="https://channel9.msdn.com/pdc2008/PC43/">
+my 2008 PDC presentation</a>,
+but one thing I didn’t mention is that the buffered paint functions
+are very handy even if you have no intention of painting.
+</p>
+<p>
+Since the buffered paint functions maintain a cache
+(provided that you remembed to call
+<code>Buffered­Paint­Init</code>),
+you can use
+<code>Begin­Buffered­Paint</code> to get a temporary bitmap
+even if you have no intention of actually painting to the screen.
+You might want a bitmap to do some off-screen composition,
+or for some other temporary purpose,
+in which case you can ask
+<code>Begin­Buffered­Paint</code> to give
+you a bitmap,
+use the bitmap for whatever you like,
+and then pass <code>fUpdateTarget = FALSE</code> when you call
+<code>End­Buffered­Paint</code>
+to say “Ha ha, just kidding.”
+</p>
+<p>
+One thing to have to be aware of is that the bitmap provided
+by <code>Begin­Buffered­Paint</code>
+is not guaranteed to be exactly
+the size you requested; it only promises that the bitmap will be
+<i>at least</i> the size you requested.
+Most of the time,
+your code won’t care (there are just pixels out there that you aren’t
+using),
+but if you use the
+<code>Get­Buffered­Paint­Bits</code>
+function to obtain direct access to the bits,
+don’t forget to take the stride into account.
+</p>
+<p>Consider this artifical example of a program that uses
+<code>Create­DIB­Section</code> to create a temporary 32bpp bitmap
+for the purpose of updating a layered window.
+Start with the
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make these changes:
+</p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ <font color="blue">BOOL fRc = FALSE;
+ HDC hdcWin = GetDC(hwnd);
+ if (hdcWin) {
+  HDC hdcMem = CreateCompatibleDC(hdcWin);
+  if (hdcMem) {
+   const int cx = 200;
+   const int cy = 200;
+   RECT rc = { 0, 0, cx, cy };
+   BITMAPINFO bmi = { 0 };
+   bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
+   bmi.bmiHeader.biWidth = cx;
+   bmi.bmiHeader.biHeight = cy;
+   bmi.bmiHeader.biPlanes = 1;
+   bmi.bmiHeader.biBitCount = 32;
+   bmi.bmiHeader.biCompression = BI_RGB;
+   RGBQUAD *prgbBits;
+   HBITMAP hbm = CreateDIBSection(hdcWin, &amp;bmi,
+             DIB_RGB_COLORS, &amp;reinterpret_cast&lt;void*&amp;&gt;(prgbBits),
+                                                        NULL, 0);
+   if (hbm) {
+    HBITMAP hbmPrev = SelectBitmap(hdcMem, hbm);
+    // Draw a simple picture
+    FillRect(hdcMem, &amp;rc,
+                     reinterpret_cast&lt;HBRUSH&gt;(COLOR_INFOBK + 1));
+    rc.left = cx / 4;
+    rc.right -= rc.left;
+    rc.top = cy / 4;
+    rc.bottom -= rc.top;
+    FillRect(hdcMem, &amp;rc,
+                   reinterpret_cast&lt;HBRUSH&gt;(COLOR_INFOTEXT + 1));
+    // Apply the alpha channel (and premultiply)
+    for (int y = 0; y &lt; cy; y++) {
+     for (int x = 0; x &lt; cx; x++) {
+      RGBQUAD *prgb = &amp;prgbBits[y * cx + x];
+      BYTE bAlpha = static_cast&lt;BYTE&gt;(cx * x / cx);
+      prgb-&gt;rgbRed = static_cast&lt;BYTE&gt;(prgb-&gt;rgbRed * bAlpha / 255);
+      prgb-&gt;rgbBlue = static_cast&lt;BYTE&gt;(prgb-&gt;rgbBlue * bAlpha / 255);
+      prgb-&gt;rgbGreen = static_cast&lt;BYTE&gt;(prgb-&gt;rgbGreen * bAlpha / 255);
+      prgb-&gt;rgbReserved = bAlpha;
+     }
+    }
+    // update the layered window
+    POINT ptZero = { 0, 0 };
+    SIZE siz = { cx, cy };
+    BLENDFUNCTION bf =  { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    fRc = UpdateLayeredWindow(hwnd, NULL, &amp;ptZero, &amp;siz, hdcMem,
+                              &amp;ptZero, 0, &amp;bf, ULW_ALPHA);
+    SelectBitmap(hdcMem, hbmPrev);
+    DeleteObject(hbm);
+   }
+   DeleteDC(hdcMem);
+  }
+  ReleaseDC(hwnd, hdcWin);
+ }
+ return fRc;</font>
+}
+</pre>
+<p>
+Pretty standard stuff.
+But let’s convert this to use the buffered paint functions
+to take advantage of the buffered paint bitmap cache.
+</p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ BOOL fRc = FALSE;
+ HDC hdcWin = GetDC(hwnd);
+ if (hdcWin) {
+  <font color="blue">HDC hdcMem;</font>
+  <font color="red"><strike>// HDC hdcMem = CreateCompatibleDC(hdcWin);</strike></font>
+  <font color="red"><strike>// if (hdcMem) {</strike></font>
+   const int cx = 200;
+   const int cy = 200;
+   RECT rc = { 0, 0, cx, cy };
+   <font color="red"><strike>// BITMAPINFO bmi = { 0 };</strike></font>
+   <font color="red"><strike>// bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);</strike></font>
+   <font color="red"><strike>// bmi.bmiHeader.biWidth = cx;</strike></font>
+   <font color="red"><strike>// bmi.bmiHeader.biHeight = cy;</strike></font>
+   <font color="red"><strike>// bmi.bmiHeader.biPlanes = 1;</strike></font>
+   <font color="red"><strike>// bmi.bmiHeader.biBitCount = 32;</strike></font>
+   <font color="red"><strike>// bmi.bmiHeader.biCompression = BI_RGB;</strike></font>
+   RGBQUAD *prgbBits;
+   <font color="blue">BP_PAINTPARAMS params = { sizeof(params), BPPF_NOCLIP };
+   HPAINTBUFFER hbp = BeginBufferedPaint(hdcWin, &amp;rc,
+                              BPBF_TOPDOWNDIB, &amp;params, &amp;hdcMem);
+   if (hbp) {
+    int cxRow;
+    if (SUCCEEDED(GetBufferedPaintBits(hpb, &amp;prgbBits, &amp;cxRow))) {</font>
+   <font color="red"><strike>// HBITMAP hbm = CreateDIBSection(hdcWin, &amp;bmi,</strike></font>
+   <font color="red"><strike>//        DIB_RGB_COLORS, &amp;reinterpret_cast&lt;void*&amp;&gt;(prgbBits),</strike></font>
+   <font color="red"><strike>//                                                   NULL, 0);</strike></font>
+   <font color="red"><strike>// if (hbm) {</strike></font>
+    <font color="red"><strike>// HBITMAP hbmPrev = SelectBitmap(hdcMem, hbm);</strike></font>
+    // Draw a simple picture
+    FillRect(hdcMem, &amp;rc,
+                     reinterpret_cast&lt;HBRUSH&gt;(COLOR_INFOBK + 1));
+    rc.left = cx / 4;
+    rc.right -= rc.left;
+    rc.top = cy / 4;
+    rc.bottom -= rc.top;
+    FillRect(hdcMem, &amp;rc,
+                   reinterpret_cast&lt;HBRUSH&gt;(COLOR_INFOTEXT + 1));
+    // Apply the alpha channel (and premultiply)
+    for (int y = 0; y &lt; cy; y++) {
+     for (int x = 0; x &lt; cx; x++) {
+      RGBQUAD *prgb = &amp;prgbBits[y * <font color="blue">cxRow</font> + x];
+      BYTE bAlpha = static_cast&lt;BYTE&gt;(cx * x / cx);
+      prgb-&gt;rgbRed = static_cast&lt;BYTE&gt;(prgb-&gt;rgbRed * bAlpha / 255);
+      prgb-&gt;rgbBlue = static_cast&lt;BYTE&gt;(prgb-&gt;rgbBlue * bAlpha / 255);
+      prgb-&gt;rgbGreen = static_cast&lt;BYTE&gt;(prgb-&gt;rgbGreen * bAlpha / 255);
+      prgb-&gt;rgbReserved = bAlpha;
+     }
+    }
+    // update the layered window
+    POINT ptZero = { 0, 0 };
+    SIZE siz = { cx, cy };
+    BLENDFUNCTION bf =  { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    fRc = UpdateLayeredWindow(hwnd, NULL, &amp;ptZero, &amp;siz, hdcMem,
+                              &amp;ptZero, 0, &amp;bf, ULW_ALPHA);
+    <font color="red"><strike>// SelectBitmap(hdcMem, hbmPrev);</strike></font>
+    <font color="red"><strike>// DeleteObject(hbm);</strike></font>
+   }
+   <font color="blue">EndBufferedPaint(hpb, FALSE);</font>
+   <font color="red"><strike>// DeleteDC(hdcMem);</strike></font>
+  }
+  ReleaseDC(hwnd, hdcWin);
+ }
+ return fRc;
+}
+// changes to WinMain
+ <font color="blue">if (SUCCEEDED(BufferedPaintInit())) {</font>
+ <font color="red"><strike>// if (SUCCEEDED(CoInitialize(NULL))) {/* In case we use COM */</strike></font>
+  <font color="blue">hwnd = CreateWindowEx(WS_EX_LAYERED,</font>
+  <font color="red"><strike>// hwnd = CreateWindow(</strike></font>
+  ...
+  <font color="blue">BufferedPaintUnInit();</font>
+  <font color="red"><strike>// CoUninitialize();</strike></font>
+  ...
+</pre>
+<p>
+We’re using the buffered paint API not for buffered painting
+but just as a convenient way to get a bitmap and a DC at one shot.
+It saves some typing (you don’t have to create the bitmap and the DC
+and select the bitmap in and out),
+and when you return the paint buffer to the cache, some other
+window that calls <code>Begin­Buffered­Paint</code> may be able
+to re-use that bitmap.
+</p>
+<p>
+There are a few tricky parts here.
+First, if you’re going to be accessing
+the bits directly, you need to call
+<code>Get­Buffered­Paint­Bits</code>
+and use the <code>cxRow</code> to determine the bitmap stride.
+Next, when we’re done, we pass <code>FALSE</code> to
+<code>End­Buffered­Paint</code> to say,
+“Yeah, um, thanks for the bitmap, but don’t <code>Bit­Blt</code> the
+results back into the DC we passed to
+<code>Begin­Buffered­Paint</code>.
+Sorry for the confusion.”
+</p>
+<p>
+A less obvious trick is that we used <code>BPPF_NOCLIP</code>
+to get a full bitmap.
+By default, <code>Begin­Buffered­Paint</code>
+returns you a bitmap which
+is clipped to the DC you pass as the first parameter.
+This is an optimization to avoid allocating memory for pixels that
+can’t be seen anyway when <code>End­Buffered­Paint</code>
+goes to copy
+the bits back to the original DC.
+We don’t want this optimization, however, since we have no intention
+of blitting the results back to the original DC.
+The clip region of the original DC is irrelevant to us because
+we just want a temporary bitmap for some internal calculations.
+</p>
+<p>
+Anyway, there you have it, an example of using
+<code>Begin­Buffered­Paint</code> to obtain a temporary bitmap.
+It doesn’t win much in this example (since we call it only once,
+at window creation time),
+but if you have code which creates a lot of DIB sections for temporary
+use, you can use this trick to take advantage of the buffered paint
+cache and reduce the overhead of bitmap creation and deletion.
+</p>
+<p>
+<b>Pre-emptive snarky comment</b>:
+“<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/08/10151258.aspx#10151864">How dare you show us an alternative method that isn’t
+available on Windows 2000</a>!”</p>
+
+
+</body>

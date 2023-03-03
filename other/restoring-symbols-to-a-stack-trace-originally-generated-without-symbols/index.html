@@ -1,0 +1,312 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Restoring symbols to a stack trace originally generated without symbols</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="https://www.youtube.com/watch?v=08xQLGWTSag">
+Has this ever happened to you</a>?
+</p>
+<pre>
+litware!Ordinal3+0x6042
+litware!DllInstall+0x4c90
+litware!DllInstall+0x4b9e
+contoso!DllGetClassObject+0x93c3
+contoso!DllGetClassObject+0x97a9
+contoso!DllGetClassObject+0x967c
+contoso!DllGetClassObject+0x94d7
+contoso!DllGetClassObject+0x25ce
+contoso!DllGetClassObject+0x2f7b
+contoso!DllGetClassObject+0xad55
+contoso!DllGetClassObject+0xaec7
+contoso!DllGetClassObject+0xadf7
+contoso!DllGetClassObject+0x3c00
+contoso!DllGetClassObject+0x3b2a
+contoso!DllGetClassObject+0x462b
+USER32!UserCallWinProcCheckWow+0x13a
+USER32!DispatchMessageWorker+0x1a7
+contoso!DllCanUnloadNow+0x19b6
+contoso!DllGetClassObject+0xeaf2
+contoso+0x1d6c
+litware!LitImportReportProfile+0x11c4
+litware!LitImportReportProfile+0x1897
+litware!LitImportReportProfile+0x1a3b
+KERNEL32!BaseThreadInitThunk+0x18
+ntdll!RtlUserThreadStart+0x1d
+</pre>
+<p>
+Ugh.
+A stack trace taken without working symbols.
+(There’s no way that
+<code>Dll­Get­Class­Object</code>
+is a deeply recursive 60KB function.
+Just by casual inspection, you know that the symbols are wrong.)
+</p>
+<p>
+To see how to fix this, you just have to understand what the
+debugger does when it has no symbols to work from:
+It uses the symbols from the exported function table.
+For every address it wants to resolve,
+it looks for the nearest exported function whose address is
+<a href="https://www.youtube.com/watch?v=1ytCEuuW2_A">
+less than or equal to</a> the target value.
+</p>
+<p>
+For example, suppose <code>CONTOSO.DLL</code>
+has the following exported symbols:
+</p>
+<table border="0">
+<tr>
+<th>Symbol</th>
+<th>Offset</th>
+</tr>
+<tr>
+<td><code>Dll­Get­Class­Object</code></td>
+<td align="right"><code>0x5132</code></td>
+</tr>
+<tr>
+<td><code>Dll­Can­Unload­Now</code></td>
+<td align="right"><code>0xFB0B</code></td>
+</tr>
+</table>
+<p>
+Look at it this way:
+The debugger is given the following information about your module:
+(Diagram not to scale.)
+</p>
+<table border="0" style="border-collapse: collapse" title="An empty horizontal box with the label DllGetClassObject at approximately 20% and the label DllCanUnloadNow at approximately 60%.">
+<tr>
+<td colspan="5" style="border: solid black .75pt"> </td>
+</tr>
+<tr>
+<td style="width: 2em"> </td>
+<td align="center" style="width: 1em">↑</td>
+<td style="padding-right: 4em">Dll­Get­Class­Object</td>
+<td align="center" style="width: 1em">↑</td>
+<td style="padding-right: 8em">Dll­Can­Unload­Now</td>
+</tr>
+</table>
+<p>
+It needs to assign a function to every byte in the module.
+In the absence of any better information, it does it like this:
+</p>
+<table border="0" style="border-collapse: collapse" title="A horizontal box in three parts. From 0% to 20% is labeled with question marks. From 20% to 60% is labeled DllGetClassObject. From 60% to 100% is labeled DllCanUnloadNow.">
+<tr>
+<td align="center" style="border: solid black .75pt;width: 2em;background-color: #FFC0C0">???</td>
+<td align="right" style="border: solid black .75pt;padding-right: 5em;background-color: #C0FFFF">Dll­Get­Class­Object</td>
+<td style="border: solid black .75pt;padding-right: 9em;background-color: #FFC0FF">Dll­Can­Unload­Now</td>
+</tr>
+</table>
+<p>
+In words, it assumes that every function begins at the location specified
+by the export table,
+and it ends one byte before the start of the next function.
+The debugger is trying to make the best of a bad situation.
+</p>
+<p>
+Suppose your DLL was loaded at
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/12/27/10380848.aspx">
+<code>0x10000000</code></a>,
+and the debugger needs to generate a symbolic name for the address
+<code>0x1000E4F5</code>.
+</p>
+<p>
+First, it converts the address into a relative virtual address
+by subtracting the DLL base address,
+leaving <code>0xE4F5</code>.
+</p>
+<p>
+Next, it looks to see what function “contains” that address.
+From the algorithm described above,
+the debugger concludes that the address <code>0xE4F5</code> is
+“part of” the
+<code>Dll­Get­Class­Object</code> function,
+which began at
+begins at <code>0x5132</code>.
+The offset into the function is therefore
+<code>0xE4F5 - 0x5132 = 0x93C3</code>,
+and it is reported in the debugger as
+<code>contoso!Dll­Get­Class­Object+0x93c3</code>.
+</p>
+<p>
+Repeat this exercise for each address that the debugger needs to resolve,
+and you get the stack trace above.
+</p>
+<p>
+Fine, now that you know how the bad symbols were generated,
+how do you fix it?
+</p>
+<p>
+You fix it by undoing what the debugger did, and then redoing it
+with better symbols.
+</p>
+<p>
+You need to find the better symbols.
+This is not too difficult if you still have a matching binary
+and symbol file,
+because you can just load up the binary into the debugger
+<a href="http://blogs.msdn.com/b/doronh/archive/2006/03/20/556053.aspx">
+in the style of a dump file</a>.
+Like Doron, you can then let the debugger do the hard work.
+</p>
+<pre>
+C:&gt; ntsd -z contoso.dll
+ModLoad: 10000000 10030000   contoso.dll
+</pre>
+<p>
+Now you just ask the debugger,
+“Could you disassemble this function for me?”
+You give it the broken symbol+offset above.
+The debugger looks up the symbol,
+applies the offset,
+and then <i>looks up the correct symbol</i> when disassembling.
+</p>
+<pre>
+0:000&gt; u contoso!DllGetClassObject+0x93c3
+<font color="red">contoso!CReportViewer::ActivateReport+0xe9</font>:
+10000e4f5 eb05            jmp     contoso!CReportViewer::ActivateReport+0xf0
+</pre>
+<p>
+Repeat for each broken symbol in the stack trace,
+and you have yourself a repaired stack trace.
+</p>
+<pre>
+litware!Ordinal3+0x6042 <font color="red">← oops</font>
+litware!CViewFrame::SetInitialKeyboardFocus+0x58
+litware!CViewFrame::ActivateViewInFrame+0xf2
+contoso!CReportViewer::ActivateReport+0xe9
+contoso!CReportViewer::LoadReport+0x12c
+contoso!CReportViewer::OnConnectionCreated+0x13f
+contoso!CViewer::OnConnectionEvent+0x7f
+contoso!CConnectionManager::OnConnectionCreated+0x85
+contoso!CReportFactory::BeginCreateConnection+0x87
+contoso!CReportViewer::CreateConnectionForReport+0x20d
+contoso!CViewer::CreateNewConnection+0x87
+contoso!CReportViewer::CreateNewReport+0x213
+contoso!CViewer::OnChangeView+0xec
+contoso!CReportViewer::WndProc+0x9a7
+contoso!CView::s_WndProc+0xf1
+USER32!UserCallWinProcCheckWow+0x13a
+USER32!DispatchMessageWorker+0x1a7
+contoso!CViewer::MessageLoop+0x24e
+contoso!CViewReportTask::RunViewer+0x12
+contoso+0x1d6c <font color="red">← oops</font>
+litware!CThreadTask::Run+0x40
+litware!CThread::ThreadProc+0xe5
+litware!CThread::s_ThreadProc+0x42
+KERNEL32!BaseThreadInitThunk+0x18
+ntdll!RtlUserThreadStart+0x1d
+</pre>
+<p>
+Oops, our trick doesn’t work for that first entry in the stack trace,
+the one with <code>Ordinal3</code>.
+What’s up with that?
+There is no function called <code>Ordinal3</code>!
+</p>
+<p>
+If your module exports functions by ordinal without a name,
+then the debugger doesn’t know what name to print for the function
+(since the name was stripped from the module),
+so it just prints the ordinal number.
+You will have to go back to your DLL’s <code>DEF</code> file
+to convert the ordinal back to a function name.
+Or you can
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/05/13/10164020.aspx">
+dump the exports from the DLL
+to see what functions match up with what ordinals</a>.
+(Of course, for that trick to work, you need to have a matching PDB file
+in the symbol search path.)
+</p>
+<p>
+In our example, suppose <code>litware.dll</code> ordinal 3
+corresponds to the function
+<code>Lit­Debug­Report­Profile</code>.
+We would then ask the debugger
+</p>
+<pre>
+0:001&gt; u litware!LitDebugReportProfile+0x6042
+<font color="red">litware!CViewFrame::FindInitialFocusControl+0x66</font>:
+1000084f5 33db            xor     ebx,ebx
+</pre>
+<p>
+Okay, that takes care of our first oops.
+What about the second one?
+</p>
+<p>
+In the second case, the address the debugger was asked to
+generate a symbol for came before the first symbol in the module.
+In our diagram above, it was in the area marked with question marks.
+The debugger has absolutely nothing to work with, so it just
+disassembles as relative to the start of the module.
+</p>
+<p>
+To resolve this symbol, you take the offset and add it to the
+base of the module as it was loaded into the debugger,
+which was reported in the <code>ModLoad</code> output:
+</p>
+<pre>
+ModLoad: <font color="red">10000000</font> 10030000   contoso.dll
+</pre>
+<p>
+If that output scrolled off the screen, you can ask the debugger
+to show it again with the help of the <code>lmm</code> command.
+</p>
+<pre>
+0:001&gt;lmm contoso*
+start    end        module name
+10000000 10030000   contoso    (export symbols)       contoso.dll
+</pre>
+<p>
+Once you have the base address, you
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2007/04/25/2265923.aspx">
+add the offset back</a>
+and ask the debugger what’s there:
+</p>
+<pre>
+0:001&gt; u 0x10000000+0x1d6c
+<font color="red">contoso!CViewReportTask::Run+0x102</font>:
+100001d6c 50              push    eax
+</pre>
+<p>
+Okay, now that we patched up all our oopses,
+we have the full stack trace with symbols:
+</p>
+<pre>
+litware!CViewFrame::FindInitialFocusControl+0x66
+litware!CViewFrame::SetInitialKeyboardFocus+0x58
+litware!CViewFrame::ActivateViewInFrame+0xf2
+contoso!CReportViewer::ActivateReport+0xe9
+contoso!CReportViewer::LoadReport+0x12c
+contoso!CReportViewer::OnConnectionCreated+0x13f
+contoso!CViewer::OnConnectionEvent+0x7f
+contoso!CConnectionManager::OnConnectionCreated+0x85
+contoso!CReportFactory::BeginCreateConnection+0x87
+contoso!CReportViewer::CreateConnectionForReport+0x20d
+contoso!CViewer::CreateNewConnection+0x87
+contoso!CReportViewer::CreateNewReport+0x213
+contoso!CViewer::OnChangeView+0xec
+contoso!CReportViewer::WndProc+0x9a7
+contoso!CView::s_WndProc+0xf1
+USER32!UserCallWinProcCheckWow+0x13a
+USER32!DispatchMessageWorker+0x1a7
+contoso!CViewer::MessageLoop+0x24e
+contoso!CViewReportTask::RunViewer+0x12
+contoso!CViewReportTask::Run+0x102
+litware!CThreadTask::Run+0x40
+litware!CThread::ThreadProc+0xe5
+litware!CThread::s_ThreadProc+0x42
+KERNEL32!BaseThreadInitThunk+0x18
+ntdll!RtlUserThreadStart+0x1d
+</pre>
+<p>
+Now the fun actually starts:
+Figuring out why there was a break in
+<code>CView­Frame::Find­Initial­Focus­Control</code>.
+Happy debugging!
+</p>
+<p>
+<b>Bonus tip</b>:
+By default,
+<code>ntsd</code> does not include line numbers when resolving symbols.
+Type <code>.lines</code> to toggle line number support.</p>
+
+
+</body>

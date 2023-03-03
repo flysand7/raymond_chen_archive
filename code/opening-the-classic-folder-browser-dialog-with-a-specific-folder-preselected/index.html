@@ -1,0 +1,61 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Opening the classic folder browser dialog with a specific folder preselected</h1>  <!-- .entry-meta -->
+
+<p>Today’s Little Program shows how to set the initial selection in the <code>SHBrowse­For­Folder</code> dialog. </p>
+<p>The design of the <code>SHBrowse­For­Folder</code> function had a defect: The <code>BROWSEINFO</code> structure doesn’t have a <code>cbSize</code> member at the start. This means that the structure cannot ever change because <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/12/12/56061.aspx">the function would have no way of knowing whether you are calling with the old structure or the new one</a>. If it weren’t for this defect, setting the initial selection would have been easy: Add a <code>pidlInitialSelection</code> member to the structure and have people fill it in. </p>
+<p>Alas, any new functionality in the <code>SHBrowse­For­Folder</code> function therefore requires that the new functionality be expressed within the constraints of the existing structure. </p>
+<p>Fortunately, there’s a callback that takes a message number. </p>
+<p>The workaround, therefore, is to express any new functionalty in the form of new callback messages. </p>
+<p>And that’s how the ability to set the initial selection in the folder browser dialog came about. A new message <code>BFFM_INITIALIZED</code> was created, and in handling that message, the callback can specify what it wants the selection to be. </p>
+<pre>
+#define UNICODE
+#define _UNICODE
+#define STRICT_TYPED_ITEMIDS
+#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;oleauto.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;stdio.h&gt; // horrors! Mixing C and C++!
+
+int CALLBACK Callback(
+    HWND hwnd, UINT uMsg, LPARAM lParam, LPARAM lpData)
+{
+ switch (uMsg) {
+ case BFFM_INITIALIZED:
+  SendMessage(hwnd, BFFM_SETSELECTION, TRUE,
+              reinterpret_cast&lt;LPARAM&gt;(L"C:\\Windows"));
+  break;
+ }
+ return 0;
+}
+
+int __cdecl wmain(int, wchar_t **)
+{
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+ TCHAR szDisplayName[MAX_PATH];
+ BROWSEINFO info = { };
+ info.pszDisplayName = szDisplayName;
+ info.lpszTitle = TEXT("Pick a folder");
+ info.ulFlags = BIF_RETURNONLYFSDIRS;
+ info.lpfn = Callback;
+ PIDLIST_ABSOLUTE pidl = SHBrowseForFolder(&amp;info);
+ if (pidl) {
+  SHGetPathFromIDList(pidl, szDisplayName);
+  wprintf(L"You chose %ls\n", szDisplayName);
+  CoTaskMemFree(pidl);
+ }
+ return 0;
+}
+</pre>
+<p>We initialize COM and then call the <code>SHBrowse­For­Folder</code> function with information that includes a callback. The callback responds to the <code>BFFM_INITIALIZED</code> message by changing the selection. </p>
+<p>It’s not hard, but it’s a bit cumbersome. </p>
+<p>Sorry. </p>
+<p><b>Bonus chatter</b>: The presence of the callback means that the function cannot <a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/08/11/10548975.aspx#10549125">shunt the work to a new thread when called from an MTA thread</a> because you are now stuck with the problem of which thread the callback should run on. </p>
+<ul>
+<li>The callback may want to access resources     that belong to the original thread,     so that argues for the callback being run on the original thraed. 
+<li>The callback may also want to access resources inside the dialog box,     say in order to customize it.     That argues for the callback being run on the new thread. </li></li></ul>
+<p>You can’t have it both ways, so you’re stuck. </p>
+<p>But it doesn’t really matter, because you <a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/04/24/8420242.aspx">shouldn’t be performing UI from a multi-threaded apartment anyway</a>. There’s not much point in making it easier for people to do the wrong thing. </p>
+
+
+</body>

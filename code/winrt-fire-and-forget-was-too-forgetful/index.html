@@ -1,0 +1,88 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;"><code>winrt::fire_and_forget</code> was too forgetful</h1>  <!-- .entry-meta -->
+
+<p>C++/WinRT provides a handy helper class called <code>winrt::</code><code>fire_</code><code>and_</code><code>forget</code>. It lets you specify that nobody is going to observe the result of the coroutine. This is handy because it lets you tell the compiler that the lack of observation is intentional, so it won’t generate a warning. </p>
+<pre>
+winrt::Windows::Foundation::IAsyncAction DoSomething()
+{
+ co_await blah();
+ co_await blah();
+ co_await blah();
+}
+
+void OnClick()
+{
+ // Compiler warning on next line
+ DoSomething();
+}
+</pre>
+<p>The <code>OnClick</code> function calls <code>Do­Something</code>, which does a bunch of stuff asynchronously, but the <code>OnClick</code> method does not <code>co_await</code> the result, and the compiler generates a warning. </p>
+<p>But if you say that the <code>Do­Something</code> function is fire-and-forget, then the compiler knows that there’s nothing worth <code>co_await</code>ing, and not only will it not generate a warning, it also will remove a lot of the internal bookkeeping that normally occurs when you have a coroutine from which somebody might await the results. </p>
+<pre>
+<font color="blue">winrt::fire_and_forget</font> DoSomething()
+{
+ co_await blah();
+ co_await blah();
+ co_await blah();
+}
+
+void OnClick()
+{
+ <font color="blue">// no compiler warning</font>
+ DoSomething();
+}
+</pre>
+<p>There’s a catch, however, in early versions of C++/WinRT: When you told it to fire and forget, it really <i>forgets</i>. If an unhandled exception occurs, the <code>fire_<code></code>and_<code></code>forget</code> just swallowed the exception and didn’t tell anybody. “You told me not to bother you, so I’m not bothering you.” </p>
+<p>You typically want to know about unhandled exceptions because they indicate a bug. We want coroutines to treat unhandled exceptions the same way that regular C++ code does: By calling <code>std::terminate</code>. </p>
+<pre>
+struct complete_asynchronously {};
+
+namespace std::experimental
+{
+  template &lt;typename ... Args&gt;
+  struct coroutine_traits&lt;complete_asynchronously, Args ...&gt;
+  {
+    struct promise_type
+    {
+        complete_asynchronously get_return_object() const noexcept
+        {
+          return{};
+        }
+
+        void return_void() const noexcept
+        {
+        }
+
+        suspend_never initial_suspend() const noexcept
+        {
+          return{};
+        }
+
+        suspend_never final_suspend() const noexcept
+        {
+          return{};
+        }
+
+        void unhandled_exception() noexcept
+        {
+          <font color="blue">std::terminate();</font>
+        }
+      };
+  };
+}
+</pre>
+<p>Now we can declare that a coroutine will not be awaited, but we want unhandled exceptions to terminate the process. </p>
+<pre>
+<font color="blue">complete_asynchronously</font> DoSomething()
+{
+ co_await blah();
+ co_await blah();
+ co_await blah();
+}
+</pre>
+<p>I personally recommend this design instead of simply dropping unhandled exceptions on the floor, because you want coroutines to treat unhandled exceptions the same way as non-coroutine code. Expressing the concept of <i>catch all exceptions and ignore them</i> is done with the conventional notation of <code>catch (...) { }</code>. </p>
+<p>The maintainers of C++/WinRT agreed with me that the existing behavior of <code>winrt::</code><code>fire_</code><code>and_</code><code>forget</code> was a bit too forgetful, and <a href="https://github.com/Microsoft/xlang/commit/3dc071af2de5bb1be2bd4835e345315fd0a566a8#diff-6e333ea03c58f9a3b64ffb3f4b98563d">they made the change I recommended above</a>. According to <a href="https://github.com/Microsoft/xlang/pull/132">the pull request</a>, the change is available starting in version 1901118.3. If you don’t have that version yet, you can use <code>complete_</code><code>asynchronously</code> as a stopgap. </p>
+<p>But wait, we’re not done yet. I’ll continue the discussion next time. </p>
+
+
+</body>

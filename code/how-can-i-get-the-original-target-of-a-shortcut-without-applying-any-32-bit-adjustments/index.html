@@ -1,0 +1,64 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I get the original target of a shortcut without applying any 32-bit adjustments?</h1>  <!-- .entry-meta -->
+
+<p>If 64-bit code creates a shortcut to, say, <code>C:\Program Files\Contoso\Contoso.exe</code>, and 32-bit code tries to read the target of that shortcut, the 32-bit code is told that the shortcut target is <code>C:\Program Files <u>(x86)</u>\Contoso\Contoso.exe</code>. What’s going on, and how can I get the original path?</p>
+<p>What’s going on is that when you create a shortcut, the shortcut code says, “Oh, this path is relative to the current <code>%ProgramFiles%</code>. Let me remember that.” Later, when you open the shortcut, the shortcut code says, “Oh, this is an environment variable-relative path, so I’ll expand it relative to the current value of <code>%ProgramFiles%</code>.”</p>
+<p>Recording paths as relative to environment variables and special folders is handy when the shortcut moves to another machine with a different directory structure, or if the directory itself moves. For example, you might move your Documents folder to a new location. Tracking a shortcut target by its location relative to the <code>FOLDERID_<wbr/>Documents</code> special folder keeps those shortcuts working even after you’ve moved it.</p>
+<p>This feature does get in the way sometimes, such as if you want to get the original path without all this “assistance”.</p>
+<p>We start with a program that prints the path stored in a shortcut.</p>
+<pre>#include &lt;windows.h&gt;
+#include &lt;winrt/base.h&gt;
+#include &lt;shlobj.h&gt;
+
+int wmain(int argc, wchar_t** argv) try
+{
+    winrt::init_apartment(winrt::apartment_type::single_threaded);
+
+    auto link = winrt::create_instance&lt;IShellLinkW&gt;(CLSID_ShellLink);
+    winrt::check_hresult(link.as&lt;IPersistFile&gt;()-&gt;Load(argv[1], STGM_READ));
+
+    wchar_t buffer[MAX_PATH];
+    WIN32_FIND_DATA wfd;
+    winrt::check_hresult(link-&gt;GetPath(buffer, MAX_PATH, &amp;wfd, 0));
+    printf("Path is %ls\n", buffer);
+} catch (...) {
+    printf("Error: %ls\n" winrt::to_message().c_str());
+    return winrt::to_hresult();
+}
+</pre>
+<p>This simple program takes the path to a shortcut file as its command line parameter and prints the target as a path. If you compile this as a 32-bit program and give it the path to a shortcut created from a 64-bit program, then paths that point into <code>C:\Program Files</code> are written as <code>C:\Program Files (x86)</code>.</p>
+<p>Let’s disable that “helpful” conversion.</p>
+<pre>int wmain(int argc, wchar_t** argv) try
+{
+    winrt::init_apartment(winrt::apartment_type::single_threaded);
+
+    auto link = winrt::create_instance&lt;IShellLinkW&gt;(CLSID_ShellLink);
+    winrt::check_hresult(link.as&lt;IPersistFile&gt;()-&gt;Load(argv[1], STGM_READ));
+
+    <span style="color: #08f;">DWORD flags;
+    winrt::check_hresult(link.as&lt;IShellLinkDataList&gt;()-&gt;GetFlags(&amp;flags));
+    flags |= SLDF_DISABLE_KNOWNFOLDER_RELATIVE_TRACKING;
+    winrt::check_hresult(link.as&lt;IShellLinkDataList&gt;()-&gt;SetFlags(flags));
+
+    winrt::com_ptr&lt;IStream&gt; stm;
+    winrt::check_hresult(CreateStreamOnHGlobal(nullptr, TRUE, stm.put()));
+    winrt::check_hresult(link.as&lt;IPersistStream&gt;()-&gt;Save(stm.get(), true));
+    winrt::check_hresult(stm-&gt;Seek({ 0 }, 0, nullptr));
+    winrt::check_hresult(link.as&lt;IPersistStream&gt;()-&gt;Load(stm.get()));</span>
+
+    wchar_t buffer[MAX_PATH];
+    WIN32_FIND_DATA wfd;
+    winrt::check_hresult(link-&gt;GetPath(buffer, MAX_PATH, &amp;wfd, 0));
+    printf("Path is %ls\n", buffer);
+} catch (...) {
+    printf("Error: %ls\n" winrt::to_message().c_str());
+    return winrt::to_hresult();
+}
+</pre>
+<p>After loading the shortcut, we query for <code>IShell­Link­Data­List</code>, which gives us access to the flags that alter the shortcut behavior. In our case, we want to turn on “disable known-folder-relative tracking”.</p>
+<p>Once we’ve updated the flags, we have to save and reload the shortcut for it to take effect. We don’t have to save it to disk, though. We save it to a memory stream, and then load it back from the same stream.</p>
+<p>Once reloaded, we can ask for the path, and since known-folder-relative tracking is disabled, you get the original raw path.</p>
+<p><b>Bonus chatter</b>: If you want to create a shortcut with this flag set in the shortcut itself (rather than merely set in memory like we did here), then use <code>IShell­Link­Data­List</code> to set the “disable known-folder-relative tracking” flag before saving it.</p>
+
+
+</body>

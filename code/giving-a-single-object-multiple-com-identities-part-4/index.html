@@ -1,0 +1,189 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Giving a single object multiple COM identities, part 4</h1>  <!-- .entry-meta -->
+
+<p>One major annoyance of the <a href="/code/giving-a-single-object-multiple-com-identities-part-3" title="Giving a single object multiple COM identities, part 3"> helper classes for giving a single object multiple COM identities</a> is that you have to create this <code>Method­Forwarder</code> so that you can talk about methods of the derived class before they exist.</p>
+<p>But it turns out that you can avoid that by simply not having to name the functions at all!</p>
+<p>We have been using the member function pointer as our way of referring to the function, and that means having to name it. But what if we used something else to refer to the function? Just let the caller pass whatever identifier they like.</p>
+<pre>template&lt;<span style="color: blue;">typename Outer, auto Id</span>&gt;
+struct CallbackWrapper
+{
+    struct Wrapper : ICallback
+    {
+        HRESULT QueryInterface(REFIID riid, void** ppv)
+        {
+            if (riid == IID_IUnknown || riid == IID_ICallback) {
+                *ppv = static_cast&lt;ICallback*&gt;(this);
+                AddRef();
+                return S_OK;
+            }
+            *ppv = nullptr;
+            return E_NOINTERFACE;
+        }
+
+        ULONG AddRef() { return outer()-&gt;AddRef(); }
+        ULONG Release() { return outer()-&gt;Release(); }
+
+        HRESULT Invoke() noexcept { return <span style="color: blue;">outer()-&gt;OnInvoke&lt;Id&gt;()</span>; }
+
+        private:
+        Outer* outer() {
+            return static_cast&lt;Outer*&gt;(
+                reinterpret_cast&lt;CallbackWrapper*&gt;(this));
+        }
+    } callback;
+
+    ICallback* GetCallback() { return &amp;callback; }
+};
+
+template&lt;<span style="color: blue;">typename Outer, auto... Ids</span>&gt;
+struct CallbackWrappers : CallbackWrapper&lt;<span style="color: blue;">Derived, Ids</span>&gt;...
+{
+    template&lt;auto <span style="color: blue;">Id</span>&gt;
+    ICallback* GetCallback() {
+        return static_cast&lt;CallbackWrapper&lt;<span style="color: blue;">Derived, Id</span>&gt;*&gt;(this)-&gt;GetCallback();
+    }
+
+    <span style="color: blue;">template&lt;auto Id&gt;
+    using CallbackWrapperOuter = CallbackWrapper&lt;Outer, Id&gt;;</span>
+    static_assert(((offsetof(<span style="color: blue;">CallbackWrapperOuter&lt;Ids&gt;</span>, callback) == 0) &amp;&amp; ...));
+};
+</pre>
+<p>The idea here is that instead of passing a list of pointers to member functions, you just pass a list of <i>whatever you like</i>. Each <i>whatever</i> identifies a callback, and when invoked, it calls the corresponding <code>OnInvoke</code> method on the base class with the same <i>whatever</i>.</p>
+<p>It’s not obvious why we had to introduce the <code>Callback­Wrapper­Outer</code> templated type. What was wrong with this?</p>
+<pre>    static_assert(((offsetof(<span style="color: blue;">CallbackWrapper&lt;Outer, Ids&gt;</span>, callback) == 0) &amp;&amp; ...));
+</pre>
+<p>What’s wrong with it is the command that separates the two <code>Callback­Wrapper</code> template parameters. The presence of this comma confuses the <code>offsetof</code> macro, since we saw some time ago that <a href="https://devblogs.microsoft.com/oldnewthing/20200508-00/?p=103735"> the C++ preprocessor doesnt understand anything about C++, and certainly not templates</a>. If the parameter to the <code>offsetof</code> macro had been an expression, we could have wrapped an extra set of parentheses around it, but in this case, it is a type, so we need to create a comma-free type alias for it.</p>
+<p>You can now derive from the <code>Callback­Wrappers</code> templated type without needing a method-forwarder helper class.</p>
+<pre>struct Widget final : IWidget
+    CallbackWrappers&lt;Widget, 1, 2&gt;
+{
+    ...
+    template&lt;auto Id&gt; HRESULT OnInvoke() = delete;
+    template&lt;&gt; HRESULT OnInvoke&lt;1&gt;();
+    template&lt;&gt; HRESULT OnInvoke&lt;2&gt;();
+    ...
+
+    void RegisterCallbacks()
+    {
+        SetCallback1(GetCallback&lt;1&gt;(this));
+        SetCallback2(GetCallback&lt;2&gt;(this));
+    }
+};
+</pre>
+<p>The <code>Widget</code> declares a templated member function called <code>OnInvoke</code> and immediately deletes it. Deleting the member function means that if you somehow do a</p>
+<pre>        GetCallback&lt;9&gt;(this);
+</pre>
+<p>you get a compile-time error if there is no 9-specialization. (Without the <code>= delete</code>, the error would not be detected until link time.)</p>
+<p>You can wrap these names so you don’t have to remember the numbers.</p>
+<pre>    HRESULT OnMicrophoneReady() { return OnInvoke&lt;1&gt;(); }
+    ICallback* GetMicrophoneReadyCallback() { return GetCallback&lt;1&gt;(); }
+</pre>
+<p>But wait, the identifier for the callback doesn’t have to be an integer. It can be anything that is a valid non-type template parameter. And they don’t even all have to be the same type!</p>
+<pre>enum class AudioStreamingCallbackKind
+{
+    MicrophoneReady,
+    RefillOutputBuffer,
+};
+
+enum class DecodeCallbackKind
+{
+    DataAvailable,
+};
+
+struct Widget final : IWidget
+    CallbackWrappers&lt;Widget,
+        AudioStreamingCallbackKind::MicrophoneReady,
+        AudioStreamingCallbackKind::RefillOutputBuffer,
+        DecodeCallbackKind::DataAvailable,
+        &amp;SomeVariable&gt;
+{
+    template&lt;auto Id&gt; HRESULT OnInvoke() = delete;
+    template&lt;&gt; HRESULT OnInvoke&lt;AudioStreamingCallbackKind::MicrophoneReady&gt;();
+    template&lt;&gt; HRESULT OnInvoke&lt;AudioStreamingCallbackKind::RefillOutputBuffer&gt;();
+    template&lt;&gt; HRESULT OnInvoke&lt;DecodeCallbackKind::DataAvailable&gt;();
+    template&lt;&gt; HRESULT OnInvoke&lt;&amp;SomeVariable&gt;();
+
+    void GetReady()
+    {
+        CallWhenMicrophoneReady(GetCallback&lt;AudioStreamingCallbackKind::MicrophoneReady&gt;());
+    }
+
+    void StartStreaming()
+    {
+        CallWhenDecoded(GetCallback&lt;DecodeCallbackKind::DataAvailable&gt;());
+        CallWhenBufferEmpty(GetCallback&lt;AudioStreamingCallbackKind::RefillOutputBuffer&gt;());
+    }
+
+    void EnjoyTheSunshine()
+    {
+        CallWhenSunny(GetCallback&lt;&amp;SomeVariable&gt;());
+    }
+};
+</pre>
+<p>Coming up with an enumeration is certainly more readable than just matching up integers, but it’s kind of annoying having to define the enumeration. The language does not permit string literals to be non-type template parameters, but we can get close, by hashing the strings:</p>
+<pre>constexpr uint64_t callback_id(char const* s)
+{
+    // Untested implementation of <a href="https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function#FNV-1a_hash">FNV-1a</a>
+    uint64_t result = 0xcbf29ce484222325;
+    for (size_t index = 0; s[index] != 0; index++) {
+        result = (result ^ s[index]) * 1099511628211;
+    }
+    return result;
+}
+</pre>
+<p>You can use this helper function to generate identifiers on demand:</p>
+<pre>struct Widget final : IWidget
+    CallbackWrappers&lt;Widget,
+        <span style="color: blue;">callback_id("microphoneReady"),
+        callback_id("dataAvailable")</span>&gt;
+{
+    template&lt;auto Id&gt; HRESULT OnInvoke() = delete;
+    template&lt;&gt; HRESULT OnInvoke&lt;<span style="color: blue;">callback_id("microphoneReady")</span>&gt;();
+    template&lt;&gt; HRESULT OnInvoke&lt;<span style="color: blue;">callback_id("dataAvailable")</span>&gt;();
+
+    void Initialize()
+    {
+        CallWhenMicrophoneReady(GetCallback&lt;<span style="color: blue;">callback_id("microphoneReady")</span>&gt;());
+        CallWhenDataAvailable(GetCallback&lt;<span style="color: blue;">callback_id("dataAvailable")</span>&gt;());
+    }
+};
+</pre>
+<p>You can save even more typing by using a user-defined literal:</p>
+<pre>constexpr uint64_t operator"" _fnv1a(char const*s, size_t)
+{
+    return callback_id(s);
+}
+
+struct Widget final : IWidget
+    CallbackWrappers&lt;Widget,
+        <span style="color: blue;">"microphoneReady"_fnv1a,
+        "dataAvailable"_fnv1a</span>&gt;
+{
+    template&lt;auto Id&gt; HRESULT OnInvoke() = delete;
+    template&lt;&gt; HRESULT OnInvoke&lt;<span style="color: blue;">"microphoneReady"_fnv1a</span>&gt;();
+    template&lt;&gt; HRESULT OnInvoke&lt;<span style="color: blue;">"dataAvailable"_fnv1a</span>&gt;();
+
+    void Initialize()
+    {
+        CallWhenMicrophoneReady(GetCallback&lt;<span style="color: blue;">"microphoneReady"_fnv1a</span>&gt;());
+        CallWhenDataAvailable(GetCallback&lt;<span style="color: blue;">"dataAvailable"_fnv1a</span>&gt;());
+    }
+};
+</pre>
+<p>Okay, that’s not so bad. A helper type for generating multiple COM ad-hoc-named identities from a single C++ object, without any overhead beyond the required vtable.</p>
+<p>Extending this pattern to support arbitrary callback types is left as a exercise. (You’ll want to use templates to deduce the parameters of the Invoke method.)</p>
+<p>Even if you don’t ever plan on using this thing (I’m not sure I ever would), we at least got a practical tour of quite a few C++ features:</p>
+<ul>
+<li>Aggregating types via variadic templates</li>
+<li>Fold expressions</li>
+<li>CRTP</li>
+<li>Delayed-expansion via templates</li>
+<li><code>auto</code> non-type template parameters</li>
+<li>Working around multi-parameter templates in macro arguments</li>
+<li>Using a template member function as a way to match up pairs of functions</li>
+<li>Designing code so that errors are detected at compile time rather than link time</li>
+<li>User-defined literals</li>
+</ul>
+
+
+</body>

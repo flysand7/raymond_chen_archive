@@ -1,0 +1,136 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The AArch64 processor (aka arm64), part 12: Memory access and alignment</h1>  <!-- .entry-meta -->
+
+<p>Accessing memory is done primarily through load and store instructions.</p>
+<pre>    ; load word or doubleword register
+    ldr     Rn/zr, [...]
+
+    ; load unsigned byte
+    ldrb    Wn/zr, [...]
+
+    ; load signed byte
+    ldrsb   Rn/zr, [...]
+
+    ; load unsigned halfword
+    ldrh    Wn/zr, [...]
+
+    ; load signed halfword
+    ldrsh   Rn/zr, [...]
+
+    ; load signed word
+    ldrsw   Xn/zr, [...]
+
+    ; load pair of registers
+    ldp     Rd1/zr, Rd2/zr, [...]
+
+    ; load pair of registers as signed word
+    ldpsw   Xd1/zr, Xd2/zr, [...]
+</pre>
+<p>AArch64 does not have AArch32’s <code>LDM</code> instruction for loading up to 13 registers at once. As a consolation present, it gives you a <code>LDP</code> instruction for loading two registers, either 32-bit or 64-bit, from consecutive bytes of memory. (The first register uses the lower address.) The <code>LDP</code> instruction is commonly used with the 64-bit registers to load spilled registers from the stack.</p>
+<p>There is a corresponding selection of instructions for storing to memory, but obviously the sign extension variations are not relevant.</p>
+<pre>    ; store word or doubleword register
+    str     Rn/zr, [...]
+
+    ; store byte
+    strb    Wn/zr, [...]
+
+    ; store halfword
+    strh    Wn/zr, [...]
+
+    ; store pair of registers
+    stp     Rd1/zr, Rd2/zr, [...]
+</pre>
+<p>Not all addressing modes are available for all variations. This is not something you worry about when reading assembly language, but it’s something you need to keep in mind when writing it.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Size</th>
+<th style="text-align: center;"><code>[Xn/sp, #imm]</code><br/>
+<span style="font-weight: normal; font-size: 80%;">(−256 … +255)</span></th>
+<th style="text-align: center;"><code>[Xn/sp, #imm]</code><br/>
+<code>[Xn/sp, #imm]!</code><br/>
+<code>[Xn/sp], #imm</code></th>
+<th><code>[pc, #imm]</code><br/>
+<span style="font-weight: normal; font-size: 80%;">(±1MB)</span></th>
+<th><code>[Xn/sp, Rn/zr, extend]</code></th>
+</tr>
+<tr>
+<td>byte</td>
+<td style="text-align: center;">•</td>
+<td style="text-align: center;">•</td>
+<td> </td>
+<td style="text-align: center;">•</td>
+</tr>
+<tr>
+<td>halfword</td>
+<td style="text-align: center;">•</td>
+<td style="text-align: center;">•</td>
+<td> </td>
+<td style="text-align: center;">•</td>
+</tr>
+<tr>
+<td>word</td>
+<td style="text-align: center;">•</td>
+<td style="text-align: center;">•</td>
+<td style="text-align: center;">loads only</td>
+<td style="text-align: center;">•</td>
+</tr>
+<tr>
+<td>doubleword</td>
+<td style="text-align: center;">•</td>
+<td style="text-align: center;">•</td>
+<td style="text-align: center;">loads only</td>
+<td style="text-align: center;">•</td>
+</tr>
+<tr>
+<td>pair</td>
+<td style="text-align: center;"> </td>
+<td style="text-align: center;">•</td>
+<td> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>The reach of the second column is is (0 … 4095) × <var>size</var>, except that the reach of the the register pairs is (−64 … 63) × <var>size</var>.</p>
+<p>All operand sizes support register indirect with offset. Only word and doubleword support <var>pc</var>-relative (and even those are supported only for loads). And register pairs support only register indirect with offset.</p>
+<p>There are some ambiguous encodings, because a constant offset in the range 0 … 255 that is a multiple of the operand size can be encoded either as a 9-bit signed byte offset, or as a 12-bit unsigned element offset. By default, assemblers will use the 12-bit unsigned element offset, but you can force the 9-bit signed byte offset by changing the opcode from <code>LDxxx</code> and <code>STxxx</code> to <code>LDUxxx</code> and <code>STUxxx</code>. The <code>U</code> stands for <i>unscaled</i>.</p>
+<p>Windows enables automatic unaligned access fixups. Simple unaligned memory accesses are fixed up automatically by the processor, but you lose atomicity: It is possible for an unaligned memory access to read a torn value. Any such tearing is at the byte level.</p>
+<table border="0" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>Original value</td>
+<td style="border: solid 1px gray;"><code>12</code></td>
+<td style="border: solid 1px gray;"><code>34</code></td>
+<td style="border: solid 1px gray;"><code>56</code></td>
+<td style="border: solid 1px gray;"><code>78</code></td>
+<td>aligned</td>
+</tr>
+<tr style="height: 1ex;">
+<td colspan="4"> </td>
+</tr>
+<tr>
+<td>Processor 1 reads</td>
+<td> </td>
+<td style="border: solid 1px gray; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; background-color: #ddd;"> </td>
+<td> </td>
+<td>misaligned</td>
+</tr>
+<tr style="height: 1ex;">
+<td colspan="4"> </td>
+</tr>
+<tr>
+<td>Processor 2 writes</td>
+<td style="border: solid 1px gray;"><code>AB</code></td>
+<td style="border: solid 1px gray;"><code>CD</code></td>
+<td style="border: solid 1px gray;"><code>EF</code></td>
+<td style="border: solid 1px gray;"><code>01</code></td>
+<td>aligned</td>
+</tr>
+</tbody>
+</table>
+<p>The misaligned halfword read from processor 1 could produce <code>34|56</code>, <code>34|EF</code>, <code>CD|56</code>, or <code>CD|EF</code>. But it won’t produce <code>3D|EF</code>.</p>
+<p>You can still take alignment faults if the misaligned memory access is fancy, such as a locked load, store exclusive, or a load with a memory barrier. We’ll learn about these special memory accesses next time.</p>
+
+
+</body>

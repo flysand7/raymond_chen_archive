@@ -1,0 +1,137 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Logging the foreground process as it changes</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s Little Program simply logs all changes to the foreground
+window by recording the path to the application the user switched to.
+You might use this as part of a usability study to monitor what
+applications users spend most of their time in.
+</p>
+<p>
+Most of this code is just taking things we already know and snapping
+them together.
+</p>
+<ol>
+<li>
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/03/25/10404940.aspx">
+    Using accessibility to monitor events</a>, specifically
+    to
+    <!-- backref: Playing a sound every time the foreground window changes -->
+    monitor foreground changes.
+<li><code>Get­Window­Thread­Process­Id</code>
+    to get the process ID from a window.
+<li><code>Open­Process</code> to get a handle to a process
+    given the process ID.
+<li><code>Query­Full­Process­ImageName</code> to
+    get the path to the application from the handle.
+    (For Windows XP, you can use
+    <code>Get­Process­Image­File­Name</code>.)
+</li></li></li></li></ol>
+<p>
+Take our
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make these changes:
+</p>
+<pre>
+BOOL QueryWindowFullProcessImageName(
+    HWND hwnd,
+    DWORD dwFlags,
+    PTSTR lpExeName,
+    DWORD dwSize)
+{
+ DWORD pid = 0;
+ BOOL fRc = FALSE;
+ if (GetWindowThreadProcessId(hwnd, &amp;pid)) {
+  HANDLE hProcess = OpenProcess(
+          PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (hProcess) {
+   fRc = QueryFullProcessImageName(
+          hProcess, dwFlags, lpExeName, &amp;dwSize);
+   CloseHandle(hProcess);
+  }
+ }
+ return fRc;
+}
+</pre>
+<p>
+The <code>Query­Window­Full­Process­Image­Name</code>
+function is the meat of the program,
+performing steps 2 through 4 above.
+</p>
+<p>
+Now we just hook this up in our event callback function.
+This should look really familiar, since we
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/03/25/10404940.aspx">
+did pretty much the same thing earlier this year</a>.
+</p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ <font color="blue">g_hwndChild = CreateWindow(TEXT("listbox"), NULL,
+     LBS_HASSTRINGS | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+     0, 0, 0, 0, hwnd, NULL, g_hinst, 0);
+ if (!g_hwndChild) return FALSE;</font>
+ return TRUE;
+}
+<font color="blue">void CALLBACK WinEventProc(
+    HWINEVENTHOOK hWinEventHook,
+    DWORD event,
+    HWND hwnd,
+    LONG idObject,
+    LONG idChild,
+    DWORD dwEventThread,
+    DWORD dwmsEventTime
+)
+{
+ if (event == EVENT_SYSTEM_FOREGROUND &amp;amp;
+     idObject == OBJID_WINDOW &amp;&amp;
+     idChild == CHILDID_SELF)
+ {
+  PCTSTR pszMsg;
+  TCHAR szBuf[MAX_PATH];
+  if (hwnd) {
+   DWORD cch = ARRAYSIZE(szBuf);
+   if (QueryWindowFullProcessImageName(hwnd, 0,
+                      szBuf, ARRAYSIZE(szBuf))) {
+    pszMsg = szBuf;
+   } else {
+    pszMsg = TEXT("&lt;unknown&gt;");
+   }
+  } else {
+   pszMsg = TEXT("&lt;none&gt;");
+  }
+  ListBox_AddString(g_hwndChild, pszMsg);
+ }
+}</font>
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+ ...
+  ShowWindow(hwnd, nShowCmd);
+ <font color="blue">HWINEVENTHOOK hWinEventHook = SetWinEventHook(
+     EVENT_SYSTEM_FOREGROUND,
+     EVENT_SYSTEM_FOREGROUND,
+     NULL, WinEventProc, 0, 0,
+     WINEVENT_OUTOFCONTEXT);</font>
+  while (GetMessage(&amp;msg, NULL, 0, 0)) {
+   TranslateMessage(&amp;msg);
+   DispatchMessage(&amp;msg);
+  }
+  <font color="blue">if (hWinEventHook) UnhookWinEvent(hWinEventHook);</font>
+...
+}
+</pre>
+<p>
+The main program installs an accessibility hook for the
+<code>EVENT_SYSTEM_FOREGROUND</code> event,
+and each time the event fires,
+it extracts the process name and logs it to
+the screen.
+Since the notification is asynchronous, the foreground window
+may have been destroyed by the time the notification is received,
+so we have to be prepared for that case.</p>
+
+
+</body>

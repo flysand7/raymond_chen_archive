@@ -1,0 +1,19 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A brief discussion on how best to respond to the end-session messages</h1>  <!-- .entry-meta -->
+
+<p>A customer discovered that their application’s shutdown code sometimes deadlocked. To address the problem, they moved the bulk of their shutdown code to the <code>WM_END­SESSION</code> message handler. The customer found <a href="https://blogs.msdn.microsoft.com/oldnewthing/20130627-00/?p=3973">my earlier discussion of the <code>WM_END­SESSION</code> message</a> and wondered if they were doing the right thing. </p>
+<p>Yes, it’s okay to do shutdown activities in response to the <code>WM_END­SESSION</code> message, provided that the <code>wParam</code> is nonzero, indicating that the session really is ending. If the <code>wParam</code> is zero, then it means that the session is <i>not</i> ending, so you had better not destroy anything you still need. </p>
+<p>Recall the shutdown sequence: First, the application receives a <code>WM_QUERY­END­SESSION</code> message. Here is the traditional point at which you can display a prompt to ask the user whether they want to save their unsaved changes.¹ Normally, you return <code>TRUE</code>, but if the user hits <i>Cancel</i> or otherwise indicates that they don’t want to shut down after all, then you return <code>FALSE</code>. </p>
+<p>If you returned <code>TRUE</code>, then you will eventually receive a <code>WM_END­SESSION</code> message whose <code>wParam</code> indicates whether the session really is ending. (The session might not actually be ending if another application returned <code>FALSE</code> to the <code>WM_QUERY­END­SESSION</code> message, or if the user canceled shutdown from the UI.) </p>
+<p>The customer shared some of their code, and I noticed that they were destroying a window in their <code>WM_END­SESSION</code> message handler, which is suspicious for two reasons: </p>
+<ol>
+<li>    If the <code>wParam</code> is <code>FALSE</code>,     the application will continue to run, but it lost     one of its windows! </li>
+<li>    If the <code>wParam</code> is <code>TRUE</code>,     then it’s okay to destroy things, but remember that     you are running under a time constraint,     and     <a href="https://blogs.msdn.microsoft.com/oldnewthing/20120105-00/?p=8683">    the building is being demolished</a>,     so you probably shouldn’t be wasting time sweeping     the floor and emptying the trash cans. </li>
+</ol>
+<p>What you could do is to kick off a background thread to prepare for shutdown when you receive the <code>WM_QUERY­END­SESSION</code> message. For example, you might start an autosave operation. Whatever you do, make sure that it’s okay for the operation to occur even if the shutdown is subsequently canceled. </p>
+<p>When you get the <code>WM_END­SESSION</code> message, you wait until that background operation completes before telling the system, “I’m good; you can shut down now.” </p>
+<p>Opportunistically starting the operation when you get the <code>WM_QUERY­END­SESSION</code> message means that you can respond more quickly to the <code>WM_END­SESSION</code> message. </p>
+<p>¹ In practice, displaying a prompt is usually not a good idea because if you don’t respond to the message after a few seconds, the system will shut down without you. </p>
+
+
+</body>

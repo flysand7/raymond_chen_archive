@@ -1,0 +1,191 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The AArch64 processor (aka arm64), part 15: Control transfer</h1>  <!-- .entry-meta -->
+
+<p>We start with the unconditional relative branch.</p>
+<pre>    b       label       ; unconditional branch
+</pre>
+<p>The reach of the relative branch is around ±128MB. If the branch target is more than 128MB away, then the linker will modify the relative branch to point to a “trampoline”, which we’ll discuss a little later.</p>
+<p>The relative branch instruction can be conditionalized on the status flags. They are the same status flags used by AArch32.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Condition</th>
+<th>Meaning</th>
+<th>Evaluation</th>
+<th>Notes</th>
+</tr>
+<tr>
+<td><code>EQ</code></td>
+<td>equal</td>
+<td>Z = 1</td>
+<td> </td>
+</tr>
+<tr>
+<td><code>NE</code></td>
+<td>not equal</td>
+<td>Z = 0</td>
+<td> </td>
+</tr>
+<tr>
+<td><code>CS</code></td>
+<td>carry set</td>
+<td rowspan="2">C = 1</td>
+<td> </td>
+</tr>
+<tr>
+<td><code>HS</code></td>
+<td>high or same</td>
+<td>unsigned greater than or equal</td>
+</tr>
+<tr>
+<td><code>CC</code></td>
+<td>carry clear</td>
+<td rowspan="2">C = 0</td>
+<td> </td>
+</tr>
+<tr>
+<td><code>LO</code></td>
+<td>low</td>
+<td>unsigned less than</td>
+</tr>
+<tr>
+<td><code>MI</code></td>
+<td>minus</td>
+<td>N = 1</td>
+<td>signed negative</td>
+</tr>
+<tr>
+<td><code>PL</code></td>
+<td>plus</td>
+<td>N = 0</td>
+<td>signed positive or zero</td>
+</tr>
+<tr>
+<td><code>VS</code></td>
+<td>overflow set</td>
+<td>V = 1</td>
+<td>signed overflow</td>
+</tr>
+<tr>
+<td><code>VC</code></td>
+<td>overflow clear</td>
+<td>V = 0</td>
+<td>no signed overflow</td>
+</tr>
+<tr>
+<td><code>HI</code></td>
+<td>high</td>
+<td>C = 1 and Z = 0</td>
+<td>unsigned greater than</td>
+</tr>
+<tr>
+<td><code>LS</code></td>
+<td>low or same</td>
+<td>C = 0 or Z = 1</td>
+<td>unsigned less than or equal</td>
+</tr>
+<tr>
+<td><code>GE</code></td>
+<td>greater than or equal</td>
+<td>N = V</td>
+<td>signed greater than or equal</td>
+</tr>
+<tr>
+<td><code>LT</code></td>
+<td>less than</td>
+<td>N ≠ V</td>
+<td>signed less than</td>
+</tr>
+<tr>
+<td><code>GT</code></td>
+<td>greater than</td>
+<td>Z = 0 and N = V</td>
+<td>signed greater than</td>
+</tr>
+<tr>
+<td><code>LE</code></td>
+<td>less than or equal</td>
+<td>Z = 1 or N ≠ V</td>
+<td>signed less than</td>
+</tr>
+<tr>
+<td><code>AL</code></td>
+<td>always</td>
+<td>always true</td>
+<td>unconditional</td>
+</tr>
+</tbody>
+</table>
+<p>Aside from <code>AL</code>,¹ the conditions come in pairs, and toggling the bottom bit negates the condition, which is conveniently kept in the bottom bit of the instruction, so if you want to reverse the sense of a branch, you can toggle the bottom bit. And if you want to replace the condition, you can replace the bottom nibble.</p>
+<p>The conditions are named after the behavior that is expected if they come directly after a <code>CMP</code> instruction. For example, a <code>BEQ</code> instruction that comes directly after a <code>CMP</code> is a conditional branch that is taken if the comparison was between two equal values.</p>
+<p>The conditional relative branches have a reach of ±1MB.</p>
+<p>There are special conditional branch instructions for testing whether a register or bit is zero.</p>
+<pre> 
+    ; compare and branch if zero/nonzero
+    cbz     Rn, label       ; branch if Rn == 0
+    cbnz    Rn, label       ; branch if Rn != 0
+
+    ; test bit and branch if zero/nonzero
+    tbz     Rn, #imm, label ; branch if Rn &amp; (1 &lt;&lt; imm) == 0
+    tbnz    Rn, #imm, label ; branch if Rn &amp; (1 &lt;&lt; imm) != 0
+</pre>
+<p>The <code>CBZ</code>/<code>CBNZ</code> instructions have a reach of ±1MB,² and the <code>TBZ</code>/<code>TBNZ</code> instructions have a reach of ±32KB.</p>
+<p>You can synthesize a “branch if negative / nonnegative” from <code>TBZ</code> and <code>TBNZ</code> by testing the sign bit.</p>
+<pre>    ; For 64-bit values, the sign bit is bit 63.
+    tbz     Xn, #63, label  ; branch if nonnegative
+    tbnz    Xn, #63, label  ; branch if negative
+
+    ; For 32-bit values, the sign bit is bit 31.
+    tbz     Wn, #31, label  ; branch if nonnegative
+    tbnz    Wn, #31, label  ; branch if negative
+</pre>
+<p>The <code>CBZ</code>/<code>CBNZ</code> and <code>TBZ</code>/<code>TBNZ</code> instructions help compensate for the absence of some flags-setting bitwise operations.</p>
+<pre>    ; you want to write
+    eor     x0, x1, x2
+    bmi     negative
+    bne     nonzero
+
+    ; alternative
+    eor     x0, x1, x2
+    tbnz    x0, #63, negative
+    cbnz    nonzero
+</pre>
+<p>In addition to relative jumps, we have a register indirect jump:</p>
+<pre>    ; branch to register
+    br      Xn/zr
+</pre>
+<p>The processor allows you to hard-code the zero register here, but that is not particularly useful unless your goal is to fault on the next cycle. (Better would be to use a permanently undefined instruction, which we’ll see later. That way the crash points at the offending instruction instead of at address 0.)</p>
+<p>Subroutine calls are performed by branching to the first instruction of the subroutine and putting the return address in the <var>x30</var> register.</p>
+<pre>    ; branch with link (can reach ±128MB)
+    bl      label           ; x30 = return address
+                            ; execution resumes at label
+
+    ; branch with link to register
+    blr     Xn/zr           ; x30 = return address
+                            ; execution resumes at Xn
+</pre>
+<p>The branch-with-link instructions predict a subroutine call.</p>
+<p>And of course your subroutine will probably want to return:</p>
+<pre>    ; return from subroutine
+    ret     Xn/zr           ; resume execution at Xn
+    ret                     ; resume execution at x30
+</pre>
+<p>The <code>RET</code> instruction is functionally equivalent to <code>BR</code> because they both perform a branch to an address held in a register. The difference is that <code>RET</code> predicts a subroutine return.</p>
+<p>Okay, now about trampolines. A trampoline is a fragment of code that jumps to the final destination. To help generate the jump instruction, the code fragment is permitted to clobber the <var>x16</var> and <var>x17</var> registers, also known as <var>xip0</var> and <var>xip1</var>. Here’s an example:</p>
+<pre>    ; original code was "bl toofar", but toofar is too far away.
+    bl      toofar_trampoline
+
+...
+
+toofar_trampoline:
+    adrp    xip0, toofar
+    add     xip0, xip0, PageOffset(toofar)
+    br      xip0
+</pre>
+<p>Next time, we’ll look at the collection of branchless conditional execution operations.</p>
+<p><b>Bonus chatter</b>: AArch64 drops the table branch instructions which were present in AArch32. The table branch instructions were used in AArch32 primarily for dense switch statements. We’ll see later how dense switch statements are handled in AArch64.</p>
+<p>¹ There is a mystery 16th condition code, and if you follow the pattern of the existing condition codes, the missing one should be <code>NV</code> for <i>never</i>, the opposite of <code>AL</code> (always). However, if you try to use it, you’ll find that it behaves the same as <code>AL</code>. This is architecturally documented behavior. So you could say that on ARM, <i>never</i> is the same as <i>always</i>.</p>
+<p>² In AArch32, the <code>CBZ</code> and <code>CBNZ</code> instructions were limited to forward branches, but in AArch64 they can go both forward and backward.</p>
+
+
+</body>

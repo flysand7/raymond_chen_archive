@@ -1,0 +1,26 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Intel 80386, part 10: Atomic operations and memory alignment</h1>  <!-- .entry-meta -->
+
+<p>Memory access on the 80386 to misaligned locations are supported, although they will operate more slowly than their aligned counterparts. If a memory access straddles a page boundary, an access violation will be raised if either page does not support the desired operation (not readable or not writable), and the instruction will not appear to have started. The instruction does not partially-execute before the exception is raised. </p>
+<p>If you are unlucky, and your misalignment straddles a page boundary, you can incur multiple page faults until pages on both sides of the boundary are simultaneously ready to accept the operation. <a href="https://blogs.msdn.microsoft.com/oldnewthing/20040827-00/?p=38033">If you are super-unlucky, this state may never be achieved</a> and your program will just keep page faulting on that same instruction over and over again until the user terminates it. </p>
+<p>Although 80386 does not support symmetric multiprocessor operations, it does support coprocessor operations as well as direct memory access (DMA), so you still need to be aware of atomicity. </p>
+<p>Storing values to memory and reading values from memory are atomic operations.¹ If a competing processor writes to or reads the same memory, the result will be completely one value or the other, never a mix of the two. </p>
+<p>This atomicity does not extend by default to read-modify-write operations, however. </p>
+<pre>
+    INC     [value]     ; may conflict with other processors
+</pre>
+<p>It’s possible that another processor could write to the memory between the read and the write of the <code>INC</code> instruction. </p>
+<p>To prevent another processor from accessing the memory during a read-modify-write memory operation, insert a <code>LOCK</code> prefix in front of the instruction. This causes the read-modify-write sequence to occur atomically. </p>
+<pre>
+    LOCK INC [value]    ; increment atomically
+</pre>
+<p>Any memory operation can be prefixed with a <code>LOCK</code>, and the processor will prevent any other processors from accessing the memory for the duration of that instruction. This works even for unaligned memory accesses! </p>
+<p>The <code>LOCK</code> prefix is superfluous for simple reads and writes, since those are already atomic. It adds value only for read-modify-write instructions. </p>
+<p>The <code>LOCK</code> prefix is also superfluous for the <code>XCHG</code> instruction, because the processor automatically locks the bus during an exchange. This automatic lock is for backward compatbility purposes, because <code>XCHG</code> was a common way to perform test-and-set operations on earlier versions of the processor. </p>
+<p>Note that many atomic operations are not available in the form we have become accustomed to: Although you can perform an atomic increment or decrement, or atomic add or subtract, you don’t receive the arithmetic result. The only atomic result from an arithmetic operation on memory is the flags. Therefore, <a href="https://blogs.msdn.microsoft.com/oldnewthing/20040506-00/?p=39463">the only information you got back from the <code>Interlocked­Increment</code> or <code>Interlocked­Decrement</code> functions was the sign of the result</a>. You could try to read the memory back to see what the result was, but that would be a separate instruction, outside the scope of the <code>LOCK</code>, and therefore is not part of the overall atomic operation. </p>
+<p>The 80386 has no compare-exchange instruction, so there was no <code>Interlocked­Compare­Exchange</code> available for the 80386. You did get a straight <code>Interlocked­Exchange</code>, though. </p>
+<p>Okay, so that’s atomic operations and memory alignment. <a href="http://devblogs.microsoft.com/oldnewthing/20190204-00/?p=101028">Next time</a>, we’ll start looking at Windows software conventions. </p>
+<p>¹ The operations are atomic, but not synchronized. </p>
+
+
+</body>

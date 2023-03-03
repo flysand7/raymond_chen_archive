@@ -1,0 +1,98 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Trying to avoid double-destruction and inadvertently triggering it</h1>  <!-- .entry-meta -->
+
+<p>
+We saw some time ago the importance of
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/09/28/474855.aspx">
+artificially bumping an object’s reference count during destruction
+to avoid double-destruction</a>.
+However, one person’s attempt to avoid this problem ended up triggering it.
+</p>
+<pre>
+ULONG MyObject::Release()
+{
+ LONG cRef = InterlockedDecrement(&amp;m_cRef);
+ if (cRef &gt; 0) return cRef;
+ m_cRef = MAXLONG; // avoid double-destruction
+ delete this;
+ return 0;
+}
+</pre>
+<p>
+The explanation for the line <code>m_cRef = MAXLONG</code>
+was that it was done
+to avoid the double-destruction problem if the object receives
+a temporary <code>AddRef/Release</code> during destruction.
+</p>
+<p>
+While it’s true that you should set the reference count to an artificial
+non-zero value,
+choosing <code>MAXLONG</code> has its own problem:
+integer overflow.
+</p>
+<p>
+Suppose that during the object’s destruction,
+the reference count is temporarily incremented twice and decremented
+twice.
+</p>
+<table border="1" cellpadding="3">
+<tr>
+<th>Action</th>
+<th>m_cRef</th>
+</tr>
+<tr>
+<td>Just before call to Release()</td>
+<td>1</td>
+</tr>
+<tr>
+<td>InterlockedDecrement</td>
+<td>0</td>
+</tr>
+<tr>
+<td>m_cRef = MAXLONG</td>
+<td>2147483647</td>
+</tr>
+<tr>
+<td>destructor does temporary <code>AddRef()</code></td>
+<td>−2147483648 (integer overflow)</td>
+</tr>
+<tr>
+<td>destructor does temporary <code>AddRef()</code></td>
+<td>−2147483647</td>
+</tr>
+<tr>
+<td>destructor does temporary <code>Release()</code></td>
+<td>−2147483648</td>
+</tr>
+<tr>
+<td colspan="2">since <code>m_cRef</code> &lt; 0, we re-destruct</td>
+</tr>
+</table>
+<p>
+Sure, choosing a huge <code>DESTRUCTOR_REFCOUNT</code>
+means that you have absolutely no chance of decrementing
+the reference count back to zero prematurely.
+However, if you choose a value too high, you introduce the
+risk of <i>incrementing</i> the reference count
+so high that it overflows.
+</p>
+<p>
+That’s why the most typical values for <code>DESTRUCTOR_REFCOUNT</code>
+are 1, 42, and 1000.
+The value 1 is really all you need to avoid double-destruction.
+Some people choose 42 because it’s cute,
+and other people choose 1000 because it’s higher than any “normal”
+refcount, so it makes it easier to spot during debugging.
+But even then, the “high” value of 1000 still leaves room for over
+two billion <code>AddRef()</code>s before overflowing the
+reference count.
+</p>
+<p>
+On the other hand, if you choose a value like <code>MAXLONG</code>
+or <code>MAXDWORD</code>,
+then you’re taking something that previously never happened
+(reference count integer overflow)
+and turning it into an almost certainty.</p>
+
+
+</body>

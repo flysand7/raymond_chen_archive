@@ -1,0 +1,56 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Confusing gotcha: PSECURITY_DESCRIPTOR is not a pointer to a SECURITY_DESCRIPTOR</h1>  <!-- .entry-meta -->
+
+<p>There is a structure called a <code>SECURITY_DESCRIPTOR</code>. It describes the layout of an absolute security descriptor. </p>
+<p>There is also a structure called a <code>SECURITY_DESCRIPTOR_RELATIVE</code>. It describes the layout of a relative security descriptor. </p>
+<p>And then there is a type called <code>PSECURITY_DESCRIPTOR</code>. You might think based on its name that it is a pointer to a <code>SECURITY_DESCRIPTOR</code>. But it’s not. It is defined as </p>
+<pre>
+typedef PVOID PSECURITY_DESCRIPTOR;
+// equivalent to
+// typedef void *PSECURITY_DESCRIPTOR;
+</pre>
+
+<p>Most code that accept security descriptors don’t care whether the security descriptor is absolute or relative. They just pass the security descriptor through to functions like <code>Access­Check</code>. And the name for a generic “pointer to some type of security descriptor, maybe relative, maybe absolute” is <code>PSECURITY_DESCRIPTOR</code>. </p>
+<p>You rarely notice this switcheroo because code that deals with security descriptors typically use helper functions to do the heavy lifting. You notice this problem if you try to use something like <code>std::unique_ptr</code> to manage the lifetime of a security descriptor. </p>
+<pre>
+template&lt;typename T&gt;
+struct LocalAlloc_delete
+{
+ LocalAlloc_delete() { }
+ void operator()(T* p) throw() { LocalFree(p); }
+};
+
+template&lt;typename T&gt;
+using unique_localptr = std::unique_ptr&lt;T, LocalAlloc_delete&lt;T&gt;&gt;;
+
+void some_function()
+{
+ PSECURITY_DESCRIPTOR result;
+ ConvertStringSecurityDescriptorToSecurityDescriptorW(
+  L"O:AOG:DAD:(A;;RPWPCCDCLCSWRCWDWOGA;;;S-1-0-0)",
+  SDDL_REVISION_1, &amp;result, nullptr);
+
+ <font color="blue">// compiler error here
+ unique_localptr&lt;SECURITY_DESCRIPTOR&gt; sd(result);</font>
+
+ .. do stuff with sd ...
+}
+</pre>
+<p>The compiler complains because <code>result</code> is a <code>PSECURITY_DESCRIPTOR</code>, but it expects a <code>SECURITY_DESCRIPTOR*</code>. </p>
+<p>I can’t think of a clean way out of this. Here are some ugly ways out: </p>
+<pre>
+// ugly option 1 - cast it away
+unique_localptr&lt;SECURITY_DESCRIPTOR&gt;
+    sd(reinterpret_cast&lt;SECURITY_DESCRIPTOR*&gt;(result));
+
+// ugly option 2 - special knowledge about PSECURITY_DESCRIPTOR
+unique_localptr&lt;void&gt; sd(result);
+
+// ugly option 3 - general, but an awful lot of typing
+ unique_localptr&lt;
+    std::remove_pointer&lt;PSECURITY_DESCRIPTOR&gt;::type&gt; sd(result);
+</pre>
+<p>In retrospect, the structure for an absolute security descriptor should have been named <code>SECURITY_DESCRIPTOR_ABSOLUTE</code>. My guess is that the name is historical: Initially, the only kind of security descriptor was absolute. Later, relative security descriptors were invented, and the easiest way to retrofit them into the existing interfaces was to make <code>PSECURITY_DESCRIPTOR</code> the generic security descriptor pointer. </p>
+
+
+</body>

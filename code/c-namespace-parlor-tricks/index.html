@@ -1,0 +1,173 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ namespace parlor tricks</h1>  <!-- .entry-meta -->
+
+<p>These tricks may be obvious, but at least I’m going to write them down.</p>
+<p>It is common to import an entire namespace into the global namespace. <a href="https://stackoverflow.com/questions/1452721/why-is-using-namespace-std-considered-bad-practice"> I’m not saying it’s a good idea</a>, but it is common. The most notorious example is to put</p>
+<pre>using namespace std;
+</pre>
+<p>to import the <code>std</code> namespace into the global namespace.</p>
+<p>When working with the Windows Runtime, you often have rather deep namespaces. For example, we saw some time ago that we were operating in the <code>Windows::<wbr/>System::<wbr/>Profile::<wbr/>System­Manufacturers</code> namespace. This is quite a mouthful, and it is common to put a</p>
+<pre>using namespace Windows::System::Profile::SystemManufacturers;
+</pre>
+<p>in your program just to save yourself the hassle of typing it all out.</p>
+<p>However, things get complicated if you create name collisions.</p>
+<p>For example, if you are using WRL, you will be working with the <code>ABI::<wbr/>Windows::<wbr/>System::<wbr/>Profile::<wbr/>System­Manufacturers</code> namespace, but if you do a</p>
+<pre>using namespace ABI::Windows::System::Profile::SystemManufacturers;
+</pre>
+<p>you now have a problem because you have imported the name <code>Smbios­Information</code> twice:</p>
+<pre>using namespace Windows::System::Profile::SystemManufacturers;
+using namespace ABI::Windows::System::Profile::SystemManufacturers;
+</pre>
+<p>After these two declarations, the name <code>System­Information</code> is now ambiguous. It could refer to <code>Windows::<wbr/>System::<wbr/>Profile::<wbr/>System­Manufacturers::<wbr/>System­Information</code>, via the first <code>using</code> declaration, or it oculd refer to <code>ABI::<wbr/>Windows::<wbr/>System::<wbr/>Profile::<wbr/>System­Manufacturers::<wbr/><code>System­Information</code>, via the second <code>using</code> declaration. </code></p>
+<p>I’ve worked around this by using namespace aliases:</p>
+<pre>namespace wspsm = Windows::System::Profile::SystemManufacturers;
+namespace awspsm = ABI::Windows::System::Profile::SystemManufacturers;
+</pre>
+<p>This lets me use <code>wspsm::Smbios­Information</code> and <code>awspsm::Smbios­Information</code> to refer to the C++/CX or ABI versions, respectively.</p>
+<p>However, this gets clunky once you have multiple namespaces you want to access:</p>
+<pre>namespace wspsm = Windows::System::Profile::SystemManufacturers;
+namespace awspsm = ABI::Windows::System::Profile::SystemManufacturers;
+namespace wwspsm = winrt::Windows::System::Profile::SystemManufacturers;
+
+namespace wuvm = Windows::UI::ViewManagement;
+namespace awuvm = ABI::Windows::UI::ViewManagement;
+namespace wwuvm = winrt::Windows::UI::ViewManagement;
+
+namespace wsc = Windows::Security::Cryptography;
+namespace awsc = ABI::Windows::Security::Cryptography;
+namespace wwsc = winrt::Windows::Security::Cryptography;
+</pre>
+<p>because you have to juggle all these aliases. &lt;/`P&gt;</p>
+<p>But there’s a more attractive solution: Move names around by importing them into another namespace. (The name for this technique is “namespace composition”, covered in <a href="https://www.safaribooksonline.com/library/view/the-c-programming/9780133522884/#toc"> sections 14.4.3 and 14.4.4</a> of <a href="https://www.amazon.com/gp/product/0321563840/?ie=UTF8&amp;tag=tholneth-20"> <i>The C++ Programming Language</i></a>.)</p>
+<pre>namespace ABI
+{
+  using Windows::System::Profile::SystemManufacturers;
+  using Windows::UI::ViewManagement;
+  using Windows::Security::Cryptography;
+}
+
+namespace cx
+{
+  using Windows::System::Profile::SystemManufacturers;
+  using Windows::UI::ViewManagement;
+  using Windows::Security::Cryptography;
+}
+
+namespace winrt
+{
+  using Windows::System::Profile::SystemManufacturers;
+  using Windows::UI::ViewManagement;
+  using Windows::Security::Cryptography;
+}
+</pre>
+<p>The first block of <code>using</code> declarations imports the contents of the <code>ABI::<wbr/>Windows::<wbr/>System::<wbr/>Profile::<wbr/>System­Manufacturers</code>, <code>ABI::<wbr/>Windows::<wbr/>UI::<wbr/>View­Management</code>, and <code>ABI::<wbr/>Windows::<wbr/>Security::<wbr/>Cryptography</code> namespaces into the <code>ABI</code> namespace.</p>
+<p>Similarly for the other two blocks.</p>
+<p>The upshot of this is that you can now do this</p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Old and busted</th>
+<th rowspan="2">To get</th>
+</tr>
+<tr>
+<th>New hotness</th>
+</tr>
+<tr>
+<td><code>awspsm::<wbr/>Smbios­Information</code></td>
+<td rowspan="2">
+
+
+</td>
+</tr>
+<tr>
+<td><code>   ABI::<wbr/>Smbios­Information</code></td>
+</tr>
+<tr>
+<td><code> wspsm::<wbr/>Smbios­Information</code></td>
+<td rowspan="2">
+
+
+</td>
+</tr>
+<tr>
+<td><code>    cx::<wbr/>Smbios­Information</code></td>
+</tr>
+<tr>
+<td><code>wwspsm::<wbr/>Smbios­Information</code></td>
+<td rowspan="2">
+
+
+</td>
+</tr>
+<tr>
+<td><code> winrt::<wbr/>Smbios­Information</code></td>
+</tr>
+<tr>
+<td><code> awuvm::<wbr/>Application­View</code></td>
+<td rowspan="2">
+
+
+</td>
+</tr>
+<tr>
+<td><code>   ABI::<wbr/>Application­View</code></td>
+</tr>
+<tr>
+<td><code>  wuvm::<wbr/>Application­View</code></td>
+<td rowspan="2">
+
+
+</td>
+</tr>
+<tr>
+<td><code>    cx::<wbr/>Application­View</code></td>
+</tr>
+<tr>
+<td><code> wwuvm::<wbr/>Application­View</code></td>
+<td rowspan="2">
+
+
+</td>
+</tr>
+<tr>
+<td><code> winrt::<wbr/>Application­View</code></td>
+</tr>
+<tr>
+<td><code>  awsc::<wbr/>Cryptographic­Buffer</code></td>
+<td rowspan="2">
+
+
+</td>
+</tr>
+<tr>
+<td><code>   ABI::<wbr/>Cryptographic­Buffer</code></td>
+</tr>
+<tr>
+<td><code>   wsc::<wbr/>Cryptographic­Buffer</code></td>
+<td rowspan="2">
+
+
+</td>
+</tr>
+<tr>
+<td><code>    cx::<wbr/>Cryptographic­Buffer</code></td>
+</tr>
+<tr>
+<td><code>  wwsc::<wbr/>Cryptographic­Buffer</code></td>
+<td rowspan="2">
+
+
+</td>
+</tr>
+<tr>
+<td><code> winrt::<wbr/>Cryptographic­Buffer</code></td>
+</tr>
+</tbody>
+</table>
+<p>In particular, this trick works with Windows Runtime classes because as a general rule, Windows Runtime type names are unique across all Windows Runtime namespaces, so you won’t inadvertently introduce a name collision by <code>using</code> a bunch of Windows Runtime namespaces together.</p>
+<p>The general rule makes Windows Runtime types easier to search for (both on the Web and in your code) because you will have fewer false positives.</p>
+<p><b>Bonus chatter</b>: The exception to the general rule is DirectX. Windows Runtime naming conventions permit the same name to be used in different versions of DirectX. This isn’t a problem because in practice, each application picks one version of DirectX and sticks with it; applications don’t try to mix-and-match different versions of DirectX.</p>
+<p><b>Bonus bonus chatter</b>: The above rule is on the books, but has yet to be exercised. As of this writing, the only version of DirectX in the Windows Runtime is DirectX11.</p>
+
+
+</body>

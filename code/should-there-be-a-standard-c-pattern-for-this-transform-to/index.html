@@ -1,0 +1,69 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Should there be a standard C++ pattern for this? transform_to</h1>  <!-- .entry-meta -->
+
+<p>I’ve got one type of collection and I want to apply a function to each member of the collection, thereby producing a new collection.</p>
+<p>Surely there’s a standard pattern for this?</p>
+<p>In JavaScript, it’s called <code>map</code>:</p>
+<pre>function getOldValues()
+{
+    return ["a", "b", "c", "d"];
+}
+
+var newValues = getOldValues().map(v =&gt; v.charCodeAt(0));
+// result: [97, 98, 99, 100]
+</pre>
+<p>In C#, it’s <code>Select</code>.</p>
+<pre>string[] GetOldValues() =&gt; new[] { "a", "b", "c", "d" };
+
+var newValues = GetOldValues().Select(v =&gt; (int)v[0]).ToArray();
+// result: int[] { 97, 98, 99, 100 };
+</pre>
+<p>In C++, it’s, um, this clumsy <code>std::transform</code>.</p>
+<pre>std::vector&lt;std::string&gt; GetOldValues()
+{
+   return { "a", "b", "c", "d" };
+}
+
+auto oldValues = GetOldValues();
+std::vector&lt;int&gt; newValues;
+newValues.reserve(oldValues.size());
+std::transform(oldValues.begin(), oldValues.end(),
+    std::back_inserter(newValues),
+    [](auto&amp;&amp; v) { return v[0]; });
+</pre>
+<p>It’s clumsy because you need to give a name to the thing being transformed, because you need to call both <code>begin</code> and <code>end</code> on it. But giving it a name extends its lifetime, so you end up carrying this <code>oldValues</code> vector around for no reason.¹</p>
+<p>It’s clumsy because you have to construct an empty <code>newValues</code> and then fill it in.</p>
+<p>Would be nice if there were some helper function like</p>
+<pre>template&lt;typename T, typename U, typename TLambda&gt;
+T transform_to(U&amp;&amp; u, TLambda&amp;&amp; lambda)
+{
+  T result;
+  if constexpr (has_size_v&lt;U&gt; &amp;&amp; has_reserve_v&lt;T&gt;)
+  {
+    result.reserve(u.size());
+  }
+  std::transform(u.begin(), u.end(), std::back_inserter(result),
+                 std::forward&lt;TLambda&gt;(lambda));
+  return result;
+}
+
+auto newValues = std::transform_to&lt;std::vector&lt;int&gt;&gt;(
+    GetOldValues(), [](auto&amp;&amp; v) { return v[0]; });
+</pre>
+<p>Maybe one exists and I’m missing it? Help me out here.</p>
+<p>¹ You can avoid extending the lifetime beyond the transform by pushing it into a lambda:</p>
+<pre>auto newValues = [&amp;]()
+{
+    auto oldValues = GetOldValues();
+    std::vector&lt;int&gt; newValues;
+    newValues.reserve(oldValues.size());
+    std::transform(oldValues.begin(), oldValues.end(),
+        std::back_inserter(newValues),
+        [](auto&amp;&amp; v) { return v[0]; });
+    return newValues;
+}();
+</pre>
+<p>but that’s basically just taking the <code>transform_to</code> function and inlining it as a lambda.</p>
+
+
+</body>

@@ -1,0 +1,207 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I make a WNDPROC or DLGPROC a member of my C++ class?</h1>  <!-- .entry-meta -->
+
+<p>
+Continuing my discussion of
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/01/27/10492898.aspx">
+<i>How can I make a callback function a member of my C++ class?</i></a>
+</p>
+<p>
+Common special cases for wanting to use a member function as a
+callback function are the window procedure and its cousin the
+dialog procedure.
+The question, then, is where to put the reference data.
+</p>
+<p>
+Let’s start with window procedures.
+The <code>Create­Window</code> function and its close friend
+<code>Create­Window­Ex</code> let you pass your reference
+data as the final parameter, prototyped as
+<code>LPVOID lpParam</code>.
+As noted in the documentation,
+that value is passed back to the window procedure by the
+<code>WM_NC­CREATE</code> and
+<code>WM_CREATE</code> messages
+as part of the <code>CREATE­STRUCT</code> structure.
+One of the first messages passed to a window is
+<code>WM_NC­CREATE</code>,
+so that’s where we’ll grab the reference data and save it for later.
+</p>
+<p>
+You can follow along
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/04/22/410773.aspx">
+in this simple C++ program</a>:
+The static window procedure handles the
+<code>WM_NC­CREATE</code> message by
+extracting the <code>lpCreate­Params</code> from the
+<code>CREATE­STRUCT</code> and saving it in the
+<code>GWLP_USER­DATA</code> window bytes.
+That value is a special per-window storage location provided
+for the benefit of the window procedure,
+and most people use it to store their context parameter for
+safekeeping.
+</p>
+<p>
+If the message is not
+<code>WM_NC­CREATE</code>,
+then we retrieve the context parameter from
+where we had stashed it.
+</p>
+<p>
+Either way, we end up with a copy of the context parameter.
+If you want your window procedure to be a member function,
+the natural choice for the context parameter is the <code>this</code>
+pointer for the instance.
+The static window procedure therefore tends to look like this:
+</p>
+<pre>
+LRESULT CALLBACK MyWindowClass::s_WndProc(
+    HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+ MyWindowClass *pThis; // our "this" pointer will go here
+ if (uMsg == WM_NCCREATE) {
+  // Recover the "this" pointer which was passed as a parameter
+  // to CreateWindow(Ex).
+  LPCREATESTRUCT lpcs = reinterpret_cast&lt;LPCREATESTRUCT&gt;(lParam);
+  pThis = static_cast&lt;MyWindowClass*&gt;(lpcs-&gt;lpCreateParams);
+  // Put the value in a safe place for future use
+  SetWindowLongPtr(hwnd, GWLP_USERDATA,
+                   reinterpret_cast&lt;LONG_PTR&gt;(pThis));
+ } else {
+  // Recover the "this" pointer from where our WM_NCCREATE handler
+  // stashed it.
+  pThis = reinterpret_cast&lt;MyWindowClass*&gt;(
+              GetWindowLongPtr(hwnd, GWLP_USERDATA));
+ }
+ if (pThis) {
+  // Now that we have recovered our "this" pointer, let the
+  // member function finish the job.
+  return pThis-&gt;WndProc(hwnd, uMsg, wParam, lParam);
+ }
+ // We don't know what our "this" pointer is, so just do the default
+ // thing. Hopefully, we didn't need to customize the behavior yet.
+ return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+</pre>
+<p>
+You pass the the <code>this</code> pointer to <code>Create­Window</code>
+as the last parameter, so that the window procedure can pick it up.
+</p>
+<pre>
+hwnd = CreateWindow(... other parameters..., <u>this</u>);
+</pre>
+<p>
+For dialog boxes, you can do basically the same thing.
+It’s just that the bookkeeping is slightly different.
+</p>
+<ul>
+<li>
+    The <code>...Param</code> versions of the dialog box functions
+    are the ones which let you pass reference data.
+<li>
+    The dialog procedure receives the reference data in the
+    <code>lParam</code> passed with the <code>WM_INIT­DIALOG</code>.
+<li>
+    The system-provided secret hiding place for dialog boxes is called
+    <code>DWLP_USER</code>.
+</li></li></li></ul>
+<pre>
+INT_PTR CALLBACK MyDialogClass::s_DlgProc(
+    HWND hdlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+ MyDialogClass *pThis; // our "this" pointer will go here
+ if (uMsg == WM_INITDIALOG) {
+  // Recover the "this" pointer which was passed as the last parameter
+  // to the ...Dialog...Param function.
+  pThis = reinterpret_cast&lt;MyDialogClass*&gt;(lParam);
+  // Put the value in a safe place for future use
+  SetWindowLongPtr(hdlg, DWLP_USER,
+                   reinterpret_cast&lt;LONG_PTR&gt;(pThis));
+ } else {
+  // Recover the "this" pointer from where our WM_INITDIALOG handler
+  // stashed it.
+  pThis = reinterpret_cast&lt;MyDialogClass*&gt;(
+              GetWindowLongPtr(hdlg, DWLP_USER));
+ }
+ if (pThis) {
+  // Now that we have recovered our "this" pointer, let the
+  // member function finish the job.
+  return pThis-&gt;DlgProc(hwnd, uMsg, wParam, lParam);
+ }
+ // We don't know what our "this" pointer is, so just do the default
+ // thing. Hopefully, we didn't need to customize the behavior yet.
+ return FALSE; // returning FALSE means "do the default thing"
+}
+</pre>
+<p>
+The above code should look really familiar, since it’s
+the same as the window procedure case,
+just with slightly different bookkeeping.
+</p>
+<p>
+The resulting classes look like this:
+</p>
+<pre>
+class MyWindowClass
+{
+ ... other class stuff goes here ...
+ // This is the static callback that we register
+ static LRESULT CALLBACK s_WndProc(
+    HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+ // The static callback recovers the "this" pointer and then
+ // calls this member function.
+ LRESULT WndProc(
+    HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+};
+void MyWindowClass::SomeMemberFunction()
+{
+ // to register the class
+ WNDCLASS wc;
+ ... fill out the window class as normal ...
+ wc.lpfnWndProc = MyWindowClass::s_WndProc;
+ wc.lpszClassName = TEXT("MyWindowClass");
+ RegisterClass(&amp;wc);
+ // to create a window
+ hwnd = CreateWindow(TEXT("MyWindowClass"),
+                     ... other parameters as usual ...,
+                     <u>this</u>);
+}
+class MyDialogClass
+{
+ ... other class stuff goes here ...
+ // This is the static callback that we register
+ static INT_PTR CALLBACK s_DlgProc(
+    HWND hdlg, UINT uMsg, WPARAM wParam, LPARAM lParam);
+ // The static callback recovers the "this" pointer and then
+ // calls this member function.
+ INT_PTR DlgProc(
+    HWND hdlg, UINT uMsg, WPARAM wParam, LPARAM lParam);
+};
+void MyDialogClass::SomeMemberFunction()
+{
+ // to create the dialog box
+ DialogBoxParam(...  other parameters as usual ...,
+                <u>reinterpret_cast&lt;LPARAM&gt;(this)</u>);
+}
+</pre>
+<p>
+Okay, I’ll try to write something more interesting for next week.
+But at least I wrote this part down so I can point people at it
+in the future.
+</p>
+<p>
+<b>Bonus chatter</b>:
+As commenter Ben noted last week,
+<a href="http://msdn.microsoft.com/library/ms648712">
+DDEML
+is another component that uses the implicit reference data model</a>.
+In the DDEML case, you use
+<code>Dde­Set­User­Handle</code> to set the reference data
+and
+<code>Dde­Query­Conv­Info</code> to retrieve it.
+</p>
+<p>
+(Various errors have been corrected based on comments, thanks everybody!)</p>
+
+
+</body>

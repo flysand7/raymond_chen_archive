@@ -1,0 +1,203 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Giving a single object multiple COM identities, part 2</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/giving-a-single-object-multiple-com-identities-part-1"> how you can give a single object multiple COM identities</a> so that different clients can maintain references to different parts of the object without knowing about the other parts.</p>
+<p>The idea here is that each identity is its own separate collection of <code>IUnknown</code> interfaces which are interconnected via <code>Query­Interface</code> to each other, but all of the identities share the same <code>AddRef</code> and <code>Release</code>, so that the lifetime of the collective ends only when all the identities run down.</p>
+<p>Our previous implementation gave each embedded identity a pointer to the outer object so it could access the shared <code>AddRef</code> and <code>Release</code> methods, as well as forward any calls to the outer object for processing.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; margin-left: 1px;" title="Embedded 'this' pointer points back to start of object">
+<tbody>
+<tr>
+<td rowspan="2"> </td>
+<td rowspan="2"> </td>
+<td rowspan="2" style="border: solid 1px black; text-align: center;">primary vtable</td>
+<td rowspan="2">◁</td>
+<td style="line-height: 50%;"> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: solid solid none none; line-height: 50%;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">reference count</td>
+<td> </td>
+<td style="border-right: solid 1px black;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">other data<br/>
+⋮</td>
+<td> </td>
+<td style="border-right: solid 1px black;"> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: solid none none solid;">CallbackWrapper</td>
+<td> </td>
+<td style="border: solid 1px black; text-align: center;">embedded vtable</td>
+<td> </td>
+<td style="border-right: solid 1px black;"> </td>
+</tr>
+<tr>
+<td rowspan="2" style="border: 1px black; border-style: none none solid solid;"> </td>
+<td rowspan="2"> </td>
+<td rowspan="2" style="border: solid 1px black; text-align: center;"><code>m_outer</code></td>
+<td> </td>
+<td style="border: 1px black; border-style: none solid solid none;"> </td>
+</tr>
+<tr>
+<td style="line-height: 50%;"> </td>
+</tr>
+</tbody>
+</table>
+<p>But it turns out that this pointer is redundant: Recovering the outer object from the embedded object can be done from the embedded object’s <code>this</code> pointer because the embedded object is at a fixed compile-time offset from the start of the outer object. All we have to do is adjust the embedded object’s <code>this</code> pointer to get a pointer to the outer object.</p>
+<pre>ULONG CallbackWrapper::AddRef()
+{
+    Outer* outer =  reinterpret_cast&lt;Outer*&gt;(
+        reinterpret_cast&lt;uintptr_t&gt;(this) - offsetof(Outer, m_wrapper));
+    return outer-&gt;AddRef();
+}
+</pre>
+<p>One major problem is that the <code>CallbackWrapper</code> class doesn’t know what member name to use as the second parameter to the <code>offsetof</code> macro. You could establish a convention that “Oh, the name must be <code>m_wrapper</code>,” but that would prevent you from having more than one wrapper.</p>
+<p>Even if you knew the name of the member variable, you can’t calculate the offset of a member variable before the type is complete.</p>
+<pre>struct Widget final : IWidget, ...
+{
+    ...
+    HRESULT OnCallback();
+    CallbackWrapper&lt;&amp;Widget::OnCallback&gt; m_wrapper;
+    ...
+};
+</pre>
+<p>At the point <code>Callback­Wrapper&lt;;&amp;Widget::OnCallback1&gt;</code> is instantiated, not only is the <code>Widget</code> type incomplete, it doesn’t even have a member named <code>m_wrapper</code> yet!</p>
+<p>But you know what you can do before a type is complete? You can <code>static_cast</code> between the type and its base types. The compiler will do the work of calculating and applying the pointer adjustment (once it is known).</p>
+<p>So let’s try it:</p>
+<pre>ULONG CallbackWrapper::AddRef()
+{
+    Outer* outer = static_cast&lt;Outer*&gt;(this);
+    return outer-&gt;AddRef();
+}
+
+struct Widget final : IWidget, CallbackWrapper&lt;&amp;Widget::OnCallback&gt;
+{
+    ...
+    HRESULT OnCallback();
+    ...
+};
+</pre>
+<p>This doesn’t work because we are now talking about <code>Widget::<wbr/>OnCallback</code> before it has been declared. Unfortunately, you cannot forward-declare a member function, so we will have to inject a helper forwarder class. To make it easier to find the ultimate target, we remember it as the nested type name <code>Outer</code>.</p>
+<pre>template&lt;typename OuterType&gt;
+struct MethodForwarder
+{
+    using Outer = OuterType;
+
+    auto outer() { return static_cast&lt;Outer*&gt;(this); }
+
+    HRESULT OnCallback() { return outer()-&gt;OnCallback(); }
+};
+
+struct Widget final : IWidget,
+    CallbackWrapper&lt;&amp;MethodForwarder&lt;Widget&gt;::OnCallback&gt;,
+{
+    ...
+    HRESULT OnCallback();
+    ...
+
+    HRESULT RegisterCallback()
+    {
+        SetCallback(this);
+    }
+};
+</pre>
+<p>There is a unique conversion from <code>Widget</code> to <code>ICallback</code> (namely through the <code>CallbackWrapper</code>), but if you need multiple callbacks, you’re in for a lot more typing to resolve the ambiguous conversion:</p>
+<pre>template&lt;typename Outer&gt;
+struct MethodForwarder
+{
+    auto outer() { return static_cast&lt;Outer*&gt;(this); }
+
+    HRESULT OnCallback1() { return outer()-&gt;OnCallback1(); }
+    HRESULT OnCallback2() { return outer()-&gt;OnCallback2(); }
+};
+
+struct Widget final : IWidget,
+    CallbackWrapper&lt;&amp;MethodForwarder&lt;Widget&gt;::OnCallback1&gt;,
+    CallbackWrapper&lt;&amp;MethodForwarder&lt;Widget&gt;::OnCallback2&gt;,
+{
+    ...
+    HRESULT OnCallback1();
+    HRESULT OnCallback2();
+    ...
+
+    HRESULT RegisterCallback()
+    {
+        SetCallback1(static_cast&lt;CallbackWrapper&lt;&amp;MethodForwarder&lt;Widget&gt;::OnCallback1&gt;*&gt;
+                                                                                  (this));
+        SetCallback2(static_cast&lt;CallbackWrapper&lt;&amp;MethodForwarder&lt;Widget&gt;::OnCallback2&gt;*&gt;
+                                                                                  (this));
+    }
+};
+</pre>
+<p>We can do some things to help a little with the verbosity: We can create a type alias, a variadic aggregator, and a helper function for casting to the correct base class:</p>
+<pre>template&lt;auto... Callbacks&gt;
+struct CallbackWrappers : CallbackWrapper&lt;Callbacks&gt;...
+{
+    template&lt;auto Callback&gt;
+    ICallback* GetCallback() {
+        return static_cast&lt;CallbackWrapper&lt;Callback&gt;*&gt;(this);
+    }
+};
+
+struct Widget;
+using WidgetForwarder = MethodForwarder&lt;Widget&gt;;
+
+struct Widget final : IWidget,
+    CallbackWrappers&lt;&amp;WidgetForwarder::OnCallback1,
+                     &amp;WidgetForwarder::OnCallback2&gt;
+{
+    ...
+    HRESULT OnCallback1();
+    HRESULT OnCallback2();
+    ...
+
+    HRESULT RegisterCallback()
+    {
+        SetCallback1(GetCallback&lt;&amp;WidgetForwarder::OnCallback1&gt;(this));
+        SetCallback2(GetCallback&lt;&amp;WidgetForwarder::OnCallback2&gt;(this));
+    }
+};
+</pre>
+<p>An alternative to using the method forwarder would be to split the Widget into two parts, one that contains the bulk of the implementation and one that adds the callbacks.</p>
+<pre>struct WidgetImpl : IWidget
+{
+    ...
+    HRESULT OnCallback1();
+    HRESULT OnCallback2();
+    ...
+};
+
+struct Widget final : WidgetImpl,
+    CallbackWrappers&lt;&amp;WidgetImpl::OnCallback1,
+                     &amp;WidgetImpl::OnCallback2&gt;
+{
+};
+</pre>
+<p>This alternative version solves one problem but adds a new one: How does <code>Widget­Impl</code> access the callbacks? One idea is to use the CRTP pattern to allow <code>WidgetImpl</code> to cast to its derived type:</p>
+<pre>template&lt;typename D&gt;
+struct WidgetImpl : IWidget
+{
+    ...
+    HRESULT OnCallback1();
+    HRESULT OnCallback2();
+    ...
+};
+
+struct Widget final : WidgetImpl&lt;Widget&gt;,
+    CallbackWrappers&lt;&amp;WidgetImpl&lt;Widget&gt;::OnCallback1,
+                     &amp;WidgetImpl&lt;Widget&gt;::OnCallback2&gt;
+{
+};
+</pre>
+<p>But this is just about as clunky, so it doesn’t really save us much.</p>
+<p>We’re nowhere near done yet, because this still doesn’t work. We’ll pick up the investigation next time.</p>
+
+
+</body>

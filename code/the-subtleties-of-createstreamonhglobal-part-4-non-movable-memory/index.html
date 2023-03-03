@@ -1,0 +1,56 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The subtleties of <code>Create­Stream­On­HGlobal</code>, part 4: Non-movable memory</h1>  <!-- .entry-meta -->
+
+<p>Last time, <a href="/code/the-subtleties-of-createstreamonhglobal-part-3-suppressing-the-deletion-of-a-shared-hglobal" title="The subtleties of Create­Stream­On­HGlobal, part 3: Suppressing the deletion of a shared HGLOBAL"> I noted that some people ignore the requirement that the memory block passed to <code>Create­Stream­On­HGlobal</code> be movable</a>. What happens next?</p>
+<p>The documentation is a bit of two minds on this. On the one hand, it says that the memory must be movable. On the other hand, it also talks about how you need to be careful if the memory is not movable (and how using movable memory is strongly recommended). I suspect this ambivalence comes from a compatibility constraint: Although the function is documented as requiring movable memory, in practice, people have provided fixed memory and have relied upon particular implementation details that let them get away with it, so the system has to let you continue to get away with it, at least to the extent that you got away with it before.</p>
+<p>So what happens if you ignore the admonitions and pass fixed memory anyway?</p>
+<p>The underlying stream doesn’t realize that the memory block is fixed and continues operating under the assumption that it is movable. It still dutifully locks and unlocks the memory block around each access, even though locking and unlocking fixed memory has no effect.</p>
+<p>The scariest change is when the underlying memory block needs to be reallocated, because reallocation of a fixed block behaves very differently from reallocation of a movable block. Reallocating a movable block will not change the memory handle, not even if the underlying memory moves to a new address. If the underlying memory moves, that the next attempt to lock the memory block returns the <i>new</i> address.</p>
+<p>On the other hand, reallocating a fixed memory block does change the handle if the underlying memory moves, because fixed memory blocks use the memory address as the handle. This means that when a reallocation happens, the internal <code>HGLOBAL</code> changes!</p>
+<p>If you have multiple streams sharing the same <code>HGLOBAL</code>, but which aren’t clones of each other, then the consequences of the <code>HGLOBAL</code> changing address are quite dire. It means that once one stream reallocates the <code>HGLOBAL</code>, all the other streams are left with a dangling pointer, which means a use-after-free bug and a security hotfix soon thereafter.</p>
+<p>As I noted, the solution here is not to create multiple streams from the same <code>HGLOBAL</code>, but rather to create a single <code>HGLOBAL</code>-based stream from the <code>HGLOBAL</code>, and then clone that stream. Clones of an <code>HGLOBAL</code>-based stream are aware of each other and can coordinate their actions.</p>
+<p>But wait, we’re not done yet.</p>
+<p>Since reallocation changes the <code>HGLOBAL</code>, it means that if a reallocation occurs, then the <code>HGLOBAL</code> you passed when you created the stream got freed out from under you!</p>
+<pre>HGLOBAL hglob = GetInitialHGlobal();
+IStream* stream;
+CreateStreamOnHGlobal(hglob, FALSE, &amp;stream);
+WriteToStream(stream); // ← hglob may no longer be valid!
+</pre>
+<p>If you’re sticking with the whole <code>fDelete­On­Release = FALSE</code> thing, then you need to check with the stream just before it is destructed, “Hey, so what’s the <code>HGLOBAL</code> you’re managing right now?” In other words, “If you were to be destructed <i>right now</i>, what <code>HGLOBAL</code> would you free?”</p>
+<p>You need to ask this question immediately before the final <code>Release</code> of the stream. Asking any sooner risks the possibility that the stream resizes again after you asked, and the answer you got is no longer valid.</p>
+<p>The hard part is knowing exactly when to ask this question. It’s not like the stream lets you know that it’s about to be destroyed. You have to keep your eye on the stream and make sure it never lands in the hands of somebody who is going to extend its lifetime.</p>
+<p>Personally, I would limit my use of <code>fDelete­On­Release = FALSE</code> to the case of creating a brand new empty stream, writing data into the stream (being careful not to give to anybody who will extend the lifetime), and then extracting the <code>HGLOBAL</code> from it.</p>
+<p>And even that is pretty risky. I would probably use an alternate approach of leaving <code>fDelete­On­Release = TRUE</code> and letting the stream itself control the lifetime of the <code>HGLOBAL</code>:</p>
+<pre>// Non-RAII version to make everything explicit.
+IStream* stream = nullptr;
+
+if (SUCCEEDED(
+    CreateStreamOnHGlobal(nullptr, TRUE, &amp;stream))) {
+
+    WriteStuffToStream(stream);
+
+    // Lifetime of the HGLOBAL is controlled by the stream.
+    HGLOBAL hglob = nullptr;
+    if (SUCCEEDED(GetHGlobalFromStream(stream, &amp;hglob))) {
+        DoStuffWith(hglob);
+    }
+
+    // This Release call frees the HGLOBAL
+    stream-&gt;Release();
+}
+</pre>
+<p><b>Bonus chatter</b>: If I were sent back in time to make small design changes to <code>Create­Stream­On­HGlobal</code> with the benefit of hindsight, I think I would have done something like this:</p>
+<pre>HRESULT CreateStreamOnHGlobal(HGLOBAL hGlobal, REFIID riid, void** ppv);
+</pre>
+<p>Creating a stream always takes ownership of the <code>hGlobal</code>. This avoids the problem of an object that intentionally leaks memory.</p>
+<pre>interface IStreamOnHGlobal : IUnknown
+{
+    HRESULT DetachHGlobal(HGLOBAL* result);
+};
+</pre>
+<p>Instead of the <code>Get­HGlobal­From­Stream</code> function, we use this interface that can be queried from the stream. Using an interface avoids undefined behavior if somebody calls <code>Get­HGlobal­From­Stream</code> with a stream that didn’t come from <code>Create­Stream­On­HGlobal</code>. The introduction of this interface explains why I changed the signature of <code>Create­Stream­On­HGlobal</code> to let you specify the output interface.</p>
+<p>The interface method <code>Detach­HGlobal</code> behaves differently from <code>Get­HGlobal­From­Stream</code>. The method performs an ownership transfer, rather than sharing ownership. Once you detach the <code>HGLOBAL</code> from a stream, it cannot be put back, and any future stream operations return an error (perhaps <code>RO_<wbr/>E_<wbr/>CLOSED</code> from the future).</p>
+<p>This avoids the problem of a stream that has had its <code>HGLOBAL</code> freed out from under it: At no point is ownership of the <code>HGLOBAL</code> ever shared. It belongs clearly to somebody at all times. If you want to access the <code>HGLOBAL</code>, you have to take ownership of it.</p>
+
+
+</body>

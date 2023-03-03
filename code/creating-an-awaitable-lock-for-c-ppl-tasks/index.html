@@ -1,0 +1,74 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating an awaitable lock for C++ PPL tasks</h1>  <!-- .entry-meta -->
+
+<p>The C# language (well, more accurately, the BCL) has <a href="https://msdn.microsoft.com/en-us/library/system.threading.semaphoreslim(v=vs.110).aspx">the <code>Reader­Writer­Lock­Slim</code> class</a> which has <a href="https://msdn.microsoft.com/en-us/library/system.threading.semaphoreslim(v=vs.110).aspx">a <code>Wait­Async</code> method</a> which returns a task that completes asynchronously when the lock has been acquired. I needed an equivalent for the Parallel Patterns Library (PPL), and since I couldn’t find one, I ended up writing one. (If you can find one, please let me know!) </p>
+<pre>
+// AsyncUILock is a nonrecursive lock that can be waited on
+// asynchronously from a UI thread.
+class AsyncUILock
+{
+public:
+  Concurrency::task&lt;void&gt; WaitAsync()
+  {
+    std::lock_guard&lt;std::mutex&gt; guard(mutex);
+    if (!locked) {
+      // Lock is available. Acquire it.
+      locked = true;
+      return <a href="https://devblogs.microsoft.com/oldnewthing/">completed_apartment_aware_task</a>();
+    }
+
+    // Lock is not available.
+    return completed_apartment_aware_task()
+      .then([captured_completion = completion] {
+      // Wait for it to become available.
+      return Concurrency::create_task(captured_completion);
+    }).then([this] {
+      // Then try again.
+      return WaitAsync();
+    });
+  }
+
+  void Release()
+  {
+    std::lock_guard&lt;std::mutex&gt; guard(mutex);
+    locked = false;
+    auto previousCompletion = completion;
+    completion = Concurrency::task_completion_event&lt;void&gt;();
+    previousCompletion.set();
+  }
+
+private:
+  std::mutex mutex;
+  bool locked = false;
+  Concurrency::task_completion_event&lt;void&gt; completion;
+};
+</pre>
+<p>The object consists of a <code>std::mutex</code> which protects the internal state, a flag that indicates whether the object has been claimed, and a task completion event that we use to signal anybody waiting on the lock that they should check again. </p>
+<p>I could have used an <code>SRWLock</code> instead of a <code>std::mutex</code>, but I was lazy and wanted to take advantage of the existing <code>std::lock_guard</code>. </p>
+<p>You can perform async waits on this object in the usual manner. For example: </p>
+<pre>
+AsyncUILock lock;
+
+void DoSomething()
+{
+  lock.WaitAsync().then([]{
+    // do something with the lock held.
+    lock.Release();
+  });
+}
+</pre>
+<p>or if you prefer <code>co_await</code> (and you probably do): </p>
+<pre>
+AsyncUILock lock;
+
+void DoSomething()
+{
+  co_await lock.WaitAsync();
+  // do something with the lock held.
+  lock.Release();
+}
+</pre>
+<p>At this point, you might decide to return an RAII type to ensure that the lock doesn’t leak. I’ll leave that as an exercise. </p>
+
+
+</body>

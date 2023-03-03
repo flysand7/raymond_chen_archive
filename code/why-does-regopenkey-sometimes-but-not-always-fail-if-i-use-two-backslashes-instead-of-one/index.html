@@ -1,0 +1,93 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does RegOpenKey sometimes (but not always) fail if I use two backslashes instead of one?</h1>  <!-- .entry-meta -->
+
+<p>
+A customer reported that on Windows XP, they observed that
+their program would very rarely get the error
+<code>ERROR_INVALID_ARGUMENT</code> when they passed
+two backslashes instead of one to the
+<code>Reg­Open­Key­Ex</code> function:
+</p>
+<pre>
+RegOpenKeyEx(hk, L"Blah<font color="red">\\\\</font>Oops", ...);
+</pre>
+<p>
+After removing C++ escapes, the resulting string passed to
+<code>Reg­Open­Key­Ex</code> is
+</p>
+<pre>
+Blah<font color="red">\\</font>Oops
+</pre>
+<p>
+The failure was very sporadic and not reproducible under
+controlled conditions.
+</p>
+<p>
+Well, first of all, doubled backslashes are not legal in
+registry key paths in the first place,
+so the first recommendation is <i>stop doubling the backslashes</i>.
+Once you fix that, the problem will go away.
+</p>
+<p>
+But the next question is why the error was detected sometimes
+but not always.
+</p>
+<p>
+When an application tries to open a registry key, the registry
+code first consults a cache of recently-opened keys,
+since registry accesses exhibit very high locality of reference.
+If a match is found in the cache, then the cached result is used.
+Otherwise, it’s a cache miss,
+and the registry tree is searched in the old-fashioned way.
+The registry tree search rejects the double-backslash since it
+interprets the path
+<code>Blah\\Oops</code> as
+“Look for a subkey called <code>"Blah"</code>,
+then a subkey called <code>""</code>,
+then a subkey called <code>"Oops"</code>.”
+The “subkey called <code>""</code>” step fails
+because key cannot have an empty string as their name.
+</p>
+<p>
+On the other hand, the code that checks the cache
+has a different search algorithm which
+happens to have the effect of
+collapsing consecutive
+backslashes, so the path
+<code>Blah\\Oops</code> is interpreted as
+“Look for a subkey called <code>"Blah"</code>,
+then a subkey called <code>"Oops"</code>.”
+(Note: “has the effect of”. There is no explicit
+“collapse backslashes” step; it just turns out that the
+way the path is parsed, consecutive backslashes end up
+being treated as if they were single backslashes.)
+</p>
+<p>
+In the customer’s case, therefore, the key in question is
+in the cache most of the time,
+which is why the doubled backslash is silently corrected to a
+single backslash.
+But every so often, the key is not in the cache,
+and the old-fashioned search is performed.
+And the old-fashioned search rejects the double-backslash
+as an invalid path.
+</p>
+<p>
+The discrepancy in the two parsing algorithms
+was resolved in Windows Vista,
+so you’ll see this issue only on Windows XP and earlier.
+</p>
+<p>
+But this historical tidbit does highlight one of the hidden
+gotchas of optimization:
+If your optimized version
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/08/31/10345196.aspx">
+differs from the unoptimized version</a>
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/09/29/10217910.aspx">
+in cases that are theoretically anyway illegal</a>,
+you may find yourself chasing elusive bugs
+when somebody accidentally stumbles into those cases
+and managed to get away with it… until now.</p>
+
+
+</body>

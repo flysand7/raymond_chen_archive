@@ -1,0 +1,231 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I destruct an object that keeps a reference to itself, because that reference prevents the object from being destructed</h1>  <!-- .entry-meta -->
+
+<p>Consider the case of an ordered work queue. Components can queue work to the worker thread, with the expectation that the work will run sequentially. </p>
+<pre>
+class OrderedWorkQueue
+{
+public:
+ OrderedWorkQueue()
+ {
+  // Start up the worker thread.
+  m_thread = std::thread([this]() {
+   while (!m_exiting) {
+    m_signal.Wait();
+    m_queue.ProcessWork();
+   }
+  });
+ }
+
+ template&lt;typename... Args&gt;
+ void QueueWork(Args&amp;&amp;... args)
+ {
+  m_queue.Append(std::make_unique&lt;OrderedWorkItem&gt;
+                                  (std::forward&lt;Args&gt;(args)...));
+  m_signal.Signal();
+ }
+
+ ~OrderedWorkQueue()
+ {
+  m_exiting = true;
+  m_signal.Signal();
+ }
+
+private:
+ // App-provided stuff. <a href="https://blogs.msdn.microsoft.com/oldnewthing/20161125-00/?p=94795">Assume they work</a>.
+ class OrderedWorkItem
+ {
+  template&lt;typename... Args&gt;
+  OrderedWorkItem(Args&amp;&amp;... args);
+
+  void Execute();
+ };
+
+ SomeSortOfQueue m_queue;
+ SomeSortOfSignal m_signal;
+
+ // Stuff related to worker thread management.
+ std::atomic&lt;bool&gt; m_exiting;
+ std::thread m_thread;
+};
+</pre>
+<p>The <code>Ordered­Work­Queue</code> object creates a worker thread whose job is to execute work items in the order they were queued. We have a problem here: The main thread signals the worker thread to exit, and then returns immediately, stranding the worker thread with a <code>this</code> pointer that points to a destructed object. </p>
+<p>One solution is to wait for the worker thread to finish its work. </p>
+<pre>
+ ~OrderedWorkQueue()
+ {
+  m_exiting = true;
+  m_signal.Signal();
+  <font color="blue">m_thread.join();</font>
+ }
+</pre>
+<p>This ensures that the <code>this</code> pointer remains valid for the duration of the worker thread. However, this comes with its own problems. </p>
+<p>First, It changes the behavior of the class. destruction used to be a quick affair, but now destruction waits for the work items to drain, which can take an indefinite length of time. The intent of the <code>Ordered­Work­Queue</code> may have been to employ a fire-and-forget design: Create an ordered work queue, queue a bunch of work to it, and then destroy the work queue. The work that got queued up will still execute eventually, in order, but the main thread was expecting to be able to get other work done in the meantime. </p>
+<p>Furthermore, one of the work items may need to communicate with the thread that is doing the destructing, but it can’t do that because the destructing thread is waiting for the worker thread to exit. So you have a potential deadlock. </p>
+<p>Okay, so we solve this problem by having the worker thread maintain a strong reference to the object, to ensure that the object’s member variables remain valid for the duration of the thread. </p>
+<pre>
+class OrderedWorkQueue
+{
+ <font color="blue">static std::shared_ptr&lt;OrderedWorkQueue&gt; Create()
+ {
+  auto self = std::make_shared&lt;OrderedWorkQueue&gt;();
+  self-&gt;</font>m_thread = std::thread([<font color="blue">lifetime = self</font>, this]() {
+   while (!m_exiting) {
+    m_signal.Wait();
+    m_queue.ProcessWork();
+   }
+  });
+  <font color="blue">return self;</font>
+ }
+</pre>
+<p>The captured <code>lifetime</code> retains the shared reference so that the background thread can continue using the object’s member variables. </p>
+<p>But wait, we have a new problem: The destructor never runs because the worker thread retains a strong reference to it. </p>
+<p>Okay, so we try to fix the problem by passing a weak reference, and converting it to strong only as necessary. </p>
+<pre>
+ static std::shared_ptr&lt;OrderedWorkQueue&gt; Create()
+ {
+  auto self = std::make_shared&lt;OrderedWorkQueue&gt;();
+  self-&gt;m_thread = std::thread(
+   <font color="blue">[weak = std::weak_ptr&lt;OrderedWorkQueue&gt;(self)</font>, this<font color="blue">]() {
+   auto strong = weak.lock();
+   if (!strong) return;</font>
+   while (!m_exiting) {
+    m_signal.Wait();
+    auto workList = m_queue.DetachWork();
+    <font color="blue">// drop the strong reference while we process the work
+    strong.reset();</font>
+    ProcessWorkList(workList);
+    <font color="blue">// reacquire the strong reference after work is done
+    strong = weak.lock();
+    if (!strong) return;</font>
+   }
+  });
+  return self;
+ }
+</pre>
+<p>This doesn’t really go anywhere because the <code>m_signal.Wait()</code> call runs while there is still a strong reference, so we are back where we started. </p>
+<p>One way out is to create a façade. The public-facing <code>Ordered­Work­Queue</code> is what other components use to queue work to a background thread. The public-facing part retains a shared reference to the private part, and it’s the private part that does the real work. </p>
+<pre>
+class OrderedWorkQueue
+{
+public:
+ OrderedWorkQueue() = default;
+
+ template&lt;typename... Args&gt;
+ void QueueWork(Args&amp;&amp;... args)
+ {
+  m_worker-&gt;QueueWork(std::forward&lt;Args&gt;(args)...);
+ }
+
+ ~OrderedWorkQueue()
+ {
+  m_worker-&gt;Exit();
+ }
+
+private:
+ // This is our old OrderWorkQueue class
+ class OrderedWorkQueueWorker
+ {
+ public:
+  static std::shared_ptr&lt;OrderedWorkQueueWorker&gt; Create()
+  {
+   auto self = std::make_shared&lt;OrderedWorkQueueWorker&gt;();
+   self-&gt;m_thread = std::thread([lifetime = self, this]() {
+    while (!m_exiting) {
+     m_signal.Wait();
+     m_queue.ProcessWork();
+    }
+   });
+   return self;
+  }
+
+  template&lt;typename... Args&gt;
+  void QueueWork(Args&amp;&amp;... args)
+  {
+   m_queue.Append(std::make_unique&lt;OrderedWorkItem&gt;
+                                  (std::forward&lt;Args&gt;(args)...));
+   m_signal.Signal();
+  }
+
+  void Exit()
+  {
+   m_exiting = true;
+   m_signal.Signal();
+  }
+
+ private:
+  // App-provided stuff. Assume they work.
+  class OrderedWorkItem
+  {
+   template&lt;typename... Args&gt;
+   OrderedWorkItem(Args&amp;&amp;... args);
+
+   void Execute();
+  };
+
+  SomeSortOfQueue m_queue;
+  SomeSortOfSignal m_signal;
+
+  // Stuff related to worker thread management.
+  std::atomic&lt;bool&gt; m_exiting;
+  std::thread m_thread;
+ };
+
+ <font color="blue">std::shared_ptr&lt;OrderedWorkQueueWorker&gt; m_worker =
+                                OrderedWorkQueueWorker::Create();</font>
+};
+</pre>
+<p>An equivalent version which some people prefer is to put only the data members into the shared object. </p>
+<pre>
+class OrderedWorkQueue
+{
+public:
+ OrderedWorkQueue()
+ {
+  m_thread = std::thread([data = m_data]() {
+   while (!data-&gt;m_exiting) {
+    data-&gt;m_signal.Wait();
+    data-&gt;m_queue.ProcessWork();
+   }
+  });
+ }
+
+ template&lt;typename... Args&gt;
+ void QueueWork(Args&amp;&amp;... args)
+ {
+  m_data-&gt;m_queue.Append(std::make_unique&lt;OrderedWorkItem&gt;
+                                  (std::forward&lt;Args&gt;(args)...));
+  m_data-&gt;m_signal.Signal();
+ }
+
+ ~OrderedWorkQueue()
+ {
+  m_data-&gt;m_exiting = true;
+  m_data-&gt;m_signal.Signal();
+ }
+
+private:
+ struct OrderWorkQueueData
+ {
+  SomeSortOfQueue m_queue;
+  SomeSortOfSignal m_signal;
+  std::atomic&lt;bool&gt; m_exiting;
+ };
+
+ class OrderedWorkItem
+ {
+  template&lt;typename... Args&gt;
+  OrderedWorkItem(Args&amp;&amp;... args);
+
+  void Execute();
+ };
+
+ std::shared_ptr&lt;OrderedWorkQueueData&gt; m_data =
+   std::make_shared&lt;OrderedWorkQueueData&gt;();
+
+ std::thread m_thread;
+};
+</pre>
+
+
+</body>

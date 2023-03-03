@@ -1,0 +1,493 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the System process that consumed a lot of CPU</h1>  <!-- .entry-meta -->
+
+<p>A report came in through Feedback Hub that the System process was consuming high CPU. I was able to explain to the customer how to include a performance trace so the problem could be diagnosed.</p>
+<p>In case you want to file a performance issue, the way to include a performance trace is to go to the <i>Additional details</i> section and click the <i>Recreate my problem</i> button. You will get additional options:</p>
+<table cellpadding="0" cellspacing="0" style="width: 30pc; font-family: Segoe UI, sans-serif; font-size: 11pt;">
+<tbody>
+<tr>
+<td style="background-color: #f2f2f2; color: black; padding: 10pt;">
+
+
+
+</td>
+<td style="width: 10px;"> </td>
+<td style="background-color: #2986cc; color: white; padding: 20pt; text-align: center;">
+
+
+</td>
+</tr>
+</tbody>
+</table>
+<p>Check the <i>Include data about</i> box and select <i>Performance</i> as the category. Assuming the performance problem is ongoing, click <i>Start capture</i> and let it run for about 15 seconds, then click <i>Stop capture</i>. (If the performance problem occurs only when you perform a certain activity, then click <i>Start capture</i>, then do the activity that creates the performance issue, and then click <i>Stop capture</i>.)</p>
+<p>That creates a performance trace that will be attached to your report.</p>
+<p>Okay, let’s open the performance trace that this customer included. The tool for this is the <a href="https://docs.microsoft.com/en-us/windows-hardware/test/wpt/windows-performance-analyzer"> Windows Performance Analyzer</a>.</p>
+<p>Since the problem is high CPU, the natural place to start is the Computation graph, which shows CPU usage.</p>
+
+<p>Yup, that sure looks like high CPU usage there.</p>
+<p>Create an analysis page for that graph and zoom in to the period of high CPU. Here’s what’s using the CPU:</p>
+<table border="1" cellpadding="2" cellspacing="0" style="border-collapse: collapse; font-size: 9pt; background-color: white; color: black; font-family: MS Sans Serif, sans-serif;" title="System process using 65% of CPU, Idle 21%, others negligible">
+<tbody>
+<tr style="background-color: #f2f2f2;">
+<td nowrap="nowrap">Line #</td>
+<td nowrap="nowrap" style="width: 20ex;">Process</td>
+<td nowrap="nowrap">Thread ID</td>
+<td nowrap="nowrap" style="width: 20em;">Stack</td>
+<td nowrap="nowrap" rowspan="5" style="background-color: #ffd700; border-right: solid #dff0f8; width: 3px;"> </td>
+<td nowrap="nowrap">Count</td>
+<td nowrap="nowrap">% Weight</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">1</td>
+<td nowrap="nowrap">▷ System</td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">29,815</td>
+<td align="right" nowrap="nowrap">65.15</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">2</td>
+<td nowrap="nowrap">Idle</td>
+<td align="right" nowrap="nowrap">0</td>
+<td nowrap="nowrap">▷ [Idle]</td>
+<td align="right" nowrap="nowrap">510</td>
+<td align="right" nowrap="nowrap">21.35</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">3</td>
+<td nowrap="nowrap">▷ Taskmgr.exe (14412)</td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">0.25</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">4</td>
+<td nowrap="nowrap">▷ MsMpEng.exe (5180)</td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">0.07</td>
+</tr>
+</tbody>
+</table>
+<p>And indeed most of it is going to the System process with 65.15%. The Idle thread is a distant second with 21.35%, and everybody else is noise.</p>
+<p>So let’s dig into the System process.</p>
+<table border="1" cellpadding="2" cellspacing="0" style="border-collapse: collapse; font-size: 9pt; background-color: white; color: black; font-family: MS Sans Serif, sans-serif;" title="All the threads in the System process are using roughly the same amount of CPU, between 1 and 3%.">
+<tbody>
+<tr style="background-color: #f2f2f2;">
+<td nowrap="nowrap">Line #</td>
+<td nowrap="nowrap" style="width: 20ex;">Process</td>
+<td nowrap="nowrap">Thread ID</td>
+<td nowrap="nowrap" style="width: 20em;">Stack</td>
+<td nowrap="nowrap" rowspan="24" style="background-color: #ffd700; border-right: solid #dff0f8; width: 3px;"> </td>
+<td nowrap="nowrap">Count</td>
+<td nowrap="nowrap">% Weight</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">1</td>
+<td nowrap="nowrap">▼System (4)</td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">29,815</td>
+<td align="right" nowrap="nowrap">65.15</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">2</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">9200</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">1,605</td>
+<td align="right" nowrap="nowrap">3.51</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">3</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">19708</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">1,576</td>
+<td align="right" nowrap="nowrap">3.44</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">4</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">▷18748</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">1,361</td>
+<td align="right" nowrap="nowrap">2.97</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">5</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">17480</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">1,346</td>
+<td align="right" nowrap="nowrap">2.93</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">6</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">12132</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">1,341</td>
+<td align="right" nowrap="nowrap">2.93</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">7</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">13020</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">1,220</td>
+<td align="right" nowrap="nowrap">2.67</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">8</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">15064</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">1,181</td>
+<td align="right" nowrap="nowrap">2.58</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">9</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">16364</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">1,084</td>
+<td align="right" nowrap="nowrap">2.36</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">10</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">11376</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">1,058</td>
+<td align="right" nowrap="nowrap">2.31</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">11</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">20444</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">994</td>
+<td align="right" nowrap="nowrap">2.17</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">12</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">21000</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">978</td>
+<td align="right" nowrap="nowrap">2.14</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">13</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">20648</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">905</td>
+<td align="right" nowrap="nowrap">1.97</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">14</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">▷19076</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">895</td>
+<td align="right" nowrap="nowrap">1.95</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">15</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">8572</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">757</td>
+<td align="right" nowrap="nowrap">1.65</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">16</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">13864</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">743</td>
+<td align="right" nowrap="nowrap">1.62</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">17</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">17072</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">685</td>
+<td align="right" nowrap="nowrap">1.50</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">18</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">16224</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">653</td>
+<td align="right" nowrap="nowrap">1.43</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">19</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">▷15988</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">625</td>
+<td align="right" nowrap="nowrap">1.37</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">20</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">19592</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">604</td>
+<td align="right" nowrap="nowrap">1.32</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">21</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">1784</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">571</td>
+<td align="right" nowrap="nowrap">1.25</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">22</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">17872</td>
+<td nowrap="nowrap">▷[Root]</td>
+<td align="right" nowrap="nowrap">560</td>
+<td align="right" nowrap="nowrap">1.22</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">⋮</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">⋮</td>
+<td nowrap="nowrap">⋮</td>
+<td align="right" nowrap="nowrap">⋮</td>
+<td align="right" nowrap="nowrap">⋮</td>
+</tr>
+</tbody>
+</table>
+<p>Hm, everything just flattens out. There’s no big culprit sucking up all the CPU.</p>
+<p>Are we being nibbled to death?</p>
+<p>Let’s look at two of those threads, maybe we’ll discover something.</p>
+<table border="1" cellpadding="2" cellspacing="0" style="border-collapse: collapse; font-size: 9pt; background-color: white; color: black; font-family: MS Sans Serif, sans-serif;">
+<tbody>
+<tr style="background-color: #f2f2f2;">
+<td nowrap="nowrap">Line #</td>
+<td nowrap="nowrap" style="width: 20ex;">Process</td>
+<td nowrap="nowrap">Thread ID</td>
+<td nowrap="nowrap" style="width: 20em;">Stack</td>
+<td nowrap="nowrap" rowspan="15" style="background-color: #ffd700; border-right: solid #dff0f8; width: 3px;"> </td>
+<td nowrap="nowrap">Count</td>
+<td nowrap="nowrap">% Weight</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">1</td>
+<td nowrap="nowrap">▼System (4)</td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">29,815</td>
+<td align="right" nowrap="nowrap">65.15</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">2</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">9200</td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▼</span>[Root]</td>
+<td align="right" nowrap="nowrap">1,605</td>
+<td align="right" nowrap="nowrap">3.51</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">3</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▼</span>ntoskrnl.exe!KxStartSystemThread</td>
+<td align="right" nowrap="nowrap">1,605</td>
+<td align="right" nowrap="nowrap">3.51</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">4</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap">|    ntoskrnl.exe!PspSystemThreadStartup</td>
+<td align="right" nowrap="nowrap">1,605</td>
+<td align="right" nowrap="nowrap">3.51</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">5</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap">|    ntoskrnl.exe!ExpWorkerThread</td>
+<td align="right" nowrap="nowrap">1,605</td>
+<td align="right" nowrap="nowrap">3.51</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">6</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▷</span>|- ntoskrnl.exe!IopProcessWorkItem</td>
+<td align="right" nowrap="nowrap">1,554</td>
+<td align="right" nowrap="nowrap">3.40</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">7</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▷</span>|- ntoskrnl.exe!KeRemovePriQueue</td>
+<td align="right" nowrap="nowrap">50</td>
+<td align="right" nowrap="nowrap">0.11</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">8</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap">|- ntoskrnl.exe!ExpWorkerThread&lt;itself&gt;</td>
+<td align="right" nowrap="nowrap">1</td>
+<td align="right" nowrap="nowrap">0.00</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">9</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">19708</td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▼</span>[Root]</td>
+<td align="right" nowrap="nowrap">1,576</td>
+<td align="right" nowrap="nowrap">3.44</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">10</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▼</span>|- ntoskrnl.exe!KxStartSystemThread</td>
+<td align="right" nowrap="nowrap">1,574</td>
+<td align="right" nowrap="nowrap">3.44</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">11</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap">|    ntoskrnl.exe!PspSystemThreadStartup</td>
+<td align="right" nowrap="nowrap">1,574</td>
+<td align="right" nowrap="nowrap">3.44</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">12</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap">|    ntoskrnl.exe!ExpWorkerThread</td>
+<td align="right" nowrap="nowrap">1,574</td>
+<td align="right" nowrap="nowrap">3.44</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">13</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▷</span>|    |- ntoskrnl.exe!IopProcessWorkItem</td>
+<td align="right" nowrap="nowrap">1,538</td>
+<td align="right" nowrap="nowrap">3.36</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">14</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▷</span>|    |- ntoskrnl.exe!KeRemovePriQueue</td>
+<td align="right" nowrap="nowrap">36</td>
+<td align="right" nowrap="nowrap">0.08</td>
+</tr>
+</tbody>
+</table>
+<p>Okay, it seems that the threads are doing <code>Iop­Process­Work­Item</code>. That explains why the work is so evenly spread out: It’s a thread pool.</p>
+<p>Remove the <i>Thread ID</i> column because we don’t care about which thread is doing the work. Now we can group purely by stacks.</p>
+<table border="1" cellpadding="2" cellspacing="0" style="border-collapse: collapse; font-size: 9pt; background-color: white; color: black; font-family: MS Sans Serif, sans-serif;">
+<tbody>
+<tr style="background-color: #f2f2f2;">
+<td nowrap="nowrap">Line #</td>
+<td nowrap="nowrap" style="width: 20ex;">Process</td>
+<td nowrap="nowrap" style="width: 20em;">Stack</td>
+<td nowrap="nowrap" rowspan="11" style="background-color: #ffd700; border-right: solid #dff0f8; width: 3px;"> </td>
+<td nowrap="nowrap">Count</td>
+<td nowrap="nowrap">% Weight</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">1</td>
+<td nowrap="nowrap">System (4)</td>
+<td nowrap="nowrap"> </td>
+<td align="right" nowrap="nowrap">29,815</td>
+<td align="right" nowrap="nowrap">65.14</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">2</td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▼</span>[Root]</td>
+<td align="right" nowrap="nowrap">29,810</td>
+<td align="right" nowrap="nowrap">65.13</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">3</td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▼</span>|- ntoskrnl.exe!KxStartSystemThread</td>
+<td align="right" nowrap="nowrap">29,794</td>
+<td align="right" nowrap="nowrap">65.09</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">4</td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap">|    ntoskrnl.exe!PspSystemThreadStartup</td>
+<td align="right" nowrap="nowrap">29,794</td>
+<td align="right" nowrap="nowrap">65.09</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">5</td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap">|    ntoskrnl.exe!ExpWorkerThread</td>
+<td align="right" nowrap="nowrap">29,699</td>
+<td align="right" nowrap="nowrap">64.89</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">6</td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▼</span>|    |- ntoskrnl.exe!IopProcessWorkItem</td>
+<td align="right" nowrap="nowrap">28,742</td>
+<td align="right" nowrap="nowrap">62.81</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">7</td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▼</span>|    |- contoso.sys!&lt;PDB not found&gt;</td>
+<td align="right" nowrap="nowrap">28,707</td>
+<td align="right" nowrap="nowrap">62.74</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">8</td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▼</span>|    |    |- contoso.sys!&lt;PDB not found&gt;</td>
+<td align="right" nowrap="nowrap">28,699</td>
+<td align="right" nowrap="nowrap">62.72</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">9</td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▼</span>|    |    |    |- contoso.sys!&lt;PDB not found&gt;</td>
+<td align="right" nowrap="nowrap">28,588</td>
+<td align="right" nowrap="nowrap">62.48</td>
+</tr>
+<tr>
+<td align="right" nowrap="nowrap">10</td>
+<td nowrap="nowrap"> </td>
+<td nowrap="nowrap"><span style="width: 1em; display: inline-block;">▷</span>|    |    |    |    |- ntoskrnl.exe!RtlWriteRegistryValue</td>
+<td align="right" nowrap="nowrap">28,572</td>
+<td align="right" nowrap="nowrap">62.44</td>
+</tr>
+</tbody>
+</table>
+<p>Aha, basically all of the work items are going to the the Contoso driver, and that driver does very little work of its own. Of the 28,707 samples that showed that we were running a Contoso work item, 28,572 of them (over 99%) were in <code>Rtl­Write­Registry­Value</code>.</p>
+<p>Basically, the Contoso driver was burning up all your CPU writing furiously to the registry.</p>
+<p>The developers at Contoso replied that the customer was running a version of the driver that was over a year old. They suggested the customer upgrade to the latest driver and see if that fixes the problem.</p>
+<p>I’m sure that upgrading to the latest driver will make the problem go away, but I’m not convinced that it’ll fix the problem. Because what’s probably happening is that the driver got into some sort of error state and is writing diagnostic information to the registry. That’ll go away even if you <i>don’t</i> upgrade the driver. All you have to do is reboot.</p>
+<p>The real question is what sort of error state the driver managed to get itself into.</p>
+<p> </p>
+
+
+</body>

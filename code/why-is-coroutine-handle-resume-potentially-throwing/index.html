@@ -1,0 +1,24 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why is coroutine_handle::resume() potentially-throwing?</h1>  <!-- .entry-meta -->
+
+<p>In our <a href="/code/c-coroutines-getting-started-with-awaitable-objects"> explorations of making <code>co_await</code>able objects</a>, we had largely been <a href="https://devblogs.microsoft.com/oldnewthing/20210308-00/?p=104938" title="Creating a co_await awaitable signal that can be awaited multiple times, part 6"> ignoring the possibility of the coroutine handle throwing an exception upon resume</a>. But according to the language specification, the <code>resume</code> method (and its equivalent, the <code>operator()</code> overloaded function call operator) is potentially-throwing. Is this an oversight or an intentional decision?</p>
+<p>Well, the <code>noop_<wbr/>coroutine</code>‘s coroutine handle does mark its <code>resume()</code> method as <code>noexcept</code>, so it’s not like the authors of the coroutine specification simply forgot about <code>noexcept</code>. They consciously put it on the resumption of a <code>noop_<wbr/>coroutine</code>, but omitted it from other coroutines.</p>
+<p>What’s more, if you look at libraries that operate on coroutines, all of them treat the <code>resume</code> method as if it were <code>noexcept</code>.</p>
+<p>What’s the deal?</p>
+<p>Gor Nishanov explained it to me.</p>
+<p>Allowing <code>resume</code> to throw was introduced in <a href="http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p0664r6.html#25"> P0664R6 section 25</a>, with this remark:</p>
+<blockquote class="q">
+<p>This resolution allows generator implementations to define unhandled_exception as follows:</p>
+<pre>  void unhandled_exception() { throw; } 
+</pre>
+<p>With this implementation, if a user of the generator pulls the next value, and during computation of the next value an exception will occur in the user authored body it will be propagate back to the user and the coroutine will be put into a final suspend state and ready to be destroyed when generator destructors is run.</p>
+</blockquote>
+<p>Yeah but what does that all mean?</p>
+<p>The scenario here is the use of coroutines as generators.</p>
+<p>If a generator encounters an exception, the normal mechanism would be for the exception to be captured in the coroutine’s <code>unhandled_<wbr/>exception</code> method so that it can be re-thrown when the caller performs an <code>await_resume</code>. But if the generator is synchronous (performs no <code>co_await</code> operations), then it is more efficient to just let the exception propagate across the coroutine boundary directly to the caller.</p>
+<p>The coroutine implementation (specifically, the promise) can indicate that it wants the exception to propagate by rethrowing the exception in <code>unhandled_<wbr/>exception</code>, rather than capturing it.</p>
+<p>But if you’re not in the case of a synchronous generator (and when dealing with coroutines as tasks, you won’t be), then <code>resume</code> is indeed nonthrowing.</p>
+<p><b>Bonus reading</b>: Another reason for not marking <code>resume()</code> as <code>noexcept</code> is that <code>resume()</code> requires that the coroutine be suspended. The presence of a precondition means that, according to <a href="https://quuxplusone.github.io/blog/2018/04/25/the-lakos-rule/"> the Lakos Rule</a>, the function should not be marked <code>noexcept</code>. This allows the implementation to choose to report the precondition violation in the form of an exception.</p>
+
+
+</body>

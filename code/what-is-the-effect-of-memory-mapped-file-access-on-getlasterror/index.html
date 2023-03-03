@@ -1,0 +1,108 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is the effect of memory-mapped file access on GetLastError()?</h1>  <!-- .entry-meta -->
+
+<p>
+A customer was using memory-mapped files and was looking for
+information as to whether access to the memory-mapped data
+modifies the value returned by
+<code>Get­Last­Error</code>.
+A member of the kernel team replied,
+“No, memory-mapped I/O does not ever change the value returned by
+<code>Get­Last­Error</code>.”
+</p>
+<p>
+That answer is simultaneously correct and wrong,
+a case of
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/05/12/10163578.aspx">
+looking at the world through kernel-colored glasses</a>.
+</p>
+<p>
+While it’s true that the kernel does not ever change the value
+returned by
+<code>Get­Last­Error</code>,
+it’s also the case that
+<i>you</i> might change it.
+</p>
+<p>
+If you set up an exception handler, then your
+exception handler might perform operations that affect
+the last-error code, and those changes will be visible
+after the exception handler returns.
+(This applies to all exception handlers and filters,
+not just ones related to memory-mapped files.)
+</p>
+<p>
+If you intend to return
+<code>EXCEPTION_CONTINUE_EXECUTION</code>
+because you handled the exception,
+then you probably should make sure to leave the last-error
+code the way you found it.
+Otherwise, the code that you interrupted and then resumed will have had its
+last-error code changed asynchronously.
+You just
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/02/10/10127054.aspx">
+sabotaged it from above</a>.
+</p>
+<pre>
+<i>// Code in italics is wrong
+LONG ExceptionFilter(LPEXCEPTION_POINTERS ExceptionPointers)
+{
+ if (IsAnExceptionICanRepair(ExceptionPointers)) {
+   RepairException(ExceptionPointers);
+   // fixed up error; continuing
+   return EXCEPTION_CONTINUE_EXECUTION;
+ }
+ if (IsAnExceptionICanHandle(ExceptionPointers)) {
+  // We cannot repair it, but we can handle it.
+  return EXCEPTION_EXECUTE_HANDLER;
+ }
+ // Not our exception. Keep looking.
+ return EXCEPTION_CONTINUE_SEARCH;
+}</i>
+</pre>
+<p>
+If the <code>Is­An­Exception­I­Can­Repair</code> function
+or
+<code>Repair­Exception</code> function
+does anything that affects the last-error code,
+then when the exception filter is executed for a repairable
+exception, the last-error code is magically changed without the
+mainline code’s knowledge.
+All the mainline code did was execute stuff normally, and somehow
+during a memory access or a floating point operation or some other
+seemingly-harmless action, the last-error code spontaneously changed!
+</p>
+<p>
+If you are going to continue execution at the point the exception was
+raised, then you need to “put things back the way you found them”
+(except of course for the part where you repair the exception itself).
+</p>
+<pre>
+LONG ExceptionFilter(LPEXCEPTION_POINTERS ExceptionPointers)
+{
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/29/10159322.aspx"><font color="blue">PreserveLastError</font></a> <font color="blue">preserveLastError;</font>
+ if (IsAnExceptionICanRepair(ExceptionPointers)) {
+   RepairException(ExceptionPointers);
+   // fixed up error; continuing
+   return EXCEPTION_CONTINUE_EXECUTION;
+ }
+ if (IsAnExceptionICanHandle(ExceptionPointers)) {
+  // We cannot repair it, but we can handle it.
+  return EXCEPTION_EXECUTE_HANDLER;
+ }
+ // Not our exception. Keep looking.
+ return EXCEPTION_CONTINUE_SEARCH;
+}
+</pre>
+<p>
+<b>Exercise</b>:
+Why isn’t it important to restore the last error code if
+you return <code>EXCEPTION_EXECUTE_HANDLER</code>?
+</p>
+<p>
+<b>Exercise</b>:
+Is it important to restore the last error code if you return
+<code>EXCEPTION_CONTINUE_SEARCH</code>?</p>
+
+
+</body>

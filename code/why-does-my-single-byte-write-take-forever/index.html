@@ -1,0 +1,85 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does my single-byte write take forever?</h1>  <!-- .entry-meta -->
+
+<p>
+A customer found that a single-byte write was taking several seconds,
+even though the write was to a file on the local hard drive that was
+fully spun-up.
+Here’s the pseudocode:
+</p>
+<pre>
+// Create a new file - returns quickly
+hFile = CreateFile(..., CREATE_NEW, ...);
+// make the file 1<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/06/11/9725386.aspx">GB</a>
+SetFilePointer(hFile, 1024*1024*1024, NULL, FILE_BEGIN);
+SetEndOfFile(hFile);
+// Write 1 byte into the middle of the file
+SetFilePointer(hFile, 512*1024*1024, NULL, FILE_BEGIN);
+BYTE b = 42;
+/ this write call takes several seconds!
+WriteFile(hFile, &amp;b, &amp;nBytesWritten, NULL);
+</pre>
+<p>
+The customer experimented with using asynchronous I/O,
+but it didn’t help.
+The write still took a long time.
+Even using <code>FILE_FLAG_NO_BUFFERING</code>
+(and
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/04/14/9995509.aspx">
+writing full sectors, naturally</a>)
+didn’t help.
+</p>
+<p>
+The reason is that on NTFS, extending a file reserves disk space but
+does not zero out the data.
+Instead, NTFS keeps track of the “last byte written”,
+technically known as the
+<i>valid data length</i>,
+and only zeroes out up to that point.
+The data past the valid data length
+are logically zero but are not
+physically zero on disk.
+When you write to a point past the current valid data length,
+all the bytes between the valid data length and the start of
+your write need to be zeroed out before the new valid data length
+can be set to the end of your write operation.
+(You can manipulate the valid data length directly with
+<a href="http://msdn.microsoft.com/library/aa365544.aspx">
+the <code>Set­File­Valid­Data</code> function</a>,
+but be very careful since it comes with serious security implications.)
+</p>
+<p>
+Two solutions were proposed to the customer.
+</p>
+<p>
+Option 1 is to force the file to be zeroed out immediately
+after setting the end of file by writing a zero byte to the end.
+This front-loads the cost so that it doesn’t get imposed on
+subsequent writes at seemingly random points.
+</p>
+<p>
+Option 2 is to
+<a href="http://msdn.microsoft.com/library/aa365564.aspx">
+make the file sparse</a>.
+Mark the file as sparse with the
+<a href="http://msdn.microsoft.com/library/aa364596.aspx">
+<code>FSCTL_SET_SPARSE</code> control code</a>,
+and
+immediately after setting the end of file,
+use
+<a href="http://msdn.microsoft.com/library/aa364597.aspx">
+the <code>FSCTL_SET_ZERO_DATA</code> control code</a>
+to make the entire file sparse.
+This logically fills the file with zeroes without committing physical
+disk space.
+Anywhere you actually write gets converted from “sparse” to “real”.
+This does open the possibility that a later write into the middle
+of the file will encounter a disk-full error,
+so it’s not a “just do this and you won’t have to worry about
+anything” solution,
+and depending on how randomly you convert the file from “sparse”
+to “real”, the file may end up more fragmented than it would have
+been if you had “kept it real” the whole time.</p>
+
+
+</body>

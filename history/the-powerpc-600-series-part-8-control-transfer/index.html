@@ -1,0 +1,247 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The PowerPC 600 series, part 8: Control transfer</h1>  <!-- .entry-meta -->
+
+<p>The PowerPC 600 series has a few types of control transfer instructions. Let’s look at direct branches first. </p>
+<pre>
+    b       target          ; branch to target
+    bl      target          ; branch to target and link
+</pre>
+<p>The direct branch instructions perform an unconditional relative branch to the target. It has a reach of ±32<a href="https://blogs.msdn.microsoft.com/oldnewthing/20090611-00/?p=17933">MB</a>. All the “… and link” instructions  set the <var>lr</var> register to the return address (the instruction after the branch). This happens even for conditional branches when the branch is not taken. </p>
+<p>There are also absolute versions of these instructions: </p>
+<pre>
+    ba      target          ; branch to target (absolute form)
+    bla     target          ; branch to target and link (absolute form)
+</pre>
+<p>The absolute versions treat the displacement as an absolute address rather than as a displacement from the current instruction pointer. These are not useful in Windows NT, but could be useful in embedded systems. </p>
+<p>Things get exciting when you look at the conditional branches. Formally, they are written as </p>
+<pre>
+    bc      BO, BI, target  ; branch conditional
+    bcl     BO, BI, target  ; branch conditional and link
+</pre>
+<p>Conditional branch instructions have a reach of only ±32<a href="https://blogs.msdn.microsoft.com/oldnewthing/20090611-00/?p=17933">KB</a>. There are also absolute variants <code>bca</code> and <code>bcla</code> which treat the displacement as an absolute address, allowing conditional branches to the top and bottom 32KB of address space. Again, absolute addressing is not that useful in Windows NT. </p>
+<p>The magical <var>BO</var> and <var>BI</var> parameters describe the condition to be tested. You can optionally decrement the <var>ctr</var> register and check if the result is zero or nonzero.¹ You can also optionally check if a specific bit in the <var>cr</var> register is set (true) or clear (false), and sometimes you can provide a static prediction hint. The following combinations are valid: </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Decrement <var>ctr</var>?</th>
+<th>Test a bit in <var>cr</var>?</th>
+<th>Prediction hint</th>
+<th><var>BO</var></th>
+<th>Mnemonic</th>
+</tr>
+<tr>
+<td>Yes, test for nonzero</td>
+<td>No</td>
+<td></td>
+<td align="right">16</td>
+<td><code>dnz</code></td>
+</tr>
+<tr>
+<td>Yes, test for nonzero</td>
+<td>No</td>
+<td>Not taken</td>
+<td align="right">24</td>
+<td><code>dnz-</code></td>
+</tr>
+<tr>
+<td>Yes, test for nonzero</td>
+<td>No</td>
+<td>Taken</td>
+<td align="right">25</td>
+<td><code>dnz+</code></td>
+</tr>
+<tr>
+<td>Yes, test for nonzero</td>
+<td>Test for false</td>
+<td></td>
+<td align="right">0</td>
+<td><code>dnzf</code></td>
+</tr>
+<tr>
+<td>Yes, test for nonzero</td>
+<td>Test for true</td>
+<td></td>
+<td align="right">8</td>
+<td><code>dnzt</code></td>
+</tr>
+<tr>
+<td>Yes, test for zero</td>
+<td>No</td>
+<td></td>
+<td align="right">18</td>
+<td><code>dz</code></td>
+</tr>
+<tr>
+<td>Yes, test for zero</td>
+<td>No</td>
+<td>Not taken</td>
+<td align="right">26</td>
+<td><code>dz-</code></td>
+</tr>
+<tr>
+<td>Yes, test for zero</td>
+<td>No</td>
+<td>Taken</td>
+<td align="right">27</td>
+<td><code>dz+</code></td>
+</tr>
+<tr>
+<td>Yes, test for zero</td>
+<td>Test for true</td>
+<td></td>
+<td align="right">10</td>
+<td><code>dzt</code></td>
+</tr>
+<tr>
+<td>Yes, test for zero</td>
+<td>Test for false</td>
+<td></td>
+<td align="right">2</td>
+<td><code>dzf</code></td>
+</tr>
+<tr>
+<td>No</td>
+<td>Test for false</td>
+<td></td>
+<td align="right">4</td>
+<td><code>f</code></td>
+</tr>
+<tr>
+<td>No</td>
+<td>Test for false</td>
+<td>Not taken</td>
+<td align="right">6</td>
+<td><code>f-</code></td>
+</tr>
+<tr>
+<td>No</td>
+<td>Test for false</td>
+<td>Taken</td>
+<td align="right">7</td>
+<td><code>f+</code></td>
+</tr>
+<tr>
+<td>No</td>
+<td>Test for true</td>
+<td></td>
+<td align="right">12</td>
+<td><code>t</code></td>
+</tr>
+<tr>
+<td>No</td>
+<td>Test for true</td>
+<td>Not taken</td>
+<td align="right">14</td>
+<td><code>t-</code></td>
+</tr>
+<tr>
+<td>No</td>
+<td>Test for true</td>
+<td>Taken</td>
+<td align="right">15</td>
+<td><code>t+</code></td>
+</tr>
+<tr>
+<td align="center" colspan="2">Unconditional</td>
+<td>Taken</td>
+<td align="right">20</td>
+<td></td>
+</tr>
+</table>
+<p>Any <var>BO</var> values not in the above table are reserved for future use and should be avoided if you know what’s good for you. </p>
+<p>A static prediction hint overrides any internal branch prediction algorithm, so you’d better have very high confidence that your hint is correct. </p>
+<p>These mnemonics save you from having to memorize the <var>BO</var> numbers. </p>
+<pre>
+    b<u>xx</u>     BI, target  ; branch conditional
+    b<u>xx</u>l    BI, target  ; branch conditional and link
+</pre>
+<p>Except that if the mnemonic ends in a <code>+</code> or <code>-</code>, then the prediction hint goes at the very end. For example, “branch if false and link, predict not taken” is <code>bfl-</code>. </p>
+<p>The bit index <var>BI</var> can be written as a number, but as we saw when we learned about condition registers, you can combine the condition register bit mnemonics with with the <var>cr#</var> mnemonics to produce a reference to a condition bit. For example, <code>4*cr2+gt</code> means “The <var>gt</var> bit in the <var>cr2</var> condition register.” And since the numeric value of <var>cr0</var> is zero, you can omit <code>4*cr0+</code>, which results in some surprisingly readable results like </p>
+<pre>
+    bt       eq, target  ; branch if eq is set in cr0
+</pre>
+<p>The assembler goes one step further and provides a few combination mnemonics:² </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Branch and condition</th>
+<th>Mnemonic</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td><code>bt lt</code></td>
+<td><code>blt</code></td>
+<td>Branch if less than</td>
+</tr>
+<tr>
+<td><code>bt gt</code></td>
+<td><code>bgt</code></td>
+<td>Branch if greater than</td>
+</tr>
+<tr>
+<td><code>bt eq</code></td>
+<td><code>beq</code></td>
+<td>Branch if equal</td>
+</tr>
+<tr>
+<td><code>bt so</code></td>
+<td><code>bso</code></td>
+<td>Branch if summary overflow</td>
+</tr>
+<tr>
+<td><code>bf lt</code></td>
+<td><code>bnl</code></td>
+<td>Branch if not less than</td>
+</tr>
+<tr>
+<td><code>bf gt</code></td>
+<td><code>bng</code></td>
+<td>Branch if not greater than</td>
+</tr>
+<tr>
+<td><code>bf eq</code></td>
+<td><code>bne</code></td>
+<td>Branch if not equal</td>
+</tr>
+<tr>
+<td><code>bf so</code></td>
+<td><code>bns</code></td>
+<td>Branch if not summary overflow</td>
+</tr>
+</table>
+<p>The mnemonics can separate the condition bit from the condition register, so you can get </p>
+<pre>
+    beq      cr4, target  ; branch if eq is set in cr4
+</pre>
+<p>Okay, the next type of branch instruction is the computed jump. </p>
+<pre> 
+    bcctr    BO, BI, BH   ; branch conditional to address in ctr
+    bcctrl   BO, BI, BH   ; branch conditional to address in ctr and link
+
+    bclr     BO, BI, BH   ; branch conditional to address in lr
+    bclrl    BO, BI, BH   ; branch conditional to address in lr and link
+</pre>
+<p>You are not allowed to use any of the “decrement <var>ctr</var>” branch operations with the <code>bcctr</code> or <code>bcctrl</code> instructions because shame on you for even thinking about trying it. </p>
+<p>The <var>BO</var> and <var>BI</var> codes follow the same rules as above, and the assembler provides mnemonics for various combinations. If you go to PowerPC reference materials, you’ll see <a href="https://developer.apple.com/library/content/documentation/DeveloperTools/Reference/Assembler/050-PowerPC_Addressing_Modes_and_Assembler_Instructions/ppc_instructions.html#//apple_ref/doc/uid/TP30000824-TPXREF105">horrid tables</a> that look like some sort of dystopian declension table from a long-forgotten Slavic language. In this hypothetical language, <code>bdnztlrl</code> means something like “branch on odd-numbered Thursdays,” I guess. (Okay, it actually means “<u>b</u>ranch, after <u>d</u>ecrementing <code>ctr</code>, if the result is <u>n</u>on<u>z</u>ero, and if the condition bit is <u>t</u>rue, to the address in the <code><u>lr</u></code> register, and <u>l</u>ink.”) </p>
+<p>The <var>BH</var> field provides a hint for branch prediction, primarily whether the branch target is likely to be the same as the previous time the branch was encountered. Branches through an import table are likely to be the same each time. Branches through a vtable could also use this hint if the method is being dispatched from the same object in a loop. (The vtable is unlikely to change during the loop.) </p>
+<p>The processor optimizes on the assumption that <code>bctr</code> is a computed jump and <code>blr</code> is a subroutine return,³ although the <var>BH</var> hints can tweak those assumptions. Furthermore, Windows NT <i>requires</i> that non-leaf subroutine returns be encoded exclusively as <code>blr</code>. You are not allowed to pull fancy tricks like <code>beqlr</code> to perform a conditional subroutine return. This is not a significant problem in practice because there’s usually other stuff that needs to be done as part of the function epilogue. Adding this rule makes the exception unwinding code easier. </p>
+<p>For the same reason, the conditional versions of the “and link” branches are mostly useless in practice because even if you can conditionalize the link, you still prepared the function call unconditionally. You might have been better off just branching over the function call entirely. </p>
+<p>Okay, so great, you have these instructions that operate on the <var>lr</var> and <var>ctr</var> registers, but how do you actually get values in and out of them? </p>
+<pre>
+    mflr    rt           ; rt = lr
+    mfctr   rt           ; rt = ctr
+
+    mtlr    rs           ; lr = rs
+    mtctr   rs           ; ctr = rs
+</pre>
+<p>The “move from/to <var>lr</var>/<var>ctr</var>” instructions let you move values into and out of the <var>lr</var> and <var>ctr</var> registers. (Like <code>mfxer</code> and <code>mtxer</code>, these are actually shorthand for <code>mfspr</code> and <code>mtspr</code> with the appropriate magic number for <var>lr</var> or <var>ctr</var>.) </p>
+<p>In practice, the first instruction of a non-leaf function is <code>mflr r0</code> to save the return address, and when it’s ready to return, it will do a <code>mtlr r0</code> to load up the return address in preparation for the <code>blr</code>. This is pretty much the only thing the Microsoft compiler uses the <var>r0</var> register for: Transferring the return address in and out of <var>lr</var>. </p>
+<p>But wait, I’m getting ahead of myself. I promised to talk about the table of contents, so let’s do that <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180816-00/?p=99505">next time</a>. </p>
+<p><b>Bonus chatter</b>: PowerPC mnemonics are so absurd that there was even <a href="https://twitter.com/ppcinstructions">a short-lived parody twitter account for them</a>. Now that you’ve learned most of the instructions, you may understand some of the more insidey jokes, like </p>
+<blockquote class="twitter-tweet">
+<p dir="ltr" lang="en">mscdfr – Means Something Completely Different For r0</p>
+<p>— PowerPC Instructions (@ppcinstructions) <a href="https://twitter.com/ppcinstructions/status/557938532401295360?ref_src=twsrc%5Etfw">January 21, 2015</a></p></blockquote>
+<p>¹ Note that even if you loaded a 64-bit value into the <var>ctr</var> register (because you detected that you had a 64-bit-capable processor), the test for zero or non-zero is performed only against the least-significant 32 bits of the <var>ctr</var> register when the processor is in 32-bit mode (which is what Windows NT uses). </p>
+<p>² The assembler also provides <code>bge</code> (branch if greater than or equal to) as an alias for <code>bnl</code> (branch if not less than). I think that’s misleading, because <code>bge</code> suggests that the test checks two bits (<var>gt</var> and <var>eq</var>) and branches if either is set. But in fact it checks whether <var>lt</var> is clear. Now, if the condition register was set by a comparison, then the two cases are equivalent, but if you have been playing games with condition register flags, you can get into states where the trichotomy of numbers breaks down. </p>
+<p>³ The return address predictor gives the processor the ability to start speculating instructions at the return address even before you move the return address into the <var>lr</var> register! </p>
+
+
+</body>

@@ -1,0 +1,69 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Intel 80386, part 5: Logical operations</h1>  <!-- .entry-meta -->
+
+<p>The next group of instructions we’ll look are the bitwise logical operation. </p>
+<pre>
+    AND     r/m, r/m/i  ; d &amp;= s, set flags
+    OR      r/m, r/m/i  ; d |= s, set flags
+    XOR     r/m, r/m/i  ; d ^= s, set flags
+
+    TEST    r/m, r/m/i  ; calculate d &amp; s, set flags
+
+    NOT     r/m         ; d = ~d, do <u>not</u> set flags
+</pre>
+<p>The <code>AND</code>, <code>OR</code>, and <code>XOR</code> instructions set flags based on the numeric value of the result; carry and overflow are always clear. </p>
+<p>The <code>TEST</code> instruction is the same as <code>AND</code>, except that the result is thrown away rather than being stored back into the destination. You can say that <code>AND</code> is to <code>TEST</code> as <code>SUB</code> is to <code>CMP</code>. </p>
+<p>A quirk of the <code>TEST</code> instruction is that it does not support an 8-bit immediate with sign extension. The immediate must be the same size as the other operand. This means that you can save instruction encoding space by using a smaller data size: </p>
+<pre>
+    TEST    DWORD PTR [rax+10h], 40000000h  ; 7-byte instruction
+    TEST    BYTE PTR [rax+13h], 40h         ; 4-byte instruction
+</pre>
+<p>If you do this, you will run afoul of the <a href="https://devblogs.microsoft.com/oldnewthing/">store-to-load forwarder</a>. Fortunately, the 80386 doesn’t have one. </p>
+<p>We will learn later that moving constants into registers requires a large instruction encoding. To avoid this, you may see two idioms for setting a register to zero: You can subtract it from itself, or you can exclusive-or it with itself. </p>
+<pre>
+    SUB     eax, eax        ; set eax = 0, set flags
+    XOR     eax, eax        ; set eax = 0, set flags
+</pre>
+<p>The 80386 doesn’t really care either way, but later versions of the processor recognize the “<code>XOR</code> a register with itself” idiom and special-case it to avoid the dependency on the previous value of the register. Therefore, you’ll see the <code>XOR</code> version in compiler-generated code. </p>
+<p>The next group of instructions is the bit-testing group. </p>
+<pre>
+    BT      r/m, r/i        ; copy bit s of d to CF
+    BTS     r/m, r/i        ; copy bit s of d to CF and set
+    BTR     r/m, r/i        ; copy bit s of d to CF and reset
+    BTC     r/m, r/i        ; copy bit s of d to CF and complement
+</pre>
+<p>The <code>BT</code> instruction tests a bit (lowest-order bit is bit zero) of the destination operand to the carry flag. If the destination is a register, then the bit number is taken mod <var>n</var>, where <var>n</var> is the register size. If the destination is memory, then the memory is considered a packed bit array, and bit <var>s</var> % 8 of byte <var>m</var> + (<var>s</var> / 8) is copied.¹ For example, </p>
+<pre>
+    BT      eax, 17     ; copy bit 17 of eax to carry
+    SBB     ecx, -1     ; ecx -= -1 + CF
+</pre>
+<p>The effect of this sequence of operations is to increment the <var>ecx</var> register if bit 17 of <var>eax</var> is clear: If the bit is not set, then the <code>BT</code> results in carry clear, so the <code>SBB</code> instruction subtracts −1 from <var>ecx</var>, which has the effect of adding 1. If the bit is set, then the <code>BT</code> results in carry set, so the <code>SBB</code> instruction subtracts −1 from <var>ecx</var>, and then subtracts one more. Some algebra shows that <var>ecx</var> − (−1) −1 = <var>ecx</var> + 1 −1 = <var>ecx</var>, so there is no net change to the <var>ecx</var> register. </p>
+<p>The <code>BTS</code>, <code>BTR</code>, and <code>BTC</code> instructions copy the bit to the carry flag, and then set, reset, or toggle the bit that was tested. I haven’t seen the compiler generate these instructions, so you probably don’t need to know them. </p>
+<p>Next are the shift instructions. </p>
+<pre>
+    SHL     r/m, CL/i       ; d = d &lt;&lt; s,             set flags
+    SHR     r/m, CL/i       ; d = d &gt;&gt; s (zero-fill), set flags
+    SAR     r/m, CL/i       ; d = d &gt;&gt; s (sign-fill), set flags
+</pre>
+<p>The <code>SHL</code> instructions shifts left, The <code>SHR</code> instructions shifts right with zero fill (unsigned shift), and the The <code>SAR</code> instructions shifts right with sign fill (signed shift). </p>
+<p>The shift amount can be a constant (the encoding with 1 is more compact than the encoding with other constants), or it can be a variable in the <var>cl</var> register. No other register can be used to specify the shift amount. The shift amount is taken mod 32. </p>
+<p>The last bit shifted out is placed in the carry flag. If the shift amount is the immediate 1, then the overflow flag is set if the sign bit changed. (If the shift amount is not the immediate 1, then the overflow flag is undefined.) The zero, sign, and parity flags are set based on the result. </p>
+<p>Next come the double shift instructions. </p>
+<pre>
+    SHLD    r/m, r, CL/i       ; d = d &lt;&lt; t, fill from s, set flags
+                               ; n = 16, 32
+    SHRD    r/m, r, CL/i       ; d = d &gt;&gt; t, fill from s, set flags
+                               ; n = 16, 32
+</pre>
+<p>The shift left double and shift right double instruction shift the destination by the amount specified by the third operand (which must be a constant or the <var>cl</var> register) and fills in the bits from the second operand. The <code>SHLD</code> instruction fills with the high-order bits of <var>s</var>, and the <code>SHRD</code> instruction fills with the low-order bits of <var>s</var>. The last bit shifted out is copied to the carry flag. The shift amount is taken mod 32. </p>
+<p>Although <var>n</var> can be 16, you won’t see it in practice, so there’s no point mentioning that the behavior is undefined if the shift amount (mod 32) is greater than 16. </p>
+<p>Okay, so those were the logical operations. <a href="http://devblogs.microsoft.com/oldnewthing/20190128-00/?p=100805">Next time</a>, we’ll look at data transfer instructions. </p>
+<p>¹ Technically, it is bit <var>s</var> % <var>n</var> of <var>n</var>-bit unit <var>m</var> + (<var>s</var> / <var>n</var>). This means that </p>
+<pre>
+    MOV     ecx, 32
+    BT      DWORD PTR [eax], ecx
+</pre>
+<p>will read four bytes from <code>[eax+4]</code> to <code>[eax+7]</code> and then test bit 0 of the value. Note that the bytes from <code>[eax+5]</code> to <code>[eax+7]</code> do not participate in the bit test, but they must still be accessible, or you will take an access violation. </p>
+
+
+</body>

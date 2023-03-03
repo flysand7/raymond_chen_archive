@@ -1,0 +1,47 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why am I getting mojibake when I try to create a shell link?</h1>  <!-- .entry-meta -->
+
+<p>A customer couldn’t get the <code>IShellLink</code> interface to work. They tried to set the shortcut target to a path, but it came out as <a href="https://devblogs.microsoft.com/oldnewthing/">Chinese mojibake</a>. </p>
+<p>Here’s a <a href="https://blogs.msdn.microsoft.com/oldnewthing/20131018-00/?p=2893">reduction</a> of their code to its simplest form. </p>
+<pre>
+HRESULT CreateLink()
+{
+  HRESULT hr;
+  IShellLinkA* psl;
+
+  hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER,
+                        IID_IShellLink, (LPVOID*)&amp;psl);
+  if (SUCCEEDED(hr)) {
+    IPersistFile* ppf;
+
+    psl-&gt;SetPath("C:\\Windows"); // this comes out as mojibake
+
+    hr = psl-&gt;QueryInterface(IID_IPersistFile, (LPVOID*)&amp;ppf);
+    if (SUCCEEDED(hr)) {
+      hr = ppf-&gt;Save(L"C:\\Test\\Test.lnk", TRUE);
+      ppf-&gt;Release();
+    }
+    psl-&gt;Release();
+  }
+  return hr;
+}
+</pre>
+<p>(You can see that this customer used to be a C programmer, because all variable declarations are at the start of blocks. Also, because they aren’t using RAII.) </p>
+<p>The problem is hidden in the call to <code>Co­Create­Instance</code>: </p>
+<pre>
+  hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER,
+                        IID_IShellLink, (LPVOID*)&amp;psl);
+  //                    --------------  -------------
+</pre>
+<p>Observe that the requested interface is <code>IID_</code><code>IShell­Link</code>, but the result is placed into a pointer to <code>IShell­LinkA</code>. This mismatch should raise a warning flag. </p>
+<p>It appears that the program is being compiled with Unicode as the default character set, which means that <code>IID_</code><code>IShell­Link</code> is really <code>IID_</code><code>IShell­LinkW</code>. Consequently, the requested interface is <code>IShell­LinkW</code>, and the result is placed into a pointer to <code>IShell­LinkA</code>. As a result of this mismatch, the call to <code>psl-&gt;SetPath</code> thinks that it’s calling <code>IShell­LinkA::</code><code>Set­Path</code>, but in reality it is calling <code>IShell­LinkW::</code><code>Set­Path</code>. (The <code>IShell­LinkA</code> and <code>IShell­LinkW</code> interfaces have the same methods in the same order, except that one uses ANSI strings and the other uses Unicode strings.) </p>
+<p>That is where the mojibake is coming from. An ANSI string is passed where a Unicode string is expected. </p>
+<p>Mismatches like this can be avoided by using the <code>IID_</code><code>PPV_</code><code>ARGS</code> macro. This macro looks at the type of the pointer you pass it and autogenerates the matching <code>REFIID</code>, as well as casting the pointer to <code>void**</code>. </p>
+<pre>
+  hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER,
+                        <font color="blue">IID_PPV_ARGS(&amp;psl)</font>);
+</pre>
+<p>While they’re at it, the customer should consider abandoning the ANSI version altogether and just using the Unicode one. </p>
+
+
+</body>

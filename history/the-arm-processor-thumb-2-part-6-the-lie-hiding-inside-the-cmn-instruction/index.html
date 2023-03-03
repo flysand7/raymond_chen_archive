@@ -1,0 +1,74 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ARM processor (Thumb-2), part 6: The lie hiding inside the CMN instruction</h1>  <!-- .entry-meta -->
+
+<p>Last time, we learned that <a href="/history/the-arm-processor-thumb-2-part-5-arithmetic" title="The ARM processor (Thumb-2), part 5: Arithmetic"> the <code>CMN</code> instruction stands for <i>compare negative</i></a>, and it compares its first argument with the negative of the second argument:</p>
+<pre>    ; compare negative (compare Rn with -op2)
+    cmn     Rn, op2             ; Set flags for Rn + op2
+</pre>
+<p>We noted that the <code>N</code> in the name is misleading, because it stands for <i>negative</i>, even though in the seemingly-analogous <code>MVN</code> instruction, the <code>N</code> stands for <i>not</i>.</p>
+<p>But that’s not the most misleading part of the <code>CMN</code> instruction.</p>
+<p>The big lie about the <i>compare negative</i> instruction is that <i>it doesn’t even compare the negative</i>.</p>
+<p>You had one job!</p>
+<p>The <i>compare negative</i> instruction is defined in terms of addition, rather than subtraction of the negative. Mathematically, the operations are identical: Subtracting a negative is the same as adding the positive.</p>
+<p>But computers aren’t operating on mathematical integers.</p>
+<p>Let’s look more closely at the difference between subtraction of the negative and addition of the positive. Recall that subtraction in a true-carry system is rewritten as addition, using the identity <code>-x = ~x + 1</code>. Therefore, <code>a - b</code> becomes <code>a + ~b + 1</code>. And the carry for this operation is the combined carry from <i>both</i> additions.</p>
+<p>On the other hand, the <code>CMN</code> instruction is implemented as a straight addition, not a subtraction of the negative.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>Expression</td>
+<td>Evaluated as</td>
+</tr>
+<tr>
+<td><code>a - (-b)</code></td>
+<td>let <code>c = ~b + 1</code><br/>
+result <code>= a + ~c + 1</code></td>
+</tr>
+<tr>
+<td><code>a + b</code></td>
+<td>result <code>= a + b</code></td>
+</tr>
+</tbody>
+</table>
+<p>One difference between the two is that in the “subtract the negative” version, the carry that occurs in the calculation of <code>~c + 1</code> contributes to the final carry, whereas that extra carry disappears in the “add the positive” version.</p>
+<p>When would <code>~c + 1</code> generate a carry?</p>
+<p>Answer: When <code>c</code> is zero, because we have <code>~c + 1 = ~0 + 1 = 0xFFFFFFFF + 1</code>, and that sum generates a carry. And <code>c</code> is zero when <code>b</code> is zero.</p>
+<p>On the other hand, if <code>b</code> is zero, then <code>a + b</code> never generates a carry because you’re just adding zero, which does nothing.</p>
+<p>Conclusion: If the second parameter to <code>CMN</code> is zero, then <code>CMN</code> results in no carry, even though “subtracting the negative of zero” would have produced a carry.</p>
+<p>In other words, these two sequences do not generate the same flags:</p>
+<pre>    ; compare r0 against negative r1 using single instruction
+    cmn     r0, r1          ; set flags for (r0 + r1)
+
+    ; compare r0 against negative r1 using two instructions
+    rsb     r12, r1, #0     ; r12 = negative r1
+    cmp     r0, r12         ; set flags for (r0 - r12)
+</pre>
+<p>In the case where <var>r1</var> is zero, the first version clears carry, but the second version sets carry. This means that if you follow the <code>CMN</code> with a conditional branch that consumes carry, you will get the wrong answer if the second parameter happens to be zero.</p>
+<p>We haven’t learned about ARM conditionals yet, but when we do, you’ll discover that it is the unsigned relative comparison conditionals¹ that are based on the carry flag. Therefore, don’t use the <code>CMN</code> instruction to make unsigned relative comparisons against values which might be zero, because the carry flag may be set incorrectly.</p>
+<p>Fortunately, this problem is relatively easy to avoid:</p>
+<p>First rule: Don’t use</p>
+<pre>    cmn     Rd, #0
+</pre>
+<p>Don’t hard-code zero as the second parameter because the carry won’t be set properly.² Just write it as the positive comparison:</p>
+<pre>    cmp     Rd, #0
+</pre>
+<p>This is even easier to write, and it doesn’t have the carry flag problem.</p>
+<p>Second rule: If you use a register or shifted register as the second parameter to <code>CMN</code>, don’t follow it with a condition that relies on the carry flag. In practice, this means that you should use signed conditions to test the result rather than unsigned conditions. (We haven’t learned about conditions yet.)</p>
+<p>Fortunately, this second rule is not that much of a problem, because the fact that you are “comparing against the negative” strongly implies that you are interpreting the comparison as between two signed integers, so you are unlikely to follow up with an unsigned relative comparison conditional.</p>
+<p>Okay, so that takes care of carry. The other troublesome bit is the overflow bit, which is just the carry from bit 30 into 31.</p>
+<p>What are the cases in which a carry from bit 30 to bit 31 would be lost? We already identified zero as one of those cases. The other case is where the value is <code>0x80000000</code>.</p>
+<p>Ah, the curse of the most negative integer.</p>
+<p>Ignoring the overflow from bit 30 to bit 31 means that the negative of <code>0x80000000</code> is treated as the positive number <code>+0x80000000</code>. Since every two’s complement 32-bit integer is less than <code>+0x80000000</code> (viewed as a large positive number), the result of the comparison is pretty much foregone. It will always say “less than”.</p>
+<p>In a way, though, the curse of the most negative integer isn’t so much of a problem here. After all, you did ask to compare against the negative of the most negative integer, and that’s a positive number that’s so positive it can’t even be represented!</p>
+<p>Wow, what a complicated, messed-up instruction <code>CMN</code> turned out to be.</p>
+<p>Next time, we’ll return to our exploration of the ARM Thumb-2 instruction set by looking at bitwise operations.</p>
+<p>¹ The unsigned relative comparison conditionals are “unsigned less than”, “unsigned less than or equal”, “unsigned greater than”, and “unsigned greater than or equal”.</p>
+<p>² Note that everything is fine if the second argument is not zero.</p>
+<pre>    ; compare against 0xFFFFFFFE.
+    ; this works properly even for unsigned comparison.
+    cmn     r1, #2
+</pre>
+<p>The problematic case for unsigned comparisons occurs only when the second argument is zero.</p>
+
+
+</body>

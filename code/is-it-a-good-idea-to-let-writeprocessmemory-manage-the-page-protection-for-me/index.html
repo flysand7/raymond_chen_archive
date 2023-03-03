@@ -1,0 +1,40 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Is it a good idea to let <code>WriteProcessMemory</code> manage the page protection for me?</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, I noted that <a href="/code/how-is-it-that-writeprocessmemory-succeeds-in-writing-to-read-only-memory"> the <code>Write­Process­Memory</code> function will make a page read-write if necessary</a>, as a courtesy to debuggers who want to use it to patch code. Is this something you should rely on?</p>
+<p>No, it’s not something you should rely on. It is a courtesy, not contractual, and courtesies can go away at any time.</p>
+<p>As I noted in the article, the courtesy itself can create problems. It creates a race condition where the courtesy page protection change can collide with an actual page protection change in the program, causing one or the other to be lost.</p>
+<table border="0" cellpadding="0" style="border-collapse: collapse; border: solid 1px black;">
+<tbody>
+<tr>
+<th style="padding: 3px; border: solid 1px black;">App thread</th>
+<th style="padding: 3px; border: solid 1px black;">WriteProcessMemory</th>
+</tr>
+<tr>
+<td style="padding: 0 3px; border: solid black; border-width: 0 1px;"> </td>
+<td style="padding: 0 3px;"><code>if (page-is-read-only) {</code><br/>
+<code>  make-page-read-write;</code><br/>
+<code>  write-the-data;</code></td>
+</tr>
+<tr>
+<td style="padding: 0 3px; border: solid black; border-width: 0 1px;"><code>change-protection-to-read-execute;</code></td>
+<td> </td>
+</tr>
+<tr>
+<td style="padding: 0 3px; border: solid black; border-width: 0 1px;"> </td>
+<td style="padding: 0 3px;"><code>  restore-original-protection;</code><br/>
+<code>}</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <code>Write­Process­Memory</code> function noticed that the page was write-protected, so it changed the page to read-write, wrote the data, and then changed it back to read-only. But at the same time, the application changed the protection from read-only to read-execute, Unfortunately, that change was overwritten by the <code>Write­Process­Memory</code> function when it tried to restore the original protection. The result: When the app tries to execute code on the page, it gets a no-execute exception.</p>
+<p>You can imagine other race conditions. For example, the app thread could change the protection to read-execute one step earlier, after the <code>Write­Process­Memory</code> function changed it to read-write, but before it could write the data. (In that case, the <code>Write­Process­Memory</code> function reports that the write operation failed.) Or perhaps the app thread changed the protection to read-execute two steps earlier, afer the <code>Write­Process­Memory</code> function realized that the page was read-only but before it could change it to read-write.</p>
+<p>These are all bad things, where the <code>Write­Process­Memory</code> function tried to be unobstrusive but ended up interfering with the operation of the program beyond simply writing memory.</p>
+<p>You should try to avoid bad things.</p>
+<p>As noted, the intended audience for the <code>Write­Process­Memory</code> function was debuggers, and when debuggers patch process memory, they do so when the process is broken into the debugger, hence no app threads can be running. The race condition doesn’t exist in that case.</p>
+<p>If you’re going to use the <code>Write­Process­Memory</code> function to write to memory of a live running process, you need to coordinate with that process to make sure your memory write operation won’t collide with the app’s own virtual memory operations.</p>
+<p><b>Bonus chatter</b>: As I noted, this behavior of the <code>Write­Process­Memory</code> function is a courtesy, not contractual. Windows 95 and Windows CE dealt with the problem differently: Instead of making the page temporarily read-write, they made the page <i>permanently</i> read-write. In other words, they didn’t bother restoring the original page protections when they were done. They just left the page read-write.</p>
+<p> </p>
+
+
+</body>

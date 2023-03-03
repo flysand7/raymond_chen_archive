@@ -1,0 +1,144 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Your program assumes that COM output pointers are initialized on failure; you just don't realize it yet</h1>  <!-- .entry-meta -->
+
+<p>
+We saw last time that the COM rules for output pointers are that
+they must be initialized on return from a function,
+even if the function fails.
+The COM marshaller relies on this behavior,
+but then again, so do you; you just don’t realize it yet.
+</p>
+<p>
+If you use a smart pointer library (be it ATL
+or boost or whatever), you are still relying on output
+pointers being <code>NULL</code> when not valid,
+regardless of whether or not the call succeeded.
+Let’s look at this line of code from
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/10/07/9904040.aspx">
+that article about <code>IUnknown::QueryInterface</code></a>:
+</p>
+<pre>
+CComQIPtr&lt;ISomeInterface&gt; spsi(punkObj);
+...
+// spsi object goes out of scope
+</pre>
+<p>
+If the <code>IUnknown::QueryInterface</code> method puts a
+non-<code>NULL</code> value in <code>spsi</code> on failure,
+then when <code>spsi</code> is destructed, it’s going
+to call <code>IUnknown::Release</code> on itself,
+and something bad happens.
+If you’re lucky, you will crash because the thing lying around in
+<code>spsi</code> was a garbage pointer.
+But if you’re not lucky, the thing lying around in <code>spsi</code>
+might be a pointer to a COM object:
+</p>
+<pre>
+<i>// wrong!
+HRESULT CObject::QueryInterface(REFIID riid, void **ppvObj)
+{
+  *ppvObj = this; // assume success since it almost always succeeds
+  if (riid == IID_IUnknown || riid == IID_IOtherInterface) {
+    AddRef();
+    return S_OK;
+  }
+  // forgot to set *ppvObj = NULL
+  return E_NOINTERFACE;
+}</i>
+</pre>
+<p>
+Notice that this code optimistically sets the output pointer to
+itself, but if the interface is not supported, it changes its mind
+and returns <code>E_NOINTERFACE</code> <i>without setting the
+output pointer to <code>NULL</code></i>.
+Now you have an elusive reference counting bug,
+because the destruction of <code>spsi</code> will call
+<code>CObject::Release</code>,
+which will manifest itself by <code>CObject</code> object
+being destroyed prematurely because you just over-released the object.
+If you’re lucky, that’ll happen relative soon;
+if you’re not lucky, it won’t manifest itself for another half hour.
+</p>
+<p>
+Okay, sure, maybe this is too obvious a mistake for
+<code>CObject::QueryInterface</code>, but any method that
+has an output parameter can suffer from this error,
+and in those cases it might not be quite so obvious:
+</p>
+<pre>
+<i>// wrong!
+HRESULT CreateSurface(const SURFACEDESC *psd,
+                      ISurface **ppsf)
+{
+ *ppsf = new(nothrow) CSurface();
+ if (!*ppsf) return E_OUTOFMEMORY;
+ HRESULT hr = (*ppsf)-&gt;Initialize(psd);
+ if (SUCCEEDED(hr)) return S_OK;
+ (*ppsf)-&gt;Release(); // throw it away
+ // forgot to set *ppsf = NULL
+ return hr;
+}</i>
+</pre>
+<p>
+This imaginary function
+takes a surface description and tries to create a surface
+that matches it.
+It does this by first creating a blank surface,
+and then initializing the surface.
+If that succeeds, then we succeed;
+otherwise, we clean up the incomplete surface and fail.
+</p>
+<p>
+Except that we forgot to set <code>*ppsf = NULL</code>
+in our failure path.
+If initialization fails, then we destroy the surface,
+and the pointer returned to the caller points to the
+surface that we abandoned.
+But the caller shouldn’t be looking at that pointer because
+the function failed, right?
+</p>
+<p>
+Well, unless the caller called you like this:
+</p>
+<pre>
+CComPtr&lt;ISurface&gt; spsf;
+if (SUCCEEDED(CreateSurface(psd, &amp;spsf))) {
+ ...
+}
+</pre>
+<p>
+If the surface fails to initialize, then <code>spsf</code>
+contains a pointer to a surface that has already been deleted.
+When the <code>spsf</code> is destructed, it’s going to call
+<code>ISurface::Release</code> on some point that is no longer
+valid, and bad things are going to happen.
+This can get particularly insidious when <code>spsf</code> is
+not a simple local variable but rather a member of
+class which itself doesn’t get destroyed for a long time.
+The bad pointer sits in <code>m_spsf</code> like a time bomb.
+</p>
+<p>
+Although all the examples I gave here involve COM interface pointers,
+the rule applies to all output parameters.
+</p>
+<pre>
+CComBSTR bs;
+if (SUCCEEDED(GetName(&amp;bs)) { ... }
+// -or-
+CComVariant var;
+if (SUCCEEDED(GetName(&amp;var)) { ... }
+</pre>
+<p>
+In the first case, the the <code>GetName</code> method had
+better not leave garbage in the output <code>BSTR</code> on failure,
+because the <code>CComBSTR</code>
+is going to <code>SysFreeString</code> in its destructor.
+Similarly in the second case with <code>CComVariant</code>
+and <code>VariantClear</code>.
+</p>
+<p>
+So remember, if your function doesn’t want to return a value
+in an output pointer, you still have to return something in it.</p>
+
+
+</body>

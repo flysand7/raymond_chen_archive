@@ -1,0 +1,423 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Removing the <code>Terminate­Thread</code> from code that waits for a job object to empty</h1>  <!-- .entry-meta -->
+
+<p>Some time ago I showed <a href="https://devblogs.microsoft.com/oldnewthing/">how to wait until all processes in a job have exited</a>. Consider the following code which wants to create a job, put a single process in it, and then return a handle that will become signaled when that process and all its child processes have exited. </p>
+<p>This exercise is inspired by actual production code, so we’re solving a real problem here. </p>
+<pre>
+template&lt;typename T&gt;
+struct scope_guard
+{
+  scope_guard(T&amp;&amp; t) : t_{std::move(t)} {}
+  ~scope_guard() { if (!cancelled_) t_(); }
+
+  // Move operators are auto-deleted when we delete copy operators.
+  scope_guard(const scope_guard&amp; other) = delete;
+  scope_guard&amp; operator=(const scope_guard&amp; other) = delete;
+
+  void cancel() { cancelled_ = true; }
+
+private:
+  bool cancelled_ = false;
+  T t_;
+};
+
+template&lt;typename T&gt;
+scope_guard&lt;T&gt; make_scope_guard(T&amp;&amp; t)
+{ return scope_guard&lt;T&gt;{std::move(t)}; }
+</pre>
+<p>This <code>scope_guard</code> class is similar to every other <code>scope_guard</code> class you’ve seen: It babysits a functor and calls it at destruction. We do add a wrinkle that the guard can be cancelled, which means that the functor is not called after all. </p>
+<pre>
+struct handle_deleter
+{
+ void operator()(HANDLE h) { CloseHandle(h); }
+};
+
+using unique_handle = std::unique_ptr&lt;void, handle_deleter&gt;;
+</pre>
+<p>The <code>unique_handle</code> class is a specialization of <code>std::unique_ptr</code> for Windows handles that can be closed by <code>Close­Handle</code>. Note that it will attempt to close <code>INVALID_</code><code>HANDLE_</code><code>VALUE</code>, so don’t use it for file handles. </p>
+<pre>
+struct WaitForJobToEmptyInfo
+{
+ unique_handle job;
+ unique_handle ioPort;
+};
+
+DWORD CALLBACK WaitForJobToEmpty(void* parameter)
+{
+ std::unique_ptr&lt;WaitForJobToEmptyInfo&gt; info(
+    reinterpret_cast&lt;WaitForJobToEmptyInfo*&gt;(parameter));
+
+ DWORD completionCode;
+ ULONG_PTR completionKey;
+ LPOVERLAPPED overlapped;
+
+ while (GetQueuedCompletionStatus(info-&gt;ioPort.get(), &amp;completionCode,
+          &amp;completionKey, &amp;overlapped, INFINITE) &amp;&amp;
+          !(completionKey == (ULONG_PTR)info-&gt;job.get() &amp;&amp;
+           completionCode == JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO)) {
+   /* keep waiting */
+ }
+
+ return 0;
+}
+</pre>
+<p>The <code>Wait­For­Job­To­Empty</code> starts by taking ownership of the <code>Wait­For­Job­To­Empty­Info</code> structure it is passed as a thread parameter by wrapping it inside a <code>std::unique_ptr</code>. Next, it monitors the I/O completion port until the job reports that there are no more processes in it. Once that happens, the thread exits, which sets the thread handle to the signaled state. </p>
+<pre>
+HANDLE CreateProcessAndReturnWaitableHandle(PWSTR commandLine)
+{
+ auto info = std::make_unique&lt;WaitForJobToEmptyInfo&gt;();
+
+ info-&gt;job.reset(CreateJobObject(nullptr, nullptr));
+ if (!info-&gt;job) {
+  return nullptr;
+ }
+
+ info-&gt;ioPort.reset(
+   CreateIoCompletionPort(INVALID_HANDLE_VALUE,
+                          nullptr, 0, 1));
+ if (!info-&gt;ioPort) {
+  return nullptr;
+ }
+
+ JOBOBJECT_ASSOCIATE_COMPLETION_PORT port;
+ port.CompletionKey = info-&gt;job.get();
+ port.CompletionPort = info-&gt;ioPort.get();
+ if (!SetInformationJobObject(info-&gt;job.get(),
+       JobObjectAssociateCompletionPortInformation,
+       &amp;port, sizeof(port))) {
+  return nullptr;
+ }
+
+ DWORD threadId;
+ unique_handle thread(CreateThread(nullptr, 0, WaitForJobToEmpty,
+                             info.get(), CREATE_SUSPENDED,
+                             &amp;threadId));
+ if (!thread) {
+  return nullptr;
+ }
+
+ <i>// Code in italics is wrong
+ auto ensureTerminateWorkerThread = make_scope_guard([&amp;]{
+  TerminateThread(thread.get());
+ });</i>
+
+ PROCESS_INFORMATION processInformation;
+ STARTUPINFO startupInfo = { sizeof(startupInfo) };
+ if (!CreateProcess(nullptr, commandLine, nullptr, nullptr,
+                    FALSE, CREATE_SUSPENDED, nullptr, nullptr,
+                    &amp;startupInfo, &amp;processInformation)) {
+  return nullptr;
+ }
+
+ auto ensureCloseHandles = make_scope_guard([&amp;]{
+  CloseHandle(processInformation.hThread);
+  CloseHandle(processInformation.hProcess);
+ });
+
+ auto ensureTerminateProcess = make_scope_guard([&amp;]{
+  TerminateProcess(processInformation.hProcess);
+ });
+
+ if (!AssignProcessToJobObject(info-&gt;job.get(),
+         processInformation.hProcess)) {
+  return nullptr;
+ }
+
+ info.release();
+ ensureTerminateProcess.cancel();
+ ensureTerminateWorkerThread.cancel();
+
+ ResumeThread(processInformation.hThread);
+ ResumeThread(thread.get());
+
+ return thread.release();
+}
+</pre>
+<p>Let’s walk through this function. </p>
+<p>First, we create the <code>Wait­For­Job­To­Empty­Info</code> object that contains the information we are passing to the worker thread. </p>
+<p>We initialize the job and the I/O completion port, and associate the job with the completion port. If anything goes wrong, we bail out. </p>
+<p>Next, we create the worker thread that will wait for the signal from the I/O completion port that the job is empty. </p>
+<p>Here is the sticking point: We aren’t finished setting up everything yet, and if it turns out we can’t create the process or can’t put the process in the job, then that thread will be waiting around for a notification that will never happen. But we want to pre-create all the resources we need before creating the process, so that we don’t find ourselves later with a process that has already been created, but not enough resources to monitor that process. </p>
+<p>Okay, so the idea is that we create the thread suspended so that it is “waiting” and hasn’t actually started doing anything yet. That way, if it turns out we need to abandon the operation, we can terminate the thread. (Uh-oh, he talked about terminating threads.) </p>
+<p>Okay, now that we have all our resources reserved, we can create the process. If that fails, then we bail out, and the <code>ensure­Terminate­Worker­Thread</code> will terminate our worker thread as part of the cleanup. </p>
+<p>If the process was created successfully, then we create a <code>scope_</code><code>guard</code> object to remember to close the handles in the <code>PROCESS_</code><code>INFORMATION</code> structure. And we also remember to terminate the process in case something goes wrong. </p>
+<p>Next, we put the process in the job. If this fails, we bail out, and our various <code>scope_</code><code>guard</code> objects will make sure that everything gets cleaned up properly. </p>
+<p>Once the process is in the job, we have succeeded, so resume the process and the worker thread, and return the worker thread to the caller so it can be waited on. </p>
+<p>The problem with this plan, of course, is that pesky call to <code>Terminate­Thread</code>, which is a function so awful <a href="https://blogs.msdn.microsoft.com/oldnewthing/20150814-00/?p=91811">it should never be called</a> because there is basically no safe way of calling it. </p>
+<p>So how do we get rid of the <code>Terminate­Thread</code>? </p>
+<p>One solution is to tweak the algorithm so the thread is the last thing we create. That way, we never have to back out of the thread creation. </p>
+<pre>
+HANDLE CreateProcessAndReturnWaitableHandle(PWSTR commandLine)
+{
+ auto info = std::make_unique&lt;WaitForJobToEmptyInfo&gt;();
+
+ info-&gt;job.reset(CreateJobObject(nullptr, nullptr));
+ if (!info-&gt;job) {
+  return nullptr;
+ }
+
+ info-&gt;ioPort.reset(
+   CreateIoCompletionPort(INVALID_HANDLE_VALUE,
+                          nullptr, 0, 1));
+ if (!info-&gt;ioPort) {
+  return nullptr;
+ }
+
+ JOBOBJECT_ASSOCIATE_COMPLETION_PORT port;
+ port.CompletionKey = info-&gt;job.get();
+ port.CompletionPort = info-&gt;ioPort.get();
+ if (!SetInformationJobObject(info-&gt;job.get(),
+       JobObjectAssociateCompletionPortInformation,
+       &amp;port, sizeof(port))) {
+  return nullptr;
+ }
+
+ <font color="red">// <strike>DWORD threadId;</strike>
+ // <strike>unique_handle thread(CreateThread(nullptr, 0, WaitForJobToEmpty,</strike>
+ //                            <strike>info.get(), CREATE_SUSPENDED,</strike>
+ //                            <strike>&amp;threadId));</strike>
+ // <strike>if (!thread) {</strike>
+ //  <strike>return nullptr;</strike>
+ // <strike>}</strike>
+ //
+ // <strike>auto ensureTerminateWorkerThread = make_scope_guard([&amp;]{</strike>
+ //  <strike>TerminateThread(thread.get());</strike>
+ // <strike>});</strike></font>
+
+ PROCESS_INFORMATION processInformation;
+ STARTUPINFO startupInfo = { sizeof(startupInfo) };
+ if (!CreateProcess(nullptr, commandLine, nullptr, nullptr,
+                    FALSE, CREATE_SUSPENDED, nullptr, nullptr,
+                    &amp;startupInfo, &amp;processInformation)) {
+  return nullptr;
+ }
+
+ auto ensureCloseHandles = make_scope_guard([&amp;]{
+  CloseHandle(processInformation.hThread);
+  CloseHandle(processInformation.hProcess);
+ });
+
+ auto ensureTerminateProcess = make_scope_guard([&amp;]{
+  TerminateProcess(processInformation.hProcess);
+ });
+
+ if (!AssignProcessToJobObject(info-&gt;job.get(),
+         processInformation.hProcess)) {
+  return nullptr;
+ }
+
+ <font color="blue">// Code moved here
+ DWORD threadId;
+ unique_handle thread(CreateThread(nullptr, 0, WaitForJobToEmpty,
+                             info.get(), 0, // not suspended
+                             &amp;threadId));
+ if (!thread) {
+  return nullptr;
+ }</font>
+
+ info.release();
+ ensureTerminateProcess.cancel();
+ <font color="red">// <strike>ensureTerminateWorkerThread.cancel();</strike></font>
+
+ ResumeThread(processInformation.hThread);
+ <font color="red">// <strike>ResumeThread(thread.get());</strike></font>
+
+ return thread.release();
+}
+</pre>
+<p> We don’t need to create the thread suspended any more; it can hit the ground running. </p>
+<p>Okay, so that’s a solution if you can find a way to tweak your algorithm is that the thread is the last thing to be created. That way, you never have to try to roll back a thread creation. But that may not be possible. For example, maybe your algorithm involves creating multiple threads. Some thread gets to be last, but the others are now at risk of needing to be rolled back in case the last thread cannot be created. </p>
+<p>Technique number two: Trick the thread into doing nothing if it turns out we don’t want it to do anything. </p>
+<p>In our case, what we can do is post a fake completion status to the I/O completion port to tell it, “Um, yeah, the job has no processes in it. Your job is done. <a href="https://www.youtube.com/watch?v=X0KjZzsov_8&amp;t=40s">Go home</a>.” </p>
+<pre>
+HANDLE CreateProcessAndReturnWaitableHandle(PWSTR commandLine)
+{
+ auto info = std::make_unique&lt;WaitForJobToEmptyInfo&gt;();
+
+ info-&gt;job.reset(CreateJobObject(nullptr, nullptr));
+ if (!info-&gt;job) {
+  return nullptr;
+ }
+
+ info-&gt;ioPort.reset(
+   CreateIoCompletionPort(INVALID_HANDLE_VALUE,
+                          nullptr, 0, 1));
+ if (!info-&gt;ioPort) {
+  return nullptr;
+ }
+
+ JOBOBJECT_ASSOCIATE_COMPLETION_PORT port;
+ port.CompletionKey = info-&gt;job.get();
+ port.CompletionPort = info-&gt;ioPort.get();
+ if (!SetInformationJobObject(info-&gt;job.get(),
+       JobObjectAssociateCompletionPortInformation,
+       &amp;port, sizeof(port))) {
+  return nullptr;
+ }
+
+ DWORD threadId;
+ unique_handle thread(CreateThread(nullptr, 0, WaitForJobToEmpty,
+                             info.get(), <font color="blue">0, // not suspended</font>
+                             &amp;threadId));
+ if (!thread) {
+  return nullptr;
+ }
+
+ <font color="blue">// thread owns the info now
+ auto ensureReleaseInfo = make_scope_guard([&amp;]{
+  info.release();
+ });</font>
+
+ auto ensureTerminateWorkerThread = make_scope_guard([&amp;]{
+  <font color="blue">// Tell the thread that there are no processes
+  // so it will break out of its loop.
+  PostQueuedCompletionStatus(info-&gt;ioPort.get(),
+                             JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO,
+                             (ULONG_PTR)info-&gt;job.get(),
+                             nullptr);</font>
+ });
+
+ PROCESS_INFORMATION processInformation;
+ STARTUPINFO startupInfo = { sizeof(startupInfo) };
+ if (!CreateProcess(nullptr, commandLine, nullptr, nullptr,
+                    FALSE, CREATE_SUSPENDED, nullptr, nullptr,
+                    &amp;startupInfo, &amp;processInformation)) {
+  return nullptr;
+ }
+
+ auto ensureCloseHandles = make_scope_guard([&amp;]{
+  CloseHandle(processInformation.hThread);
+  CloseHandle(processInformation.hProcess);
+ });
+
+ auto ensureTerminateProcess = make_scope_guard([&amp;]{
+  TerminateProcess(processInformation.hProcess);
+ });
+
+ if (!AssignProcessToJobObject(info-&gt;job.get(),
+         processInformation.hProcess)) {
+  return nullptr;
+ }
+
+ <font color="red">// <strike>info.release();</strike></font>
+ ensureTerminateProcess.cancel();
+ ensureTerminateWorkerThread.cancel();
+
+ ResumeThread(processInformation.hThread);
+ <font color="red">// <strike>ResumeThread(thread.get());</strike></font>
+
+ return thread.release();
+}
+</pre>
+<p>Technique number three: If all else fails, then just have a special flag to tell the thread, “I don’t want you to do anything. Just get out as quickly as you can.” </p>
+<pre>
+struct WaitForJobToEmptyInfo
+{
+ unique_handle job;
+ unique_handle ioPort;
+ <font color="blue">bool active = false;</font>
+};
+
+DWORD CALLBACK WaitForJobToEmpty(void* parameter)
+{
+ std::unique_ptr&lt;WaitForJobToEmptyInfo&gt; info(
+    reinterpret_cast&lt;WaitForJobToEmptyInfo&gt;(parameter));
+
+ <font color="blue">// If we are not active, then do nothing.
+ if (!info-&gt;active) return 0;</font>
+
+ DWORD completionCode;
+ ULONG_PTR completionKey;
+ LPOVERLAPPED overlapped;
+
+ while (GetQueuedCompletionStatus(info-&gt;ioPort.get(), &amp;completionCode,
+          &amp;completionKey, &amp;overlapped, INFINITE) &amp;&amp;
+          !(completionKey == (ULONG_PTR)info-&gt;job.get() &amp;&amp;
+           completionCode == JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO)) {
+   /* keep waiting */
+ }
+
+ return 0;
+}
+
+HANDLE CreateProcessAndReturnWaitableHandle(PWSTR commandLine)
+{
+ auto info = std::make_unique&lt;WaitForJobToEmptyInfo&gt;();
+
+ info-&gt;job.reset(CreateJobObject(nullptr, nullptr));
+ if (!info-&gt;job) {
+  return nullptr;
+ }
+
+ info-&gt;ioPort.reset(
+   CreateIoCompletionPort(INVALID_HANDLE_VALUE,
+                          nullptr, 0, 1));
+ if (!info-&gt;ioPort) {
+  return nullptr;
+ }
+
+ JOBOBJECT_ASSOCIATE_COMPLETION_PORT port;
+ port.CompletionKey = info-&gt;job.get();
+ port.CompletionPort = info-&gt;ioPort.get();
+ if (!SetInformationJobObject(info-&gt;job.get(),
+       JobObjectAssociateCompletionPortInformation,
+       &amp;port, sizeof(port))) {
+  return nullptr;
+ }
+
+ DWORD threadId;
+ unique_handle thread(CreateThread(nullptr, 0, WaitForJobToEmpty,
+                             info.get(), CREATE_SUSPENDED,
+                             &amp;threadId));
+ if (!thread) {
+  return nullptr;
+ }
+
+ <font color="red">// <strike>auto ensureTerminateWorkerThread = make_scope_guard([&amp;]{</strike>
+ //  <strike>TerminateThread(thread.get());</strike>
+ // <strike>});</strike></font>
+
+ <font color="blue">auto ensureResumeWorkerThread = make_scope_guard([&amp;]{
+  ResumeThread(thread.get());
+ });</font>
+
+ PROCESS_INFORMATION processInformation;
+ STARTUPINFO startupInfo = { sizeof(startupInfo) };
+ if (!CreateProcess(nullptr, commandLine, nullptr, nullptr,
+                    FALSE, CREATE_SUSPENDED, nullptr, nullptr,
+                    &amp;startupInfo, &amp;processInformation)) {
+  return nullptr;
+ }
+
+ auto ensureCloseHandles = make_scope_guard([&amp;]{
+  CloseHandle(processInformation.hThread);
+  CloseHandle(processInformation.hProcess);
+ });
+
+ auto ensureTerminateProcess = make_scope_guard([&amp;]{
+  TerminateProcess(processInformation.hProcess);
+ });
+
+ if (!AssignProcessToJobObject(info-&gt;job.get(),
+         processInformation.hProcess)) {
+  return nullptr;
+ }
+
+ <font color="blue">info-&gt;active = true; // tell the thread that it has work to do</font>
+ info.release();
+ ensureTerminateProcess.cancel();
+ <font color="red">// <strike>ensureTerminateWorkerThread.cancel();</strike></font>
+ <font color="blue">ensureResumeWorkerThread.cancel();</font>
+
+ ResumeThread(processInformation.hThread);
+ ResumeThread(thread.get());
+
+ return thread.release();
+}
+</pre>
+<p>We could have signaled the thread that it should not do anything by closing the handles in the <code>Wait­For­Job­To­Empty­Info</code> structure, but I want to demonstrate the most general possible solution. </p>
+<p>There is some subtlety in resuming the worker thread: We need the <code>Resume­Thread</code> to happen before the <code>thread.release()</code> because the <code>thread.release()</code> causes the <code>thread</code> to relinquish knowledge of the kernel thread. I probably could have fixed this some more scoping, but I tried to change the existing code as little as possible. </p>
+<p>So there you go: Three ways of getting rid of the <code>Terminate­Thread</code> from this specific algorithm. The general-purpose trick works if the reason you were terminating a thread was to prevent it from starting. Instead of terminating the thread, resume it, but make sure it does nothing. </p>
+
+
+</body>

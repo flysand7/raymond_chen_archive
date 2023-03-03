@@ -1,0 +1,125 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why do member functions need to be "static" to be used as a callback?</h1>  <!-- .entry-meta -->
+
+<p><a href="http://weblogs.asp.net/oldnewthing/archive/2004/01/08/48616.aspx">
+As we learned yesterday</a>,
+nonstatic member functions take a secret “this” parameter, which makes
+them incompatible with the function signature required by Win32 callbacks.
+Fortunately, nearly all callbacks provide some way of providing context.
+You can shove the “this” pointer into the context so you can reconstruct
+the source object.  Here’s an example:</p>
+<p><pre>
+class SomeClass {
+ ...
+ static DWORD CALLBACK s_ThreadProc(LPVOID lpParameter)
+ {
+  return ((SomeClass*)lpParameter)-&gt;ThreadProc();
+ }
+ DWORD ThreadProc()
+ {
+  ... fun stuff ...
+ }
+};
+</pre>
+</p>
+<p>
+Some callback function signatures place the context parameter
+(also known as “reference data”) as the first parameter.  How
+convenient, for the secret “this” parameter is also the first
+parameter.  Looking at
+<a href="http://weblogs.asp.net/oldnewthing/archive/2004/01/08/48616.aspx">
+the various calling conventions available to us</a>,
+it sure
+looks like the <code>__stdcall</code> calling convention
+for <b>member functions</b> matches our desired stack layout
+rather well.
+Let’s take <code><a href="http://msdn.microsoft.com/library/en-us/dllproc/base/waitortimercallback.asp">WAITORTIMERCALLBACK</a></code>
+for example:
+</p>
+<table border="0">
+<col style="padding-left: 1pc;padding-right: 1pc"/>
+<col style="padding-right: 1pc"/>
+<col style="padding-left: 1pc;padding-right: 1pc"/>
+<col style="padding-right: 1pc"/>
+<col style="padding-left: 1pc;padding-right: 1pc"/>
+<tr>
+<th colspan="2">__stdcall callback</th>
+<th colspan="2">__stdcall method call</th>
+<th colspan="2">thiscall method call</th>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">.. rest of stack ..</td>
+<td></td>
+<td style="border: solid 1px buttonshadow">.. rest of stack ..</td>
+<td></td>
+<td style="border: solid 1px buttonshadow">.. rest of stack ..</td>
+<td></td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">TimerOrWaitFired</td>
+<td></td>
+<td style="border: solid 1px buttonshadow">TimerOrWaitFired</td>
+<td></td>
+<td style="border: solid 1px buttonshadow">TimerOrWaitFired</td>
+<td>&lt;- ESP</td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow">lpParameter</td>
+<td>&lt;- ESP</td>
+<td style="border: solid 1px buttonshadow">this</td>
+<td>&lt;- ESP</td>
+</tr>
+</table>
+<p>
+Well, “thiscall” doesn’t match, but the two “__stdcall”s do.
+Fortunately the compiler is smart enough to recognize this and
+can optimize the <code>s_ThreadProc</code> static method to
+nothing if you just give it enough of a nudge:</p>
+<p><pre>
+class SomeClass {
+ ...
+ static DWORD CALLBACK s_ThreadProc(LPVOID lpParameter)
+ {
+  return ((SomeClass*)lpParameter)-&gt;ThreadProc();
+ }
+ DWORD <font color="red">__stdcall</font> ThreadProc()
+ {
+  ... fun stuff ...
+ }
+};
+</pre>
+</p>
+<p>
+If you look at the code generation for the <code>s_ThreadProc</code>
+function, you’ll see that has been reduced to nothing but a
+jump instruction, since the compiler has realized that the two
+calling conventions coincide here so there is no actual translation
+to do.
+</p>
+<p><pre>
+?s_ThreadProc@SomeClass@@SGKPAX@Z PROC NEAR
+  jmp     ?ThreadProc@SomeClass@@QAGKXZ
+?s_ThreadProc@SomeClass@@SGKPAX@Z ENDP
+</pre>
+<p>
+Now some people would take this one step further and just
+cast the second parameter to <code>CreateThread</code>
+to <code>LPTHREAD_START_ROUTINE</code>
+and get rid of the helper <code>s_ThreadProc</code> function
+entirely.
+<b>I strongly advise against this.</b>
+I have seen too many people cause trouble by miscasting
+function pointers; more on this in a future entry.
+</p>
+<p>
+Although we took advantage above of a coincidence between the two
+<code>__stdcall</code> calling conventions,
+we did not <b>rely</b> on it.
+If the coincidence in calling conventions fails to occur,
+the code is still correct.
+This is important when it comes time to port this code to
+another architecture, one where the coincidence may longer
+be true!</p>
+
+
+</p></body>

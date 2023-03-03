@@ -1,0 +1,90 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The buffer size parameter to GetFileVersionInfo is the size of your buffer, no really</h1>  <!-- .entry-meta -->
+
+<p>
+The <code>GetFileVersionInfo</code> function takes a
+pointer to a buffer (<code>lpData</code>) and a size
+(<code>dwLen</code>),
+and that size is the size of the buffer, in bytes.
+</p>
+<p>
+No really, that’s what it is.
+</p>
+<p>
+The application compatibility folks found one popular game
+which wasn’t quite sure what that <code>dwLen</code> parameter
+meant.
+The programmers must have thought it meant “The size of the version resources
+you want to load” and called it like this (paraphrased):
+</p>
+<pre>
+void CheckFileVersion(LPCTSTR pszFile)
+{
+ BYTE buffer[1024];
+ DWORD dwHandle;
+ DWORD dwLen = GetFileVersionInfoSize(pszFile, &amp;dwHandle);
+ if (GetFileVersionInfo(pszFile, dwHandle, dwLen, buffer)) {
+  ...
+ }
+}
+</pre>
+<p>
+“Gosh, the
+<code>GetFileVersionInfo</code> function wants to know how big
+the version info is,
+so we need to call <code>GetFileVersionInfoSize</code> to find out!”
+they must have thought.
+</p>
+<p>
+This code worked great… for a while.
+It was checking the file version of the video driver.
+(My guess is that they were trying to detect specific
+video drivers so they could work around bugs in them
+or take advantage of driver-specific features.)
+But if you had a video driver whose version
+resource needed more than 1024 bytes of space,
+the program crashed with stack corruption.
+</p>
+<p>
+I don’t know whether the Windows Vista
+application compatibility folks decided
+that it was worth fixing this program’s bug, since it occurred
+even on Windows XP.
+If so decided, the fix would have been fairly straightforward.
+Once the program was detected,
+we would just have had to take the
+value the program passed as <code>dwLen</code> and modify it
+according to the simple formula
+</p>
+<pre>
+dwLen = min(dwLen, 1024);
+</pre>
+<p>
+before doing the real work of loading the version information.
+</p>
+<p>
+For those playing along at home, by the way, the correct
+code would go something like this:
+</p>
+<pre>
+void CheckFileVersion(LPCTSTR pszFile)
+{
+ DWORD dwHandle;
+ DWORD dwLen = GetFileVersionInfoSize(pszFile, &amp;dwHandle);
+ if (dwLen) {
+  BYTE *pBuffer = (BYTE*)malloc(dwLen);
+  if (pBuffer) {
+   if (GetFileVersionInfo(pszFile, dwHandle, dwLen, pBuffer)) {
+    ...
+   }
+   free(pBuffer);
+  }
+ }
+}
+</pre>
+<p>
+(Use your favorite memory allocation technique instead of <code>malloc</code>
+and <code>free</code>.)</p>
+
+
+</body>

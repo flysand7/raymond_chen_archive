@@ -1,0 +1,27 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Should I be concerned that WaitForSingleObject is taking a large percentage of my performance test’s execution time</h1>  <!-- .entry-meta -->
+
+<p>A customer designed a client-server system where the client and the server ran on the same machine (but with different security contexts). They were doing some performance tests of the data transfer portion of the system, and one of tests consisted of the following: </p>
+<ul>
+<li>Client opens a unit of content on the server. 
+<li>Repeat 100,000 times:     
+<ul>
+<li>Client seeks to the start of the content.     
+<li>Client reads entire content a line at a time         until the end of the content is reached.     </li></li></ul>
+<li>Client closes the connection with the server. </li></li></li></ul>
+<p>When they ran this test, they found that the <code>Wait­For­Single­Object</code> function was consuming 6% of the total CPU time. “We expected overhead of calling the <code>Wait­For­Single­Object</code> function to be negligible. I suspect most developers don’t take into account the full cost of <code>Wait­For­Single­Object</code>.” </p>
+<p>If you read the same content 100,000 times, it will quickly become fully cached, and the entire exercise becomes CPU-bound rather than I/O-bound. </p>
+<p>CPU-bound operation is CPU-bound. </p>
+<p>“Yes, we understand that this is an artificial scenario and that real-world applications will not use the server in this manner. The issue is that the <code>Wait­For­Single­Object</code> function is using a lot of CPU in this trace, whereas most developers probably consider <code>Wait­For­Single­Object</code> to be effectively free.” </p>
+<p>What you’ve done is taken what is presumably a complex operation and stripping it down to just overhead. Caching the entire workload in memory means that the actual work of reading the data is reduced to a series of <code>memcpy</code> operations, and since you’re reading the data a line at a time, you’re not copy a lot of data at each round trip. It’s like using a large cardboard box to ship an index card. All of the cost is in getting the cardboard box, setting it up, packing it, sealing it, and mailing it. </p>
+<p>Continuing the analogy: If you construct a sample test of your company’s shipping system by shipping 100,000 cardboard boxes, each of which contains a single index card, then you’re going to draw conclusions like “Tape and shipping labels constitute 5% of the weight!” </p>
+<p>Well yeah, if you’re shipping empty boxes, then tape and shipping labels are going to take up a measureable percentage of the weight, seeing as <i>you are shipping boxes that are practically empty</i>. </p>
+<p>What you’ve got there, my friend, is a <code>Wait­For­Single­Object</code> stress test. </p>
+<p>What is more interesting from a performance standpoint is not the percentage of overhead that goes to <code>Wait­For­Single­Object</code>. What you should be worrying about is the actual amount of time spent by <code>Wait­For­Single­Object</code>. From the customer’s own data, it appeared that around 3 microseconds of the per-operation cost was being spent in calls to <code>Wait­For­Single­Object</code>.¹ That’s the number you should be putting into your calculations to decide whether that overhead is preventing you from reaching your performance targets. </p>
+<p>If you think about it some more, you may notice that the customer is worried that the <code>Wait­For­Single­Object</code> cost is too large a percentage of the CPU time, when in fact they should be worried that it is <i>too little</i> of the CPU time. Look at it another way: 94% of the CPU time is spent <i>inside the application code</i>. For example, when the <code>Wait­For­Single­Object</code> call returns, the server that was waiting on the handle has to figure out what the signaled handle means, determine which client is issuing the request and which piece of content is being requested, and route the request to the appropriate handler. The handler then performs any applicable security checks and parameter checks, and then it can do actual work: Calculate how many bytes of data need to be returned, locate those bytes, and copy those bytes. Finally, it has to do whatever is necessary to transfer that data back to the client. </p>
+<p>Assuming that the actual work of determining what memory needs to be transferred to the client is, say, 1% of CPU (this is probably being generous), then that means 93% of the CPU is being spent in <i>application overhead</i>. </p>
+<p>In the above analogy, the thing you should be noticing is not that tape and shipping labels take up 5% of the weight. What you should be noticing is that cardboard boxes take up 95% of the weight. That’s the thing that’s determining your shipping weight overhead. If you want to lower your weight overhead for shipping a single index card, don’t try to get thinner shipping labels. Work on switching from cardboard boxes to envelopes. </p>
+<p>¹ The customer didn’t say how many times <code>Wait­For­Single­Object</code> was called per operation, so I don’t know what the per-call <code>Wait­For­Single­Object</code> cost was. </p>
+
+
+</body>

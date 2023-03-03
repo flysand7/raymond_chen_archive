@@ -1,0 +1,32 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If the prototypes of DispatchMessageA and DispatchMessageW are identical, why have both?</h1>  <!-- .entry-meta -->
+
+<p>There are a number of functions, mostly in the window manager, which have both ANSI and Unicode variants, even though the prototypes are identical. </p>
+<pre>
+LRESULT WINAPI DispatchMessageW(const MSG*);
+LRESULT WINAPI DispatchMessageA(const MSG*);
+
+BOOL WINAPI TranslateMessageW(const MSG*);
+BOOL WINAPI TranslateMessageA(const MSG*);
+
+int WINAPI TranslateAcceleratorW(HWND, HACCEL, LPMSG);
+int WINAPI TranslateAcceleratorA(HWND, HACCEL, LPMSG);
+
+HACCEL WINAPI CreateAcceleratorTableW(LPACCEL, int);
+HACCEL WINAPI CreateAcceleratorTableA(LPACCEL, int);
+</pre>
+<p>Why can’t these pairs of functions be combined into a single function? Clearly there’s no <code>CHAR</code>/<code>WCHAR</code> mismatch, seeing as the parameters are identical. </p>
+<p>While it’s true that there is no type mismatch, there is still a character set dependency. </p>
+<p>For the <code>MSG</code>-based functions, the system needs to know whether the message was obtained via <code>Get­MessageW</code>/<code>Peek­MessageW</code> or via <code>Get­MessageA</code>/<code>Peek­MessageA</code>. If the message is <code>WM_<code></code>CHAR</code>, then the meaning of the <code>WPARAM</code> changes depending on the character set of the function that obtained the <code>MSG</code>. If you used <code>Get­MessageW</code>/<code>Peek­MessageW</code>, then the <code>WPARAM</code> is a Unicode code unit, but if you used <code>Get­MessageA</code>/<code>Peek­MessageA</code>, then it’s an ANSI code unit. </p>
+<p>The case of <code>Create­Accelerator­Table</code> is more subtle. Even though the same <code>ACCEL</code> structure is used for both ANSI and Unicode, the meaning of one of the fields changes: </p>
+<pre>
+typedef struct tagACCEL {
+  BYTE fVirt;
+  WORD key;
+  WORD cmd;
+} ACCEL, *LPACCEL;
+</pre>
+<p>If the <code>FVIRTKEY</code> flag is not set in the <code>fVirt</code> member, then the <code>key</code> member <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms646340(v=vs.85).aspx">contains a character code</a>, and that’s the place where a character set dependency sneaks in. </p>
+
+
+</body>

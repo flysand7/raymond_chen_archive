@@ -1,0 +1,228 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why is my FormatMessage call crashing trying to read my insertion parameter?</h1>  <!-- .entry-meta -->
+
+<p>A customer was looking for assistance in debugging a crash
+in their product.
+The stack trace looked like this:
+</p>
+<pre>
+ntdll!_woutput_l+0x356
+ntdll!_vsnwprintf_l+0x81
+ntdll!_vsnwprintf+0x11
+ntdll!RtlStringVPrintfWorkerW+0x3c
+ntdll!RtlStringCchPrintfExW+0xa8
+ntdll!RtlFormatMessageEx+0x324
+KERNELBASE!BaseDllFormatMessage+0x18e
+KERNELBASE!FormatMessageW+0x37
+contoso!FormatWithFallbackLanguage+0x8a
+contoso!RecordFailure+0x56
+</pre>
+<p>
+The string being formatted is
+<code>There was an error processing the object '%1'.</code>,
+and the insertion is a long (but valid) string.
+A unit test which passes a similarly long object name to
+<code>Record­Failure</code> does not crash.
+</p>
+<p>
+What is the problem?
+There are clues in the stack trace.
+</p>
+<p>
+The natural place to start is the function that calls
+<code>Format­Message</code> to see what parameters are
+being passed in.
+And that’s where you see something strange:
+</p>
+<pre>
+<i>// Code in italics is wrong
+BOOL FormatWithFallbackLanguage(
+    DWORD dwMessageId, PCTSTR pszBuffer, SIZE_T cchBuffer, ...)
+{
+ va_list ap;
+ va_start(ap, cchBuffer);
+ // Format from the user's preferred language.
+ DWORD cchResult = FormatMessage(
+               FORMAT_MESSAGE_FROM_HMODULE,
+               g_hinst, dwMessageId, g_preferredLangId,
+               pszBuffer, cchBuffer, &amp;ap);
+ // If that didn't work, then use the fallback language.
+ if (cchResult == 0) {
+  cchResult = FormatMessage(
+               FORMAT_MESSAGE_FROM_HMODULE,
+               g_hinst, dwMessageId, g_fallbackLangId,
+               pszBuffer, cchBuffer, &amp;ap);
+ }
+ va_end(ap);
+ return cchResult != 0;
+}</i>
+</pre>
+<p>
+(The clue in the stack trace was the word
+<i>fallback</i> in the function name,
+which suggests that if the formatting attempt fails,
+it’ll try again some other way.)
+</p>
+<p>
+The purpose of this function is to format the message
+using the specified message ID,
+first looking in the preferred language message table,
+and if that fails, by looking in the fallback language
+message table.
+</p>
+<p>
+The crash occurred on the second call to
+<code>Format­Message</code>.
+The customer said,
+“I’m guessing that the parameters being passed to
+<code>Format­Message</code>
+may be causing this,
+but I’m not sure how to proceed.
+Can you provide pointers for further investigation?”
+</p>
+<p>
+The bug is that code is reusing the
+<code>ap</code> parameter without resetting it.
+The documentation for
+<code>Format­Message</code> says
+about the <code>Arguments</code> parameter:
+</p>
+<blockquote class="q"><p>
+The state of the <b>va_list</b> argument is undefined
+upon return from the function.
+To use the <b>va_list</b> again,
+destroy the variable argument list pointer using <b>va_end</b>
+and reinitialize it with <b>va_start</b>.
+</p></blockquote>
+<p>
+The function
+<code>Format­With­Fallback­Language</code>
+calls <code>Format­Message</code>, which consumes
+and renders unusable the <code>ap</code> variable.
+If the first format attempt fails,
+the code passes the same (now invalid)
+<code>va_list</code> to a second
+<code>Format­Message</code>,
+which is now operating on undefined data and is
+therefore within its rights to crash.
+</p>
+<p>
+In practice, what happens is that the
+<code>Format­Message</code> function calls
+<code>va_arg</code> on the
+<code>va_list</code> to extract the insertions,
+and since <code>va_list</code>s are single-use,
+that pretty much renders it useless for anything else.
+If you want to walk the parameters a second time,
+you need to clean up the <code>va_list</code>
+and then reinitialize it.
+</p>
+<pre>
+BOOL FormatWithFallbackLanguage(
+    DWORD dwMessageId, PCTSTR pszBuffer, SIZE_T cchBuffer, ...)
+{
+ va_list ap;
+ va_start(ap, cchBuffer);
+ // Format from the user's preferred language.
+ DWORD cchResult = FormatMessage(
+               FORMAT_MESSAGE_FROM_HMODULE,
+               g_hinst, dwMessageId, g_preferredLangId,
+               pszBuffer, cchBuffer, &amp;ap);
+ // If that didn't work, then use the fallback language.
+ if (cchResult == 0) {
+  <font color="blue">va_end(ap);
+  va_start(ap, cchBuffer);</font>
+  cchResult = FormatMessage(
+               FORMAT_MESSAGE_FROM_HMODULE,
+               g_hinst, dwMessageId, g_fallbackLangId,
+               pszBuffer, cchBuffer, &amp;ap);
+ }
+ va_end(ap);
+ return cchResult != 0;
+}
+</pre>
+<p>
+By ending the old argument list and restarting it,
+the second call to
+<code>Format­Message</code> has the correct starting point
+for extracting the variadic parameters.
+An alternate (and in my opinion better) way to fix the bug
+would be
+</p>
+<pre>
+BOOL FormatWithFallbackLanguage(
+    DWORD dwMessageId, PCTSTR pszBuffer, SIZE_T cchBuffer, ...)
+{
+ va_list ap;
+ // Format from the user's preferred language.
+ <font color="blue">va_start(ap, cchBuffer);</font>
+ DWORD cchResult = FormatMessage(
+               FORMAT_MESSAGE_FROM_HMODULE,
+               g_hinst, dwMessageId, g_preferredLangId,
+               pszBuffer, cchBuffer, &amp;ap);
+ <font color="blue">va_end(ap);</font>
+ // If that didn't work, then use the fallback language.
+ if (cchResult == 0) {
+  <font color="blue">va_start(ap, cchBuffer);</font>
+  cchResult = FormatMessage(
+               FORMAT_MESSAGE_FROM_HMODULE,
+               g_hinst, dwMessageId, g_fallbackLangId,
+               pszBuffer, cchBuffer, &amp;ap);
+  <font color="blue">va_end(ap);</font>
+ }
+ return cchResult != 0;
+}
+</pre>
+<p>
+This avoids the “magic switcheroo” and more clearly
+scopes the region of validity of the <code>ap</code>
+variable to “solely for the purpose of the
+<code>Format­Message</code> function.”
+</p>
+<p>
+<b>Bonus chatter</b>:
+Suppose the <code>Format­With­Fallback­Language</code>
+accepted a <code>va_list</code> parameter directly.
+You might be tempted to implement it like this:
+</p>
+<pre>
+<i>// code in italics is wrong
+BOOL FormatWithFallbackLanguage(
+    DWORD dwMessageId, PCTSTR pszBuffer, SIZE_T cchBuffer, va_list ap)
+{
+ va_list apOriginal = ap;
+ // Format from the user's preferred language.
+ DWORD cchResult = FormatMessage(
+               FORMAT_MESSAGE_FROM_HMODULE,
+               g_hinst, dwMessageId, g_preferredLangId,
+               pszBuffer, cchBuffer, &amp;ap);
+ // If that didn't work, then use the fallback language.
+ if (cchResult == 0) {
+  cchResult = FormatMessage(
+               FORMAT_MESSAGE_FROM_HMODULE,
+               g_hinst, dwMessageId, g_fallbackLangId,
+               pszBuffer, cchBuffer, &amp;apOriginal);
+ }
+ return cchResult != 0;
+}</i>
+</pre>
+<p>
+This is not legal because a <code>va_list</code> is not
+directly copyable.
+Some architectures have rather complicated calling conventions
+that entail memory allocation in order to enumerate the parameters
+passed to variadic functions,
+and a bitwise copy will not respect those complexities.
+You have to use the <code>va_copy</code> macro to make a copy
+of a <code>va_list</code>.
+</p>
+<p>
+<b>Exercise</b>:
+How did this error elude unit testing?
+</p>
+<p>
+<b>Exercise</b>:
+What else can go wrong in this function?</p>
+
+
+</body>

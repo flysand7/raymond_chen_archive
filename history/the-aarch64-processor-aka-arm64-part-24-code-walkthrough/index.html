@@ -1,0 +1,170 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The AArch64 processor (aka arm64), part 24: Code walkthrough</h1>  <!-- .entry-meta -->
+
+<p>As is traditional, I wrap up the processor overview series with an annotated walkthrough of a simple function. Here’s the function again:</p>
+<pre>extern FILE _iob[];
+
+int fclose(FILE *stream)
+{
+    int result = EOF;
+
+    if (stream-&gt;_flag &amp; _IOSTRG) {
+        stream-&gt;_flag = 0;
+    } else {
+        int index = stream - _iob;
+        _lock_str(index);
+        result = _fclose_lk(stream);
+        _unlock_str(index);
+    }
+
+    return result;
+}
+</pre>
+<p>Here we go.</p>
+<p>This function takes a single pointer parameter, which is therefore passed in the <var>x0</var> register. No parameters are passed on the stack.</p>
+<pre>; int fclose(FILE *stream)
+
+    stp     x19, x20, [sp,#-0x20]!
+    str     x21, [sp,#0x10]
+    stp     fp, lr, [sp,#-0x10]!
+    mov     fp, sp
+</pre>
+<p>We start with the function prologue, which creates the stack frame and saves nonvolatile registers that we will be using inside the function.</p>
+<p>The first instruction reserves 32 bytes of stack and stores <var>x19</var> and <var>x20</var> into the first two slots. The pre-increment addressing mode (signaled by the exclamation point) updates the base register <var>sp</var> with the effective address, so this both stores the registers to memory as well as moving the stack pointer.</p>
+<p>The second instruction stores the <var>x21</var> variable into the memory that follows <var>x20</var>. The last 8 bytes are not used; they were allocated in order to preserve 16-byte stack pointer alignment.</p>
+<p>The third instruction pushes the frame pointer and link register into the stack. Notice that this function adjusted the stack pointer twice. I’m not sure how the compiler decides whether to reserve stack space all at once, or whether to reserve it little by little, like we did here.</p>
+<p>After all the registers have been stored, we set <var>fp</var> to the current stack pointer, which makes it point to where we stored the previous <var>fp</var>, thereby linking a new node onto the chain of stack frames.</p>
+<p>Now that the prologue is out of the way, we can start with the function body.</p>
+<pre>    mov     x20, x0             ; x20 = stream
+</pre>
+<p>The compiler takes the <var>stream</var> parameter, which was received in <var>x0</var>, and saves it in the nonvolatile register <var>x20</var> so it can be preserved across function calls.</p>
+<pre>; int result = EOF;
+; if (stream-&gt;_flag &amp; _IOSTRG) {
+
+    ldr     w8, [x20, #0xC]     ; w8 = stream-&gt;_flag
+    mov     w21, #-1            ; w21 = EOF
+    tbz     x8, #6, nostring    ; branch if _IOSTRG bit is zero
+</pre>
+<p>The work for the next two lines of code are interleaved. The compiler appears to have chosen to use <var>w21</var> to hold the <code>result</code> variable, so it initializes it to <code>-1</code>. The disassembler shows it as a <code>MOV</code>, but the raw instruction is really a <code>MOVN w21, #0, LSL #0</code>.</p>
+<p>The initialization of the <code>result</code> variable is sandwiched between the test for the <code>_IOSTRG</code> bit. We load the value of <code>_flag</code> into the <var>w8</var> register and test bit 6, which is the bit that corresponds to <code>_IOSTRG</code>, branching if the bit is clear (test bit zero).</p>
+<pre>;    stream-&gt;_flag = 0;
+; } else {
+
+    str     wzr, [x20, #0xC]    ; set _flag to zero
+    b       done                ; end of "true" branch
+</pre>
+<p>If the branch is not taken, we fall through and store a 32-bit zero to <code>_flag</code>. That’s the end of the “true” branch.</p>
+<pre>;   int index = stream - _iob;
+
+nostring:
+    adrp    x8, sample+0x2000   ; load high bits of pointer
+    add     x8, x8, #0x0180     ; x8 -&gt; _iob
+    sub     x9, x20, x8         ; calculate byte offset
+    asr     x19, x9, #4         ; x19 = convert to element offset
+</pre>
+<p>In the “false” branch, we calculate the stream index. First, we load up the address of the <code>_iob</code>. This takes two instructions, the first to load up the page that holds the <code>_iob</code> variable, and the second to find the <code>_iob</code> within that page.</p>
+<p>Subtract the <code>_iob</code> from the <code>stream</code> to get the byte offset, and convert it to an index by dividing by the size of a single <code>FILE</code>, which happens to be 16, so dividing can be done by shifting. The index is kept in <var>x19</var>.</p>
+<pre>;   _lock_str(index);
+
+    mov     w0, w19             ; parameter is the index
+    bl      _lock_str
+</pre>
+<p>The index is the sole parameter to <code>_lock_str</code>, so we put it into <var>w0</var> and call the function.</p>
+<pre>;   result = _fclose_lk(stream);
+
+    mov     x0, x20             ; parameter is the stream
+    bl      _fclose_lk          ; call _fclose_lk
+    mov     w21, w0             ; save the result
+</pre>
+<p>Next up is calling <code>_fclose_lk</code> with the stream as the parameter. We save the return value into <var>w21</var> which represents the <code>result</code> variable.</p>
+<pre>;   _unlock_str(index);
+; }
+
+    mov     w0, w19             ; parameter is the index
+    bl      _unlock_str
+</pre>
+<p>Unlocking the string is done by index, which is fortunately still sitting around in the <var>w19</var> register.</p>
+<pre>; return result;
+
+done:
+    mov     w0, w21
+</pre>
+<p>The function return value goes into <var>x0</var>, so we move <var>w21</var> (representing <code>result</code>) into the lower 32 bits of the <var>x0</var> register.</p>
+<pre>; }
+    ldp     fp, lr, [sp], #0x10
+    ldr     x21, [sp, #0x10]
+    ldp     x19, x20, [sp], #0x20
+    ret
+</pre>
+<p>And we’re done. Now it’s time to clean up. We pop off the previous frame pointer and return address, the restore and pop the other nonvolatile registers we had saved. Finally we perform a <code>ret</code> to jump back to the return address in <var>lr</var>.</p>
+<p>When I do these walkthrough, I look to see if there was anything I could do to tighten up the code. The interesting thing that the compiler failed to recognize is that the lifetimes of <code>result</code> and <code>stream</code> do not overlap in any meaningful way, so they could share the same register. This reduces the number of registers by one, which saves 16 bytes of stack since we no longer need to save <var>x21</var>.</p>
+<p>Another trick is to fold the <code>asr</code> into the <code>mov</code> instruction that sets up the <code>index</code> parameter, saving an instruction.</p>
+<pre>; int fclose(FILE *stream)
+    stp     x19, x20, [sp,#-0x10]!  ; NEW! Need only 0x10 bytes
+                                ; NEW! Don't need to save x21
+    stp     fp, lr, [sp,#-0x10]!
+    mov     fp, sp
+
+    mov     x20, x0             ; x20 = stream
+
+; int result = EOF;
+; if (stream-&gt;_flag &amp; _IOSTRG) {
+
+    ldr     w8, [x20, #0xC]     ; w8 = stream-&gt;_flag
+    tbz     x8, #6, nostring    ; branch if _IOSTRG bit is zero
+
+;    stream-&gt;_flag = 0;
+; } else {
+
+    str     wzr, [x20, #0xC]    ; set _flag to zero
+                                ; NEW! "stream" is dead, so
+                                ;      w20 now represents "result"
+    mov     w20, #-1            ; result = EOF
+    b       done                ; end of "true" branch
+
+;   int index = stream - _iob;
+
+nostring:
+    adrp    x8, sample+0x2000   ; load high bits of pointer
+    add     x8, x8, #0x0180     ; x8 -&gt; _iob
+    sub     x19, x20, x8        ; calculate byte offset (x19)
+
+;   _lock_str(index);
+
+                                ; NEW! Convert byte offset to index
+                                ;      on the fly
+    asr     w0, w19, #4         ; parameter is the index
+    bl      _lock_str
+
+;   result = _fclose_lk(stream);
+;   _unlock_str(index);
+; }
+
+    mov     x0, x20             ; parameter is the stream
+    bl      _fclose_lk          ; call _fclose_lk
+
+                                ; NEW! "stream" is dead, so
+                                ;      w20 now represents "result"
+    mov     w20, w0             ; save the result
+
+                                ; NEW! Convert byte offset to index
+                                ;      on the fly
+    asr     w0, w19, #4         ; parameter is the index
+    bl      _unlock_str
+
+; return result;
+
+done:
+    mov     w0, w20
+
+; }
+    ldp     fp, lr, [sp], #0x10
+                                ; NEW! Don't need to restore x21
+    ldp     x19, x20, [sp], #0x10
+    ret
+</pre>
+<p>This is really just recreational optimization at this point. The extra few instructions in the compiler-generated code is not going to be noticeable here, seeing as the <code>fclose</code> function is probably going to do things like close file handles, which are far more expensive than just a few instructions.</p>
+<p>This concludes our quick overview of the ARM processor in 64-bit mode. Now when you have to look at a crash dump on an ARM64 system, you might have a clue about what you’re looking at.</p>
+
+
+</body>

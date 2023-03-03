@@ -1,0 +1,157 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Ordering asynchronous updates with coroutines, part 2: Restart with hand-off</h1>  <!-- .entry-meta -->
+
+<p>Another serialization pattern for coroutines is where calling some method initiates some asynchronous activity, and if the method gets called again while the activity is still incomplete, you want to let the previous activity run to completion, and then run it again.</p>
+<p>For example, maybe you have a method called <code>SetColor</code> that changes the color in private state and asynchronously propagates that color into another component. If the previous color-setting operation is still in progress when a second <code>SetColor</code> occurs, you want to let the propagation of the old color finish, and once that’s done, start pushing out the new color. (Intermediate colors are not important; only the last color counts.)</p>
+<pre>std::mutex m_mutex;
+bool m_busy = false;
+
+winrt::fire_and_forget Widget::SetColor(Color newColor)
+{
+    auto lock = std::unique_lock(m_mutex);
+    m_color = newColor;
+    if (std::exchange(m_busy, true)) {
+        co_return;
+    }
+
+    auto lifetime = get_strong();
+
+    Color latestColor;
+    do {
+        latestColor = m_color;
+        lock.unlock();
+        try {
+            co_await UpdateColorOfExternalPartner(latestColor);
+        } catch (...) {
+            // nowhere to report the error
+            // you can choose to log it or to fail fast
+        }
+        lock.lock();
+    } while (m_color != latestColor);
+    m_busy = false;
+}
+</pre>
+<p>The idea here is that after setting the private <code>m_color</code>, we check whether somebody else is already busy updating the color of the external partner. If so, then we just return immediately, knowing that the existing worker will pick up the new color eventually.</p>
+<p>If nobody is doing the work (the previous value of <code>m_busy</code> was <code>false</code>), then we assume responsibility for the work: We capture the most recently set color, and then drop the lock while we update the external partner. Once that’s done, we reacquire the lock and see if the color changed again in the meantime. If so, we go back and push the new latest color, repeating until we make it through an entire update cycle with the updated color equal to the current color.</p>
+<p>Now, this pattern assumes that we can detect that new work is needed by inspecting the <code>m_color</code>. But that may not always be the case, in which case we need a separate flag to say “New work was requested.”</p>
+<pre>std::mutex m_mutex;
+bool m_busy = false;
+bool m_refreshNeeded = false;
+
+winrt::fire_and_forget Widget::Refresh()
+{
+    auto lock = std::unique_lock(m_mutex);
+    <span style="color: blue;">m_refreshNeeded = true;</span>
+    if (std::exchange(m_busy, true)) {
+        co_return;
+    }
+    auto lifetime = get_strong();
+
+    <span style="color: blue;">while (std::exchange(m_refreshNeeded, false))</span> {
+        lock.unlock();
+        try {
+            co_await RefreshExternalPartner();
+        } catch (...) {
+            // nowhere to report the error
+            // you can choose to log it or to fail fast
+        }
+        lock.lock();
+    }
+}
+</pre>
+<p>Since we don’t have a <code>m_color</code> to tell us that we need to do more work, we create an explicit <code>m_refreshNeeded</code> flag, and we use a <code>while</code> loop to keep refreshing the external partner until we manage to make it all the way to the end without another refresh request coming in.</p>
+<p>In the case where the object has thread affinity (common for UI objects), you may already have the requirement that <code>SetColor</code> or <code>Refresh</code> be called from the UI thread. More generally, if you can arrange that all accesses to <code>m_color</code>, <code>m_busy</code>, and <code>m_refreshNeeded</code> are on the same thread, then you don’t need the mutex at all, and all the uses of the <code>lock</code> object can be removed.¹</p>
+<p>In these examples, I made the coroutines <code>fire_<wbr/>and_<wbr/>forget</code>, so they return to their callers quickly. If we changed them to return <code>IAsyncAction</code>, then the caller could <code>co_await</code> the call to wait for the update to complete. However, the way we structured the work, it means that if the object is constantly being updated, the first call to <code>Set­Color</code> or <code>Refresh</code> ends up doing all of the work, and the <code>IAsyncAction</code> doesn’t complete until the final refresh, which is unfair to the first caller:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: 1px black; border-style: solid solid none solid;">Caller 1<br/>
+<code>co_await Refresh();</code><br/>
+<code>  m_busy = true;</code><br/>
+<code>  co_await RefreshExternalPartner();</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid; background-color: #eeeeee;"> </td>
+<td> </td>
+<td style="border: solid 1px black;">Caller 2<br/>
+<code>co_await Refresh();</code><br/>
+<code>  m_needRefresh = true;</code><br/>
+<code>  co_return;</code></td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid; background-color: #eeeeee;"> </td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid;"><code>  m_needRefresh = false;</code><br/>
+<code>  co_await RefreshExternalPartner();</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid; background-color: #eeeeee;"> </td>
+<td> </td>
+<td style="border: solid 1px black;">Caller 3<br/>
+<code>co_await Refresh();</code><br/>
+<code>  m_needRefresh = true;</code><br/>
+<code>  co_return;</code></td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid solid solid;"><code>  m_needRefresh = false;</code><br/>
+<code>  co_await RefreshExternalPartner();</code><br/>
+<code>  m_busy = false;</code><br/>
+<code>  co_return;</code></td>
+<td> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>We’ll come back to this issue after we look at some other patterns for serializing asynchronous operations.</p>
+<p><b>Exercise</b>: In the asynchronous refresh pattern, why use a <code>while</code> loop? Why couldn’t we have used the previous pattern of using a <code>do...while</code> loop, like this?</p>
+<pre>std::mutex m_mutex;
+bool m_busy = false;
+bool m_refreshNeeded = false;
+
+winrt::fire_and_forget Widget::Refresh()
+{
+    auto lock = std::unique_lock(m_mutex);
+    if (std::exchange(m_busy, true)) {
+        <span style="color: blue;">m_refreshNeeded = true;</span>
+        co_return;
+    }
+    auto cleanup = wil::scope_exit([&amp;] { m_busy = false; });
+    auto lifetime = get_strong();
+
+    <span style="color: blue;">do</span> {
+        lock.unlock();
+        co_await RefreshExternalPartner();
+        lock.lock();
+    } <span style="color: blue;">while (std::exchange(m_refreshNeeded, false))</span>;
+}
+</pre>
+<p><b>Bonus chatter</b>: You can be extra-clever and combine <code>m_busy</code> and <code>m_refreshNeeded</code> into a single atomic variable.</p>
+<pre>// 0 = not busy
+// 1 = busy
+// 2 = refresh needed
+
+std::atomic&lt;int&gt; m_busy;
+
+winrt::fire_and_forget Widget::Refresh()
+{
+    if (m_busy.exchange(2, std::memory_order_release)) {
+        co_return;
+    }
+    while (m_busy.fetch_sub(1, std::memory_order_acquire) == 2) {
+        ... do work ...
+    }
+}
+</pre>
+<p>The initial exchange publishes the request to refresh the external partner, so it uses release semantics. If the previous value is nonzero, then it means that somebody else is already working, so we can return immediately and let the existing worker pick up the refresh request.</p>
+<p>If nobody is doing work, then we have to do it. We decrement the busy count and see if there is work to do. If so, the busy count is decremented to 1, meaning “We are doing work, and no additional work has been requested.” After doing the work, we loop back and decrement again. If work has been requested in the meantime, the value will have been bumped up to 2, so our decrement drops it back to 1, and the loop continues. Eventually, we make it all the way through without anybody requesting more work, which we detect when the busy count decrements all the way to zero.</p>
+<p>¹ Note that we are assuming that <code>Update­Color­Of­External­Partner</code> and <code>Refresh­External­Partner</code> return <code>IAsyncAction</code> or otherwise ensure that the <code>co_await</code> resumes in the same COM context in which it suspended.</p>
+
+
+</body>

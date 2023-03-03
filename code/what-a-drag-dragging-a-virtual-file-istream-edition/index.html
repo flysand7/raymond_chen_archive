@@ -1,0 +1,58 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What a drag: Dragging a virtual file (IStream edition)</h1>  <!-- .entry-meta -->
+
+<p>Last time, we saw <a href="/code/what-a-drag-dragging-a-virtual-file-hglobal-edition" title="What a drag: Dragging a virtual file (HGLOBAL edition)"> how to drag a virtual file whose contents are expressed as a block of bytes in memory (<code>HGLOBAL</code>)</a>. Often, a block of bytes is not a convenient way to express the contents of a virtual file. You might prefer to express it as a stream. For example, the contents might be dynamically generated (say by the output of an algorithm), or it might come in from an external source (say, a web page that is being downloaded). Let’s take our program from last time and convert it to return the file contents in the form of a stream. The first change we need to make is to our constructor, telling it to report file contents as a stream rather than as an <code>HGLOBAL</code>:</p>
+<pre>#include &lt;shlwapi.h&gt; // for SHOpenRegStream
+
+CTinyDataObject::CTinyDataObject() : m_cRef(1)
+{
+  SetFORMATETC(&amp;m_rgfe[DATA_FILEGROUPDESCRIPTOR],
+               RegisterClipboardFormat(CFSTR_FILEDESCRIPTOR));
+  SetFORMATETC(&amp;m_rgfe[DATA_FILECONTENTS],
+               RegisterClipboardFormat(CFSTR_FILECONTENTS),
+               <span style="color: blue;">TYMED_ISTREAM</span>, /* lindex */ 0);
+}
+</pre>
+<p>Next, we need to produce that stream and its corresponding descriptor in our <code>IDataObject::GetData</code> handler:</p>
+<pre>HRESULT CTinyDataObject::GetData(FORMATETC *pfe, STGMEDIUM *pmed)
+{
+  ZeroMemory(pmed, sizeof(*pmed));
+
+  switch (GetDataIndex(pfe)) {
+  case DATA_FILEGROUPDESCRIPTOR:
+  {
+    FILEGROUPDESCRIPTOR fgd;
+    ZeroMemory(&amp;fgd, sizeof(fgd));
+    fgd.cItems = 1;
+    StringCchCopy(fgd.fgd[0].cFileName,
+                  ARRAYSIZE(fgd.fgd[0].cFileName),
+                  TEXT("Dummy"));
+    pmed-&gt;tymed = TYMED_HGLOBAL;
+    return CreateHGlobalFromBlob(&amp;fgd, sizeof(fgd),
+                              GMEM_MOVEABLE, &amp;pmed-&gt;hGlobal);
+  }
+
+  case DATA_FILECONTENTS:
+    <span style="color: blue;">pmed-&gt;tymed = TYMED_ISTREAM;
+    pmed-&gt;pstm = SHOpenRegStream(HKEY_LOCAL_MACHINE,
+       TEXT("Hardware\\Description\\System\\CentralProcessor\\0"),
+       TEXT("~MHz"), STGM_READ);
+    <span style="color: blue;">// <a href="https://devblogs.microsoft.com/oldnewthing/20140918-00/?p=44033">set the stream position properly</a>
+    if (pmed-&gt;pstm) {
+      LARGE_INTEGER liZero = { 0, 0 };
+      pmed-&gt;pstm-&gt;Seek(liZero, STREAM_SEEK_END, NULL);
+    }</span>
+    return pmed-&gt;pstm ? S_OK : E_FAIL;</span>
+  }
+
+  return DV_E_FORMATETC;
+}
+</pre>
+<p>Of course, in real life, you would use a more interesting stream than your CPU speed. I just chose that one as an example.</p>
+<p>As with our <code>HGLOBAL</code>-based data object, you can drop this data object onto an Explorer folder to create a file, into an Outlook message to create an attachment, and anywhere else a program supports the shell virtual file transfer model. And as with the <code>HGLOBAL</code> example, you can set various optional information in the <code>FILEGROUPDESCRIPTOR</code> in order to make the transfer go more smoothly, particularly the expected stream size. But I won’t go into it because the theme of this series is “It’s the least you can do”.</p>
+<p>But already you know enough to solve this customer’s problem:</p>
+<blockquote class="m"><p>We need to know what directory the user dropped a file onto. We need to transfer data from another computer, so what we do is have the user drag a single dummy file, and then once we find out where the user dropped the dummy file, we can go in, delete the dummy file, and start transferring the data from the remote computer and saving it into real files in the destination directory.</p></blockquote>
+<p>Next time, we’ll look at the final storage medium that can be used for file transfer, the <code>TYMED_ISTORAGE</code>.</p>
+
+
+</body>

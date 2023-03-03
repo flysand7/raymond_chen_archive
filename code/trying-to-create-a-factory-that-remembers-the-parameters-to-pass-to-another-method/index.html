@@ -1,0 +1,171 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Trying to create a factory that remembers the parameters to pass to another method</h1>  <!-- .entry-meta -->
+
+<p>Continuing from <a href="/code/class-template-argument-deduction-may-be-the-new-hotness-but-we-ll-always-have-maker-functions" title="Class template argument deduction may be the new hotness, but we'll always have maker functions"> using maker functions to work around limitations of class template argument deduction</a>, let’s suppose you want to create a generic factory. This sounds like an arbitrary academic exercise, but this stemmed from a real problem. This has practical use, say, if you have a common object and need to generate various factories that produce preconfigured objects.</p>
+<pre>// Imaginary code that doesn't even compile.
+
+template&lt;typename T, typename...Args&gt;
+struct generic_factory
+{
+    template&lt;typename... Actuals&gt;
+    generic_factory(Actuals&amp;&amp;... args) : /* something */ { }
+
+    auto make()
+    {
+        return std::make_unique&lt;T&gt;(args...);
+    }
+};
+
+template&lt;typename T, typename... Args&gt;
+auto make_generic_factory(Args&amp;&amp;... args)
+{
+    return generic_factory&lt;T, std::decay_t&lt;Args&gt;...&gt;
+        (std::forward&lt;Args&gt;(args)...);
+}
+</pre>
+<p>The idea is that you create the generic factory by telling it what type you want to create (<code>T</code>) and the arguments to pass to the constructor (<code>args...</code>). You can then call the <code>make</code> method on the generic factory, and out comes a new <code>T</code> object, constructed with exactly those parameters.</p>
+<p>The question is how to convert this sketch into a real class.</p>
+<p>A handy place to store a bunch of values is a tuple, and getting the values out of a tuple to pass them as parameters can be done with <code>std::apply</code>: While we’re at it, we’ll move the <code>std::decay</code> into the <code>generic_<wbr/>factory</code>, to make things a little less awkward.</p>
+<pre>// Compiles but doesn't work.
+
+template&lt;typename T, typename...Args&gt;
+struct generic_factory
+{
+    using Tuple = std::tuple&lt;std::decay_t&lt;Args&gt;...&gt;;
+    Tuple captured;
+
+    generic_factory(Args&amp;&amp;... args) :
+        captured(std::forward&lt;Args&gt;(args)...) {}
+
+    auto make()
+    {
+        return std::apply(std::make_unique&lt;T&gt;, captured);
+    }
+};
+
+template&lt;typename T, typename...Args&gt;
+auto make_generic_factory(Args&amp;&amp;... args)
+{
+    return generic_factory&lt;T, Args...&gt;(std::forward&lt;Args&gt;(args)...);
+}
+</pre>
+<p>Now, it looks like we’re reinventing <code>std::bind</code>, and yes, that’s very similar what we’re doing. We don’t have the special rules about <code>std::ref</code> and <code>std::cref</code> that <code>std::bind</code> has, nor do our parameters decay, nor do we support placeholders. But one annoying thing about <code>std::bind</code> is that the return type <i>has no name</i>, so it’s hard to store it in a variable for later use. (I guess what you usually do is immediately put it inside a <code>std::function</code>, but that comes with its own issues.)</p>
+<p>And it turns out that <code>std::bind</code> has the same problem that our <code>make</code> does:</p>
+<pre>    // with std::bind
+    auto make = std::bind(std::make_unique&lt;T&gt;, args...);
+    make();
+
+    // with std::apply
+    return std::apply(std::make_unique&lt;T&gt;, captured);
+</pre>
+<p>Both of these fail with some horrible error message:</p>
+<pre style="white-space: pre-wrap;">// std::bind
+Failed to specialize function template 'unknown-type std::_Binder&lt;std::_Unforced, std::unique_ptr&lt;T, std::default_delete&lt;T&gt;&gt; (__cdecl &amp;)(void),T&gt;::operator ()(_Unbound &amp;&amp;...) noexcept() const'
+
+// std::apply
+'std::invoke': no matching overloaded function found
+see reference to function template instantiation 'decltype(auto) std::_Apply_impl&lt;std::unique_ptr&lt;T, std::default_delete&lt;T&gt;&gt; (__cdecl &amp;)(void),std::tuple&lt;Args...&gt;&amp;,0&gt;(std::unique_ptr&lt;T,std::default_delete&lt;T&gt;&gt; (__cdecl &amp;)(void), std::tuple&lt;int&gt; &amp;, std::integer_sequence&lt;size_t, 0&gt;)' being compiled
+</pre>
+<p>I find it interesting that calling <code>std::bind</code> does compile. However, it produces an object that cannot be used for anything: Trying to invoke the bound call generates the compiler error.</p>
+<p>These calls fail because the first parameter to <code>std::bind</code> and <code>std::apply</code> is a <i>callable</i>. No overloading or template type inference is happening here: In order for those to occur, the expression needs to be cast to a specific type, or there need to be parameters to force a resolution to occur. But <code>std::bind</code> and <code>std::apply</code> accept their first parameters as an arbitrary type, so there is no coersion to any particular parameter list.</p>
+<p>I mean, you and I know that the parameter is given by the remaining arguments, but that’s only because we understand the semantics of what <code>std::bind</code> and <code>std::apply</code> are going to do, namely, combine the first parameter with the other parameters to create a function call. But the compiler doesn’t know that. It just sees a bunch of parameters and doesn’t know that they’re going to be combined at some point in the future.</p>
+<p>This means that when we write <code>std::<wbr/>make_<wbr/>unique&lt;T&gt;</code>, we are specifying the version of <code>make_<wbr/>unique</code> that takes no parameters. The parameters to <code>make_<wbr/>unique</code> correspond to the second and subsequent template type paramters, for which we passed none.</p>
+<p>Since the compiler doesn’t have enough information to infer the extra parameters, we have to specify them explicitly:</p>
+<pre>    // with std::bind
+    auto make = std::bind(std::make_unique&lt;T<span style="color: blue;">, Args...</span>&gt;, args...);
+    make();
+
+    // with std::apply
+    return std::apply(std::make_unique&lt;T<span style="color: blue;">, Args...</span>&gt;, captured);
+</pre>
+<p>Unfortunately, this still doesn’t work. The confusing error message this time is</p>
+<pre style="white-space: pre-wrap;">// std::bind
+'operator __surrogate_func': no matching overloaded function found
+Failed to specialize function template 'unknown-type std::_Binder&lt;std::_Unforced, std::unique_ptr&lt;T, std::default_delete&lt;T&gt;&gt; (__cdecl &amp;)(void), T&gt;::operator ()(_Unbound &amp;&amp;...) noexcept() const'
+
+// std::apply
+'std::invoke': no matching overloaded function found
+see reference to function template instantiation 'decltype(auto) std::_Apply_impl&lt;std::unique_ptr&lt;T, std::default_delete&lt;T&gt;&gt;(__cdecl &amp;)(int &amp;&amp;), std::tuple&lt;int&gt;&amp;, 0&gt;(std::unique_ptr&lt;T, std::default_delete&lt;T&gt;&gt; (__cdecl &amp;)(int &amp;&amp;), std::tuple&lt;int&gt;, std::integer_sequence&lt;size_t, 0&gt;)' being compiled
+</pre>
+<p>Buried in all that error message is the interesting part:</p>
+<pre>(__cdecl &amp;)(int &amp;&amp;)
+</pre>
+<p>The specialization of <code>make_<wbr/>unique</code> we are calling wants an <code>int&amp;&amp;</code>. Why does it want an <code>int&amp;&amp;</code>?</p>
+<p>The corresponding parameter is an <code>int&amp;&amp;</code> because the declaration of <code>make_<wbr/>unique</code> uses a universal reference:</p>
+<pre>template&lt;typename T, typename... Args&gt;
+unique_ptr&lt;T&gt; make_unique(Args&amp;&amp;... args);
+</pre>
+<p>Since we explicitly passed <code>Args = int</code>, this makes the parameter list <code>make_<wbr/>unique(int&amp;&amp; args)</code>. And that’s why the function wants an <code>int&amp;&amp;</code>.</p>
+<p>Okay, so we need to pass an <code>int&amp;&amp;</code>. But what does <code>std::apply</code> actually pass?</p>
+<p>The <code>std::apply</code> function passes <code>std::get&lt;N&gt;(tuple)</code> for each parameter. Since the tuple we passed was an lvalue, <code>std::get&lt;N&gt;(tuple)</code> returns an lvalue reference to the tuple element.</p>
+<p>And that’s where the error is coming from. The function wants an rvalue reference to <code>int</code>, but we’re passing an lvalue reference.</p>
+<p>Before we try to solve this problem, we need to understand what we are trying to do.</p>
+<p>We want to capture the parameters to pass to <code>make_<wbr/>unique</code>, and each time someone calls <code>make</code>, we want to call <code>make_<wbr/>unique</code> again with the same parameters. Therefore, we don’t want to pass rvalue references to our tuple elements: The first call to <code>make_<wbr/>unique</code> would be able to steal the resources from our captured parameters, leaving nothing for the the second and subsequent calls.</p>
+<p>Similarly, we don’t want to pass a straight lvalue reference, because that allows the <code>T</code> constructor to mutate the parameter, which would mess up the captured parameters for the second and subsequent calls.</p>
+<p>What we really want to pass is a <code>const</code> lvalue reference. And we can make this easier to enforce by making our <code>captured</code> member variable also <code>const</code>.</p>
+<pre>template&lt;typename T, typename...Args&gt;
+struct generic_factory
+{
+    using Tuple = std::tuple&lt;std::decay_t&lt;Args&gt;...&gt;;
+    Tuple <span style="color: blue;">const</span> captured;
+
+    generic_factory(Args&amp;&amp;... args) :
+        captured(std::forward&lt;Args&gt;(args)...) {}
+
+    auto make()
+    {
+        return std::apply(std::make_unique&lt;T,
+            <span style="color: blue;">std::decay_t&lt;Args&gt; const&amp;...</span>&gt;, captured);
+    }
+};
+
+template&lt;typename T, typename...Args&gt;
+auto make_generic_factory(Args&amp;&amp;... args)
+{
+    return generic_factory&lt;T, Args...&gt;(std::forward&lt;Args&gt;(args)...);
+}
+</pre>
+<p>A note of caution here: The parameters passed to <code>make_<wbr/>generic_<wbr/>factory</code> are captured as-is. If constructing a <code>T</code> from them requires a parameter conversion, the conversion is applied at the time the <code>T</code> is constructed, not at the time the parameters are captured.</p>
+<p>Here’s an example:</p>
+<pre>struct widget
+{
+    widget(std::string const&amp; name) : m_name(name) { }
+    std::string m_name;
+};
+
+auto factory = make_generic_factory&lt;widget&gt;("bob");
+</pre>
+<p>The parameter captured by <code>make_<wbr/>generic_<wbr/>factory</code> is the string literal, not a <code>std::string</code>. Each time you call <code>make</code>, the string literal is converted to a <code>std::string</code>, which is then passed to the <code>widget</code> constructor, and then when the constructor returns, the temporary <code>std::string</code> is destructed. If you want to construct the <code>std::string</code> only once, you’ll have to capture it as a <code>std::string</code>:</p>
+<pre>auto factory = make_generic_factory&lt;widget&gt;("bob"s);
+</pre>
+<p>This can get scary for some conversion constructors:</p>
+<pre>auto make_widget_factory(int id)
+{
+    char name[80];
+    snprintf(name, 80, "item #%d", id);
+    return make_generic_factory&lt;widget&gt;(name);
+}
+</pre>
+<p>In this case, the captured parameter is the raw pointer to the stack buffer, which immediately goes out of scope. When you call <code>make()</code>, that raw pointer is then passed to <code>make_<wbr/>unique</code>, which will try to convert it to a <code>std::string</code>, but it’s too late. The raw pointer is dangling.</p>
+<p><b>Bonus chatter</b>: A lambda would also do the trick. The <code>make</code> method becomes the <code>operator()</code>:</p>
+<pre>template&lt;typename T, typename...Args&gt;
+auto make_generic_factory(Args&amp;&amp;... args)
+{
+    return [captured = std::make_tuple(args...)]() {
+        return std::apply(std::make_unique&lt;T,
+            std::decay_t&lt;Args&gt; const&amp;...&gt;, captured);
+    };
+}
+</pre>
+<p>C++20 adds the ability to capture a parameter pack into a lambda without having to hide it inside a tuple:</p>
+<pre>template&lt;typename T, typename...Args&gt;
+auto make_generic_factory(Args&amp;&amp;... args)
+{
+    return [...args = std::forward&lt;Args&gt;(args)]() {
+        return std::make_unique&lt;T&gt;(args...);
+    };
+}
+</pre>
+
+
+</body>

@@ -1,0 +1,211 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Remember what happens when you broadcast a message</h1>  <!-- .entry-meta -->
+
+<p>
+Occasionally I catch people doing things like broadcasting
+a <code>WM_COMMAND</code> message to all top-level windows.
+This is one of those things that is so obviously wrong I don’t
+see how people even thought to try it in the first place.
+</p>
+<p>
+Suppose you broadcast the message
+</p>
+<pre>
+SendMessage(HWND_BROADCAST, WM_COMMAND, 100, 0);
+</pre>
+<p>
+What happens?
+</p>
+<p>
+Every top-level window receives the message with the same parameters,
+and every top-level window starts interpreting those parameters
+in their own idiosyncratic way.
+As you know (since you’ve written them yourself),
+each window procedure defines its own menu items and
+child windows and there is no guarantee that command 100
+will mean the same thing to each window.
+A dialog box with the template
+</p>
+<pre>
+#define IDC_USEDEFAULT 100
+...
+    AUTORADIOBUTTON "Use &amp;default color",
+                    IDC_USEDEFAULT, 14, 38, 68, 10, WS_TABSTOP
+</pre>
+<p>
+would interpret the message as
+</p>
+<table>
+<tr>
+<td>id </td>
+<td>= </td>
+<td>IDC_USEDEFAULT (100)</td>
+</tr>
+<tr>
+<td>command </td>
+<td>= </td>
+<td>BN_CLICKED (0)</td>
+</tr>
+<tr>
+<td>window </td>
+<td>= </td>
+<td>NULL (0) — illegal parameter</td>
+</tr>
+</table>
+<p>
+Depending on how the dialog procedure is written,
+it might try to send a message back to the button control
+(and fail since you passed <code>NULL</code> as the window handle),
+or it might update some dialog state like disabling the color
+customization controls (since it was told that the
+user clicked the “User default color” radio button).
+</p>
+<p>
+Another dialog box might have the template
+</p>
+<pre>
+#define IDC_CHANGE 100
+...
+    PUSHBUTTON      "C&amp;hange", IDC_CHANGE, 88, 95, 50, 14
+</pre>
+<p>
+This dialog procedure would interpret the message as
+</p>
+<table>
+<tr>
+<td>id </td>
+<td>= </td>
+<td>IDC_CHANGE (100)</td>
+</tr>
+<tr>
+<td>command </td>
+<td>= </td>
+<td>BN_CLICKED (0)</td>
+</tr>
+<tr>
+<td>window </td>
+<td>= </td>
+<td>NULL (0) — illegal parameter</td>
+</tr>
+</table>
+<p>
+The reaction would probably be to apply the changes
+that were pending in the dialog.
+</p>
+<p>
+Meanwhile, another window might have a menu that goes like this:
+</p>
+<pre>
+#define IDC_REFRESH 100
+...
+        MENUITEM "&amp;Refresh", IDC_REFRESH
+</pre>
+<p>
+It is going to interpret the message as the user having selected
+“Refresh” from the window menu.
+</p>
+<table>
+<tr>
+<td>id </td>
+<td>= </td>
+<td>IDC_REFRESH (100)</td>
+</tr>
+<tr>
+<td>command </td>
+<td>= </td>
+<td>0 — illegal parameter, must be 1 for menu items</td>
+</tr>
+<tr>
+<td>window </td>
+<td>= </td>
+<td>NULL (0)</td>
+</tr>
+</table>
+<p>
+Not only is the command code invalid for a menu item,
+the window might be in a state where the program had disabled
+the “Refresh” option.
+Yet you sent the window a message as if to say that the user
+selected it anyway,
+which is impossible.
+Congratulations, you just presented the program with an impossible
+situation and it very well may crash as a result.
+For example, the program may have disabled the “Refresh” option
+since there is no current object to refresh.
+When you send it the “Refresh” command, it will try to refresh
+the current object and crash with a null pointer error.
+</p>
+<p>
+Obviously, then, you cannot broadcast the <code>WM_COMMAND</code>
+message since there is no universal meaning for any of the command IDs.
+A command ID that means “Refresh” to one window might mean “Change”
+to another.
+</p>
+<p>
+The same logic applies to nearly all of the standard Windows messages.
+The ones that are actually designed to be broadcast are as follows:
+</p>
+<table>
+<tr>
+<td>WM_SYSCOLORCHANGE</td>
+</tr>
+<tr>
+<td>WM_SETTINGCHANGE (= WM_WININICHANGE)</td>
+</tr>
+<tr>
+<td>WM_DEVMODECHANGE</td>
+</tr>
+<tr>
+<td>WM_FONTCHANGE</td>
+</tr>
+<tr>
+<td>WM_TIMECHANGE</td>
+</tr>
+<tr>
+<td>WM_DDE_INITIATE</td>
+</tr>
+</table>
+<p>
+If you try to broadcast a message in the
+<code>WM_USER</code> or <code>WM_APP</code> ranges,
+then you’re even crazier than I thought.
+As we’ve already seen,
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/12/02/55914.aspx">
+the meaning of window messages in those ranges are defined
+by the window class or the application that created the window</a>.
+Not only are the parameters to the message context-sensitive,
+the message itself is!
+This means that sending a random window a <code>WM_USER+1</code> message
+(say) will result in extremely random behavior.
+(We saw this before
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/05/05/126427.aspx">
+in the context of broadcasts</a>, but it applies to directed delivery, too.)
+If it’s a dialog box, it will think you sent a
+<code>DM_SETDEFID</code> message, and you just changed that dialog’s
+default ID.
+If it’s a common dialog box, it will think you sent a
+<code>WM_CHOOSEFONT_GETLOGFONT</code> message,
+and if you’re lucky, it will crash trying to return the
+<code>LOGFONT</code> through an invalid pointer.
+(If you’re not lucky, the parameter you passed will happen to be
+a valid pointer and the program will merely corrupt its own memory
+in some strange way, only to behave erratically later on.)
+If it’s a tooltip control, then you just sent it the
+<code>TTM_ACTIVATE</code> message and you just manipulated
+the tooltip’s activation state.
+</p>
+<p>
+The same caution applies, using the same logic, to
+sending messages without universal meaning to windows
+whose window class you do not have an interface contract with.
+For example, I’ll see people sending the
+<code>PSM_PRESSBUTTON</code> message to a window on the
+blind-faith assumption that it is a property sheet.
+</p>
+<p>
+Remember, then, that when you send a message to a window,
+you need to be sure that
+the window will interpret it in the manner you intend.</p>
+
+
+</body>

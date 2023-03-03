@@ -1,0 +1,47 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Wrapping some other scripting language inside a batch file</h1>  <!-- .entry-meta -->
+
+<p>Nobody actually enjoys batch programming, but sometimes you can get away with writing in a language you like better while retaining the <code>.cmd</code> extension. Still, that leaves you having to get the extension for that language registered on your target machines, which can be tricky for xcopy-style deployment scenarios. The solution then is to use a <a href="http://en.wikipedia.org/wiki/Polyglot_(computing)">polyglot</a> header that is valid both as a batch file and in your target language. The header re-invokes the target language interpreter with the batch file itself as input. </p>
+<p><b>Note</b>: That this trick isn’t necessary if you can associate the file extension with the scripting engine. So you don’t need to do this polyglot nonsense with, say, PowerShell scripts, because the <code>.ps1</code> extension is already associated with <code>powershell.exe</code> (<a href="http://images.wikia.com/en.futurama/images/9/98/Love%27sLaboursLostinSpacets.png">where available</a>). </p>
+<p>The general shape of a polyglot header is </p>
+<pre>
+@rem prefix stuff
+@⟨<i>interpreter</i>⟩.exe ⟨<i>interpreter options</i>⟩ "%~f0" %*
+@goto :eof
+⟨<i>suffix stuff</i>⟩
+⟨<i>the script itself</i>⟩
+⟨<i>trail stuff</i>⟩
+</pre>
+<p>Prefixing each line with an at-sign prevents it from being echoed. The first line is a comment, which lets you stick arbitrary goop in front, in order to swallow up the <code>@rem</code> and make the rest of the header invisible to the interpreter. </p>
+<p>The <code>"%~f0" %*</code> sequence looks like line noise, but it’s actually a batch file idiom for “A quoted, fully-qualified path to the batch file, followed by the original arguments.” The <code>%~f0</code> part uses the <a href="http://www.microsoft.com/resources/documentation/windows/xp/all/proddocs/en-us/percent.mspx">tilde operator</a> to build up a full path to the <code>%0</code> (which is the batch file itself). And <code>%*</code> is a batch variable that expands to the arguments passed to the batch file. </p>
+<p>Anything after the <code>@goto :eof</code> is ignored by the batch interpreter, so you can add language-specific suffix stuff to finish up the “start ignoring this” goop you set up on the first line. </p>
+<p>Finally, in rare cases, you might need to add trail stuff at the end of the script to balance out anything you set up in the header, like closing an open set of braces. This is rare because you usually close them up in the ⟨suffix stuff⟩ part. </p>
+<p>Okay, now that we see the general shape of a polyglot header, let’s look at some examples. </p>
+<p> <b>Perl</b> </p>
+<pre>
+@rem --*-Perl-*--
+@perl.exe -x "%~f0" %*
+goto :eof
+#!perl
+⟨perl script⟩
+</pre>
+<p>This isn’t a proper polyglot because we’re running perl in a special mode which is not the default (<code>-x</code>). But hey, we’re trying to get things done, not solve some theoretical puzzle, so running perl in a special mode is just fine if it gets the job done. </p>
+<p>Note that if you want other special command line options to be passed to perl, you can sneak them in with the <code>-x</code>. For example, you might ask for <code>-Sx</code> to get poor-man’s command line switch auto-parsing. </p>
+<p>The leading comment <code>--*-Perl-*--</code> is not used by either perl or the command processor. It’s there by tradition, so that when emacs users load the script into the editor, <a href="http://www.gnu.org/software/emacs/manual/html_node/emacs/Choosing-Modes.html#Choosing-Modes">it will be detected as a perl script</a>, and perl-specific editing commands will be enabled. </p>
+<p><b>JavaScript</b> </p>
+<pre>
+@if (1 == 0) @end /*
+@cscript.exe /E:jscript /nologo "%~f0" %*
+goto :eof
+*/
+⟨<i>JScript script</i>⟩
+</pre>
+<p>Instead of using <code>@rem</code>, the JScript polyglot header uses an <code>@if</code> conditional that is never true. This was chosen so that the opening syntax of the file matches that of <a href="http://msdn.microsoft.com/en-us/library/7kx09ct1(v=VS.80).aspx">JScript conditional compilation</a>, and the entire header gets gobbled up as a false conditional followed by a big comment. Note that JScript conditional compilation is a Microsoft extension, but since <code>cscript</code> runs the Microsoft JScript engine when you specify <code>/e:jscript</code>, it’s okay to use it anyway. </p>
+<p><b>Bonus chatter</b>: Sometimes I miss the <a href="http://www.jrttest.com/Help/Os2Bat.Html#EXTPROC"><code>EXTPROC</code> directive</a> from OS/2’s command interpreter, then I realize that it really only solves half of the problem (getting the command interpreter to hand control to another scripting engine), and doesn’t solve the other half (getting the scripting engine to ignore the start of the batch file). The additional restriction that <code>EXTPROC</code> appear on the first line of the batch file makes it harder to work the first line into valid code in your target language. </p>
+<p><b>Bonus chatter 2</b>: JScript is probably the most convenient alternative scripting language because, while it may be <a href="http://javascript.crockford.com/javascript.html">the world’s most misunderstood programming language</a>, it’s nevertheless immeasurably better than batch. And it has come preinstalled since Windows 2000, so your script will work on pretty much any Windows computer of modern interest. The downside is that the version of JScript used by <code>cscript</code> <a href="https://msdn.microsoft.com/library/2z6exc9e(v=vs.100).aspx">is ancient</a>. </p>
+<p>PowerShell is very nice, but it wasn’t standard-issue until Windows 7. With the <a href="https://support.microsoft.com/en-us/help/22882/windows-vista-end-of-support">retirement of Windows Vista</a>, we are finally in a situation where all supported versions of Windows come with PowerShell. It took eight years, but we made it. (Note that you can’t run PowerShell scripts by default. You have to go in and <a href="http://technet.microsoft.com/en-us/library/ee176949.aspx">change an administrative setting first</a>.) </p>
+<p>So maybe, if you’re lucky, you may be able to declare the end of the era of suffering with batch files. I can more confidently say that the suffering of Batch File Week is now over, at least for now. </p>
+<p><b>Bonus content</b>: Here’a Web page which demonstrates various <a href="http://www.dostips.com/DtTipsStringManipulation.php">batch file string manipulation</a> operations. </p>
+
+
+</body>

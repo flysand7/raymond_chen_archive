@@ -1,0 +1,114 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Obtaining information about the user's wallpaper on multiple monitors</h1>  <!-- .entry-meta -->
+
+<p>
+Today we’re going to dump information about the user’s wallpaper
+settings on multiple monitors.
+</p>
+<p>
+The idea is simple. You use the
+<code>IDesktop­Wallpaper</code> interface on the
+<code>Desktop­Wallpaper</code> object
+to get information about the desktop wallpaper.
+It will tell you the wallpaper positioning information,
+whether a single image is being used for all monitors,
+where those monitors are,
+and which image is on which monitor.
+</p>
+<pre>
+#define UNICODE
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/02/12/71851.aspx">_UNICODE</a>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;atlalloc.h&gt;
+#include &lt;stdio.h&gt; // horrors! mixing C and C++!
+int __cdecl wmain(int, wchar_t **)
+{
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+ // Create the DesktopWallpaper object
+ CComPtr&lt;IDesktopWallpaper&gt; spdw;
+ CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_ALL,
+                  IID_PPV_ARGS(&amp;spdw));
+ // See if there is a single wallpaper on all monitors.
+ CComHeapPtr&lt;wchar_t&gt; spszCommonWallpaper;
+ HRESULT hr = spdw-&gt;GetWallpaper(nullptr, &amp;spszCommonWallpaper);
+ switch (hr) {
+ case S_OK:
+  printf("Same wallpaper on all monitors: %ls\n",
+         static_cast&lt;wchar_t *&gt;(spszCommonWallpaper));
+  break;
+ case S_FALSE:
+  printf("Different wallpaper on each monitor\n");
+  break;
+ default:
+  printf("Mysterious error: 0x%08x\n", hr);
+  break;
+ }
+ // Get the number of monitors,
+ UINT count;
+ spdw-&gt;GetMonitorDevicePathCount(&amp;count);
+ printf("There are %d monitors\n", count);
+ // Print information about each monitor.
+ for (UINT i = 0; i &lt; count; i++) {
+  // Get the device path for the monitor.
+  CComHeapPtr&lt;wchar_t&gt; spszId;
+  spdw-&gt;GetMonitorDevicePathAt(i, &amp;spszId);
+  printf("path[%d] = %ls\n",
+         i, static_cast&lt;wchar_t *&gt;(spszId));
+  // Get the monitor location.
+  RECT rc;
+  spdw-&gt;GetMonitorRECT(spszId, &amp;rc);
+  printf("rect = (%d, %d, %d, %d)\n",
+         rc.left, rc.top, rc.bottom, rc.right);
+  // Get the wallpaper on that monitor.
+  CComHeapPtr&lt;wchar_t&gt; spszWallpaper;
+  hr = spdw-&gt;GetWallpaper(spszId, &amp;spszWallpaper);
+  printf("image = %ls\n",
+         static_cast&lt;wchar_t *&gt;(spszWallpaper));
+ }
+ return 0;
+}
+</pre>
+<p>
+The program proceeds in a few basic steps.
+</p>
+<p>
+We create the <code>Desktop­Wallpaper</code> object.
+That object will give us the answers to our questions.
+</p>
+<p>
+Our first question is,
+“Is the same wallpaper being shown on all monitors?”
+To determine that, we call
+<code>IDesktop­Wallpaper::Get­Wallpaper</code>
+and specify <code>nullptr</code> as the monitor ID.
+The call succeeds with <code>S_OK</code> if the same wallpaper
+is shown on all monitors (in which case the shared wallpaper
+is returned).
+It succeeds with <code>S_FALSE</code> if each monitor has a different
+wallpaper.
+</p>
+<p>
+To get information about the wallpaper on each monitor,
+we iterate through them,
+first asking for the monitor device path,
+since that is how the
+<code>Desktop­Wallpaper</code> object identifies monitors.
+For each monitor, we ask for its location
+and the wallpaper for that monitor.
+Note that if the monitor is not displaying a wallpaper at all,
+the <code>Get­Wallpaper</code> method succeeds
+but returns an empty string.
+</p>
+<p>
+And that’s it.
+You can juice up this program by asking for wallpaper
+positioning information,
+and if you are feeling really adventuresome,
+you can use the <code>Set­Wallpaper</code>
+method to change the wallpaper.</p>
+
+
+</body>

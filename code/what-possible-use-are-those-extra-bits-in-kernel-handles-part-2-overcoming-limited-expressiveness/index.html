@@ -1,0 +1,225 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What possible use are those extra bits in kernel handles? Part 2: Overcoming limited expressiveness</h1>  <!-- .entry-meta -->
+
+<p><p>
+Last time, we saw how
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/08/27/8898863.aspx">
+those extra bits can be used to develop safe sentinel values</a>.
+That is a special case of a more general problem:
+How do you pack 33 bits of information into
+a 32-bit value?
+Whereas last time, we weren’t forced into the use of a sentinel value
+because we could develop a (cumbersome) helper class and switch
+people over to the helper class
+(or to pass two parameters to every function that used to take one),
+there are places where you are forced to try to squeeze 33 bits
+of information into a 32-bit value,
+and the helper class simply isn’t going to work.
+(I’m going to assume 32-bit Windows for concreteness,
+but the same considerations apply to 64-bit Windows.
+Just make the appropriate changes.)
+</p>
+<p>
+Suppose you have a window message that does some work and
+returns a <code>HANDLE</code>, but it can fail, and when it does,
+you want to return an error code.
+In other words, you want to return either
+<code>(TRUE, HANDLE)</code>
+or
+<code>(FALSE, HRESULT)</code>.
+But that’s 33 bits of information, and you can return only 32 bits.
+How can you provide 33 bits of information with only 32 bits?
+</p>
+<p>
+Well, it turns out that you don’t actually have 33 bits of information
+to return.
+Since handle values are multiples of four, the bottom two bits are
+always zero and therefore convey no information.
+A kernel handle is really only 30 bits.
+Similarly, a COM error code in the form of an <code>HRESULT</code> always
+has the top bit set—after all if the top bit were clear, it would be
+a success code!
+Therefore, there are only 31 bits of information in an
+<code>HRESULT</code> error code.
+</p>
+<p>
+Okay, so it turns out that <code>(TRUE, HANDLE)</code> is only
+1 + 30 = 31 bits of information,
+and <code>(FALSE, HRESULT)</code> is only
+1 + 31 = 32 bits of information.
+We can fit them inside a single 32-bit value after all!
+</p>
+<pre>
+LRESULT PackHandleIntoLresult(HANDLE Handle)
+{
+  LRESULT Lresult = (LRESULT)Handle;</pre></p>
+<p>  // if this assertion fires, then somebody tried to
+  // pack an invalid handle!
+  assert((Lresult &amp; 1) == 0);</p>
+<p>  return Lresult;
+}</p>
+<p>LRESULT PackErrorHresultIntoLresult(HRESULT Hresult)
+{
+  // if this assertion fires, then somebody tried to
+  // pack a success code!
+  assert(FAILED(Hresult));</p>
+<p>  return ((DWORD)Hresult &lt;&lt; 1) | 1;
+}
+
+<p>
+The bottom bit is our boolean that tells us whether we have
+a success or failure.
+If the bit is clear, then the operation succeeded and the entire
+value is the handle,
+relying on the fact that valid handles always have the bottom two bits
+clear.
+On the other hand, if the bottom bit is set,
+then we have an error code, and the remaining 31 bits give us
+the significant bits of the <code>HRESULT</code>.
+Unpacking the values would then go like this:
+</p>
+<pre>
+BOOL IsLresultError(LRESULT Lresult)
+{
+  return Lresult &amp; 1;
+}</pre></p>
+<p>HANDLE UnpackLresultToHandle(LRESULT Lresult)
+{
+  assert(!IsLresultError(Lresult));
+  return (HANDLE)Lresult;
+}</p>
+<p>HRESULT UnpackLresultToHresult(LRESULT Lresult)
+{
+  assert(IsLresultError(Lresult));
+  return (HRESULT)(0x80000000 | ((DWORD)Lresult &gt;&gt; 1));
+}
+
+<p>
+In pictures (since people like pictures):
+</p>
+<pre>
+Success:
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x|0|0| HANDLE
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
+ v v v v v v v v v v v v v v v v v v v v v v v v v v v v v v
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x|0|0| LRESULT
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
+ v v v v v v v v v v v v v v v v v v v v v v v v v v v v v v
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x|0|0| HANDLE
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+</pre></p>
+<p>Failure:
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|1|e e e e e e e e e e e e e e e e e e e e e e e e e e e e e e e| HRESULT
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+  / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
+ v v v v v v v v v v v v v v v v v v v v v v v v v v v v v v v
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|e e e e e e e e e e e e e e e e e e e e e e e e e e e e e e e|1| LRESULT
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+  \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \
+   v v v v v v v v v v v v v v v v v v v v v v v v v v v v v v v
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|1|e e e e e e e e e e e e e e e e e e e e e e e e e e e e e e e| HRESULT
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+<p>
+That bottom bit tells us whether the upper 31 bits are
+the meaningful bits from a <code>HANDLE</code>
+or the meaningful bits from an <code>HRESULT</code>.
+Once we know which case we are in, we can take those upper bits
+and put them back into meaningful parts of the source data.
+</p>
+<p>
+If you want to put this trick on a more formal footing, you could
+express the multiplexing in the form of a discriminant in a union:
+</p>
+<pre>
+// Type-specific value for HANDLE is the upper 31 bits
+LRESULT TypeSpecificValueFromHandle(HANDLE Handle)
+{
+  LRESULT Lresult = (LRESULT)Handle;</pre></p>
+<p>  // if this assertion fires, then somebody tried to
+  // pack an invalid handle!
+  assert((Lresult &amp;1) == 0);</p>
+<p>  // discard the bottom bit since we know it is zero
+  return Lresult &gt;&gt; 1;
+}</p>
+<p>HANDLE HandleFromTypeSpecificValue(LRESULT Lresult)
+{
+  // regenerate the bottom bit which we know is zero
+  return (HANDLE)(Lresult &lt;&lt; 1);
+}</p>
+<p>// Type-specific value for HRESULT is the lower 31 bits
+LRESULT TypeSpecificValueFromHresult(HRESULT Hresult)
+{
+  // if this assertion fires, then somebody tried to
+  // pack a success code!
+  assert(FAILED(Hresult));</p>
+<p>  // discard the top bit since we know it is 1
+  return (DWORD)Hresult &amp; 0x7FFFFFFF;
+}</p>
+<p>HRESULT HresultFromTypeSpecificValue(LRESULT Lresult)
+{
+  // regenerate the top bit which we know is 1
+  return (HRESULT)(Lresult | 0x80000000);
+}</p>
+<p>// Oh boy, let’s pack and unpack these puppies
+#define TYPE_HANDLE  0
+#define TYPE_HRESULT 1</p>
+<p>typedef struct PACKEDLRESULT {
+ int Type:1;
+ LRESULT TypeSpecificValue:sizeof(LRESULT)*8-1;
+} PACKEDLRESULT;</p>
+<p>typedef union PACKEDLRESULTHELPER {
+ PACKEDLRESULT Structure;
+ LRESULT Lresult;
+} PACKEDLRESULTHELPER;</p>
+<p>LRESULT PackLresult(int Type, LRESULT TypeSpecificValue)
+{
+  PACKEDLRESULTHELPER Helper;
+  Helper.Structure.Type = Type;
+  Helper.Structure.TypeSpecificValue = TypeSpecificValue;
+  return Helper.Lresult;
+}</p>
+<p>int GetPackedLresultType(LRESULT Lresult)
+{
+  PACKEDLRESULTHELPER Helper;
+  Helper.Lresult = Lresult;
+  return Helper.Structure.Type;
+}</p>
+<p>HANDLE GetHandleFromPackedLresult(LRESULT Lresult)
+{
+  PACKEDLRESULTHELPER Helper;
+  Helper.Lresult = Lresult;
+  return HandleFromTypeSpecificValue(Helper.Structure.TypeSpecificValue);
+}</p>
+<p>HRESULT GetHresultFromPackedLresult(LRESULT Lresult)
+{
+  PACKEDLRESULTHELPER Helper;
+  Helper.Lresult = Lresult;
+  return HresultFromTypeSpecificValue(Helper.Structure.TypeSpecificValue);
+}
+
+<p>
+This more explicit form may be more helpful if you have more than just
+two types to discriminate among, but in our case, the extra typing
+probably just confuses the matter more than clearing it up.
+</p>
+<p>
+This type of trick is actually quite common.
+For example, the
+<a href="http://msdn2.microsoft.com/en-us/library/ms696170.aspx">
+<code>LresultFromObject</code></a>
+function uses a variation of this technique in order to pack
+a marshallable object <i>and</i> a COM error code into a single 32-bit value.
+It’s also common in lisp systems, where it is known by the name
+<i>tagged pointers</i>.
+</p></p>
+
+
+</body>

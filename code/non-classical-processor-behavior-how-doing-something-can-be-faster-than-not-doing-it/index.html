@@ -1,0 +1,351 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Non-classical processor behavior: How doing something can be faster than not doing it</h1>  <!-- .entry-meta -->
+
+<p>
+Consider the following program:
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+int array[10000];
+int countthem(int boundary)
+{
+ int count = 0;
+ for (int i = 0; i &lt; 10000; i++) {
+  if (array[i] &lt; boundary) count++;
+ }
+ return count;
+}
+int __cdecl <a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/01/06/10487119.aspx#10487874">wmain</a>(int, wchar_t **)
+{
+ for (int i = 0; i &lt; 10000; i++) array[i] = rand() % 10;
+ for (int boundary = 0; boundary &lt;= 10; boundary++) {
+  LARGE_INTEGER liStart, liEnd;
+  QueryPerformanceCounter(&amp;liStart);
+  int count = 0;
+  for (int iterations = 0; iterations &lt; 100; iterations++) {
+   count += countthem(boundary);
+  }
+  QueryPerformanceCounter(&amp;liEnd);
+  printf("count=%7d, time = %I64d\n",
+         count, liEnd.QuadPart - liStart.QuadPart);
+ }
+ return 0;
+}
+</pre>
+<p>
+The program generates a lot of random integers in the range 0..9
+and then counts how many are less than 0, less than 1, less than 2,
+and so on.
+It also prints how long the operation took in QPC units.
+We don’t really care how big a QPC unit is; we’re just interested
+in the relative values.
+(We print the number of items found merely to verify that the result
+is close to the expected value of <code>boundary * 100000</code>.)
+</p>
+<p>
+Here are the results:
+</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse">
+<tr>
+<th>boundary</th>
+<th>count</th>
+<th colspan="2">time</th>
+</tr>
+<tr>
+<td align="right">0</td>
+<td align="right">0</td>
+<td align="right" style="border-right: none">1869</td>
+<td style="border-left: none"><span style="background-color: #66F;width: 18.69pt"> </span></td>
+</tr>
+<tr>
+<td align="right">1</td>
+<td align="right">100000</td>
+<td align="right" style="border-right: none">5482</td>
+<td style="border-left: none"><span style="background-color: #66F;width: 54.82pt"> </span></td>
+</tr>
+<tr>
+<td align="right">2</td>
+<td align="right">200800</td>
+<td align="right" style="border-right: none">8152</td>
+<td style="border-left: none"><span style="background-color: #66F;width: 81.52pt"> </span></td>
+</tr>
+<tr>
+<td align="right">3</td>
+<td align="right">300200</td>
+<td align="right" style="border-right: none">10180</td>
+<td style="border-left: none"><span style="background-color: #66F;width: 101.80pt"> </span></td>
+</tr>
+<tr>
+<td align="right">4</td>
+<td align="right">403100</td>
+<td align="right" style="border-right: none">11982</td>
+<td style="border-left: none"><span style="background-color: #66F;width: 119.82pt"> </span></td>
+</tr>
+<tr>
+<td align="right">5</td>
+<td align="right">497400</td>
+<td align="right" style="border-right: none">12092</td>
+<td style="border-left: none"><span style="background-color: #66F;width: 120.92pt"> </span></td>
+</tr>
+<tr>
+<td align="right">6</td>
+<td align="right">602900</td>
+<td align="right" style="border-right: none">11029</td>
+<td style="border-left: none"><span style="background-color: #66F;width: 110.29pt"> </span></td>
+</tr>
+<tr>
+<td align="right">7</td>
+<td align="right">700700</td>
+<td align="right" style="border-right: none">9235</td>
+<td style="border-left: none"><span style="background-color: #66F;width: 92.35pt"> </span></td>
+</tr>
+<tr>
+<td align="right">8</td>
+<td align="right">797500</td>
+<td align="right" style="border-right: none">7051</td>
+<td style="border-left: none"><span style="background-color: #66F;width: 70.51pt"> </span></td>
+</tr>
+<tr>
+<td align="right">9</td>
+<td align="right">902500</td>
+<td align="right" style="border-right: none">4537</td>
+<td style="border-left: none"><span style="background-color: #66F;width: 45.37pt"> </span></td>
+</tr>
+<tr>
+<td align="right">10</td>
+<td align="right">1000000</td>
+<td align="right" style="border-right: none">1864</td>
+<td style="border-left: none"><span style="background-color: #66F;width: 18.64pt"> </span></td>
+</tr>
+</table>
+<p>
+To the untrained eye, this chart is strange.
+Here’s the naïve analysis:
+</p>
+<p>
+When the boundary is zero, there is no incrementing at all,
+so the entire running time is just loop overhead.
+You can think of this as our control group.
+We can subtract 1869 from the running time of every column
+to remove the loop overhead costs.
+What remains is the cost of running <code>count</code>
+increment instructions.
+</p>
+<p>
+The cost of a single increment operation is highly variable.
+At low boundary values, it is around 0.03 time units per increment.
+But at high boundary values, the cost drops to one tenth that.
+</p>
+<p>
+What’s even weirder is that once the count crosses 600,000,
+each addition of another 100,000 increment operations makes the code
+run <i>faster</i>,
+with the extreme case when
+the boundary value reaches 10,
+where we run
+faster than if we hadn’t done any incrementing at all!
+</p>
+<p>
+How can the running time of an increment instruction be <i>negative</i>?
+</p>
+<p>
+The explanation for all this is that CPUs are more complicated
+than the naïve analysis realizes.
+We saw earlier that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/12/16/317157.aspx">
+modern CPUs contain all sorts of hidden variables</a>.
+Today’s hidden variable is the branch predictor.
+</p>
+<p>
+Executing a single CPU instruction takes multiple steps,
+and modern CPUs kick off multiple instructions in parallel,
+with each instruction at a different stage of execution,
+a technique known as
+<a href="http://en.wikipedia.org/wiki/Pipeline_(computing)">
+pipelining</a>.
+</p>
+<p>Conditional branch instructions are bad for pipelining.
+Think about it:
+When a conditional branch instruction enters the pipeline,
+the CPU doesn’t know whether the condition will be true
+when the instruction reaches the end of the pipeline.
+Therefore, it doesn’t know what instruction to feed into
+the pipeline next.
+</p>
+<p>
+Now, it could just sit there and let the pipeline sit idle
+until the branch/no-branch decision is made,
+at which point it now knows which instruction to feed into
+the pipeline next.
+But that wastes a lot of pipeline capacity,
+because it will take time for those new instructions to
+make it all the way through the pipeline and start
+doing productive work.
+</p>
+<p>
+To avoid wasting time, the processor has an internal
+<i>branch predictor</i> which remembers the recent
+history of which conditional branches were taken and which
+were not taken.
+The fanciness of the branch predictor varies.
+Some processors merely assume that a branch will go the same
+way that it did the last time it was countered.
+Others keep complicated branch history and try to infer
+patterns (such as “the branch is taken every other time”).
+</p>
+<p>
+When a conditional branch is encountered,
+the branch predictor tells the processor which instructions
+to feed into the pipeline.
+If the branch prediction turns out to be correct,
+then we win!
+Execution continues without a pipeline stall.
+</p>
+<p>
+But if the branch prediction turns out to be incorrect,
+then we lose!
+All of the instructions that were fed into the pipeline
+need to be recalled and their effects undone,
+and the processor has to go find the correct instructions
+and start feeding them into the pipeline.
+</p>
+<p>
+Let’s look at our little program again.
+When the boundary is 0,
+the result of the comparison is always false.
+Similarly, when the boundary is 10, the result is always true.
+In those cases, the branch predictor can reach 100% accuracy.
+</p>
+<p>
+The worst case is when the boundary is 5.
+In that case, half of the time the comparison is true
+and half of the time the comparison is false.
+And since we have random data,
+<a href="http://www.amazon.com/gp/search?index=books&amp;keywords=winning+the+lottery&amp;tag=tholneth-20">
+fancy historical analysis</a>
+doesn’t help any.
+The predictor is going to be wrong half the time.
+</p>
+<p>
+Here’s a tweak to the program:
+Change the line
+</p>
+<pre>
+     if (array[i] &lt; boundary) count++;
+</pre>
+<p>
+to
+</p>
+<pre>
+     count += (array[i] &lt; boundary) ? 1 : 0;
+</pre>
+<p>
+This time, the results look like this:
+</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse">
+<tr>
+<th>boundary</th>
+<th>count</th>
+<th>time</th>
+</tr>
+<tr>
+<td align="right">0</td>
+<td align="right">0</td>
+<td><span style="width: 5ex;text-align: right">2932</span>
+<span style="background-color: #66F;width: 29.32pt"> </span></td>
+</tr>
+<tr>
+<td align="right">1</td>
+<td align="right">100000</td>
+<td><span style="width: 5ex;text-align: right">2931</span>
+<span style="background-color: #66F;width: 29.31pt"> &lt;/span</span></td>
+</tr>
+<tr>
+<td align="right">2</td>
+<td align="right">200800</td>
+<td><span style="width: 5ex;text-align: right">2941</span>
+<span style="background-color: #66F;width: 29.41pt"> &lt;/span</span></td>
+</tr>
+<tr>
+<td align="right">3</td>
+<td align="right">300200</td>
+<td><span style="width: 5ex;text-align: right">2931</span>
+<span style="background-color: #66F;width: 29.31pt"> &lt;/span</span></td>
+</tr>
+<tr>
+<td align="right">4</td>
+<td align="right">403100</td>
+<td><span style="width: 5ex;text-align: right">2932</span>
+<span style="background-color: #66F;width: 29.32pt"> &lt;/span</span></td>
+</tr>
+<tr>
+<td align="right">5</td>
+<td align="right">497400</td>
+<td><span style="width: 5ex;text-align: right">2932</span>
+<span style="background-color: #66F;width: 29.32pt"> &lt;/span</span></td>
+</tr>
+<tr>
+<td align="right">6</td>
+<td align="right">602900</td>
+<td><span style="width: 5ex;text-align: right">2932</span>
+<span style="background-color: #66F;width: 29.32pt"> &lt;/span</span></td>
+</tr>
+<tr>
+<td align="right">7</td>
+<td align="right">700700</td>
+<td><span style="width: 5ex;text-align: right">2999</span>
+<span style="background-color: #66F;width: 29.99pt"> &lt;/span</span></td>
+</tr>
+<tr>
+<td align="right">8</td>
+<td align="right">797500</td>
+<td><span style="width: 5ex;text-align: right">2931</span>
+<span style="background-color: #66F;width: 29.31pt"> &lt;/span</span></td>
+</tr>
+<tr>
+<td align="right">9</td>
+<td align="right">902500</td>
+<td><span style="width: 5ex;text-align: right">2932</span>
+<span style="background-color: #66F;width: 29.32pt"> &lt;/span</span></td>
+</tr>
+<tr>
+<td align="right">10</td>
+<td align="right">1000000</td>
+<td><span style="width: 5ex;text-align: right">2931</span>
+<span style="background-color: #66F;width: 29.31pt"> &lt;/span</span></td>
+</tr>
+</table>
+<p>
+The execution time is now independent of the boundary value.
+That’s because the optimizer was able to remove the branch from
+the ternary expression:
+</p>
+<pre>
+; on entry to the loop, ebx = boundary
+    mov edx, offset array ; start at the beginning of the array
+$LL3:
+    xor ecx, ecx    ; start with zero
+    cmp [edx], ebx  ; compare array[i] with boundary
+    setl cl         ; if less than boundary, then set al = 1
+    add eax, ecx    ; accumulate result in eax
+    add edx, 4      ; loop until end of array
+    cmp edx, offset array + 40000
+    jl $LL3
+</pre>
+<p>
+Since there are no branching decisions in the inner loop
+aside from the loop counter,
+there is no need for a branch predictor to decide which way
+the comparison goes.
+The same code executes either way.
+</p>
+<p>
+<b>Exercise</b>:
+Why are the counts exactly the same for both runs,
+even though the dataset is random?</p>
+
+
+</body>

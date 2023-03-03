@@ -1,0 +1,136 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using fibers to simplify enumerators, part 5: Composition</h1>  <!-- .entry-meta -->
+
+<p>
+Another type of higher-order enumeration is composition,
+where one enumerator actually combines the results of
+multiple enumerators.
+(Everybody knows about derivation, but
+composition is another powerful concept in
+object-oriented programming.
+<a href="/oldnewthing/archive/2004/10/07/239197.aspx">
+We’ve seen it before when building context menus</a>.)
+</p>
+<p>
+In a producer-driven enumerator, you would implement composition
+by calling the two enumeration functions one after the other.
+In a consumer-driven enumerator, you would implement composition
+by wrapping the two enumerators inside a large enumerator
+which then chooses between the two based on which enumerator
+was currently active.
+</p>
+<p>
+A fiber-based enumerator behaves more like a consumer-driven
+enumerator, again, with easier state management.
+</p>
+<p>
+Let’s write a composite enumerator that enumerates everything
+in the root of your C: drive (no subdirectories),
+plus everything in the current directory (including subdirectories).
+</p>
+<pre>
+class CompositeEnumerator : public FiberEnumerator {
+public:
+ CompositeEnumerator()
+   : m_eFiltered(TEXT("C:\\"))
+   , m_eCd(TEXT(".")) { }
+ LPCTSTR GetCurDir()
+    { return m_peCur-&gt;GetCurDir(); }
+ LPCTSTR GetCurPath()
+    { return m_peCur-&gt;GetCurPath(); }
+ const WIN32_FIND_DATA* GetCurFindData()
+    { return m_peCur-&gt;GetCurFindData(); }
+private:
+ void FiberProc();
+private:
+ FiberEnumerator* m_peCur;
+ FilteredEnumerator m_eFiltered;
+ DirectoryTreeEnumerator m_eCd;
+};
+void CompositeEnumerator::FiberProc()
+{
+ FEFOUND fef;
+ m_peCur = &amp;m_eFiltered;
+ while ((fef = m_peCur-&gt;Next()) != FEF_DONE &amp;&amp;
+        fef != FEF_LEAVEDIR) {
+  m_peCur-&gt;SetResult(Produce(fef));
+ }
+ m_peCur = &amp;m_eCd;
+ while ((fef = m_peCur-&gt;Next()) != FEF_DONE) {
+  m_peCur-&gt;SetResult(Produce(fef));
+ }
+}
+</pre>
+<p>
+<strong>Sidebar</strong>:
+Our composite enumeration is complicated by the
+fact that our <code>FilteredEnumerator</code>
+spits out a <code>FEF_LEAVEDIR</code> at the
+end, but which we want to suppress, so we have to
+check for it and eat it.
+</p>
+<p>
+In the more common case where the enumerator is generating
+a flat list, it would be a simple matter of just forwarding
+the two enumerators one after the other.
+Something like this:
+</p>
+<pre>
+void CompositeEnumerator2::FiberProc()
+{
+ Enum(&amp;m_eFiltered);
+ Enum(&amp;m_eCd);
+}
+void CompositeEnumerator2::Enum(FiberEnumerator *pe)
+{
+ m_peCur = pe;
+ FEFOUND fef;
+ while ((fef = m_peCur-&gt;Next()) != FEF_DONE) {
+  m_peCur-&gt;SetResult(Produce(fef));
+ }
+}
+</pre>
+<p>
+<strong>End sidebar</strong>.
+</p>
+<p>
+You can try out this <code>CompositeEnumerator</code>
+with the program you’ve been playing with for the past
+few days.  Just change the line in <code>main</code>
+that creates the enumerator to the following:
+</p>
+<pre>
+ CompositeEnumerator e;
+</pre>
+<p>
+<strong>Exercise</strong>: Gosh, why is the total so unusually large?
+</p>
+<p>
+<strong>Exercise</strong>: How many fibers are there in the program?
+</p>
+<p>
+<strong>Exercise</strong>: Draw a diagram showing how control flows
+among the various fibers in this program.
+</p>
+<p>
+Before you get all excited about fibers, consider the following:
+</p>
+<ul>
+<li>Converting a thread to a fiber needs to be coordinated among
+    all the components in the process so that it is converted only
+    once and stays converted until everybody is finished.
+    This means that if you are writing a plug-in that will go into
+    some other process, you probably should avoid fibers,
+    since you don’t know what the other components in the process
+    are going to do with fibers.
+<li>Fibers do not completely solve the one-thread-per-connection problem.
+    They do reduce the context switching, but the memory footprint
+    will still limit you to 2000 fibers per process (assuming a
+    2GB user-mode address space) since each fiber has a stack,
+    which defaults to 1MB.
+</li></li></ul>
+<p>
+I think that’s enough about fibers for now.</p>
+
+
+</body>

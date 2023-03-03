@@ -1,0 +1,207 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Intel 80386, part 14: Rescuing a stack trace after the debugger gave up when it reached an FPO function</h1>  <!-- .entry-meta -->
+
+<p>So here you go, minding your own business, taking a stack trace, and then the world stops. </p>
+<pre>
+ChildEBP RetAddr
+0019ec98 5654ef4e combase!CoInitializeEx+0x35
+0019ecf8 5654e70b WINSPOOL!GetCurrentNetworkId+0x36
+0019ed28 5654e58a WINSPOOL!InternalGetDefaultPrinter+0x8b
+0019ed58 75953b77 WINSPOOL!GetDefaultPrinterW+0x5a
+0019ed70 7594e6b8 comdlg32!PrintGetDefaultPrinterName+0x17
+0019f1b8 7594e520 comdlg32!PrintBuildDevNames+0x60
+0019f1d0 75951340 comdlg32!PrintReturnDefault+0x30
+0019f628 759a03ab comdlg32!PrintDlgX+0x132
+0019fae0 01804a8e comdlg32!PrintDlgA+0x5b
+0019fd50 7686196c contoso+0x4a8e
+</pre>
+<p>The stack trace just gives up. The function in the Cnotoso DLL was compiled with frame pointer omission (FPO), which means that the <var>ebp</var> register is being used as a general-purpose register and does not point to the next frame deeper in the stack. And since we don’t have symbols for Contoso, the debugger cannot consult the symbol table to get help with unwinding the stack one more level. </p>
+<p>We’ll have to build the stack trace manually. This is basically the same exercise on every architecture: You look at the code you’re returning to, find its function prologue or epilogue, and use that information to unwind another frame. </p>
+<p>The last known good stack frame was <code>0019fae0</code> from <code>Print­DlgA</code>. Let’s see what we have there: </p>
+<pre>
+0:000&gt; dps 0019fae0
+0019fae0  0019fd50                ← saved ebp
+0019fae4  01804a8e contoso+0x4a8e ← return address
+0019fae8  018083b0 contoso+0x83b0 ← argument to PrintDlgA
+0019faec  0000000e
+0019faf0  01803b8c contoso+0x3b8c
+0019faf4  0019fd50
+0019faf8  0000000e
+0019fafc  0000000e
+0019fb00  00200cce
+0019fb04  00000112
+0019fb08  0000f095
+0019fb0c  0078006b
+</pre>
+<p>The <code>Print­DlgA</code> function takes a single parameter, and it uses the <code>__stdcall</code> calling convention, so we know that when <code>Print­DlgA</code> returns, the stack pointer will be at <code>0019faec</code>, and we will have returned to the code at <code>01804a8e</code>. We also see that the <var>ebp</var> register will have the value <code>0019fd50</code>. </p>
+<p>To unwind a level, we need to disassemble at <code>01804a8e</code> and look for the code that cleans up the stack and returns to the previous function. </p>
+<pre>
+contoso+0x4a8e:
+01804a8e 833dbc83800100  cmp     dword ptr [contoso+0x83bc (018083bc)],0
+01804a95 7509            jne     contoso+0x4aa0 (01804aa0)
+01804a97 b8ffffffff      mov     eax,0FFFFFFFFh
+01804a9c 5e              pop     esi
+01804a9d c3              ret
+</pre>
+<p>For the purpose of this exercise, we are just looking for any code path that leads to a <code>ret</code> instruction. We can assume conditional jumps are taken, or not taken, based on whichever case will get us to a <code>ret</code> instruction faster. Along the way to the <code>ret</code>, we watch for instructions that affect the <var>esp</var> register, because we’ll have to simulate them in our head. </p>
+<p>In this case, we can pretend that the conditional jump is not taken, and that leads us quickly to a <code>pop esi</code> and a <code>ret</code>. </p>
+<p>So let’s simulate those two operations. Since our simulated <var>esp</var> register is at <code>0019faec</code>, the <code>pop esi</code> pops the value <code>0000000e</code> into <var>esi</var>, and the <code>ret</code> returns to <code>01803b8c</code>. Since this was a simple <code>ret</code> with no parameters, there is no extra cleanup, and the stack pointer is left pointing to <code>0019faf4</code>. </p>
+<pre>
+0019faec  0000000e                ← saved esi
+0019faf0  01803b8c contoso+0x3b8c ← return address
+0019faf4  0019fd50                ← esp points here after ret
+0019faf8  0000000e
+</pre>
+<p>Disassemble at the return address to see how to pop out another level. </p>
+<pre>
+contoso+0x3b8c:
+01803b8c 8bd8            mov     ebx,eax
+01803b8e 0bdb            or      ebx,ebx
+01803b90 7510            jne     contoso+0x3ba2 (01803ba2)
+01803b92 b8fbffffff      mov     eax,0FFFFFFFBh
+01803b97 5d              pop     ebp        ← saved ebp
+01803b98 5f              pop     edi        ← saved edi
+01803b99 5e              pop     esi        ← saved esi
+01803b9a 5b              pop     ebx        ← saved ebx
+01803b9b 81c4e8000000    add     esp,0E8h  ← adjust esp
+01803ba1 c3              ret               ← return, no extra cleanup
+</pre>
+<p>Again, we pretend that the conditional jump is not taken, and that leads us quickly to the function epilogue. We pop four values off the stack, then add <code>0e8h</code> to the <var>esp</var> register before executing the <code>ret</code>. Let’s simulate those operations on our stack. </p>
+<pre>
+0019faf4  0019fd50       ← saved ebp
+0019faf8  0000000e       ← saved edi
+0019fafc  0000000e       ← saved esi
+0019fb00  00200cce       ← saved ebx
+0019fb04  00000112       ← esp points here after pop ebx
+</pre>
+<p>After popping <var>ebx</var>, the code adds <code>0E8h</code> to <var>esp</var>, so let’s ask the debugger to skip ahead <code>0xe8</code> bytes. </p>
+<pre>
+0:000&gt; dps 0019fb04+e8
+0019fbec  01801325 contoso+0x1325 ← return address
+0019fbf0  0000000e                ← esp points here after ret
+</pre>
+<p><a href="https://www.youtube.com/watch?v=0Hkn-LSh7es">Just keep swimming</a>. </p>
+<pre>
+01801325 0bc0            or      eax,eax
+01801327 0f8d74040000    jge     contoso+0x17a1 (018017a1)
+0180132d 83f8fd          cmp     eax,0FFFFFFFDh
+01801330 0f846b040000    je      contoso+0x17a1 (018017a1)
+01801336 83f8fb          cmp     eax,0FFFFFFFBh
+01801339 740d            je      contoso+0x1348 (01801348)
+0180133b 83f8fc          cmp     eax,0FFFFFFFCh
+0180133e 7410            je      contoso+0x1350 (01801350)
+</pre>
+<p>Okay, we’re not so lucky this time. We don’t see the end of the function right away. The code does a bunch of stuff with the value returned by this function, but if the return value is nonnegative, it jumps ahead to <code>018017a1</code>. I’m guessing that that jump forward will take us closer to the end of the function, so let’s continue disassembling there. </p>
+<pre>
+018017a1 b801000000      mov     eax,1
+018017a6 5f              pop     edi
+018017a7 5e              pop     esi
+018017a8 81c404010000    add     esp,104h
+018017ae c20c00          ret     0Ch
+</pre>
+<p>My hunch paid off. We pop two registers, adjust <var>esp</var>, and then return with 12 bytes of extra cleanup. </p>
+<pre>
+0019fbf0  0000000e            ← pop edi
+0019fbf4  00000111            ← pop esi
+0019fbf8  00000000            ← esp points here after pop esi
+0:000&gt; dps 0019fbf8+0x104  ← simulate "add esp, 104h"
+0019fcfc  01801fea contoso+0x1fea ← return address
+0019fd00  00200cce            ← first four bytes of stack arguments
+0019fd04  0000000e            ← next four bytes of stack arguments
+0019fd08  00000000            ← last four bytes of stack arguments
+0019fd0c  00000111            ← esp points here after ret 0Ch
+</pre>
+<p>Okay, that was a little trickier because the <code>ret 0Ch</code> means that after popping the return address, we also have to add <code>0Ch</code> to the <var>esp</var> register, leaving it at <code>0019fd0c</code>. </p>
+<p>On to the next function. </p>
+<pre>
+contoso+0x1fea:
+01801fea 0bc0            or      eax,eax
+01801fec 0f85d6010000    jne     contoso+0x21c8 (018021c8)
+01801ff2 8b44242c        mov     eax,dword ptr [esp+2Ch]
+01801ff6 50              push    eax
+01801ff7 57              push    edi
+01801ff8 56              push    esi
+01801ff9 53              push    ebx
+01801ffa e831060000      call    contoso+0x2630 (01802630)
+01801fff 5f              pop     edi
+01802000 5e              pop     esi
+01802001 5b              pop     ebx
+01802002 83c410          add     esp,10h
+01802005 c21000          ret     10h
+</pre>
+<p>This one is a little trickier, for even though the <code>ret</code> is in sight, there’s another function call in between. </p>
+<p>I’m going to assume that the function at <code>01802630</code> ends with a <code>ret 10h</code>, matching the 16 bytes of parameters pushed immediately prior to the <code>call</code>. This is generally a safe bet with the Microsoft C compiler, which prefers to create its entire stack frame at function entry and leave it alone until the function epilogue. </p>
+<p>That means that the epilogue starts with the <code>pop edi</code>, and we can simulate those instructions as well. </p>
+<pre>
+0019fd0c  00000111                ← saved edi
+0019fd10  00000000                ← saved esi
+0019fd14  01801b90 contoso+0x1b90 ← saved ebx
+0019fd18  00000070                                      \
+0019fd1c  ffffffff                                       \ skipped by
+0019fd20  ffffffff                                       / add esp, 10h
+0019fd24  768617bb USER32!UserCallWinProcCheckWow+0x1fb /
+0019fd28  7688311b USER32!_InternalCallWinProc+0x2b ← return address
+0019fd2c  00200cce
+0019fd30  00000111
+0019fd34  0000000e
+0019fd38  00000000
+0019fd3c  00000000                ← esp points here after return
+</pre>
+<p>Hooray, we finally returned to a function we have symbols for! That means we can use the <code>k=</code> command to resume our stack trace. </p>
+<p>The parameters to the <code>k=</code> command are </p>
+<ul>
+<li>The value to pretend is in <var>ebp</var>.</li>
+<li>The value to pretend is in <var>esp</var>.</li>
+<li>The value to pretend is in <var>eip</var>.</li>
+</ul>
+<p>We will pretend that we are just about to execute the <code>ret 10h</code> instruction. From our calculations, therefore, immediately after the <code>ret 10h</code> instruction, the stack pointer is at <code>0019fd3c</code>, the instruction pointer is at <code>7688311b</code>, and the <var>ebp</var> register has the value… um, what’s the value? </p>
+<p>Look back through our notes for the most recent simulated <code>pop ebp</code>. </p>
+<pre>
+0019faf4  0019fd50       ← saved ebp
+</pre>
+<p>Ah, there it is. Okay, let’s go for it. </p>
+<pre>
+0:000&gt; k=0019fd50 0019fd28 768617bb
+ChildEBP RetAddr
+0019fd50 7686196c USER32!_InternalCallWinProc+0x2b
+0019fe34 76860abe USER32!UserCallWinProcCheckWow+0x3ac
+0019fea8 7687d750 USER32!DispatchMessageWorker+0x20e
+0019feb0 018022d1 USER32!DispatchMessageA+0x10
+0019ff70 765b60c9 contoso+0x22d1 ← UH-OH
+0019ff80 77d43814 KERNEL32!BaseThreadInitThunk+0x19
+0019ffdc 77d437e4 ntdll!__RtlUserThreadStart+0x2f
+0019ffec 00000000 ntdll!_RtlUserThreadStart+0x1b
+</pre>
+<p>Okay, this seems to look good, but there’s that <code>contoso</code> on the stack again. However, this time, the debugger was able to walk the stack past that function. It could mean that the function was compiled with frame pointers enabled, in which case we have a valid stack trace. Or it could mean that the function was compiled with frame pointers omitted, but the value in the <var>ebp</var> register happened to point to another frame, which is probably the next <var>ebp</var>-based frame. </p>
+<p>Since debugging is an exercise in optimism, we’ll assume that the stack trace is “good enough”. It certainly looks reasonable. The <var>ebp</var> chain looks reasonable. The next frame is only slightly deeper on the stack. And even if there were some FPO functions in there, we can defer trying to tease them out until our investigation tells us that we need to do so. </p>
+<p>So here’s the stack trace we ended up with at the point we decided we had something “good enough”: </p>
+<pre>
+ChildEBP RetAddr
+0019ec98 5654ef4e combase!CoInitializeEx+0x35
+0019ecf8 5654e70b WINSPOOL!GetCurrentNetworkId+0x36
+0019ed28 5654e58a WINSPOOL!InternalGetDefaultPrinter+0x8b
+0019ed58 75953b77 WINSPOOL!GetDefaultPrinterW+0x5a
+0019ed70 7594e6b8 comdlg32!PrintGetDefaultPrinterName+0x17
+0019f1b8 7594e520 comdlg32!PrintBuildDevNames+0x60
+0019f1d0 75951340 comdlg32!PrintReturnDefault+0x30
+0019f628 759a03ab comdlg32!PrintDlgX+0x132
+0019fae0 01804a8e comdlg32!PrintDlgA+0x5b
+0019fd50 7686196c contoso+0x4a8e
+0019faf0 01803b8c contoso+0x3b8c \ we reconstructed these
+0019fbec 01801325 contoso+0x1325  &gt; three stack
+0019fcfc 01801fea contoso+0x1fea / frames
+0019fd50 7686196c USER32!_InternalCallWinProc+0x2b
+0019fe34 76860abe USER32!UserCallWinProcCheckWow+0x3ac
+0019fea8 7687d750 USER32!DispatchMessageWorker+0x20e
+0019feb0 018022d1 USER32!DispatchMessageA+0x10
+0019ff70 765b60c9 contoso+0x22d1 ← UH-OH
+0019ff80 77d43814 KERNEL32!BaseThreadInitThunk+0x19
+0019ffdc 77d437e4 ntdll!__RtlUserThreadStart+0x2f
+0019ffec 00000000 ntdll!_RtlUserThreadStart+0x1b
+</pre>
+<p>Now, sure, digging out those three stack frames doesn’t look that useful because we don’t have any symbols for Contoso at all, but you may be in a case where you do have symbols for Contoso, but those symbols lack FPO information. In that case, reconstructing stack frames gives you a proper stack trace as if you had FPO information all along. </p>
+<p>And those extra stack frames may be the difference between a “How did we get here?” and a “Oh, this is how we got here.” </p>
+<p><a href="http://devblogs.microsoft.com/oldnewthing/20190208-00/?p=101036">Next time</a>, we’ll look at some compiler code generation idioms. </p>
+
+
+</body>

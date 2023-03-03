@@ -1,0 +1,601 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On static methods in the Windows Runtime and C++/WinRT</h1>  <!-- .entry-meta -->
+
+<p>The Windows Runtime supports static members, which are members that apply to a class as a whole, rather than to particular instances of a class. The expectation is that these members are exposed via the language projection as static members of some language-specific representation of the class.</p>
+<p>Under the covers, though, there are no static members. That’s because static members have to belong to a class, but the Windows Runtime uses COM as its low-level interface, and all COM members belong to COM interfaces, and COM interfaces are implemented by <i>objects</i>.</p>
+<p>For illustration purposes, say we have this Windows Runtime class:</p>
+<pre>runtimeclass Widget
+{
+    Widget(); // default constructor
+    Widget(String name); // nondefault constructor
+
+    void InstanceMethod();
+
+    static void StaticMethod();
+}
+</pre>
+<p>Accessing the <code>Instance­Method()</code> from a <code>Widget</code> object is easy: The object implements <code>IWidget</code>, and you call the <code>IWidget::<wbr/>Instance­Method()</code> method on it.</p>
+<p>But it’s less obvious how you get to the constructors and static methods. Because those start from nothing; there is no object in your hand from which to call the methods.</p>
+<p>The solution is to fabricate another object, known as the <i>activation factory</i>. This object contains all the operations that are not dependent upon an existing instance. You can think of this object as representing <i>the class itself</i>.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: left;">
+<tbody>
+<tr>
+<td style="text-align: center; border: solid 1px transparent;">from nothing</td>
+</tr>
+<tr>
+<td style="text-align: center;">↓<span style="position: relative;"><span style="position: absolute;">RoGetActivationFactory(“Widget”)</span></span></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center;">Widget factory</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none;"><code>IActivationFactory</code></td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid; padding-left: 1em;"><code>ActivateInstance()</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none;"><code>IWidgetFactory</code></td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid; padding-left: 1em;"><code>CreateInstance(name)</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none;"><code>IWidgetStatics</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-top: none; padding-left: 1em;"><code>StaticMethod()</code></td>
+</tr>
+</tbody>
+</table>
+<p>Every activation factory implements <code>IActivation­Factory</code> at a minimum. This interface provides the default constructor, known as <code>IActivation­Factory::<wbr/>Activate­Instance()</code>. Even if an object doesn’t have a default constructor, the <code>IActivation­Factory</code> interface will still be there; its <code>Activate­Instance</code> method will just return <code>E_<wbr/>NOTIMPL</code>.</p>
+<p>If a class has nondefault constructors, they exist on a separate <code>IWidgetFactory</code> method. By convention, these nondefault constructor methods are named <code>Create­Instance</code> or some variation thereof.</p>
+<p>And if a class has static members, then they exist on an <code>IWidgetStatics</code> method.</p>
+<p>For example, under the covers, calling a static method works like this:</p>
+<pre>IWidgetStatics* statics;
+RoGetActivationFactory(L"Widget", IID_PPV_ARGS(&amp;statics));
+statics-&gt;StaticMethod();
+</pre>
+<p>Okay, so how does C++/WinRT represent static members?</p>
+<p>At the projection level, they look like static class members.</p>
+<pre>winrt::Widget::StaticMethod();
+</pre>
+<p>C++/WinRT does the under-the-covers thing we described above, though with the bonus feature of caching the activation factory object for better performance.</p>
+<p>At the implementation level, what happens depends on what version of C++/WinRT you’re using.</p>
+<p>In C++/WinRT version 1 (or C++/WinRT without the <code>/optimize</code> option), the implementation mirrors the under-the-covers behavior:</p>
+<pre>namespace winrt::factory_implementation::Widget
+{
+    struct Widget : WidgetT&lt;Widget&gt;
+    {
+        // instance method on factory object
+        void SomeMethod() { ... }
+    }
+}
+</pre>
+<p>C++/WinRT autogenerates the <code>IActivation­Factory</code> and <code>IWidget­Factory</code> by having the corresponding methods construct an instance via a corresponding public constructor of the <code>implementation::<wbr/>Widget</code> type. But the static members are up to you to implement, and they are members of the factory object.</p>
+<p>When the Widget object is consumed by the projection, it goes through the factory:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;" title="Projected Widget static method call uses RoGetActivationFactory to get Widget factory object, then calls StaticMethod from factory object">
+<tbody>
+<tr>
+<td style="border: dotted 1px black;"><code>winrt::Widget::StaticMethod</code></td>
+</tr>
+<tr>
+<td style="text-align: center;">↓<span style="position: relative;"><span style="position: absolute;">RoGetActivationFactory(“Widget”)</span></span></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; text-align: center;">Widget factory</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none;"><code>IActivationFactory</code></td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid; padding-left: 1em;"><code>ActivateInstance()</code><br/>
+<span style="font-size: 80%;">(autogenerated)</span></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none;"><code>IWidgetFactory</code></td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid; padding-left: 1em;"><code>CreateInstance(name)</code><br/>
+<span style="font-size: 80%;">(autogenerated)</span></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none;"><code>IWidgetStatics</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-top: none; background: #e0e0ff; padding-left: 1em;"><code>StaticMethod()</code></td>
+</tr>
+</tbody>
+</table>
+<p>(I put the static method call in a dotted box to emphasize that there is no object involved here. It’s a free function.)</p>
+<p>In the case where your static methods are stateless, this creates an inefficiency in the projection when used from within the same module: They still go through the formality of obtaining a factory and calling the nominally static method as a member method of the <code>IWidget­Statics</code> interface. But if the static method is stateless, then it has no use for the factory object. We went through the effort of locating it, and then making a virtual method call on it, when we could have just gone straight to the implementation.</p>
+<p>C++/WinRT version 2 with the <code>/optimize</code> option fixes this. Calls to static methods are forwarded to the corresponding static method on the <i>implementation</i> class, rather than to the instance method on the factory implementation class.</p>
+<pre>namespace winrt::implementation::Widget
+{
+    struct Widget : WidgetT&lt;Widget&gt;
+    {
+        // static method on instance object
+        static void SomeMethod() { ... }
+    }
+}
+</pre>
+<p>Furthermore, the factory implementation also forwards its instance members (corresponding to Windows Runtime static members) to the static members of the implementation type.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;" title="Projected Widget static method call goes directly to static method on instance implementation. External consumer goes through Widget factory.">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;"><code>winrt::Widget::StaticMethod</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="font-size: 200%;">⇘</td>
+</tr>
+<tr>
+<td style="border: dotted 1px black; text-align: center;">External consumer</td>
+<td>→</td>
+<td style="border: solid 1px black; text-align: center;">Widget factory</td>
+<td> </td>
+<td style="border: dotted 1px black; text-align: center;">Widget instance static members</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; border-bottom: none;"><code>IActivationFactory</code></td>
+<td> </td>
+<td rowspan="5" style="border: dotted 1px black; border-bottom: none;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: 1px black; border-style: none solid; padding-left: 1em;"><code>ActivateInstance()</code><br/>
+<span style="font-size: 80%;">(autogenerated)</span></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; border-bottom: none;"><code>IWidgetFactory</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: 1px black; border-style: none solid; padding-left: 1em;"><code>CreateInstance(name)</code><br/>
+<span style="font-size: 80%;">(autogenerated)</span></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; border-bottom: none;"><code>IWidgetStatics</code></td>
+<td rowspan="2" style="font-size: 200%;" valign="bottom">⇒</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; padding-left: 1em;"><code>StaticMethod()</code></td>
+<td style="border: dotted 1px black; border-top: none; padding-left: 1em;"><code>StaticMethod()</code></td>
+</tr>
+</tbody>
+</table>
+<p>Sending the projection’s static method straight to the instance static method avoids the hassle of obtaining the widget factory object, which we never use anyway. It avoids the virtual call through the factory’s COM interfaces, and thereby opens inlining opportunities for very simple static methods.</p>
+<p>But what if your static methods are stateful? Well, you could just keep that state in global variables, but that’s a problem if some of the state involves COM objects, because you now have a COM object in a global variable: The global variable will destruct when the DLL unloads, which is likely to be <i>after</i> COM has shut down.</p>
+<p>This is where the <a href="/code/the-com-static-store-part-1-introduction" title="The COM static store, part 1: Introduction"> COM static store</a> comes to the rescue. You can ask C++/WinRT to put the class factory in the COM static store by adding <code>static_lifetime</code> to the template parameter list:</p>
+<pre>namespace winrt::factory_implementation::Widget
+{
+    struct Widget : WidgetT&lt;Widget, <span style="color: blue;">static_lifetime</span>&gt;
+    {
+        ...
+    }
+}
+</pre>
+<p>Now you can put your state in the factory object, and it will be destructed when COM tears down.</p>
+<p>But how do you access the factory object from the static method in the instance object? You’ll just have to get it manually.</p>
+<pre>namespace winrt::implementation::Widget
+{
+    struct Widget : WidgetT&lt;Widget&gt;
+    {
+        // static method on instance object
+        // forward to factory object
+        static void SomeMethod() {
+            get_activation_factory&lt;winrt::Widget, IWidgetStatics&gt;()
+                -&gt;StaticMethod();
+        }
+    }
+}
+</pre>
+<p>At this point, you start to get a little dizzy because there’s this game of “Where’s the static method?” being played. The instance implementation is forwarding to the factory implementation, but the factory implementation is forwarding to the instance implementation:</p>
+<p><a href="https://knowyourmeme.com/memes/spider-man-pointing-at-spider-man"> <img decoding="async" height="250" src="data:image/jpg;base64,
+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
+G9oQ7MkdD/AOxyPZ/9k=" title="Meme image of Spider-Man pointing at Spider-Man, one labeled 'Instance implementation' the other labeled 'Factory implementation'" width="400"/></a></p>
+<p>You break the infinite loop by implementing the method in the factory implementation, just like you did back in C++/WinRT version 1:</p>
+<pre>namespace winrt::factory_implementation::Widget
+{
+    struct Widget : WidgetT&lt;Widget&gt;
+    {
+        // instance method on factory object
+        void SomeMethod() { ... }
+    }
+
+    // state variables go here
+    int32_t m_state;
+}
+</pre>
+<p>An explicit implementation in the factory implementation object overrides the default implementation, thereby breaking the cycle.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;" title="Projected Widget static method call goes directly to static method on instance implementation, which forwards to Widget factory. External consumer goes to Widget factory directly.">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;"><code>winrt::Widget::StaticMethod</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="font-size: 200%;">⇘</td>
+</tr>
+<tr>
+<td style="border: dotted 1px black; text-align: center;">External consumer</td>
+<td>→</td>
+<td style="border: solid 1px black; text-align: center;">Widget factory</td>
+<td> </td>
+<td style="border: dotted 1px black; text-align: center;">Widget instance static members</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; border-bottom: none;"><code>IActivationFactory</code></td>
+<td> </td>
+<td rowspan="5" style="border: dotted 1px black; border-bottom: none;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: 1px black; border-style: none solid; padding-left: 1em;"><code>ActivateInstance()</code><br/>
+<span style="font-size: 80%;">(autogenerated)</span></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; border-bottom: none;"><code>IWidgetFactory</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: 1px black; border-style: none solid; padding-left: 1em;"><code>CreateInstance(name)</code><br/>
+<span style="font-size: 80%;">(autogenerated)</span></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; border-bottom: none;"><code>IWidgetStatics</code></td>
+<td rowspan="2" style="font-size: 200%;" valign="bottom">⇐</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; padding-left: 1em;"><code>StaticMethod()</code></td>
+<td style="border: dotted 1px black; border-top: none; padding-left: 1em;"><code>StaticMethod()</code></td>
+</tr>
+</tbody>
+</table>
+<p><b>Bonus chatter</b>: Even if you never call the static method yourself, you still have to include a declaration for it, so that the projection short-circuit (the diagonal arrow) can call it. You don’t have to implement it, though.</p>
+
+
+</body>

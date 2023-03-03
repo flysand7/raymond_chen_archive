@@ -1,0 +1,164 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Understanding the classical model for linking: Sometimes you don’t want a symbol to come along for a ride</h1>  <!-- .entry-meta -->
+
+<p>Continuing our study of
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/07/10382714.aspx">
+the classical model for linking</a>,
+let’s take another look at the trick of
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/08/10383017.aspx">
+taking symbols along for the ride</a>.
+</p>
+<p>
+The technique of taking symbols along for the ride is quite handy
+if that’s what you want,
+but sometimes you don’t actually want it.
+For example, a symbol taken along for the ride may create
+conflicts or create unwanted dependencies.
+</p>
+<p>
+Here’s an example:
+Suppose you have a library called <code>stuff.lib</code>
+where you put functions that are
+used by various modules in different projects.
+One of the files in your library might look like this:
+</p>
+<pre>
+// filedatestuff.cpp
+<p>BOOL GetFileCreationTimeW(
+        LPCWSTR pszFile,
+        FILETIME *pft)
+{
+    WIN32_FILE_ATTRIBUTE_DATA wfad;
+    BOOL fSuccess = GetFileAttributesExW(pszFile,
+                             GetFileExInfoStandard,
+                             &amp;wfad);
+    if (fSuccess) {
+        *pft = wfad.ftCreationTime;
+    } else {
+        pft-&gt;dwLowDateTime = 0;
+        pft-&gt;dwHighDateTime = 0;
+    }
+    return fSuccess;
+}</p>
+<p>BOOL GetFileCreationTimeAsStringW(
+         LPCWSTR pszFile,
+         LPWSTR pszBuf,
+         UINT cchBuf)
+{
+    FILETIME ft;
+    BOOL fSuccess = GetFileCreationTimeW(pszFile, &amp;ft);
+    if (fSuccess) {
+        fSuccess = SHFormatDateTimeW(&amp;ft, NULL,
+                                     pszBuf, cchBuf) &gt; 0;
+    }
+    return fSuccess;
+}
+</p></pre>
+<p>
+Things are working out great,
+people like the helper functions in your library,
+and then you get a bug report:
+</p>
+<blockquote class="q">
+When my program calls the
+<code>Get­File­Creation­TimeW</code>
+function,
+I get a linker error:
+<tt>unresolved external: __imp__SHFormat­Date­TimeW</tt>.
+If I remove my call to 
+<code>Get­File­Creation­TimeW</code>,
+then my program builds fine.
+</blockquote>
+<p>
+You scratch your head.
+“The program is calling
+<code>Get­File­Creation­TimeW</code>,
+but that function doesn’t call
+<code>SHFormat­Date­TimeW</code>,
+so why are we getting an unresolved external error?
+Any why hasn’t anybody else run into this problem before?”
+</p>
+<p>
+First question first.
+Why are we getting an unresolved external error
+for a nonexistent external dependency?
+</p>
+<p>
+Because the
+<code>Get­File­Creation­Time­As­StringW</code>
+function got <i>taken along for the ride</i>.
+When the customer’s program called
+<code>Get­File­Creation­TimeW</code>,
+that pulled in the <code>filedatestuff.obj</code> file,
+and that OBJ file contains both
+<code>Get­File­Creation­TimeW</code>
+<i>and</i>
+<code>Get­File­Creation­Time­As­StringW</code>.
+Since they are in the same OBJ file,
+pulling in one function pulls in all of them.
+</p>
+<p>
+The fix is to split the <code>filedatastuff.cpp</code> file
+into two files,
+one for each function.
+That way, when you pull in one function,
+nobody else comes along for the ride.
+</p>
+<p>
+Now to the second half of the question:
+Why did nobody run into this problem before?
+</p>
+<p>
+The
+<code>Get­File­Creation­TimeW</code>
+function has a dependency on
+<code>Get­File­Attributes­ExW</code>,
+which is a function in <code>KERNEL32.DLL</code>.
+On the other hand, the
+<code>Get­File­Creation­Time­As­StringW</code>
+function has a dependency on
+<code>SHFormat­Date­TimeW</code>,
+which is a function in
+<code>SHLWAPI.DLL</code>.
+If somebody lists
+<code>KERNEL32.LIB</code> as a dependent library
+in their project,
+but they don’t include
+<code>SHLWAPI.LIB</code> on that list,
+then they will encounter this problem
+because the linker will pull in the reference to
+<code>SHFormat­Date­TimeW</code>
+and have no way of resolving it.
+</p>
+<p>
+Nobody ran into this before because <code>SHLWAPI.LIB</code>
+has lots of cute little functions in it,
+so most people include it in their project.
+Only if somebody is being frugal and leaving
+<code>SHLWAPI.LIB</code> out of their project
+will they run into this problem.
+</p>
+<p>
+<b>Bonus chatter</b>:
+The suggestion to split the file into two will work,
+but if you are really clever, you can still do some consolidation.
+Instead of splitting up files by functional group
+(for example, “all <code>FILETIME</code> functions”),
+you need to split them up based on their dependencies
+(“functions that are dependent solely on <code>SHLWAPI.LIB</code>“).
+Of course, this type of organization may make the code harder
+to follow (“Why did you put
+<code>Get­File­Creation­Time­As­StringW</code>
+and
+<code>Hash­String</code>
+in the same file?”),
+so you have to balance this against maintainability and
+readability.
+For example, somebody who is not aware of the classical
+model for linking may add a function to the file that has
+a dependency on <code>SHELL32.DLL</code>,
+and now your careful separation has fallen apart.
+</p>
+
+
+</body>

@@ -1,0 +1,178 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The MIPS R4000, part 12: Calling convention</h1>  <!-- .entry-meta -->
+
+<p>The Windows NT calling convention for the MIPS R4000 is similar to the other major MIPS calling conventions, but calling conventions for the MIPS are like snowflakes: Despite being made of the same underlying materials, no two are completely alike. </p>
+<p>The short version of the parameter passing is that the first four parameters are passed in registers <var>a0</var> through <var>a3</var>, and the remaining parameters go on the stack after a 16-byte gap. The 16-byte gap represents the home space for the register-based parameters. We’ve seen this convention before, <a href="https://blogs.msdn.microsoft.com/oldnewthing/20040114-00/?p=41053">in the x64 calling convention</a>. Even if a function accepts fewer than four parameters, you must still provide a full 16 bytes of home space. </p>
+<p>Things get weird when you mix in 64-bit values or floating point. The way to think about it is as if you were creating a C structure whose members are all the parameters, in order, except that any types smaller than a 32-bit value are promoted to a 32-bit value. If you have a 64-bit value (either integer or floating point), you may need to insert padding to get the parameter to be properly aligned. </p>
+<p>Once you’ve laid out your parameters in the structure, you load the first sixteen bytes into <var>a0</var> through <var>a3</var>, and the rest go on the stack. However, if a parameter that would normally be passed in <var>a0</var> through <var>a3</var> turns out to be a non-variadic floating point value, then it is stored in <var>$f12</var>/<var>$f13</var> (for the first floating point value) or <var>$f14</var>/<var>$f15</var> (for the second), and the corresponding integer register is left unused. </p>
+<p>Here are some examples: </p>
+<p><code>void f(int a, char b, short c, int d, int e);</code> </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Offset</th>
+<th>Parameter</th>
+<th>Passed as</th>
+</tr>
+<tr>
+<td><code>00</code></td>
+<td><code>int a</code></td>
+<td><var>a0</var></td>
+</tr>
+<tr>
+<td><code>04</code></td>
+<td><code>int b</code></td>
+<td><var>a1</var></td>
+</tr>
+<tr>
+<td><code>08</code></td>
+<td><code>int c</code></td>
+<td><var>a2</var></td>
+</tr>
+<tr>
+<td><code>0C</code></td>
+<td><code>int d</code></td>
+<td><var>a3</var></td>
+</tr>
+<tr>
+<td><code>10</code></td>
+<td><code>int e</code></td>
+<td><code>0x10(sp)</code></td>
+</tr>
+</table>
+<p><code>void f(float a, int b, double c, int d);</code> </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Offset</th>
+<th>Parameter</th>
+<th>Passed as</th>
+</tr>
+<tr>
+<td><code>00</code></td>
+<td><code>float a</code></td>
+<td><var>f12</var></td>
+</tr>
+<tr>
+<td><code>04</code></td>
+<td><code>int b</code></td>
+<td><var>a1</var></td>
+</tr>
+<tr>
+<td><code>08</code></td>
+<td rowspan="2"><code>double c</code></td>
+<td><var>f14</var></td>
+</tr>
+<tr>
+<td><code>0C</code></td>
+<td><var>f15</var></td>
+</tr>
+<tr>
+<td><code>10</code></td>
+<td><code>int e</code></td>
+<td><code>0x10(sp)</code></td>
+</tr>
+</table>
+<p><code>void f(int a, double b, float c);</code> </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Offset</th>
+<th>Parameter</th>
+<th>Passed as</th>
+</tr>
+<tr>
+<td><code>00</code></td>
+<td><code>int a</code></td>
+<td><var>a0</var></td>
+</tr>
+<tr>
+<td><code>04</code></td>
+<td colspan="2">padding</td>
+</tr>
+<tr>
+<td><code>08</code></td>
+<td rowspan="2"><code>double b</code></td>
+<td><var>f12</var></td>
+</tr>
+<tr>
+<td><code>0C</code></td>
+<td><var>f13</var></td>
+</tr>
+<tr>
+<td><code>10</code></td>
+<td><code>float c</code></td>
+<td><code>0x10(sp)</code></td>
+</tr>
+</table>
+<p><code>void f(int a, ...);</code><br/><code>f(1, 2, 0.0, 3);</code> </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Offset</th>
+<th>Parameter</th>
+<th>Passed as</th>
+</tr>
+<tr>
+<td><code>00</code></td>
+<td><code>1</code></td>
+<td><var>a0</var></td>
+</tr>
+<tr>
+<td><code>04</code></td>
+<td><code>2</code></td>
+<td><var>a1</var></td>
+</tr>
+<tr>
+<td><code>08</code></td>
+<td rowspan="2"><code>0.0</code></td>
+<td><var>a2</var></td>
+</tr>
+<tr>
+<td><code>0C</code></td>
+<td><var>a3</var></td>
+</tr>
+<tr>
+<td><code>10</code></td>
+<td><code>3</code></td>
+<td><code>0x10(sp)</code></td>
+</tr>
+</table>
+<p>In this last example, the floating point double-precision value <code>0.0</code> is a variadic parameter (matches the <code>...</code> part of a function prototype), so it gets passed in the integer registers even though it’s a floating point value. That’s because one of the first things that variadic functions do is spill all their variadic register parameters onto the stack so they form a contiguous array of bytes. Passing all variadic parameters in integer registers means that this spilling can be done without knowing the types of the parameters. (Which is a good thing because the types of the parameters are frequently not known at compile time.) </p>
+<p>The last wrinkle is if you’re calling a function with no prototype. In that case, you don’t know whether a parameter is variadic or not. If the parameter is a floating point value, then you have to pass it in both an integer register <i>and</i> a floating point register, because you don’t know where the callee is going to look for it. </p>
+<p><code> f(1, 2, 0.0, 3); // no prototype</code> </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Offset</th>
+<th>Parameter</th>
+<th>Passed as</th>
+</tr>
+<tr>
+<td><code>00</code></td>
+<td><code>1</code></td>
+<td><var>a0</var></td>
+</tr>
+<tr>
+<td><code>04</code></td>
+<td><code>2</code></td>
+<td><var>a1</var></td>
+</tr>
+<tr>
+<td><code>08</code></td>
+<td rowspan="2"><code>0.0</code></td>
+<td><var>a2</var> and <var>f12</var></td>
+</tr>
+<tr>
+<td><code>0C</code></td>
+<td><var>a3</var> and <var>f13</var></td>
+</tr>
+<tr>
+<td><code>10</code></td>
+<td><code>3</code></td>
+<td>stack</td>
+</tr>
+</table>
+<p>This explains the importance of the rule that if a parameter is passed in a floating point register, then the corresponding integer register is left unused. Without that rule, calling functions with no prototype would be a disaster because the register assignment would be different depending on whether the function takes variadic parameters or not. </p>
+<p>With the exception of lightweight leaf functions, every function must include exception unwind codes in the module metadata so that the kernel can figure out what to do if an exception occurs. </p>
+<p>A lightweight leaf function is one that can do its work using only the 16 bytes of home space, plus any scratch registers. It cannot move the stack pointer or modify any callee-preserved registers. Furthermore, the return address must remain in the <var>ra</var> register for the duration of the function. </p>
+<p>You are allowed to promote your lightweight leaf function to a full function by a technique known as <i>shrink-wrapping</i>, <a href="https://devblogs.microsoft.com/oldnewthing/">which I described earlier</a>. </p>
+<p>(Some of the details of the calling convention are <a href="https://msdn.microsoft.com/en-us/library/ms864304.aspx">documented on MSDN</a>. The documentation was originally written for Windows CE, but I figure they are still true for Windows NT, because why not reuse the compiler you already have?) </p>
+
+
+</body>

@@ -1,0 +1,91 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">I called AdjustTokenPrivileges, but I was still told that a necessary privilege was not held, redux</h1>  <!-- .entry-meta -->
+
+<p>A customer had a service and wanted to change some token information. The information that they wanted to change required <code>Se­Tcb­Privilege</code>, so they adjusted their token privileges to enable that privilege, but the call still failed with <code>ERROR_</code><code>PRIVILEGE_</code><code>NOT_</code><code>HELD</code>: “A required privilege is not held by the client.”</p>
+<p>They followed the cookbook from <a href="/code/i-called-adjusttokenprivileges-but-i-was-still-told-that-a-necessary-privilege-was-not-held"> the last time we tried to address this problem</a>. All calls succeed except the last one.</p>
+<pre>ImpersonateSelf(SecurityImpersonation);
+
+HANDLE threadToken;
+OpenThreadToken(GetCurrentThread(), TOKEN_ALL_ACCESS,
+                TRUE, &amp;threadToken);
+
+TOKEN_PRIVILEGES privileges;
+privileges.PrivilegeCount = 1;
+privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+LookupPrivilegeValue(nullptr, SE_TCB_NAME,
+                     &amp;privileges.Privileges[0].Luid);
+
+TOKEN_PRIVILEGES changedPrivileges;
+AdjustTokenPrivileges(threadToken, FALSE, &amp;privileges,
+                      sizeof(changedPrivileges),
+                      &amp;changedPrivileges,
+                      nullptr);
+
+if (changedPrivileges.PrivilegeCount == 0)
+{
+  // No net changes to privileges occurred,
+  // so we must have had TCB already.
+  Log("Already had TCB privilege");
+}
+
+// Now do the thing that requires TCB privilege.
+
+HANDLE newToken;
+DuplicateTokenEx(threadToken, TOKEN_ALL_ACCESS, nullptr,
+                 SECURITY_MAX_IMPERSONATION_LEVEL,
+                 TokenPrimary, &amp;newToken);
+
+DWORD sessionId = ...;
+SetTokenInformation(newToken, TokenSessionId,
+                    &amp;sessionId, sizeof(sessionId));
+// ^^ this fails
+</pre>
+<p>What’s going on?</p>
+<p>There is a horrible non-obvious quirk of the <code>Adjust­Token­Privileges</code> function that is tripping us up: The function returns success <i>even though it may have failed to do what you asked</i>.</p>
+<p>The function “succeeded” in the sense that it successfully attempted to adjust the privileges you requested, and it successfully reported the result of the adjustment attempt. But that doesn’t mean that the attempt actually accomplished what you asked it to do.</p>
+<blockquote class="q">
+<p>If the function succeeds, the return value is nonzero. To determine whether the function adjusted all of the specified privileges, call <b>GetLastError</b>, which returns one of the following values when the function succeeds:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th style="border-bottom: solid 1px gray;">Return code</th>
+<th style="border-bottom: solid 1px gray;">Description</th>
+</tr>
+<tr>
+<td style="border-bottom: solid 1px gray;"><b>ERROR_SUCCESS</b></td>
+<td style="border-bottom: solid 1px gray;">The function adjusted all specified privileges.</td>
+</tr>
+<tr>
+<td style="border-bottom: solid 1px gray;"><b>ERROR_NOT_ALL_ASSIGNED</b></td>
+<td style="border-bottom: solid 1px gray;">The token does not have one or more of the privileges specified in the <i>NewState</i> parameter. The function may succeed with this error value <u>even if no privileges were adjusted</u>. The <i>PreviousState</i> parameter indicates the privileges that were adjusted.</td>
+</tr>
+</tbody>
+</table>
+</blockquote>
+<p>Emphasis mine.</p>
+<p>Therefore, we must also check whether all of the requested privileges were actually adjusted.</p>
+<pre>TOKEN_PRIVILEGES changedPrivileges;
+if (!AdjustTokenPrivileges(threadToken, FALSE, &amp;privileges,
+                           sizeof(changedPrivileges),
+                           &amp;changedPrivileges,
+                           nullptr)) {
+  clean up and fail;
+}
+
+<span style="color: blue;">if (GetLastError() == ERROR_NOT_ALL_ASSIGNED)
+{
+  clean up and fail;
+}</span>
+</pre>
+<p>This case is simple because we are adjusting only one privilege. If we were adjusting more than one privilege, then we would have to call <code>Adjust­Token­Privileges</code> a second time with the <code>changed­Privileges</code> to restore the token’s privileges to their original state. If you forget to do this, you end up returning with a token that has extra privileges enabled, which could be a security issue.</p>
+<pre>if (GetLastError() == ERROR_NOT_ALL_ASSIGNED)
+{
+  <span style="color: blue;">// Need to clean up the partially-adjusted token.
+  AdjustTokenPrivileges(threadToken, FALSE, &amp;changedPrivileges,
+                        sizeof(changedPrivileges), nullptr, nullptr);</span>
+  clean up and fail;
+}
+</pre>
+
+
+</body>

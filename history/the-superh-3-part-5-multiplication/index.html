@@ -1,0 +1,40 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The SuperH-3, part 5: Multiplication</h1>  <!-- .entry-meta -->
+
+<p><a href="/history/the-superh-3-part-4-basic-arithmetic"> Last time, we looked at simple addition and subtraction</a>. Now let’s look at multiplication.</p>
+<p>Multiplication operations report their results in a pair of 32-bit registers called called <var>MACH</var> and <var>MACL</var>, which collectively form a 64-bit virtual register known as <var>MAC</var> (multiply and accumulate).</p>
+<p>We start with the simple multiplication operations.</p>
+<pre>    MUL.L   Rm, Rn  ; MACL =           Rm *           Rn, no effect on MACH
+    MULS.W  Rm, Rn  ; MACL = ( int16_t)Rm * ( int16_t)Rn, no effect on MACH
+    MULU.W  Rm, Rn  ; MACL = (uint16_t)Rm * (uint16_t)Rn, no effect on MACH
+</pre>
+<p>The <code>.W</code> operations treat the two source operands as 16-bit values, either signed or unsigned, and store the 32-bit result into <var>MACL</var>. The <code>MUL.L</code> treats the source operands as full 32-bit values, and produces a 32-bit result in <var>MACL</var>. (It doesn’t matter whether the sources are considered signed or unsigned because the lower 32 bits of the result are the same either way.)</p>
+<p>The next instructions produce 64-bit results.</p>
+<pre>    DMULS.L Rm, Rn      ; MAC = Rn * Rm,   signed 32x32→64 multiply
+    DMULU.L Rm, Rn      ; MAC = Rn * Rm, unsigned 32x32→64 multiply
+
+    MAC.L   @Rm+, @Rn+  ; MAC += @Rm++ * @Rn++, signed 32x32→64 multiply
+    MAC.W   @Rm+, @Rn+  ; MAC += @Rm++ * @Rn++, signed 16x16→64 multiply
+</pre>
+<p>The <code>MAC.x</code> instructions are interesting in that they access two memory locations in one instruction. Both <var>Rm</var> and <var>Rn</var> are treated as addresses, 16-bit or 32-bit values are loaded from those addresses, the loaded values are treated as signed integers, multiplied together, and the result added to the 64-bit accumulator register <var>MAC</var>, and finally the registers are incremented by the operand size. The design of the instruction is evidently for performing a dot product of two vectors.</p>
+<p>There’s an additional wrinkle to the <code>MAC.x</code> instructions: If you set the <var>S</var> flag, then the operations use saturating addition rather than wraparound addition. For <code>MAC.L</code>, the saturation is as a 48-bit value, and the value is sign-extended to a 64-bit value in <var>MAC</var>. For <code>MAC.W</code>, the saturation is as a 32-bit value, and the bottom bit of <var>MACH</var> is set to 1 if an overflow occurred.</p>
+<p>In practice, of these multiplication instructions, you will likely see only <code>MUL.L</code> in compiler-generated code.</p>
+<p>Oh wait, how do you get the answers out of the <var>MAC</var> registers? Yeah, there are instructions for that too.</p>
+<pre>    CLRMAC              ; MAC = 0
+
+    LDS     Rm, MACH    ; MACH = Rm
+    LDS     Rm, MACL    ; MACL = Rm
+    LDS.L   @Rm+, MACH  ; MACH = @Rm+
+    LDS.L   @Rm+, MACL  ; MACL = @Rm+
+
+    STS     MACH, Rn    ; Rn = MACH
+    STS     MACL, Rn    ; Rn = MACL
+    STS.L   MACH, @-Rn  ; @-Rn = MACH
+    STS.L   MACL, @-Rn  ; @-Rn = MACL
+</pre>
+<p>The <code>CLRMAC</code> instruction sets <var>MAC</var> to zero, which is a good starting point for subsequent <code>MAC.x</code> instructions.</p>
+<p>The <code>LDS</code> instructions move values into the <var>MAC</var> registers. You can move a value directly from a register or load it (with post-increment) from memory. Conversely, the <code>STS</code> instructions move values out of the <var>MAC</var> registers, either into a general-purpose register or into memory.</p>
+<p><a href="https://devblogs.microsoft.com/oldnewthing/20190812-00/?p=102778"> Next up is integer division</a>, which is going to be interesting.</p>
+
+
+</body>

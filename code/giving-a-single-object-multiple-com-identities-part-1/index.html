@@ -1,0 +1,215 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Giving a single object multiple COM identities, part 1</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/a-very-brief-introduction-to-patterns-for-implementing-a-com-object-that-hands-out-references-to-itself"> patterns for COM objects that need to hand out references to themselves</a>. One common pattern is to make the callbacks separate objects that retain strong references to (and forward the callbacks to) the main object. An alternative pattern is to have the main object implement all of the necessary callback interfaces, but also observed that this had some downsides: The clients as well as the event sources have full access to the object, including interfaces that they weren’t intended to access, and there’s no way to register the object against multiple different event sources that use the same callback interface (but against which you want to register different handlers).</p>
+<p>So it looks like we’re stuck with the pattern of making the callback be a separate object, and paying for the extra allocations. This can be quite cumbersome if you need to generate these callbacks frequently, say, because they are completion callbacks for operations you perform frequently. This happens a lot in multimedia, where you might say “Go read some samples from the audio card, and then call this callback when you’re done.” You’d rather not have to keep creating these one-time callback objects.</p>
+<p>Fortunately, the situation is not hopeless. You can still keep your callback in the main object. You just have to give it a separate COM identity.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">Widget</td>
+</tr>
+<tr>
+<td>client</td>
+<td>→</td>
+<td style="border: solid 1px black;">IUnknown</td>
+<td style="border: solid 1px black;">IWidget</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black; border-bottom: none;">refcount</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">IUnknown</td>
+<td style="border: solid 1px black;">ICallback</td>
+<td>←</td>
+<td>event source</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black; border-top: none;">state data</td>
+</tr>
+</tbody>
+</table>
+<p>The idea here is that the main object and the callback share the same reference count, but they expose separate COM identities. The <code>IUnknown</code> given to the client responds to <code>Query­Interface</code> with itself or the <code>IWidget</code>. The one given to the event source responds to itself or the client’s <code>ICallback</code>. We want to write something like this:</p>
+<pre>struct Widget : public IWidget, public ICallback
+{
+    HRESULT IWidget::IUnknown::QueryInterface(REFIID riid, void** ppv)
+    {
+        if (riid == IID_IUnknown || riid == IID_IWidget) {
+            *ppv = static_cast&lt;IWidget*&gt;(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    HRESULT IWidget::WidgetMethod() { ... }
+
+    HRESULT ICallback::IUnknown::QueryInterface(REFIID riid, void** ppv)
+    {
+        if (riid == IID_IUnknown || riid == IID_ICallback) {
+            *ppv = static_cast&lt;ICallback*&gt;(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    HRESULT ICallback::CallbackMethod() { ... }
+
+    // AddRef and Release are shared by IWidget and ICallback
+    ULONG AddRef() { ... }
+    ULONG Release() { ... }
+}
+</pre>
+<p>(I’m removing some of <a href="https://devblogs.microsoft.com/oldnewthing/20200911-00/?p=104205"> the macros for declaring COM interfaces</a> for expository purposes.)</p>
+<p>You can’t actually write this, though. If a method is inherited from multiple base classes, you cannot override each one separately. Your only choice is to override all of them with the same function.</p>
+<p>The standard workaround for this is to demote one of the base classes to a member. We’ll demote the callback.</p>
+<pre>template&lt;typename D&gt;
+struct CallbackWrapper : public ICallback
+{
+    D* m_outer;
+
+    CallbackWrapper(D* outer) : m_outer(outer) { }
+
+    HRESULT QueryInterface(REFIID riid, void** ppv)
+    {
+        if (riid == IID_IUnknown || riid == IID_ICallback) {
+            *ppv = static_cast&lt;ICallback*&gt;(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    // Forward everything else to the outer class
+    D* outer() { return m_outer; }
+    ULONG AddRef() { return outer()-&gt;AddRef(); }
+    ULONG Release() { return outer()-&gt;Release(); }
+
+    HRESULT CallbackMethod() { return outer()-&gt;CallbackMethod(); }
+};
+
+struct Widget : public IWidget
+{
+    HRESULT QueryInterface(REFIID riid, void** ppv)
+    {
+        if (riid == IID_IUnknown || riid == IID_IWidget) {
+            *ppv = static_cast&lt;IWidget*&gt;(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    ULONG AddRef() { ... }
+    ULONG Release() { ... }
+
+    HRESULT WidgetMethod() { ... }
+    HRESULT CallbackMethod() { ... }
+
+
+    CallbackWrapper&lt;Widget&gt; m_wrapper{ this };
+};
+</pre>
+<p>You can pass the <code>m_wrapper</code> to the event source to pass the callback.</p>
+<pre>EventSource::RegisterCallback(&amp;m_wrapper);
+</pre>
+<p>Demoting it to a member also means that you can create multiple wrappers for different callbacks.</p>
+<pre>template&lt;auto Method&gt;
+struct CallbackWrapper : public ICallback
+{
+    template&lt;typename Outer&gt; static Outer outer_type(HRESULT(Outer::*)());
+    using Outer = decltype(outer_type(Callback));
+
+    Outer* m_outer;
+
+    CallbackWrapper(Outer* outer) : m_outer(outer) { }
+
+    HRESULT QueryInterface(REFIID riid, void** ppv)
+    {
+        if (riid == IID_IUnknown || riid == IID_ICallback) {
+            *ppv = static_cast&lt;ICallback*&gt;(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    // Forward everything else to the outer class
+    Outer* outer() { return m_outer; }
+    ULONG AddRef() { return outer()-&gt;AddRef(); }
+    ULONG Release() { return outer()-&gt;Release(); }
+
+    HRESULT CallbackMethod() { return (outer()-&gt;*Callback)(); }
+};
+
+struct Widget : public IWidget
+{
+    HRESULT QueryInterface(REFIID riid, void** ppv)
+    {
+        if (riid == IID_IUnknown || riid == IID_IWidget) {
+            *ppv = static_cast&lt;IWidget*&gt;(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    HRESULT WidgetMethod() { ... }
+
+    ULONG AddRef() { ... }
+    ULONG Release() { ... }
+
+    HRESULT CallbackMethod1() { ... }
+    HRESULT CallbackMethod2() { ... }
+
+    CallbackWrapper&lt;&amp;Widget::CallbackMethod1&gt; m_wrapper1{ this };
+    CallbackWrapper&lt;&amp;Widget::CallbackMethod2&gt; m_wrapper2{ this };
+};
+</pre>
+<p>This is important if your Widget performs multiple operations that all use the same callback interface. You need a way to distinguish the different instances of the callback.</p>
+<p>There’s some template magic going on here, taking advantage of the <code>auto</code> non-type template parameter introduced in C++17. Prior to C++17, you would have had to declare the <code>Outer</code> type explicitly:</p>
+<pre>template&lt;typename Outer, HRESULT(Outer::*Method)()&gt;
+{
+    ...
+};
+
+...
+    CallbackWrapper&lt;Widget, &amp;Widget::CallbackMethod1&gt; m_wrapper1{ this };
+    CallbackWrapper&lt;Widget, &amp;Widget::CallbackMethod2&gt; m_wrapper2{ this };
+</pre>
+<p>With C++17, we can accept just the function pointer and then infer the associated class with some template magic:</p>
+<pre>    template&lt;typename Outer&gt; static Outer outer_type(HRESULT(Outer::*)());
+    using Outer = decltype(outer_type(Callback));
+</pre>
+<p>The <code>outer_type</code> function takes a callback function and returns the associated class. The method is never called, so it needs no implementation. We are just using it for the template inference. The existence of a function declared but never implemented might trigger some warnings, so you can work around it in a few different ways.</p>
+<p>One is to give it an implementation (that is nevertheless never called). For example, you might try to use <code>std::declval</code>:</p>
+<pre>    template&lt;typename Outer&gt; static Outer outer_type(HRESULT(Outer::*)())
+    { return std::declval&lt;Outer&gt;(); }
+    using Outer = decltype(outer_type(Callback));
+</pre>
+<p>The <code>outer_type</code> function is called only in a non-evaluated context, so it is not odr-used. On the other hand, I’m not sure whether the instantiation of the templated <code>outer_type</code> function causes its body to become instantiated, which in turn triggers the odr-usage of <code>std::declval</code>, which is not allowed.</p>
+<p>A safer solution would be</p>
+<pre>    template&lt;typename Outer&gt; static Outer* outer_type(HRESULT(Outer::*)())
+    { return nullptr; }
+    using Outer = decltype(std::remove_pointer_t(outer_type(Callback)));
+</pre>
+<p>I’ve been showing an implementation in straight C++, but it also works in a framework, as long as you have some way of using the outer object to (1) adjust the reference count and (2) call the method you want to forward to. In most frameworks, the most-derived class provides all you need, so the above code works even if you declare the COM class with ATL or WRL or C++/WinRT.</p>
+<p>One annoyance here is that we have to remember the outer object’s <code>this</code> pointer, even though it’s something that could be hard-coded by taking advantage of the fixed layout of the <code>Widget</code> object. We’ll look at removing that <code>m_outer</code> member next time.</p>
+
+
+</body>

@@ -1,0 +1,12 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When can GetSecurityInfo API return ERROR_INSUFFICIENT_BUFFER?</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that under stress testing, they found that when they call the <code>Get­Security­Info</code> function to get the DACL of a job object, the call randomly returns <code>ERROR_</code><code>INSUFFICIENT_</code><code>BUFFER</code>. They can’t find a pattern to the failure, and since the caller doesn’t pass a buffer, it’s not clear what buffer was insufficient. This happens even when the system is not under memory pressure, so it’s not that the program itself was running out of memory. </p>
+<p>What’s going on is a race condition called out in the documentation: </p>
+<blockquote class="q"><p>This function <a href="https://msdn.microsoft.com/library/windows/desktop/aa446654(v=vs.85).aspx">does not handle race conditions</a>. If your thread calls this function at the approximate time that another thread changes the object’s security descriptor, then this function could fail. </p></blockquote>
+<p>Basically, what happens is that internally, the function asks for the size of the security info, <a href="https://blogs.msdn.microsoft.com/oldnewthing/20121212-00/?p=5853">allocates the memory</a>, and then asks for the buffer to be filled in. If the security information increases in size between the first and third steps, then the buffer passed in the third step is insufficient, and that’s the error that is returned. </p>
+<p>It’s apparent from the fact that this race condition is called out that the function doesn’t handle the TOCTTOU error and merely propagates the error back to you, making it up to you to retry (if that’s what you want). </p>
+<p>Personally, I think this is a flaw in the implementation. </p>
+
+
+</body>

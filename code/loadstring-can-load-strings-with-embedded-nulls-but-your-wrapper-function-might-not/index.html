@@ -1,0 +1,73 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">LoadString can load strings with embedded nulls, but your wrapper function might not</h1>  <!-- .entry-meta -->
+
+<p>
+Whenever somebody reports that the
+<code>SHFileOperation</code> function
+or the <code>lpstrFilter</code> member of the
+<code>OPENFILENAME</code> structure
+is not working,
+my psychic powers tell me that they
+<a href="http://shellrevealed.com/blogs/shellblog/archive/2006/09/28/Common-Questions-Concerning-the-SHFileOperation-API_3A00_-Part-2.aspx">
+failed to manage
+the double-null-terminated strings</a>.
+</p>
+<p>
+Since
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/01/30/65013.aspx">
+string resources take the form of a counted string</a>,
+they can contain embedded null characters,
+since the null character is not being used as the string terminator.
+The <code>LoadString</code> function knows about this,
+but other functions might not.
+</p>
+<p>
+Here’s one example:
+</p>
+<pre>TCHAR szFilters[80];<br/><i>strcpy_s(szFilters, 80, "Text files\0*.txt\0All files\0*.*\0");<br/>// ... or ...<br/>strlcpy(szFilters, "Text files\0*.txt\0All files\0*.*\0", 80);</i><br/></pre>
+<p>
+The problem is that you’re using a function which operates
+on null-terminated strings
+but you’re giving it a double-null-terminated string.
+Of course, it will stop copying at the first null terminator,
+and the result is that <code>szFilters</code> is not a valid
+double-null-terminated string.
+</p>
+<p>
+Here’s another example:
+</p>
+<pre><i>sprintf_s(szFilters, 80, "%s\0*.txt\0%s\0*.*\0", "Text files", "All files");</i><br/></pre>
+<p>
+Same thing here.
+Functions from the
+<code>sprintf</code> family take a null-terminated
+string as the format string.
+If you “embed” a null character into the format string,
+the <code>sprintf</code> function will treat it as the end of the
+format string and stop processing.
+</p>
+<p>
+Here’s a more subtle example:
+</p>
+<pre>CString strFilter;<br/>strFilter.LoadString(g_hinst, IDS_FILE_FILTER);<br/></pre>
+<p>
+There is no obvious double-null-termination bug here,
+but there is if you look deeper.
+</p>
+<pre>BOOL CString::LoadString(UINT nID)<br/>{<br/>  // try fixed buffer first (to avoid wasting space in the heap)<br/>  TCHAR szTemp[256];<br/>  int nCount =  sizeof(szTemp) / sizeof(szTemp[0]);<br/>  int nLen = _LoadString(nID, szTemp, nCount);<br/>  if (nCount - nLen &gt; CHAR_FUDGE)<br/>  {<br/>    *this = szTemp;<br/>    return nLen &gt; 0;<br/>  }<br/> <br/>  // try buffer size of 512, then larger size until entire string is retrieved<br/>  int nSize = 256;<br/>  do<br/>  {<br/>    nSize += 256;<br/>    nLen = _LoadString(nID, GetBuffer(nSize - 1), nSize);<br/>  } while (nSize - nLen &lt;= CHAR_FUDGE);<br/>  ReleaseBuffer();<br/> <br/>  return nLen &gt; 0;<br/>}<br/></pre>
+<p>
+Observe that this function loads the string into a temporary
+buffer, and then if it succeeds, stores the result via the
+<code>operator=</code> operator,
+which assumes a null-terminated string.
+If your string resource contains embedded nulls,
+the <code>operator=</code> operator will stop at the first null.
+</p>
+<p>
+The mistake here was taking a class designed for null-terminated strings
+and using it for something that isn’t a null-terminated string.
+After all, it’s called a <code>CString</code> and not a
+<code>CDoubleNullTerminatedString</code>.</p>
+
+
+</body>

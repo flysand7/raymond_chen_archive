@@ -1,0 +1,158 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Processing a ValueSet or PropertySet even in the face of possible mutation, part 3</h1>  <!-- .entry-meta -->
+
+<p>We’ve looked at a few different ways of one way of saving the contents of a ValueSet or PropertySet while remaining resilient to concurrency modification. A customer tried to implement the first pattern, <a href="/code/processing-a-valueset-or-propertyset-even-in-the-face-of-possible-mutation-part-1" title="Processing a ValueSet or PropertySet even in the face of possible mutation, part 1"> where each mutation is followed by a processing pass that bails out if it notices a subsequent modification</a>.</p>
+<p>A customer tried to implement this pattern, but with a wrinkle: The collection was not self-saving; rather, the collection was part of a larger object that had an explicit <code>Save</code> method. They factored the code this way:</p>
+<pre>// Interface declaration
+namespace Contoso
+{
+    runtimeclass Widget
+    {
+        Windows.Foundation.Collections.PropertySet ExtendedProperties { get; };
+        void Save();
+    }
+}
+
+// C++/WinRT code-behind
+struct Widget : WidgetT&lt;Widget&gt;
+{
+    winrt::PropertySet ExtendedProperties() { return m_propertySet; }
+    void Save();
+
+    winrt::PropertySet m_propertySet;
+};
+</pre>
+<p>The <code>Save</code> method followed the “abandon on failure” pattern:</p>
+<pre>void Widget::Save()
+{
+    try {
+        SomeKindOfDataBuffer buffer;
+        auto it = m_propertySet.First();
+        if (it.HasCurrent()) {
+            do {
+                auto current = it.Current();
+                buffer.AddKeyAndValue(current.Key(), current.Value());
+            } while (it.MoveNext());
+        }
+
+        auto guard = m_lock.lock();
+
+        // verify that the collection is still unchanged before saving
+        std::ignore = it.HasCurrent();
+
+        SaveToFile(buffer);
+    } catch (winrt::hresult_changed_state const&amp;) {
+        // Abandon the operation.
+        // The mutating thread will do its own Save.
+        return;
+    }
+}
+</pre>
+<p>(Observe that this is a direct copy/pasta from <a href="/code/processing-a-valueset-or-propertyset-even-in-the-face-of-possible-mutation-part-1" title="Processing a ValueSet or PropertySet even in the face of possible mutation, part 1"> our first pattern</a>.)</p>
+<p>Was this the correct implementation?</p>
+<p>No.</p>
+<p>In the two patterns discussed so far, the object was auto-saving. Therefore, if there was a conflicting modification, we know that the modifying thread will also perform its own <code>Save()</code>, and we could therefore just abandon the work, knowing that the other thread will assume responsibility for saving. (If that other thread subsequently fails due to a conflict modification, then the responsibility transfers to whoever made the conflicting modification. Eventually, the last modification will make it all the way to the end and save the collection for real.)</p>
+<p>But the <code>Widget</code> object is not auto-saving. If the <code>Save</code> fails due to a concurrent modification, the conflicting thread is not going to “take over” the <code>Save</code> operation since there is no <code>Save</code> happening on the conflicting thread.</p>
+<p>For this pattern, you have to decide what your object’s policy is if a conflicting modification is made during a <code>Save</code>.</p>
+<p>One option you might choose is that <code>Save()</code> silently fails if a concurrent modification occurs, under the expectation that the mutating thread will eventually perform its own <code>Save()</code> to bring things back in sync. Though you might want to change it so that the <code>Save()</code> method reports whether the save was interrupted.</p>
+<pre><span style="color: blue;">bool Widget::TrySave()</span>
+{
+    try {
+        SomeKindOfDataBuffer buffer;
+        auto it = m_propertySet.First();
+        if (it.HasCurrent()) {
+            do {
+                auto current = it.Current();
+                buffer.AddKeyAndValue(current.Key(), current.Value());
+            } while (it.MoveNext());
+        }
+
+        auto guard = m_lock.lock();
+
+        // verify that the collection is still unchanged before saving
+        std::ignore = it.HasCurrent();
+
+        SaveToFile(buffer);
+        <span style="color: blue;">return true;</span>
+    } catch (winrt::hresult_changed_state const&amp;) {
+        // Abandon the operation.
+        // The mutating thread <span style="color: red;"><span style="text-decoration: line-through;">will</span></span><span style="color: blue;">should</span> do its own Save.
+        <span style="color: blue;">return false;</span>
+    }
+}
+</pre>
+<p>This model assumes that everybody will want to (eventually) save their changes. Consider this guy:</p>
+<pre>    Widget widget;
+
+    // Temporarily mark it as busy.
+    widget.ExtendedProperties().Insert(L"IsBusy", winrt::box_value(true));
+
+    DoSomething(widget);
+
+    // Okay, not busy any more.
+    widget.ExtendedProperties().Remove(L"IsBusy");
+</pre>
+<p>This caller has no intention of saving the changes. But their temporary modification of the collection may have prevent somebody else from saving. Then again, if the timing were different, their temporary modifications would have been saved by mistake! You get to decide if this is a pattern you want to follow.</p>
+<p>Another option is to say make it forbidden to modify the <code>Widget</code>‘s properties while it is being saved. In that case, you would just remove all the concurrent modification protection from the <code>Save</code> method and let the “changed state” exception propagate to the caller:</p>
+<pre>void Widget::Save()
+{
+    <span style="color: red;">// <span style="text-decoration: line-through;">try {</span></span>
+        SomeKindOfDataBuffer buffer;
+        auto it = m_propertySet.First();
+        if (it.HasCurrent()) {
+            do {
+                auto current = it.Current();
+                buffer.AddKeyAndValue(current.Key(), current.Value());
+            } while (it.MoveNext());
+        }
+
+        <span style="color: red;">// <span style="text-decoration: line-through;">auto guard = m_lock.lock();</span></span>
+
+        <span style="color: red;">// <span style="text-decoration: line-through;">verify that the collection is still unchanged before saving</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">std::ignore = it.HasCurrent();</span></span>
+
+        SaveToFile(buffer);
+    <span style="color: red;">// <span style="text-decoration: line-through;">} catch (winrt::hresult_changed_state const&amp;) {</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">Abandon the operation.</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">The mutating thread will do its own Save.</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">return;</span></span>
+    <span style="color: red;">// <span style="text-decoration: line-through;">}</span></span>
+}
+</pre>
+<p>The only reason for manually iterating was so we could make a final <code>HasCurrent()</code> check at the end, but since that got deleted, we can return to the simple version:</p>
+<pre>void Widget::Save()
+{
+    SomeKindOfDataBuffer buffer;
+    for (auto [name, value] : m_propertySet)
+        buffer.AddKeyAndValue(name, value);
+    }
+
+    SaveToFile(buffer);
+}
+</pre>
+<p>If a concurrent modification occurs, then the <code>Save()</code> method fails with a “changed state” exception, which tells the caller, “You broke the rules and modified the collection while it was saving. Shame on you!”</p>
+<p>Note that there is a tiny window where the concurrent modification is not detected, if it happens after we build the buffer and before we save it. That’s not a problem, because as far as the caller can tell, the mutation could very well have occurred at the <code>ret</code> instruction at the end of the <code>Save­To­File</code> function. (The caller has no insight into the moment in time after the buffer is built and the buffer being saved.)</p>
+<p>Yet another pattern is to say that if you mutate the collection during a <code>Save</code>, then you can’t predict whether it will save the pre-mutation version or post-mutation version, but will always save <i>something</i>. In that case, we need to back out and retry if a concurrent mutation is encountered.</p>
+<pre>void Widget::Save()
+{
+    while (true) {
+        try {
+            SomeKindOfDataBuffer buffer;
+            for (auto [name, value] : m_propertySet)
+                buffer.AddKeyAndValue(name, value);
+            }
+
+            SaveToFile(buffer);
+
+            return;
+
+        } catch (winrt::hresult_changed_state const&amp;) {
+            // Abandon the operation and try again.
+        }
+    }
+}
+</pre>
+<p>The customer also had another scenario where they needed to process a PropertySet in the fact of concurrent mutation. We’ll look at that next time.</p>
+
+
+</body>

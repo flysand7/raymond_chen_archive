@@ -1,0 +1,57 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I get from a file path to the volume that holds it?</h1>  <!-- .entry-meta -->
+
+<p>Say you have the path to a file and you want to access the volume that the file resides on.</p>
+<p><b>Warning</b>: All error checking is removed for expository purposes.</p>
+<p>The first step on our journey is getting from the path to the volume mount point. This tells us where the root of the volume got inserted into the namespace.</p>
+<pre>TCHAR volumePath[MAX_PATH]; // for expository purposes
+GetVolumePathName(filePath, volumePath, ARRAYSIZE(volumePath));
+</pre>
+<p>This information might be useful in its own right, but for us, it’s just a stepping stone to the next piece of information: The volume name.</p>
+<pre>TCHAR volumeName[MAX_PATH]; // for expository purposes
+GetVolumeNameForVolumeMountPoint(volumePath, volumeName, ARRAYSIZE(volumeName));
+</pre>
+<p>The volume name is returned in the form <tt>\\?\Volume{guid}\</tt>, with a trailing backslash. Note that this call will fail if the path is not a local drive.</p>
+<p>Now things get weird.</p>
+<p>If you pass that path to the <code>CreateFile</code> function with the trailing backslash intact, then you are opening a handle to the root directory of the volume.</p>
+<p>If you pass that path to the <code>CreateFile</code> function with the trailing backslash removed, then you are opening a handle to the volume itself.</p>
+<p>Depending on which operation you want to perform on the volume, you either must have or must not have that trailing backslash.</p>
+<p>In our case, we want to open a handle to the volume itself, so we need to remove that trailing backslash. The call to <code>CreateFile</code> looks like this:</p>
+<pre>HANDLE handle = CreateFile(volumeNameWithoutTrailingBackslash,
+    0, /* no special access requested */
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    nullptr, /* no custom security */
+    OPEN_EXISTING,
+    FILE_FLAG_BACKUP_SEMANTICS,
+    nullptr); /* template */
+</pre>
+<p>Volume query operations do not require any specific level of access, so we’ll ask for no special access. Which is good, because regular non-elevated code doesn’t really have much in the way of special access to volumes. You won’t able to get <code>GENERIC_</code><code>READ</code>, much less <code>GENERIC_</code><code>WRITE</code>. (You’ll be able to get <code>FILE_</code><code>READ_</code><code>ATTRIBUTES</code>, if that’s any consolation.)</p>
+<p>You also need to request backup semantics in order to open a volume.</p>
+<p>We can put all of this together into a function called, say, <code>Get­Volume­Handle­For­File</code>. For RAII, I’m going to use <a href="https://github.com/microsoft/wil/">wil</a>.</p>
+<pre>wil::unique_hfile GetVolumeHandleForFile(PCWSTR filePath)
+{
+  wchar_t volumePath[MAX_PATH];
+  THROW_IF_WIN32_BOOL_FALSE(GetVolumePathName(filePath,
+                                volumePath, ARRAYSIZE(volumePath)));
+
+  wchar_t volumeName[MAX_PATH];
+  THROW_IF_WIN32_BOOL_FALSE(GetVolumeNameForVolumeMountPoint(volumePath,
+                                volumeName, ARRAYSIZE(volumeName)));
+
+  auto length = wcslen(volumeName);
+  if (length &amp;&amp; volumeName[length - 1] == L'\\')
+  {
+    volumeName[length - 1] = L'\0';
+  }
+
+  wil::unique_hfile result{ CreateFile(volumeName, 0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr) };
+  THROW_LAST_ERROR_IF(!result);
+  return result;
+}
+</pre>
+<p>Now that you have the volume handle, you can ask the volume for information. We’ll look at that next time.</p>
+
+
+</body>

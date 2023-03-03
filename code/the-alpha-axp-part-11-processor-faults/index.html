@@ -1,0 +1,26 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Alpha AXP, part 11: Processor faults</h1>  <!-- .entry-meta -->
+
+<p>There are three types of faults on the Alpha AXP: </p>
+<ul>
+<li>Software faults</li>
+<li>Hardware faults</li>
+<li>Arithmetic faults</li>
+</ul>
+<p>Software faults are those triggered by explicit instructions, such as <code>CALL_PAL</code>. These are calls that trap into the kernel and are used as the Alpha AXP version of <code>syscall</code>. Software faults are raised synchronously, and execution does not proceed past a software fault. Consequently, they are restartable. </p>
+<p>Hardware faults are those triggered by things like page faults, hardware interrupts, or software emulation. Hardware faults are not necessarily raised synchronously; execution can proceed past a hardware fault before the fault is generated, but the fault is nevertheless restartable. Even though instructions past the faulting instruction may have already executed, they can safely be executed again. </p>
+<p>Arithmetic faults are tricky. </p>
+<p>The <code>ADD<u>x</u></code>, <code>SUB<u>x</u></code> and <code>MUL<u>x</u></code> instructions can take a <code>/V</code> suffix to indicate that the instruction should raise a processor trap if a signed integer overflow occurs.¹ There is a similar suffix that can be applied to floating point operations to trigger an arithmetic fault if something goes wrong in the floating point calculation. </p>
+<p>The catch is that the trap is not required to be raised at the point of the operation. The processor is permitted to delay the overflow trap indefinitely, or until you do this: </p>
+<pre>
+    TRAPB
+</pre>
+<p>The trap barrier instruction tells the processor to raise any overflow traps that are still pending. The previous arithmetic operations need not run to completion; they only need to run far enough to confirm that no overflow has occurred. The processor is allowed to execute past the <code>TRAPB</code> instruction, as long as it can do so without violating the constraints of the <code>TRAPB</code> instruction. </p>
+<p>In practice, you don’t see the <code>/V</code> suffix because C-like programming languages don’t raise overflow exceptions. They just define integer overflows to wrap, or leave the behavior undefined. </p>
+<p>You usually see <code>TRAPB</code> instructions at the start and end of a function, and whenever code enters or exits a <code>__try</code> block. Basically, it happens any time there is a change to how exceptions are dispatched and unwound. </p>
+<p>The fact that overflow traps can occur long after the operation that caused the overflow means that overflow traps are in general not recoverable, because you don’t know which register contains the overflowed value. (Indeed, the overflowed value may not even be in a register any more.) If you want your overflow traps to be recoverable, you need to put the <code>TRAPB</code> immediately after the instruction that potentially creates the overflow condition. </p>
+<p>Okay, so that’s overflow. But what about carry? We’ll look at that next time. </p>
+<p>¹ The presence of overflow detection means that the <code>L</code> versions of the instructions are not quite the same as “Perform the <code>Q</code> operation, and then sign-extend the low-order 32 bits of the result.” The numeric result is the same, but the overflow conditions are different. </p>
+
+
+</body>

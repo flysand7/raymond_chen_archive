@@ -1,0 +1,108 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The std::map subscript operator is a convenience, but a potentially dangerous one</h1>  <!-- .entry-meta -->
+
+<p>The <code>std::map&lt;K, V&gt;</code> class is an associative container of key/value pairs. It also provides a handy subscript operator <code>[]</code> that lets you access the map as if it were an array. </p>
+<p>That operator is a convenience, but a potentially dangerous one. </p>
+<p>The problem is that the <code>[]</code> operator is trying to serve two masters. You might use it to read a value from the map: </p>
+<pre>
+std::map&lt;int, T&gt; m;
+
+auto value = m[2]; // retrieve the item whose key is 2
+</pre>
+<p>Or you might use it to write to the map. </p>
+<pre>
+m[2] = t; // create or update the item whose key is 2
+</pre>
+<p>The <code>[]</code> operator doesn’t know whether you’re going to read from or write to the result, so it has to come up with some sort of compromise. And sometimes the result of a compromise is something both sides dislike. </p>
+<ul>
+<li>    If the key is found in the map,     then return a reference to the existing value.     You can read that value or overwrite it. </li>
+<li>    If the key is not found in the map,     then create a new entry in the map consisting of the key     (moved, if movable) and a default-constructed value,     then return a reference to that freshly-created value.     You can read that value or overwrite it. </li>
+</ul>
+<p>This is different from how the <code>[]</code> operator works in C#, JavaScript, Java, Perl, PHP, Python, Ruby, pretty much every other programming language out there. In all those other languages, reading a value out of an associative array is a non-mutating operation. Trying to fetch an element whose key is <code>2</code> does not cause such an element to be created! </p>
+<p>But that’s what happens when you read from a <code>std::map</code> using the <code>[]</code> operator. </p>
+<p>Also, in those other languages, setting a new value in the associative array does not first create a throwaway value that gets immediately overwritten. </p>
+<p>But that’s what happens when you create a new key/value pair in a <code>std::map</code> using the <code>[]</code> operator. </p>
+<p>Synthesizing a value in the <code>[]</code> operator means that you can accidentally fill your <code>std::map</code> with garbage entries when you really were just trying to see if an element was there. </p>
+<pre>
+std::map&lt;int, std::unique_ptr&lt;T&gt;&gt; m;
+
+void RecolorizeIfPresent(int i)
+{
+  if (m[i]) { m[i]-&gt;Recolorize(); }
+}
+</pre>
+<p>If you call <code>Recolorize­If­Present</code> with an integer that is not in the associative array, the associative array will create an empty <code>std::unique_ptr&lt;T&gt;</code>, add it to the associative array, and then return it to you. Your <code>if</code> then converts that <code>std::unique_ptr&lt;T&gt;</code> to a <code>bool</code>, which says whether the <code>std::unique_ptr&lt;T&gt;</code> is managing a <code>T</code>, which in the case of a default-constructed <code>std::unique_ptr&lt;T&gt;</code>, will be “no”. </p>
+<p>The result is that your map gets clogged with empty <code>std::unique_ptr&lt;T&gt;</code> objects, one for each key you probed. If you aren’t expecting this behavior, you just created a memory leak: You didn’t expect the probe to create an entry in the map, so you aren’t going to have any code to clean out those empty entries. Those empty entries will just keep accumulating, slowly consuming more and more memory. </p>
+<p>Meanwhile, the code that is trying to add an entry to the map is also not too happy. </p>
+<pre>
+std::map&lt;int, T&gt; m;
+
+m[2] = T(constructor_argument1, constructor_argument2);
+</pre>
+<p>It looks like this code creates a <code>T</code> object and puts it into the map under the key <code>2</code>. But actually, this code creates <i>two</i> <code>T</code> objects. It creates a default one when you say <code>m[2]</code> and there is no entry for <code>2</code>, and then it creates a second one when you construct one with <code>T(...)</code>. Finally, the assignment operator causes the first one to be overwritten by the second one, and then the second one is destructed. </p>
+<p>This can be quite expensive if <code>T</code> has a complex constructor, or if its constructor has observable side effects. </p>
+<pre>
+class Screenshot
+{
+public:
+  // The default constructor captures the entire screen.
+  Screenshot();
+
+  // Or you can specify a portion of the screen.
+  Screenshot(Rectangle const&amp; rect);
+
+  ...
+};
+
+std::map&lt;Timestamp, Screenshot&gt; screenshots;
+
+void CaptureScreenRectangle(Rectangle const&amp; rect)
+{
+ m[now()] = Screenshot(rect);
+}
+</pre>
+<p>Every time you call <code>Capture­Screen­Rectangle</code>, you actually take a screen shot of the entire screen (which will probably be slow and allocate a lot of memory), and then take a screen shot of the desired rectangle (which could very well be tiny), and then overwrite the giant screen shot with the small one. </p>
+<p>Note also that if the value type is not default-constructible, then the <code>[]</code> operator won’t work at all! </p>
+<pre>
+struct Nope
+{
+public:
+  Nope(int); // no default constructor
+};
+
+std::map&lt;int, Nope&gt; m;
+
+m[2] = Nope(2); // does not compile
+</pre>
+<p>My personal recommendation is to avoid the <code>[]</code> operator. If you want to use an entry if it exists, then use <code>map::find()</code>. </p>
+<pre>
+auto item = m.find(2);
+if (item != m.end()) {
+ DoSomethingWith(*item);
+}
+</pre>
+<p>If you expect the entry to exist, then use <code>map::at()</code>. </p>
+<pre>
+auto&amp; value = m.at(2); // throws if not found
+</pre>
+<p>If you want to create a brand new entry, but leave any existing entry intact, then use <code>map::insert</code> or <code>map::emplace</code> or <code>map::try_emplace</code>. </p>
+<pre>
+auto [item, inserted] = m.insert({ now(), Screenshot(rect) });
+
+auto [item, inserted] = m.emplace(now(), rect);
+
+// try_emplace doesn't even construct the Screenshot if an
+// entry already exists.
+auto [item, created] = m.try_emplace(now(), rect);
+</pre>
+<p>If you want to create a new entry or overwrite any existing entry, then use <code>map::insert_or_assign</code>.</p>
+<pre>
+auto [item, inserted] = m.insert_or_assign(now(), Screenshot(rect));
+</pre>
+<p>Just don’t use <code>[]</code>. </p>
+<p><b>Bonus reading</b>: <a href="https://www.fluentcpp.com/2018/12/11/overview-of-std-map-insertion-emplacement-methods-in-cpp17/">Overview of std::maps Insertion / Emplacement Methods in C++17</a>. </p>
+<p><b>Bonus chatter</b>: There have been <a href="https://groups.google.com/a/isocpp.org/forum/#!msg/std-proposals/09a4G1aXF8U/Qs5yBO6QBAAJ">various</a> <a href="https://groups.google.com/a/isocpp.org/d/msg/std-proposals/K7hIXITovAc/w3VEAK3kBgAJ">ideas</a> for <a href="https://groups.google.com/a/isocpp.org/d/msg/std-proposals/qcjpw-sidq0/TZI7kiffXAIJ">fixing this</a> problem with <code>[]</code>, but none of them work. </p>
+<p><b>Bonus viewing</b>: Louis Brandy calls this “<a href="https://www.youtube.com/watch?v=lkgszkPnV8g&amp;t=7m3s">The greatest C++ newbie trap</a>.” </p>
+
+
+</body>

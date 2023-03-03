@@ -1,0 +1,104 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to split out pieces of a file while preserving git line history: The easy way with misleading commits</h1>  <!-- .entry-meta -->
+
+<p><a href="/other/how-to-split-out-pieces-of-a-file-while-preserving-git-line-history-the-hard-way-with-commit-tree"> Last time</a>, we split pieces of a file into separate files while preserving line history. We had to do some <code>git commit-tree</code> magic to get the results we wanted. But there’s a way to do this with an octopus merge. You just have to make sure to keep the octopus happy.</p>
+<p>Again, let’s use the same scratch repo as we did for the last few days. You can follow the same copy/paste script, or you can take your existing scratch repo and <code>git reset --hard ready</code> to get it back into its “ready to start experimenting” state.</p>
+<p>To do things the easy way, we create a branch for each file we want to split out.</p>
+<pre style="white-space: pre-wrap;">git checkout -b 2f
+
+git mv foods fruits
+git commit --author="Greg &lt;greg&gt;" -m "create fruits from foods"
+</pre>
+<p>As before, we start by renaming <code>foods</code> to <code>fruits</code>. This ensures that when git traces the history of the <code>fruits</code> file, it will follow the history back into the <code>foods</code> file.</p>
+<p>Next, we edit the <code>fruits</code> file so that it contains the lines we want to split out from <code>foods</code> (so far so good), but we also regenerate the <code>foods</code> file with only its <i>final contents</i>. We intend to delete the vegetables from the <code>foods</code> file, so we’ll delete <i>both</i> the fruits <i>and</i> the vegetables. and the rest go back into the <code>foods</code> file.</p>
+<pre style="white-space: pre-wrap;">&gt;foods echo cheese
+&gt;&gt;foods echo eggs
+&gt;&gt;foods echo milk
+git add foods
+
+&gt;fruits echo apple
+&gt;&gt;fruits echo grape
+&gt;&gt;fruits echo orange
+
+git commit --author="Greg &lt;greg&gt;" -am "split fruits from foods"
+
+git checkout -
+</pre>
+<p>This is <i>completely misleading</i> and looks like we’ve lost our minds. We are ostensibly splitting the fruits out from the foods, but we also <i>threw away the veggies</i>. Somebody looking at this commit in isolation will say, “Hey, what happened to all the veggies?”</p>
+<p>But let’s keep going. Repeat the exercise by splitting out the veggies and throwing away the fruit.</p>
+<pre style="white-space: pre-wrap;">git checkout -b 2v
+
+git mv foods veggies
+git commit --author="Greg &lt;greg&gt;" -m "create veggies from foods"
+
+git checkout 2f foods
+
+&gt;veggies echo celery
+&gt;&gt;veggies echo lettuce
+&gt;&gt;veggies echo peas
+
+git commit --author="Greg &lt;greg&gt;" -am "split veggies from foods"
+
+git checkout -
+</pre>
+<p>To save ourselves some typing, we used a <code>git checkout 2f foods</code> to say “Just give me the copy of <code>foods</code> from the <code>2f</code> branch.”</p>
+<p>Finally, on the main branch, we also edit the <code>foods</code> file into its final form.</p>
+<pre style="white-space: pre-wrap;">git checkout 2f foods
+git commit --author="Greg &lt;greg&gt;" -am "split fruits and veggies from foods"
+</pre>
+<p>This commit is also absurdly misleading because most of the contents of the <code>foods</code> file simply vanished!</p>
+<pre style="white-space: pre-wrap;">git merge 2f 2v
+
+Trying simple merge with 2f
+Trying simple merge with 2v
+Merge made by the 'octopus' strategy.
+ fruits  | 3 +++
+ veggies | 3 +++
+ 2 files changed, 6 insertions(+)
+ create mode 100644 fruits
+ create mode 100644 veggies
+</pre>
+<p>The result is now that all three files are at their desired final forms, with the desired final line attributions.</p>
+<pre style="white-space: pre-wrap;">git blame fruits
+
+^e7a114d foods (Alice 2019-09-16 07:00:00 -0700 1) apple
+86348be4 foods (Bob   2019-09-16 07:00:01 -0700 2) grape
+34eb5bd1 foods (Carol 2019-09-16 07:00:02 -0700 3) orange
+
+git blame veggies
+
+^e7a114d foods (Alice 2019-09-16 07:00:00 -0700 1) celery
+86348be4 foods (Bob   2019-09-16 07:00:01 -0700 2) lettuce
+34eb5bd1 foods (Carol 2019-09-16 07:00:02 -0700 3) peas
+
+git blame foods
+
+^e7a114d (Alice 2019-09-16 07:00:00 -0700 1) cheese
+86348be4 (Bob   2019-09-16 07:00:01 -0700 2) eggs
+34eb5bd1 (Carol 2019-09-16 07:00:02 -0700 3) milk
+</pre>
+<p>However, the way we got there is very strange, and includes quite a few <i>extremely misleading</i> commits. I don’t really recommend it. I recommend doing it the hard way with <code>git commit-tree</code>. Yes, it’s harder, but it’s also much less misleading to people who come to the repo later.</p>
+<p><b>Bonus chatter</b>: The misleading commit on the main branch is necessary because of another bug in octopus merges: It silently ignores the <code>--no-ff</code> flag. You can see this if you skip the extra commit on the main branch and try an octopus merge right away:</p>
+<pre style="white-space: pre-wrap;">git merge --no-ff 2f 2v
+
+<b>Fast-forwarding to: 2f</b>
+Trying simple merge with 2v
+Merge made by the 'octopus' strategy.
+ foods   | 6 ------
+ fruits  | 3 +++
+ veggies | 3 +++
+ 3 files changed, 6 insertions(+), 6 deletions(-)
+ create mode 100644 fruits
+ create mode 100644 veggies
+</pre>
+<p>Even though we said <code>--no-ff</code>, the octopus merge fast-forwarded anyway. The result is that the <code>foods</code> file failed to preserve line history.</p>
+<pre style="white-space: pre-wrap;">git blame foods
+
+61bca29b (Greg 2019-09-18 07:00:00 -0700 1) cheese
+61bca29b (Greg 2019-09-18 07:00:00 -0700 2) eggs
+61bca29b (Greg 2019-09-18 07:00:00 -0700 3) milk
+</pre>
+<p>All the lines got blamed on Greg, when they really should be blamed on Alice, Bob, and Carol.</p>
+
+
+</body>

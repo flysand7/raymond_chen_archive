@@ -1,0 +1,91 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How you might be loading a DLL during DLL_PROCESS_DETACH without even realizing it</h1>  <!-- .entry-meta -->
+
+<p>
+As you are I’m sure aware,
+you shouldn’t be doing much of anything in your <code>DllMain</code>
+function,
+but you have to watch out for cases where you end up doing them
+accidentally.
+</p>
+<p>
+Some time ago, I was investigating a failure which was traced back
+to loading a DLL inside <code>DLL_PROCESS_DETACH</code>.
+Wait, what kind of insane person <i>loads</i> a DLL as part of
+shutting down?
+Shouldn’t you be cleaning up stuff, not creating new stuff?
+</p>
+<p>
+The following is not the actual code, but it captures the same
+spirit:
+</p>
+<pre>
+INFO *CachedInfo;
+BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, void *pvReserved)
+{
+  switch (dwReason) {
+  ...
+  case DLL_PROCESS_DETACH:
+    ...
+    CoTaskMemFree(CachedInfo);
+    ...
+  }
+  return TRUE;
+}
+</pre>
+<p>
+There is some global variable that contains a pointer to memory
+that was allocated by <code>CoTaskMemAlloc</code>.
+In this case, I made it a cache, but the details aren’t important.
+When the DLL is detached from the process, we free the cached memory
+so we don’t have a leak.
+Since it is okay to pass <code>NULL</code> to
+the <code>CoTaskMemFree</code> function (it simply returns
+without doing anything),
+the cleanup code works even if we never called a function that
+put a value into the cache.
+</p>
+<p>
+Except that this code ended up loading a DLL.
+The reason is delay-loading.
+</p>
+<p>
+The authors of this DLL sped up its load time by marking
+<code>OLEAUT32.DLL</code> as a
+<a href="http://msdn.microsoft.com/yx9zd12s.aspx">
+delay-loaded DLL</a>,
+which means that it doesn’t get loaded until somebody calls a
+function in it.
+</p>
+<p>
+And in fact, nobody called a function from <code>OLEAUT32</code>.
+Ever.
+</p>
+<p>
+“Hooray!” you shout.
+“We avoided loading <code>OLEAUT32</code> altogether.”
+After all, the fastest code is code that doesn’t run.
+</p>
+<p>
+Except that it does run.
+Right there.
+In your <code>DLL_PROCESS_DETACH</code> handler.
+</p>
+<p>
+Since nobody called a function from <code>OLEAUT32</code>,
+the call to <code>CoTaskMemFree</code> was the first call to
+<code>OLEAUT32</code> and therefore
+<i>caused it to be loaded</i>.
+From inside a <code>DLL_PROCESS_DETACH</code> handler.
+</p>
+<p>
+Delay-loading is one of those features that is very convenient
+and saves you a lot of typing (namely, writing those stub functions
+yourself),
+but you also have to understand what’s going on so you don’t
+use it incorrectly.
+(In this case, a superficially-redundant
+<code>if (CachedInfo != NULL)</code> test needs to be inserted.)</p>
+
+
+</body>

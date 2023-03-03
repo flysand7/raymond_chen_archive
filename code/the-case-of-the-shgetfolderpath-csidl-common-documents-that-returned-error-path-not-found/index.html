@@ -1,0 +1,16 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the <code>SHGet­Folder­Path(CSIDL_<wbr/>COMMON_<wbr/>DOCUMENTS)</code> that returned <code>ERROR_<wbr/>PATH_<wbr/>NOT_<wbr/>FOUND</code></h1>  <!-- .entry-meta -->
+
+<p>A customer was experiencing a problem with the <code>SHGet­Folder­Path</code> function. Specifically, they had a program that called the function like this:</p>
+<pre>SHGetFolderPath(NULL, CSIDL_COMMON_DOCUMENTS, NULL,
+                SHGFP_TYPE_CURRENT, pathBuffer);
+</pre>
+<p>but it failed with error <code>0x80070003</code> which is the <code>HRESULT</code> version of <code>ERROR_<wbr>PATH_<wbr>NOT_<wbr>FOUND</wbr></wbr></wbr></code>. The error occurs only when run from a Jenkins pipeline. If they the run the program standalone, then the function succeeds and returns the expected result.</p>
+<p>A procmon trace showed that the application tried to access the folder <code>C:\<wbr>Windows\<wbr>SysWOW64\<wbr/>autobuild\<wbr/>Documents</wbr></wbr></code>, which failed with <code>NAME_<wbr/>NOT_<wbr/>FOUND</code>. And that was the clue that broke things open.</p>
+<p>The Common Documents folder defaults to <code>%PUBLIC%\<wbr/>Documents</code>. The <code>PUBLIC</code> environment variable’s normal value is <code>C:\<wbr/>Users\<wbr/>Public</code>, but when the program runs as part of a Jenkins pipeline, the environment variable is set to <code>autobuild</code> for some reason.</p>
+<p>This means that when the program calls <code>SHGet­Folder­Path</code> and asks for <code>CSIDL_<wbr/>COMMON_<wbr/>DOCUMENTS</code>, the system looks for <code>autobuild\<wbr/>Documents</code>, which doesn’t exist, hence error <code>0x80070003</code>: “The system cannot find the path specified.”</p>
+<p>There are a number of environment variables that have special meaning, and you change them at your peril. You probably know about variables like <code>windir</code>, <code>ProgramFiles</code>, and <code>TEMP</code>, but there are quite a number of other special environment variables, and <code>PUBLIC</code> is one of them.</p>
+<p>Armed with this information, the customer went back to see who was messing with the <code>PUBLIC</code> environment variable and try to get them to stop.</p>
+
+
+</body>

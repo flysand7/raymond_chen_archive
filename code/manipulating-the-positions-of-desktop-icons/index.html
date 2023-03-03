@@ -1,0 +1,166 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Manipulating the positions of desktop icons</h1>  <!-- .entry-meta -->
+
+<p>Today’s little program demonstrates how you can manipulate the positions of desktop icons.</p>
+<p>The entire program is just scaffolding to get us far enough that we can call <a href="http://msdn.microsoft.com/library/bb775600.aspx"> <code>IFolder­View::<wbr/>Get­Item­Position</code></a> and <a href="http://msdn.microsoft.com/library/bb775614.aspx"> <code>IFolder­View::<wbr/>Select­And­Position­Items</code></a>.</p>
+<p>First, we adapt the code <a href="https://devblogs.microsoft.com/oldnewthing/20040720-00/?p=38393" title="Querying information from an Explorer window"> we saw some time ago</a> that extracts the <code>IFolder­View</code> from a window.</p>
+<p><b>Reminder</b>: These “Little Programs” do no error checking because they are intended as demonstrations, not production-ready applications.</p>
+<pre>void FindDesktopFolderView(REFIID riid, void **ppv)
+{
+ CComPtr&lt;IShellWindows&gt; spShellWindows;
+ spShellWindows.CoCreateInstance(CLSID_ShellWindows);
+
+ CComVariant vtLoc(CSIDL_DESKTOP);
+ CComVariant vtEmpty;
+ long lhwnd;
+ CComPtr&lt;IDispatch&gt; spdisp;
+ spShellWindows-&gt;FindWindowSW(
+     &amp;vtLoc, &amp;vtEmpty,
+     SWC_DESKTOP, &amp;lhwnd, SWFO_NEEDDISPATCH, &amp;spdisp);
+
+ CComPtr&lt;IShellBrowser&gt; spBrowser;
+ CComQIPtr&lt;IServiceProvider&gt;(spdisp)-&gt;
+     QueryService(SID_STopLevelBrowser,
+                  IID_PPV_ARGS(&amp;spBrowser));
+
+ CComPtr&lt;IShellView&gt; spView;
+ spBrowser-&gt;QueryActiveShellView(&amp;spView);
+
+ spView-&gt;QueryInterface(riid, ppv);
+}
+</pre>
+<p>The <code>Find­Desktop­Folder­View</code> function takes the code from that earlier article and uses it to extract the shell view for the desktop. Everything here should look familiar (just in a different costume), aside from the call to <code>Find­Window­SW</code>, because we are looking for a specific window by location rather than just enumerating through all of them.</p>
+<p>The first parameter to <code>Find­Window­SW</code>. is the folder we are looking for. In our case, we are looking for the desktop.</p>
+<p>The second parameter is reserved and must be <code>VT_EMPTY</code>.</p>
+<p>The third parameter describes <a href="http://msdn.microsoft.com/library/cc836581.aspx"> the types of windows we are looking for</a>. We use the special <code>SWC_<wbr/>DESKTOP</code> flag (available starting in Windows Vista) to say, “Hey, I know the desktop isn’t the sort of thing people think of when they go looking for Explorer windows, but I know what I’m talking about, so let me have it.”</p>
+<p>The fourth parameter receives the window handle, which is of no interest to us, but the parameter is mandatory, so we have to give it something.</p>
+<p>The fifth parameter specifies the <a href="http://msdn.microsoft.com/librarycc836580.aspx"> search options</a>. We use <code>SWFO_<wbr/>NEED­DISPATCH</code> to say, “Please return the <code>IDispatch</code> in the sixth parameter.” And the sixth parameter is where we want the <code>IDispatch</code> to be returned.</p>
+<p>Okay, we already have enough to be able to enumerate all the desktop icons and print their names and locations.</p>
+<pre>#define UNICODE
+#define <a href="https://devblogs.microsoft.com/oldnewthing/20040212-00/?p=40643" title="TEXT vs. _TEXT vs. _T, and UNICODE vs. _UNICODE">_UNICODE</a>
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;exdisp.h&gt;
+#include &lt;shlwapi.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;atlalloc.h&gt;
+#include &lt;stdio.h&gt;
+
+// <a href="https://devblogs.microsoft.com/oldnewthing/20040520-00/?p=39243">CCoInitialize</a> incorporated by reference
+
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ CCoInitialize init;
+ CComPtr&lt;IFolderView&gt; spView;
+ FindDesktopFolderView(IID_PPV_ARGS(&amp;spView));
+ CComPtr&lt;IShellFolder&gt; spFolder;
+ spView-&gt;GetFolder(IID_PPV_ARGS(&amp;spFolder));
+
+ CComPtr&lt;IEnumIDList&gt; spEnum;
+ spView-&gt;Items(SVGIO_ALLVIEW, IID_PPV_ARGS(&amp;spEnum));
+ for (CComHeapPtr&lt;ITEMID_CHILD&gt; spidl;
+      spEnum-&gt;Next(1, &amp;spidl, nullptr) == S_OK;
+      spidl.Free()) {
+  <a href="https://devblogs.microsoft.com/oldnewthing/20040823-00/?p=38073">STRRET</a> str;
+  spFolder-&gt;GetDisplayNameOf(spidl, SHGDN_NORMAL, &amp;str);
+  CComHeapPtr&lt;wchar_t&gt; spszName;
+  <a href="http://msdn.microsoft.com/library/bb773427.aspx">StrRetToStr</a>(&amp;str, spidl, &amp;spszName);
+
+  POINT pt;
+  spView-&gt;GetItemPosition(spidl, &amp;pt);
+  
+  wprintf(L"At %4d,%4d is %ls\n", pt.x, pt.y, spszName);
+ }
+ return 0;
+}
+</pre>
+<p>After getting the <code>IFolder­View</code>, we also ask for the corresponding <code>IShell­Folder</code>. This isn’t actually necessary for enumerating the icons, but it lets us print their names.</p>
+<p>We ask the view for its <code>Items</code> enumeration, then proceed to enumerate each of the items. For each item, we ask the <code>IShell­Folder</code> for its name, and we ask the <code>IFolder­View</code> for its position. Then we print the results.</p>
+<p>Okay, that was neat, but you can do more than just query the positions. You can also modify them.</p>
+<pre>int __cdecl wmain(int argc, wchar_t **argv)
+{
+ CCoInitialize init;
+ CComPtr&lt;IFolderView&gt; spView;
+ FindDesktopFolderView(IID_PPV_ARGS(&amp;spView));
+
+ CComPtr&lt;IEnumIDList&gt; spEnum;
+ spView-&gt;Items(SVGIO_ALLVIEW, IID_PPV_ARGS(&amp;spEnum));
+ for (CComHeapPtr&lt;ITEMID_CHILD&gt; spidl;
+      spEnum-&gt;Next(1, &amp;spidl, nullptr) == S_OK;
+      spidl.Free()) {
+  POINT pt;
+  spView-&gt;GetItemPosition(spidl, &amp;pt);
+  pt.x += (rand() % 5) - 2;
+  pt.y += (rand() % 5) - 2;
+
+ PCITEMID_CHILD apidl[1] = { spidl };
+ spView-&gt;SelectAndPositionItems(
+     1, apidl, &amp;pt, SVSI_POSITIONITEM);
+ }
+ return 0;
+}
+</pre>
+<p>This time, instead of printing the item’s name and position, we jiggle the icon position by a few pixels randomly, then set the jiggled coordinates as the new position.</p>
+<p>Turn off <i>Auto arrange icons</i> and <i>Align icons to grid</i> on the desktop, and then run this program. Hey, look, your icons shifted randomly by a few pixels.</p>
+<p>For extra hijinx, drop a call to <code>spView-&gt;<wbr/>Set­Current­Folder­Flags(<wbr/>FWF_<wbr/>AUTO­ARRANGE | FWF_<wbr/>SNAP­TO­GRID, 0)</code> before you enter the loop (to programmatically turn off auto-arrange and snap-to-grid), then put this program in a loop, and slip it onto a friend’s (or enemy’s) computer.</p>
+<p>More seriously, we can we put the two pieces together to make a program that saves and restores desktop icon positions.</p>
+<p><b>Second reminder</b>: These “Little Programs” do no error checking because they are intended as demonstrations, not production-ready applications.</p>
+<pre>void SavePositions(IFolderView *pView, PCWSTR pszFile)
+{
+ CComPtr&lt;IStream&gt; spStream;
+ SHCreateStreamOnFileEx(pszFile, STGM_CREATE | STGM_WRITE,
+     FILE_ATTRIBUTE_NORMAL, TRUE, nullptr, &amp;spStream);
+ CComPtr&lt;IEnumIDList&gt; spEnum;
+ pView-&gt;Items(SVGIO_ALLVIEW, IID_PPV_ARGS(&amp;spEnum));
+ for (CComHeapPtr&lt;ITEMID_CHILD&gt; spidl;
+      spEnum-&gt;Next(1, &amp;spidl, nullptr) == S_OK;
+      spidl.Free()) {
+  IStream_WritePidl(spStream, spidl);
+  POINT pt;
+  pView-&gt;GetItemPosition(spidl, &amp;pt);
+  IStream_Write(spStream, &amp;pt, sizeof(pt));
+ }
+}
+</pre>
+<p>The <code>Save­Positions</code> function enumerates all the icons in a view and writes their identities and positions to a file.</p>
+<pre>void RestorePositions(IFolderView *pView, PCWSTR pszFile)
+{
+ CComPtr&lt;IStream&gt; spStream;
+ SHCreateStreamOnFileEx(pszFile, STGM_READ,
+     FILE_ATTRIBUTE_NORMAL, FALSE, nullptr, &amp;spStream);
+ POINT pt;
+ for (CComHeapPtr&lt;ITEMID_CHILD&gt; spidl;
+      SUCCEEDED(IStream_ReadPidl(spStream, &amp;spidl)) &amp;&amp;
+      SUCCEEDED(IStream_Read(spStream, &amp;pt, sizeof(pt)));
+      spidl.Free()) {
+  PCITEMID_CHILD apidl[1] = { spidl };
+  pView-&gt;SelectAndPositionItems(1, apidl, &amp;pt, SVSI_POSITIONITEM);
+ }
+}
+</pre>
+<p>The <code>Restore­Positions</code> function does the reverse. It reads the identities and positions from the file and calls <code>IFolder­View::<wbr/>Select­And­Position­Items</code> to move the item to its previously-saved position.</p>
+<pre>int __cdecl wmain(int argc, wchar_t **argv)
+{
+ if (argc != 3) {
+  wprintf(L"Usage: %ls save filename\n"
+          L"       %ls restore filename\n", argv[0], argv[0]);
+  return 0;
+ }
+ CCoInitialize init;
+
+ CComPtr&lt;IFolderView&gt; spView;
+ FindDesktopFolderView(IID_PPV_ARGS(&amp;spView));
+
+ if (wcscmp(argv[1], L"save") == 0) {
+  SavePositions(spView, argv[2]);
+ } else if (wcscmp(argv[1], L"restore") == 0) {
+  RestorePositions(spView, argv[2]);
+ }
+ return 0;
+}
+</pre>
+<p>And all that’s left is to write the main program that calls either the <code>Save­Positions</code> or <code>Restore­Positions</code> function based on the command line parameters.</p>
+<p><b>Exercise</b>: Discuss what happens if you rename an item on the desktop, and then try to restore its position. What could be done to address this?</p>
+
+
+</body>

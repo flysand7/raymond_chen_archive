@@ -1,0 +1,57 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the constructor that was being ignored</h1>  <!-- .entry-meta -->
+
+<p>When I pointed out <a href="/code/how-can-i-build-a-url-query-string-in-the-windows-runtime" title="How can I build a URL query string in the Windows Runtime?"> a way to build URL query strings in the Windows Runtime</a>, the customer reported that it didn’t work.</p>
+<pre>#include &lt;winrt/Windows.Web.Http.h&gt;
+
+void test()
+{
+    auto encoder = HttpFormUrlEncodedContent({
+        { L"v", L"dQw4w9WgXcQ" },
+        { L"t", L"43s" },
+    });
+}
+</pre>
+<p>This failed with the error</p>
+<pre style="white-space: pre-wrap;">error C2440: '&lt;function-style-cast&gt;': cannot convert from 'initializer list' to 'winrt::Windows::Web::Http::HttpFormUrlEncodedContent'
+message : No constructor could take the source type, or constructor overload resolution was ambiguous
+</pre>
+<p>Let’s start debugging.</p>
+<p>If you do a “Go to definition” on the <code>Http­Form­Url­Encoded­Content</code> in Visual Studio, you are taken to the class definition, which happens to be in the header file <code>impl/<wbr/>Windows.<wbr/>Web.<wbr/>Http.<wbr/>2.h</code>.</p>
+<pre>    struct __declspec(empty_bases) HttpFormUrlEncodedContent :
+        Windows::Web::Http::IHttpContent,
+        impl::require&lt;HttpFormUrlEncodedContent, Windows::Foundation::IStringable&gt;
+    {
+        HttpFormUrlEncodedContent(std::nullptr_t) noexcept {}
+        HttpFormUrlEncodedContent(void* ptr, take_ownership_from_abi_t) noexcept :
+            Windows::Web::Http::IHttpContent(ptr, take_ownership_from_abi) {}
+        explicit HttpFormUrlEncodedContent(
+            param::iterable&lt;Windows::Foundation::Collections::
+                IKeyValuePair&lt;hstring, hstring&gt;&gt; const&amp; content);
+    };
+</pre>
+<p>Let’s look at these constructors one at a time.</p>
+<p>First up is the <code>nullptr</code> constructor for creating an empty <code>Http­Form­Url­Encoded­Content</code> smart pointer.</p>
+<p>Next is the <code>take_<wbr/>ownership_<wbr/>from_<wbr/>abi</code> constructor for creating a <code>Http­Form­Url­Encoded­Content</code> that takes over ownership of the object from a pointer obtained at the ABI layer. It is a two-parameter constructor and therefore would never be considered since we are calling the constructor with one parameter.</p>
+<p>Last is the one we are trying to call: It takes a <code>param::<wbr/>iterable</code> of <code>IKeyValuePair&lt;hstring, hstring&gt;</code>.</p>
+<p>There are also two implicitly defined constructors: The copy and move constructor. Those candidates look like this:</p>
+<pre>        HttpFormUrlEncodedContent(HttpFormUrlEncodedContent const&amp;) = default;
+        HttpFormUrlEncodedContent(HttpFormUrlEncodedContent &amp;&amp;) = default;
+</pre>
+<p>Okay, so we have four candidates that survived the arity check.</p>
+<ul>
+<li><code>nullptr</code> constructor.</li>
+<li><code>param::iterable</code> constructor.</li>
+<li>copy constructor.</li>
+<li>move constructor.</li>
+</ul>
+<p>The error messages says that the compiler could not find a suitable constructor, so we have to think about why the <code>param::iterable</code> constructor wasn’t chosen. We expect it to be chosen bcause <code>param::iterable</code> has a conversion constructor that takes an <code>initializer_<wbr/>list</code>. Why isn’t that conversion being used?</p>
+<p>I could not reproduce the error in my test project, so I asked the customer to send me theirs. I ran the file through the preprocessor so I could see exactly what the compiler saw, thinking that maybe the customer had some <code>#ifdef</code> or other weird configuration.</p>
+<p>I searched the preprocessed file for the <code>param::iterable</code> constructor.</p>
+<p>And it wasn’t there!</p>
+<p>The preprocessed file had a forward declaration for <code>param::iterable</code>, but no definition. That explains why the compiler couldn’t convert the <code>initializer_<wbr/>list</code> to a <code>param::iterable</code>: Because the conversion constructor hadn’t yet been declared!</p>
+<p>The <code>param::iterable</code> template class is defined in the header file <code>winrt/Windows.Foundation.Collections.h</code>, following the C++/WinRT rule that you must explicitly include the header files for any namespaces you use. We are using the <code>Windows::<wbr/>Foundation::<wbr/>Collections</code> namespace because that’s where the <code>IIterable</code> class resides, and that is the projected type of the parameter that the <code>Http­Form­Url­Encoded­Content</code> constructor accepts.</p>
+<p>This question started out as a “C++/WinRT problem” (which is how I got roped into it), but all of the debugging just treated it as a “C++ problem”: It turns out that if there’s a particular constructor you want to use, you should make sure the parameter types are defined.</p>
+
+
+</body>

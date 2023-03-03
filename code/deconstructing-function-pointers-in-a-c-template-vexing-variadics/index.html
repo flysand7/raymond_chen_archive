@@ -1,0 +1,136 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Deconstructing function pointers in a C++ template, vexing variadics</h1>  <!-- .entry-meta -->
+
+<p>Last time, <a href="/code/deconstructing-function-pointers-in-a-c-template-the-noexcept-complication"> we taught our little traits class about <code>noexcept</code> functions</a>. One of many oddball cases in the world of function pointers is that of the variadic function, a classic example of which is <code>printf</code>.</p>
+<p>Recall that we had this:</p>
+<pre>template&lt;typename R, typename... Args&gt;
+struct FunctionTraitsBase
+{
+   using RetType = R;
+   using ArgTypes = std::tuple&lt;Args...&gt;;
+   static constexpr std::size_t ArgCount = sizeof...(Args);
+   template&lt;std::size_t N&gt;
+   using NthArg = std::tuple_element_t&lt;N, ArgTypes&gt;;
+};
+
+template&lt;typename F&gt; struct FunctionTraits;
+
+template&lt;typename R, typename... Args&gt;
+struct FunctionTraits&lt;R(*)(Args...)&gt;
+    : FunctionTraitsBase&lt;R, Args...&gt;
+{
+  using Pointer = R(*)(Args...);
+  constexpr static bool IsNoexcept = false;
+};
+
+template&lt;typename R, typename... Args&gt;
+struct FunctionTraits&lt;R(*)(Args...) noexcept&gt;
+    : FunctionTraitsBase&lt;R, Args...&gt;
+{
+  using Pointer = R(*)(Args...);
+  constexpr static bool IsNoexcept = true;
+};
+</pre>
+<p>But it falls apart when we give it a function like <code>printf</code> because none of our specializations handle that case. Let’s fix that.</p>
+<pre>template&lt;typename R, typename... Args&gt;
+struct FunctionTraitsBase
+{
+  using RetType = R;
+  using ArgTypes = std::tuple&lt;Args...&gt;;
+  static constexpr std::size_t ArgCount = sizeof...(Args);
+  template&lt;std::size_t N&gt;
+  using NthArg = std::tuple_element_t&lt;N, ArgTypes&gt;;
+};
+
+template&lt;typename R, typename... Args&gt;
+struct FunctionTraits&lt;R(*)(Args...)&gt;
+    : FunctionTraitsBase&lt;R, Args...&gt;
+{
+  using Pointer = R(*)(Args...);
+  constexpr static bool IsNoexcept = false;
+  <span style="color: blue;">static constexpr bool IsVariadic = false;</span>
+};
+
+template&lt;typename R, typename... Args&gt;
+struct FunctionTraits&lt;R(*)(Args...<span style="color: blue;">, ...</span>)&gt; <span style="color: blue;">// variadic</span>
+    : FunctionTraitsBase&lt;R, Args...&gt;
+{
+  using Pointer = R(*)(Args...<span style="color: blue;">, ...</span>); <span style="color: blue;">// variadic</span>
+  static constexpr bool IsNoexcept = false;
+  <span style="color: blue;">static constexpr bool IsVariadic = true;</span>
+};
+</pre>
+<p>We have to repeat this for the <code>noexcept</code> version, so things are getting pretty repetitive now that we’re up to four flavors of this structure. We saw with <code>noexcept</code> that the varieties cannot be deduced via templating, but we’ll reduce the repetitiveness with a temporary macro.</p>
+<pre>#define MAKE_TRAITS(Noexcept, Variadic, ...)                \
+template&lt;typename R, typename... Args&gt;                      \
+struct FunctionTraits&lt;R(*)(__VA_ARGS__) noexcept(Noexcept)&gt; \
+    : FunctionTraitsBase&lt;R, Args...&gt;                        \
+{                                                           \
+  using Pointer = R(*)(__VA_ARGS__) noexcept(Noexcept);     \
+  constexpr static bool IsNoexcept = Noexcept;              \
+  constexpr static bool IsVariadic = Variadic;              \
+}
+
+MAKE_TRAITS(false, false, Args...);
+MAKE_TRAITS(false,  true, Args..., ...);
+MAKE_TRAITS( true, false, Args...);
+MAKE_TRAITS( true,  true, Args..., ...);
+
+#undef MAKE_TRAITS
+</pre>
+<p>The <code>MAKE_TRAITS</code> macro takes three-ish parameters.</p>
+<ul>
+<li><code>Noexcept</code> is <code>true</code> to create the <code>noexcept</code> version, or <code>false</code> to create the regular potentially-throwing version.</li>
+<li><code>Variadic</code> is <code>true</code> to mark the result as variadic, or <code>false</code> if not.</li>
+<li>The “third” parameter is either <code>Args...</code> to create the non-variadic version or <code>Args..., ...</code> to create the variadic version.</li>
+</ul>
+<p>The treatment of <code>Noexcept</code> takes advantage of the optional argument to the <code>noexcept</code> specifier, discussed earlier.</p>
+<p>The way we interpret the “third” parameter is a workaround for preprocessor limitations.</p>
+<p>Passing a comma in a macro parameter is complicated, because it is normally interpreted as a parameter separator. In order to protect it, you need to enclose the comma in parentheses, <!-- backref: The C++ preprocessor doesn't understand anything, and certainly not templates --> as we discussed some time ago.</p>
+<p>The hack is to use a variadic macro. The remaining parameters are all captured into the pseudo-parameter <code>__VA_ARGS__</code>, and you can spit them back out in the macro expansion.</p>
+<p>If you fail to pass anything for the variadic parameter, then the result is emptiness, but that creates a problem, because we want to include a comma prior to the <code>...</code> if it is present, but omit it if we are generating the non-variadic version. C++20 adds the <code>__VA_OPT__</code> pseudo-macro which expands its argument only if the <code>__VA_ARGS__</code> is nonempty. I’m trying to stick with C++17 for now, so I can’t use that.</p>
+<p>Instead, I make the caller pass the prior parameter <code>Args...</code> as well, so that the comma is “baked into” the <code>__VA_ARGS__</code>.</p>
+<p>I can simplify the above macro a bit, by inferring whether the result is variadic by comparing the function pointer against an explicitly non-variadic version.</p>
+<pre>#define MAKE_TRAITS(Noexcept, ...)                          \
+template&lt;typename R, typename... Args&gt;                      \
+struct FunctionTraits&lt;R(*)(__VA_ARGS__) noexcept(Noexcept)&gt; \
+    : FunctionTraitsBase&lt;R, Args...&gt;                        \
+{                                                           \
+  using Pointer = R(*)(__VA_ARGS__) noexcept(Noexcept);     \
+  constexpr static bool IsNoexcept = Noexcept;              \
+  constexpr static bool IsVariadic =                        \
+    !std::is_same_v&lt;void(*)(__VA_ARGS__), void(*)(Args...)&gt;;\
+}
+
+MAKE_TRAITS(false, Args...);
+MAKE_TRAITS(false, Args..., ...);
+MAKE_TRAITS( true, Args...);
+MAKE_TRAITS( true, Args..., ...);
+
+#undef MAKE_TRAITS
+</pre>
+<p>I could also avoid the whole <code>__VA_ARGS__</code> nonsense by requiring that the argument list be parenthesized:</p>
+<pre>#define MAKE_TRAITS(Noexcept, ArgsList)                \
+template&lt;typename R, typename... Args&gt;                 \
+struct FunctionTraits&lt;R(*)ArgsList noexcept(Noexcept)&gt; \
+    : FunctionTraitsBase&lt;R, Args...&gt;                   \
+{                                                      \
+  using Pointer = R(*)ArgsList noexcept(Noexcept);     \
+  constexpr static bool IsNoexcept = Noexcept;         \
+  constexpr static bool IsVariadic =                   \
+    !std::is_same_v&lt;void(*)ArgsList, void(*)(Args...)&gt;;\
+}
+
+MAKE_TRAITS(false, (Args...));
+MAKE_TRAITS(false, (Args..., ...));
+MAKE_TRAITS( true, (Args...));
+MAKE_TRAITS( true, (Args..., ...));
+
+#undef MAKE_TRAITS
+</pre>
+<p>Are we done?</p>
+<p>Nope, there’s still more that needs to be done to cover function pointers. We’ll look at another complication next time.</p>
+<p><b>In case you were wondering</b>: I’m not talking about <a href="http://www.open-std.org/JTC1/SC22/WG21/docs/papers/2015/p0172r0.html"> abominable functions</a>. Those things are evil, and I’m going to pretend they simply don’t exist. There’s nothing you can do with them anyway.</p>
+
+
+</body>

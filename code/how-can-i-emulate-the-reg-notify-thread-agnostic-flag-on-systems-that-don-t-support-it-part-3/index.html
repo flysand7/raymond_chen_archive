@@ -1,0 +1,75 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I emulate the REG_NOTIFY_THREAD_AGNOSTIC flag on systems that don’t support it? part 3</h1>  <!-- .entry-meta -->
+
+<p>We <a href="/code/how-can-i-emulate-the-reg-notify-thread-agnostic-flag-on-systems-that-don-t-support-it-part-2"> continue our exercise of emulating the <code>REG_<wbr/>NOTIFY_<wbr/>THREAD_<wbr/>AGNOSTIC</code> flag</a>, this time trying to address the problem we discovered where our proposed solution can end up starving the thread pool due to its own misbehavior.</p>
+<p>What you have to do to fix this problem is make the registration asynchronous, allowing the caller to continue and release the thread pool thread. If the registration turns out to be invalid, you can set the event to let the caller know that the registration failed. You communicate the failure through a secondary output parameter.</p>
+<pre>struct RegNotifyChangeKeyValueAsyncArgs
+{
+  HKEY hkey;
+  BOOL bWatchSubtree;
+  DWORD dwNotifyFilter;
+  HANDLE hEvent;
+  LONG* registrationResult;
+
+  ~RegNotifyChangeKeyValueAsyncArgs()
+  {
+    if (hkey) RegCloseKey(hkey);
+  }
+};
+
+DWORD CALLBACK RegNotifyChangeKeyValueOnPersistentThread(
+    void* param)
+{
+  auto args = std::unique_ptr&lt;RegNotifyChangeKeyValueAsyncArgs&gt;(
+              reinterpret_cast&lt;
+               RegNotifyChangeKeyValueAsyncArgs*&gt;(param));
+  LONG result = RegNotifyChangeKeyValue(
+    args-&gt;hkey,
+    args-&gt;bWatchSubtree,
+    args-&gt;dwNotifyFilter,
+    args-&gt;hEvent,
+    TRUE);
+  *args-&gt;registrationResult = result;
+  if (result != ERROR_SUCCESS) SetEvent(args-&gt;hEvent);
+  return 0;
+}
+
+void RegNotifyChangeKeyValueAsync(
+  HKEY hkey,
+  BOOL bWatchSubtree,
+  DWORD dwNotifyFilter,
+  HANDLE hEvent,
+  LONG* registrationResult)
+{
+  LONG result;
+  auto args = std::unique_ptr&lt;RegNotifyChangeKeyValueAsyncArgs&gt;(
+    new(std::nothrow) RegNotifyChangeKeyValueAsyncArgs{
+      nullptr, bWatchSubtree, dwNotifyFilter, hEvent,
+      registrationResult });
+  if (!args) {
+    result = ERROR_OUT_OF_MEMORY;
+  } else {
+    result = RegOpenKeyEx(hkey, nullptr, 0,
+                    KEY_NOTIFY, &amp;args-&gt;hkey);
+    if (result == ERROR_SUCCESS) {
+      if (QueueUserWorkItem(
+          RegNotifyChangeKeyValueOnPersistentThread,
+          args.get(),
+          WT_EXECUTEINPERSISTENTTHREAD)) {
+        args.release();
+        result = ERROR_SUCCESS;
+      } else {
+        result = static_cast&lt;LONG&gt;(GetLastError());
+      }
+    }
+  }
+  *registrationResult = result;
+  if (result != ERROR_SUCCESS) SetEvent(hEvent);
+}
+</pre>
+<p>What we do is record the results in the <code>registrationResult</code> pointer, and if the registration failed, we also signal the event to notify the caller that something is ready for inspection.</p>
+<p>The caller waits on the event and checks the registration result. If the result is an error code, then it means that the registration was unsuccessful. If the result is <code>ERROR_SUCCESS</code>, then the registration succeeded, and the signal means that the key changed.</p>
+<p>But now that we’re doing things asynchronously, we can try to go all the way, perhaps anachronistically. Next time.</p>
+
+
+</body>

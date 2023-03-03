@@ -1,0 +1,59 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the system() call that returned before finishing</h1>  <!-- .entry-meta -->
+
+<p>A customer was having trouble with some code that copies a bunch of files and then processes the copy. Here’s the code they shared (suitably redacted): </p>
+<p><pre>
+// copy the files
+char command[512] = {NULL};
+sprintf_s(command, 512, "copy /Y %s %s &gt;nul 2&gt;&amp;1",
+          sourcePath, destPath);
+printf("The command is %s\n", command);
+Log("The command is %s", command);
+system(command);
+
+// process the files
+char searchPattern[256] = {NULL};
+sprintf_s(searchPattern, 256, "%s\\*", destPath);
+printf("The directory is %s.\n", searchPattern);
+Log("The directory is %s", searchPattern);
+
+hFile = FindFirstFileA(searchPattern, &amp;FindFileData);
+
+// error when searching files
+if (hFile == INVALID_HANDLE_VALUE) {
+  DWORD lastError = GetLastError();
+
+  if (lastError == ERROR_FILE_NOT_FOUND) {
+    printf("No files under directory %s.\n", searchPattern);
+    Log("No files under directory %s", searchPattern);
+    return S_OK;
+  } else {
+    printf("FindFirstFile failed in directory %s with error: %d.\n",
+           searchPattern, lastError);
+    Log("FindFirstFile failed under directory %s with error: %d",
+        searchPattern, lastError);
+    return E_FAIL;
+  }
+}
+
+do { 
+  printf("The file is %s.\n", FindFileData.cFileName);
+  Log("The file is %s", FindFileData.cFileName);
+  ...
+</pre>
+<p>The customer reported that “It appears that <code>Find­First­FileA</code> does not wait for <code>system()</code> to finish copying the files. Here’s a sample log file: </p>
+<pre>
+The command is copy /Y \\server\path\to\data\* D:\data &gt;nul 2&gt;&amp;1
+The directory is D:\data\*
+The file is .
+</pre>
+<p>“Observe that <code>Find­First­FileA</code> did not find the files we copied. How can we wait for the <code>system()</code> function to finish copying the files before the program proceeds to the <code>Find­First­FileA</code>?” </p>
+<p>In the ensuing discussion, people suggested using <code>Copy­File</code> or <code>SHFile­Operation</code> instead of shelling out to <code>cmd.exe</code>. Issues with spaces and other characters in the directory names. But can you find the reason why <code>Find­First­FileA</code> couldn’t find the files? </p>
+<p>Look carefully at the last line of the log: “The file is .” Part of this is confusing because the program both prints its output to the screen as well as to the log file, but prints them differently. The output to the screen includes a period at the end; the output to the log file does not. </p>
+<p>And that’s the key. Since the output to the log file does not include a period at the end, it means that the period in the output is the actual contents of <code>FindFileData.cFileName</code>. </p>
+<p>The customer misread their log file. The issue isn’t that the <code>Find­First­FileA</code> ran before the files were copied. The issue is that the first thing found by <code>Find­First­FileA</code> was the file whose name consists of a single period. </p>
+<p>Recall that every directory has two artificial entries, one for the directory itself (<code>.</code>), and one for the directory’s parent (<code>..</code>). What you found was the first artificial entry, the one that represents the directory itself. Instead of giving up right away, keep looking, and the files you copied will show up later. </p>
+<p>(Assuming they were all successfully copied. The program doesn’t actually check.) </p>
+
+
+</p></body>

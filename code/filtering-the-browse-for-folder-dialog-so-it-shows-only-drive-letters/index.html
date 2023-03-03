@@ -1,0 +1,85 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Filtering the Browse for Folder dialog so it shows only drive letters</h1>  <!-- .entry-meta -->
+
+<p>Today, we’re going to customize the Browse for Folder dialog so it shows only drive letters.</p>
+<p>Start with <a href="/code/filtering-the-folders-that-appear-in-the-browse-for-folder-dialog"> our previous Browse for Folder customization program</a>, and make these changes:</p>
+<pre><span style="color: blue;">// Lazy global variable
+PIDLIST_ABSOLUTE g_pidlMyComputer;</span>
+
+class CFunnyFilter :
+    public RuntimeClass&lt;
+    RuntimeClassFlags&lt;RuntimeClassType::ClassicCom&gt;,
+    IFolderFilter&gt;
+{
+public:
+  // *** IFolderFilter ***
+  IFACEMETHODIMP ShouldShow(
+        IShellFolder* psf,
+        PCIDLIST_ABSOLUTE pidlFolder,
+        PCUITEMID_CHILD pidlItem)
+  {
+    <span style="color: blue;">int compare = CompareDepth(pidlFolder);
+    if (compare &lt; 0) return S_OK;
+    if (compare &gt; 0) return S_FALSE;
+
+    STRRET str;
+    psf-&gt;GetDisplayNameOf(pidlItem, SHGDN_FORPARSING, &amp;str);
+    wchar_t buf[4];
+    if (SUCCEEDED(StrRetToBuf(&amp;str, pidlItem, buf, ARRAYSIZE(buf))) &amp;&amp;
+        PathIsRoot(buf)) return S_OK;
+    return S_FALSE;</span>
+  }
+
+  IFACEMETHODIMP GetEnumFlags(
+      IShellFolder* psf,
+      PCIDLIST_ABSOLUTE pidlFolder,
+      HWND *phwnd,
+      DWORD *pgrfFlags) {        
+    <span style="color: blue;">if (CompareDepth(pidlFolder) &gt; 0) *pgrfFlags = 0;</span>
+    return S_OK;
+  }
+
+private:
+  <span style="color: blue;">static int CompareDepth(PCIDLIST_ABSOLUTE pidl)
+  {
+    if (pidl == nullptr) return -1;
+    if (ILIsEqual(pidl, g_pidlMyComputer)) return 0;
+    if (ILIsParent(pidl, g_pidlMyComputer, FALSE)) return -1;
+    return 1;
+  }</span>
+};
+
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+  <a href="https://devblogs.microsoft.com/oldnewthing/20040520-00/?p=39243">CCoInitialize</a> init;
+  BROWSEINFO bi = { };
+  TCHAR szDisplayName[MAX_PATH];
+  <span style="color: blue;">SHGetSpecialFolderLocation(nullptr, CSIDL_DRIVES, &amp;g_pidlMyComputer);
+  bi.pidlRoot = g_pidlMyComputer;</span>
+  bi.pszDisplayName = szDisplayName;
+  bi.lpfn = BrowseCallbackProc;
+  bi.ulFlags = BIF_NEWDIALOGSTYLE <span style="color: blue;">| BIF_RETURNONLYFSDIRS</span>;
+  PIDLIST_ABSOLUTE pidl = SHBrowseForFolder(&amp;bi);
+  CoTaskMemFree(pidl);
+  <span style="color: blue;">CoTaskMemFree(g_pidlMyComputer);</span>
+  return 0;
+}
+</pre>
+<p>Okay, let’s see what we’ve got.</p>
+<p>First, we declare a global variable to remember the location of what was once called <i>My Computer</i> but nowadays goes by the name <i>This PC</i>. Whatever it is, it’s the thing that contains your drive letters.</p>
+<p>The real work happens in the filter. Starting at the bottom, we have a method called <code>Check­Depth</code> which determines whether the passed-in folder is an ancestor of, equal to, or a descendant of <i>My Computer</i>. Actually, we treat anything that isn’t a parent or equal to <i>My Computer</i> as if it were a descendant.</p>
+<p>The <code>Check­Depth</code> method is method is a bit tricky for a few reasons. First, it treats the null pointer as equivalent to the desktop, so that it is the ancestor of everything. For whatever reason, that’s what <code>IFolder­Filter</code> gives you, so we accommodate it.</p>
+<p>Second, if you pass <code>FALSE</code> to <code>ILIs­Parent</code>, it means that the function will return a nonzero value if the first ID list is an ancestor of <i>or is equal to</i> the second ID list. Therefore, we have to do the equality test first.</p>
+<p>Okay, working upward, the next method is <code>Get­Enum­Flags</code>. This is called when the Browse for Folder dialog wants to enumerate the children of a folder, and it’s our chance to influence what gets enumerated. We don’t want to expand the drives themselves, so if we have something that is a child of <i>My Computer</i>, we set the enumeration flags to zero, which means that nothing gets enumerated.</p>
+<p>The first method is <code>Should­Show</code>. This is where most of the excitement is. You are given a folder and an item in that folder, and your job is to decide whether that item should be shown in the Browse for Folder dialog.</p>
+<p>First, we say that folders which are ancestors of <i>My Computer</i> can show all of their children. This ensures that the Browse for Folder dialog can reach <i>My Computer</i> in the first place.</p>
+<p>Second, we say that descendants of <i>My Computer</i> do not show any children. This is technically redundant because our <code>Get­Enum­Flags</code> prevented those children from being enumerated, but we’ll block them here just to be sure they don’t show up.</p>
+<p>Finally, if we are showing children of <i>My Computer</i> itself, we ask for the parsing name of the item and see if a drive root comes back. If the parsing name is longer than four characters, then the <code>Str­Ret­To­Buf</code> function will fail with an insufficient-buffer error, in which case we know that we don’t have a drive root.</p>
+<p>The handy <code>Str­Ret­To­Buf</code> function deals with <a href="https://devblogs.microsoft.com/oldnewthing/20040823-00/?p=38073"> the kooky <code>STRRET</code> structure</a> so we don’t have to.</p>
+<p>So that’s the filtering. The last changes are to <code>Win­Main</code>: We obtain the item ID list for <i>My Computer</i> and set it as the root for the Browse for Folder dialog. (Remember that Little Programs do little to no error checking.) We also tell the Browse for Folder dialog that we require the user to select a file system object. That ensures that the <i>OK</i> button is disabled when the user is sitting at <i>My Computer</i>. And after the excitement is done, we clean up.</p>
+<p>There you have it. A Browse for Folder dialog that shows only drive letters.</p>
+<p>I’m not sure how useful this is, but I never claimed that this was useful.</p>
+
+
+</body>

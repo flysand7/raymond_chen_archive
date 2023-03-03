@@ -1,0 +1,89 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the application that used thread local storage it never allocated</h1>  <!-- .entry-meta -->
+
+<p>An application compatibility issue was found with a program that crashed because its <a href="https://docs.microsoft.com/en-us/cpp/parallel/thread-local-storage-tls?view=msvc-170"> Thread Local Storage (TLS)</a> slots were being corrupted.</p>
+<p>Upon closer inspection, the real problem was not that the application’s TLS was being corrupted. The problem was that the application was using TLS slots it never allocated, so it was inadvertently using somebody else’s TLS slots as its own. And of course, when the true owner updated the TLS value, the application interpreted that as corruption.</p>
+<p>It’s like just parking your car in a reserved space that belongs to someone else, and then when that other person parks in their own space, you complain, “Hey, what are you doing in my parking space?”</p>
+<p>The program wants to allocate 38 TLS slots, and some reverse-compiling reveals that it does so like this:</p>
+<pre>DWORD g_firstTls;
+
+bool AllocateContiguousTlsSlots()
+{
+    g_firstTls = TlsAlloc();
+
+    for (int i = 1; i &lt; 38; i++) {
+        DWORD tls = TlsAlloc();
+        if (tls != g_firstTls + i) return false;
+    }
+    return true;
+}
+</pre>
+<p>The program calls <code>TlsAlloc()</code> 38 times, and requires that the values it receives are all consecutive. If any non-consecutive value is received, then it declares that TLS slot allocation has failed.</p>
+<p>The problem is that the code that calls <code>Allocate­Contiguous­Tls­Slots()</code> doesn’t check the return value. It assumes that the allocations all succeeded!</p>
+<p>What started happening is that the program allocated its first TLS slot and got 9. Then 10, then 11, and so on up to 15. But when it called <code>TlsAlloc()</code> again, the slot index it got back was 17, not the expected value of 16. This caused <code>Allocate­Contiguous­Tls­Slots()</code> to fail, but since the program never checked whether <code>Allocate­Contiguous­Tls­Slots()</code> succeeded, it just assumed that it had ownership of slots 9 through 46, even though it had only allocated 9 through 15, and then 17. Slots 16 and 18 through 46 were never allocated, but the program used them anyway.</p>
+<p>Why did this start happening all of a sudden?</p>
+<p>Because I made a performance optimization that reduced the memory usage of the system by 8KB per thread.</p>
+<p>Over the decades of its existence, the main DLL used by the shell, <code>shell32.dll</code>, accumulated quite a few features, and some of those features require TLS slots, so they allocate the TLS slots at initialization. It got to the point where a program that used <code>shell32.dll</code> and other frequently-used DLLs would end up allocating a total of over 64 TLS slots during initialization.</p>
+<p>The value of 64 is important, because once the 65th TLS slot is allocated, the kernel goes into “overflow” mode and allocates an extra 1024 TLS slots for each thread, bringing the total to <a href="/code/why-is-the-maximum-number-of-tls-slots-1088-what-a-strange-number"> the magic number of 1088</a>. On a 32-bit system, 1024 TLS slots occupy 4KB of memory. On a 64-bit system, it takes 8KB of memory. The result was that nearly every application that used <code>shell32.dll</code> (which in practice is nearly every application) was paying an extra 8KB of memory per thread.</p>
+<p>But it’s rare that a single program exercises every single feature of <code>shell32.dll</code>.</p>
+<p>I changed the code so that instead of pre-allocating the TLS slots, the various components allocated their TLS slots on demand when the component was used for the first time. Depending on the application, this resulted in a typical savings of 13 to 19 TLS slots, bringing the total number of allocated TLS slots below the magic number of 64.</p>
+<p>Hooray, I saved 8KB of memory per thread in nearly every process in the system. It also meant that certain buggy programs would not crash when they allocated a TLS slot and <a href="/history/what-s-so-special-about-the-number-64-when-it-comes-to-tls-slots"> got an index larger than 64</a>.</p>
+<p>In the case of the application that was having compatibility problems, the reason they couldn’t get their 38 contiguous TLS slots was that I was <i>too good</i> at reducing the number of TLS slots used during initialization. With the specific mix of DLLs this particular application used, the number of allocated TLS slots was only 10. The in-use slots were 0 through 8, and 16.</p>
+<table border="0" cellpadding="0" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr style="font-size: 75%;">
+<td style="width: 2em;">0</td>
+<td style="width: 2em;">1</td>
+<td style="width: 2em;">2</td>
+<td style="width: 2em;">3</td>
+<td style="width: 2em;">4</td>
+<td style="width: 2em;">5</td>
+<td style="width: 2em;">6</td>
+<td style="width: 2em;">7</td>
+<td style="width: 2em;">8</td>
+<td style="width: 2em;">9</td>
+<td style="width: 2em;">10</td>
+<td style="width: 2em;">11</td>
+<td style="width: 2em;">12</td>
+<td style="width: 2em;">13</td>
+<td style="width: 2em;">14</td>
+<td style="width: 2em;">15</td>
+<td style="width: 2em;">16</td>
+<td style="width: 2em;">17</td>
+<td style="width: 2em;">18</td>
+<td style="width: 2em;">19</td>
+<td>…</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; background-color: #aaa;">•</td>
+<td style="border: solid 1px gray; background-color: #aaa;">•</td>
+<td style="border: solid 1px gray; background-color: #aaa;">•</td>
+<td style="border: solid 1px gray; background-color: #aaa;">•</td>
+<td style="border: solid 1px gray; background-color: #aaa;">•</td>
+<td style="border: solid 1px gray; background-color: #aaa;">•</td>
+<td style="border: solid 1px gray; background-color: #aaa;">•</td>
+<td style="border: solid 1px gray; background-color: #aaa;">•</td>
+<td style="border: solid 1px gray; background-color: #aaa;">•</td>
+<td style="border: solid 1px gray;"> </td>
+<td style="border: solid 1px gray;"> </td>
+<td style="border: solid 1px gray;"> </td>
+<td style="border: solid 1px gray;"> </td>
+<td style="border: solid 1px gray;"> </td>
+<td style="border: solid 1px gray;"> </td>
+<td style="border: solid 1px gray;"> </td>
+<td style="border: solid 1px gray; background-color: #aaa;">•</td>
+<td style="border: solid 1px gray;"> </td>
+<td style="border: solid 1px gray;"> </td>
+<td style="border: solid 1px gray;"> </td>
+<td>…</td>
+</tr>
+</tbody>
+</table>
+<p>What’s up with that weirdo TLS slot out at index 16?</p>
+<p>It turns out that one particular TLS slot has to be fixed at index 16 for a different compatibility reason. I don’t know the details, but accepted that it was locked to index 16.</p>
+<p>The compatibility team wrote a shim that kicks in when you run the program that was making untoward assumptions about TLS slot numbers. If the program calls <code>TlsAlloc()</code> and gets an index less than 16, then the compatibility shim loops back and calls <code>TlsAlloc()</code> again until it gets a value larger than 16. That way, when this program allocates TLS slots, it starts at slot 17. Early in the initialization of the program, all of the slots from 17 and beyond are all available, so its 38 consecutive calls get consecutive TLS indices 17 through 54.</p>
+<p>The <code>Allocate­Contiguous­Tls­Slots()</code> function succeeds, and the program doesn’t crash.</p>
+<p>Another day in the life of application compatibility.</p>
+
+
+</body>

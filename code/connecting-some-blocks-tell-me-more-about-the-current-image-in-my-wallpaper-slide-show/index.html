@@ -1,0 +1,88 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Connecting some blocks: Tell me more about the current image in my wallpaper slide show</h1>  <!-- .entry-meta -->
+
+<p>One of my colleagues said, </p>
+<blockquote class="q"><p>I really like the wallpaper slide show feature, especially the one that rotates through the top-rated pictures in my photo library. My photo library includes photos taken by other members of my family, and sometimes I’ll get a wallpaper that I want to learn more about. It’d be great if there were some way to say “Hey, tell me more about this wallpaper.” </p></blockquote>
+<p>Today’s Little Program <a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/08/04/9856634.aspx">snaps together some blocks</a>. </p>
+<ul>
+<li>It registers a command on the desktop background. 
+<li>The command looks at the current wallpaper image. 
+<li>And then shows you some information about it in the     form of a property sheet. </li></li></li></ul>
+<p>(My colleague actually preferred that the image be opened in <a href="http://windows.microsoft.com/en-US/windows-live/photo-gallery">Photo Gallery</a>, but I’ll just show the properties because not every has Photo Gallery installed, and the purpose of the exercise is to show how to snap blocks together, not to argue about which color blocks to use.) </p>
+<pre>
+#define UNICODE
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/02/12/71851.aspx">_UNICODE</a>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;shellapi.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;atlalloc.h&gt;
+
+void ShowProperties(PCWSTR pszFile)
+{
+ SHELLEXECUTEINFO sei = { sizeof(sei) };
+ sei.fMask = SEE_MASK_FLAG_DDEWAIT | SEE_MASK_INVOKEIDLIST;
+ sei.nShow = SW_SHOWNORMAL;
+ sei.lpVerb = L"properties";
+ sei.lpFile = pszFile;
+ ShellExecuteEx(&amp;sei);
+}
+
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
+{
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/05/28/8555658.aspx">ProcessReference</a> ref;
+
+ // The rest of this code is adapted from
+ // <a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/06/02/10530131.aspx">Obtaining information about the user's wallpaper on multiple monitors</a>
+
+ CComPtr&lt;IDesktopWallpaper&gt; spdw;
+ CoCreateInstance(CLSID_DesktopWallpaper, nullptr, CLSCTX_ALL,
+                  IID_PPV_ARGS(&amp;spdw));
+
+ CComHeapPtr&lt;wchar_t&gt; spszCommonWallpaper;
+ HRESULT hr = spdw-&gt;GetWallpaper(nullptr, &amp;spszCommonWallpaper);
+ if (hr == S_OK) {
+  // Single wallpaper on all monitors.
+  ShowProperties(spszCommonWallpaper);
+ } else if (hr == S_FALSE) {
+  // Different wallpaper on each monitor.
+  // Look for the monitor that has the mouse pointer.
+  POINT pt;
+  GetCursorPos(&amp;pt);
+
+  UINT count;
+  spdw-&gt;GetMonitorDevicePathCount(&amp;count);
+
+  for (UINT i = 0; i &lt; count; i++) {
+   // Get the device path for the monitor.
+   CComHeapPtr&lt;wchar_t&gt; spszId;
+   spdw-&gt;GetMonitorDevicePathAt(i, &amp;spszId);
+
+   // Get the monitor location.
+   RECT rc;
+   spdw-&gt;GetMonitorRECT(spszId, &amp;rc);
+   if (PtInRect(&amp;rc, pt)) {
+    // Get the wallpaper on that monitor.
+    CComHeapPtr&lt;wchar_t&gt; spszWallpaper;
+    hr = spdw-&gt;GetWallpaper(spszId, &amp;spszWallpaper);
+    ShowProperties(spszWallpaper);
+    break;
+   }
+  }
+ }
+
+ return 0;
+}
+</pre>
+<p>Now we get to hook this up to the context menu for the desktop. </p>
+<pre>
+[HKEY_CLASSES_ROOT\DesktopBackground\shell\Wallpaper properties\command]
+@="WallpaperProperties.exe"
+</pre>
+<p>Now you can right-click on the desktop background and select <i>Wallpaper properties</i>, and it will show you the properties of the wallpaper. You are of course welcome to do something else, like load the wallpaper into your favorite image viewer. </p>
+<p>Note that I cheated a bunch here. In addition to pretty much ignoring all error checking (because this is a Little Program), I also use the current mouse position instead of <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/09/23/233376.aspx">using the point at which the context menu was invoked</a>. </p>
+
+
+</body>

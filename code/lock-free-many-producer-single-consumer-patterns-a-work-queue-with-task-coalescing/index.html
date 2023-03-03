@@ -1,0 +1,33 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Lock free many-producer/single-consumer patterns: A work queue with task coalescing</h1>  <!-- .entry-meta -->
+
+<p>Today we’re going to implement a very simple producer/consumer pattern: There are many producers who are producing work, and a single consumer who processes the work. The work is all identical, and it is idempotent. That means that doing the work twice is the same as doing it once. </p>
+<p>You see this pattern when the work is something like <i>Refresh</i>. Refreshing once is the same as refreshing twice, as long as the single refresh is the last one. </p>
+<p>The naïve way of doing this is to avoid the coalescing at all and have each refresh request notify the consumer to perform a refresh. This means, however, that if a thousand refresh requests come in rapid succession, the consumer thread will perform a thousand refreshes, nearly all of which were unnecessary. </p>
+<p>A less naïve solution is to have a flag that says whether a refresh was requested. The first person to request a refresh wakes up the consumer. The second and subsequent people to request a refresh merely reminds the consumer that another refresh request arrived. When the consumer wakes up, it performs an atomic test-and-reset of the flag. If set, then it performs a refresh, and then it goes back and performs another test-and-reset of the flag to see whether a refresh request arrived while the previous one was in progress. </p>
+<pre>
+LONG RefreshRequested;
+
+void RequestRefresh()
+{
+ if (!InterlockedExchange(&amp;RefreshRequested, TRUE)) {
+  // You provide the WakeConsumer() function.
+  WakeConsumer();
+ }
+}
+
+// You call this function when the consumer receives the
+// signal raised by WakeConsumer().
+void ConsumeRefresh()
+{
+ while (InterlockedExchange(&amp;RefreshRequested, FALSE)) {
+  Refresh();
+ }
+}
+</pre>
+<p>Note that we wake the consumer only on the transition from <code>FALSE</code> to <code>TRUE</code>. (In the lingo, the consumer is <i>edge-triggered</i> rather than <i>level-triggered</i>.) This reduces traffic between the two threads, which is important if your communication channel is something like <code>Post­Message</code>, because you don’t want to spam the message queue with 10,000 identical messages. Not only does this cause <code>Consume­Refresh</code> to run 9,999 times more than necessary, but you run the risk of <a href="https://blogs.msdn.microsoft.com/oldnewthing/20090126-00/?p=19393">overflowing your message queue</a>. </p>
+<p>Remember, there is only one consumer, so if <code>Wake­Consumer</code> is called while <code>Consume­Refresh</code> is still running, the wake will not start a new consumer immediately. It will wait for the existing <code>Consume­Refresh</code> to complete before starting a new <code>Consume­Refresh</code>. </p>
+<p>Okay, that scenario was easy. We’re still warming up. More next time. </p>
+
+
+</body>

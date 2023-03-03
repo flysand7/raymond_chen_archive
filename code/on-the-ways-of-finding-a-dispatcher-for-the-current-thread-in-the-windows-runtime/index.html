@@ -1,0 +1,24 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On the ways of finding a dispatcher for the current thread in the Windows Runtime</h1>  <!-- .entry-meta -->
+
+<p>If you’re working with XAML in the Windows Runtime, there’s a good chance that you are going to have to deal with dispatchers. A dispatcher is an object that manages a queue of work items and runs (dispatches) them in some order, usually to a dedicated thread. For UWP XAML apps, the dispatcher is a <code>Core­Dispatcher</code>. There’s also a different dispatcher known as a <code>Dispatcher­Queue</code> which is used by Direct3D and Composition.</p>
+<p>If you’re writing general-use code, you may want to obtain the dispatcher for the current thread, so you can dispatch work back to thread later.</p>
+<p>To obtain the <code>Dispatcher­Queue</code> for the current thread, you can call the <code>Dispatcher­Queue.<wbr/>Get­For­Current­Thread</code> static method. It returns null if the current thread is not controlled by a <code>Dispatcher­Queue</code>.</p>
+<p>Getting the <code>Core­Dispatcher</code> is trickier, since there is no obvious way to get one. You’ll have to get it indirectly.</p>
+<p>One way is to ask the misleadingly-named <code>Core­Application.<wbr/>Get­Current­View</code> static method for the <code>Core­Application­View</code> that belongs to the current thread, and then retrieve the <code>Core­Application­View.<wbr/>Dispatcher</code> property.</p>
+<p>I say that the <code>Get­Current­View</code> method is misleadingly named because the sense of “current” is not “currently on the screen” or “currently has focus”, but rather “belonging to the current thread”. The word <i>current</i> refers to the thread context, not to the view. It’s confusing because the word <i>thread</i> appears nowhere in the method name!</p>
+<p>There’s a practical downside of the <code>Get­Current­View</code> method: If the current thread does not have an associated <code>Core­Application­View</code>, the method fails, which gets turned by the languages projection into an exception. You have to catch the exception, which is not only annoying, but it’s also distracting, because debuggers often break whenever an exception is thrown (even if the exception is ultimately caught). Developers using your library have to disable “break on exception”, which may conflict with their preferred settings, especially if the developer is trying to track down the source of an exception that is causing problems.</p>
+<p>Even if everybody agrees not to break on exceptions, you still get debug spew about the exception that was thrown and subsequently caught. If a developer is trying to chase down a problem, and they see some debug spew about an exception, they may begin to suspect that your library is somehow the cause of their problem, even though it has nothing to do with their problem.</p>
+<p>Fortunately, there’s an alternative: You can use the static <code>Core­Window.<wbr/>Get­For­Current­Thread</code> method, which attempts to find the <code>Core­Window</code> for the current thread, and then retrieve the <code>Core­Window.<wbr/>Dispatcher</code> property. This gives you the same dispatcher that you would have gotten from the <code>Core­Application­View</code>, but the advantage here is that <code>Core­Window.<wbr/>Get­For­Current­Thread</code> returns <code>null</code> if the current thread doesn’t have a <code>Core­Window</code>, rather than throwing an exception.</p>
+<p>If you want to sniff around for a dispatcher, you can do this:</p>
+<pre>if (auto dispatcherQueue = DispatcherQueue.GetForCurrentThread()) {
+  ... do something with the dispatcherQueue ...
+} else if (auto window = CoreWindow.GetForCurrentThread()) {
+  ... do something with window.Dispatcher() ...
+} else {
+  ... deal with the fact that there is no dispatcher ...
+}
+</pre>
+
+
+</body>

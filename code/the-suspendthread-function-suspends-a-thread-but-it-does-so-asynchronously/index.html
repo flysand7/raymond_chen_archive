@@ -1,0 +1,47 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The SuspendThread function suspends a thread, but it does so asynchronously</h1>  <!-- .entry-meta -->
+
+<p><b>Prologue</b>: <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/12/09/55988.aspx">Why you should never suspend a thread</a>. </p>
+<p>Okay, so a colleague decided to ignore that advice because he was running some experiments with thread safety and interlocked operations, and suspending a thread was a convenient way to open up race windows. </p>
+<p>While running these experiments, he observed some strange behavior. </p>
+<pre>
+LONG lValue;
+
+DWORD CALLBACK IncrementerThread(void *)
+{
+ while (1) {
+  InterlockedIncrement(&amp;lValue);
+ }
+ return 0;
+}
+
+// This is just a test app, so we will abort() if anything
+// happens we don't like.
+
+int __cdecl main(int, char **)
+{
+ DWORD id;
+ HANDLE thread = CreateThread(NULL, 0, IncrementerThread, NULL, 0, &amp;id);
+ if (thread == NULL) abort();
+
+ while (1) {
+  if (SuspendThread(thread) == (DWORD)-1) abort();
+
+  if (InterlockedOr(&amp;lValue, 0) != InterlockedOr(&amp;lValue, 0)) {
+   printf("Huh? The variable lValue was modified by a suspended thread?\n");
+  }
+
+  ResumeThread(thread);
+ }
+ return 0;
+}
+</pre>
+<p>The strange thing is that the “Huh?” message was being printed. How can a suspended thread modify a variable? Is there some way that <code>Interlocked­Increment</code> can start incrementing a variable, then get suspended, and somehow finish the increment later? </p>
+<p>The answer is simpler than that. The <code>Suspend­Thread</code> function tells the scheduler to suspend the thread but does not wait for an acknowledgment from the scheduler that the suspension has actually occurred. This is sort of alluded to in <a href="http://msdn.microsoft.com/library/ms686345">the documentation for <code>Suspend­Thread</code></a> which says </p>
+<blockquote class="q"><p>This function is primarily designed for use by debuggers. It is not intended to be used for thread synchronization </p></blockquote>
+<p>You are not supposed to use <code>Suspend­Thread</code> to synchronize two threads because there is no actual synchronization guarantee. What is happening is that the <code>Suspend­Thread</code> signals the scheduler to suspend the thread and returns immediately. If the scheduler is <a href="http://channel9.msdn.com/shows/Going+Deep/Arun-Kishan-Farewell-to-the-Windows-Kernel-Dispatcher-Lock/">busy doing something else</a>, it may not be able to handle the suspend request immediately, so the thread being suspended gets to run on borrowed time until the scheduler gets around to processing the suspend request, at which point it actually gets suspended. </p>
+<p>If you want to make sure the thread really is suspended, you need to perform a synchronous operation that is dependent on the fact that the thread is suspended. This forces the suspend request to be processed since it is a prerequisite for your operation, and since your operation is synchronous, you know that by the time it returns, the suspend has definitely occurred. </p>
+<p>The traditional way of doing this is to call <code>Get­Thread­Context</code>, since this requires the kernel to read from the context of the suspended thread, which has as a prerequisite that the context be saved in the first place, which has as a prerequisite that the thread be suspended. </p>
+
+
+</body>

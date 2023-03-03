@@ -1,0 +1,237 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Programmatically controlling which handles are inherited by new processes in Win32</h1>  <!-- .entry-meta -->
+
+<p>
+In unix, file descriptors are inherited by child processes by default.
+This wasn’t so much an active decision as it was a consequence
+of the fork/exec model.
+To exclude a file descriptor from being inherited by children,
+you set the <code>FD_CLO­EXEC</code> flag on the file descriptor.
+</p>
+<p>
+Win32 sort of works like that, but backwards, and maybe a little
+upside-down.
+<a href="http://www.gingerrogers.com/about/quotes.html">
+And in high heels</a>.
+</p>
+<p>
+In Win32, handles default to <i>not inherited</i>.
+Ways to make a handle inherited during
+<code>Create­Process</code>
+have grown during the evolution of Win32.
+</p>
+<p>
+As far as I can tell, back in the old days,
+inheritability of handles was established at handle creation time.
+For most handle creation functions, you do this by passing
+a <code>SECURITY_ATTRIBUTES</code> structure
+with <code>bInherit­Handle</code> set
+to <code>TRUE</code>.
+Functions which created handles from existing objects don’t have
+a <code>SECURITY_ATTRIBUTES</code> parameter,
+so they instead have an explicit <code>bInherit­Handle</code>
+parameter.
+(For examples, see
+<code>Open­Event</code> and <code>Duplicate­Handle</code>.)
+</p>
+<p>
+But just marking a handle as inheritable isn’t good enough to get
+it inherited.
+You also have to pass
+<code>TRUE</code>
+as the
+<code>bInherit­Handles</code> parameter to <code>Create­Process</code>.
+A handle will be inherited only if
+if the <code>bInherit­Handles</code> parameter is
+<code>TRUE</code> <u>and</u> the handle is marked as inheritable.
+Miss either of those steps, and you don’t get your inheritance.
+(To make sure you get your inheritance IRL, be nice to your grandmother.)
+</p>
+<p>
+In Windows 2000,
+Win32 gained the ability to alter the inheritability of a handle
+after it is created.
+The
+<code>Set­Handle­Information</code> function
+lets you turn the <code>HANDLE_FLAG_INHERIT</code>
+flag on and off on a handle.
+</p>
+<p>
+But all this inheritability fiddling still had a fatal flaw:
+What if two threads within the same process both call
+<code>Create­Process</code> but disagree on which handles
+they want to be inherited?
+For example, suppose you have a function
+<code>Create­Process­With­Shared­Memory</code>
+whose job it is to
+launch a process, passing it
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/12/11/56043.aspx">
+a custom-made shared memory block</a>.
+Suppose two threads run this function simultaneously.
+</p>
+<table cellpadding="3" cellspacing="0">
+<tr>
+<th>A</th>
+<td rowspan="5" style="border-left: .75pt solid black;width: .75pt"> </td>
+<th>B</th>
+</tr>
+<tr>
+<td>CreateFileMapping(inheritable=TRUE)</td>
+<td>CreateFileMapping(inheritable=TRUE)</td>
+</tr>
+<tr>
+<td>returns handle H1</td>
+<td>returns handle H2</td>
+</tr>
+<tr>
+<td>CreateProcess(“A”, bInheritHandles=TRUE)</td>
+<td>CreateProcess(“B”, bInheritHandles=TRUE)</td>
+</tr>
+<tr>
+<td>CloseHandle(H1)</td>
+<td>CloseHandle(H2)</td>
+</tr>
+</table>
+<p>
+What just happened?
+Since inheritability is a property of the handle,
+processes A and B inherited <i>both</i> handles
+H1 and H2, even though what we wanted was
+for process A to inherit handle H1 and
+for process B to inherit handle H2.
+</p>
+<p>
+For a long time, the answer to this problem was the unsatisfactory
+“You’ll just have to serialize your calls to
+<code>Create­Process­With­Shared­Memory</code>
+so that thread B won’t accidentally cause a handle from
+thread A to be inherited by process B.”
+Actually, the answer was even worse.
+You had to serialize all functions that created inheritable
+handles from the time the handle was created,
+through the call to
+<code>Create­Process</code>,
+and waiting until after all those inheritable handles were made
+no longer inheritable.
+</p>
+<p>
+This was a serious problem since who knows what other parts of
+your program are going to call <code>Create­Process</code>
+with <code>bInherit­Handles</code> set to <code>TRUE</code>?
+Sure you can control the calls that your own code made,
+but what about calls from plug-ins or other unknown components?
+(This is
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2007/05/02/2365433.aspx">
+another case</a> of
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/05/12/10163578.aspx">
+kernel-colored glasses</a>.)
+</p>
+<p>
+Windows Vista addresses this problem by allowing you to
+pass an explicit list of handles you want the
+<code>bInherit­Handles</code> parameter to apply to.
+(If you pass an explicit list, then you must pass
+<code>TRUE</code> for <code>bInherit­Handles</code>.)
+And as before, for a handle to be inherited, it must be
+also be marked as inheritable.
+</p>
+<p>
+Passing the list of handles you want to inherit is a multi-step
+affair.
+Let’s walk through it:
+</p>
+<pre>
+BOOL CreateProcessWithExplicitHandles(
+  __in_opt     LPCTSTR lpApplicationName,
+  __inout_opt  LPTSTR lpCommandLine,
+  __in_opt     LPSECURITY_ATTRIBUTES lpProcessAttributes,
+  __in_opt     LPSECURITY_ATTRIBUTES lpThreadAttributes,
+  __in         BOOL bInheritHandles,
+  __in         DWORD dwCreationFlags,
+  __in_opt     LPVOID lpEnvironment,
+  __in_opt     LPCTSTR lpCurrentDirectory,
+  __in         LPSTARTUPINFO lpStartupInfo,
+  __out        LPPROCESS_INFORMATION lpProcessInformation,
+    // here is the new stuff
+  __in         DWORD cHandlesToInherit,
+  __in_ecount(cHandlesToInherit) HANDLE *rgHandlesToInherit)
+{
+ BOOL fSuccess;
+ BOOL fInitialized = FALSE;
+ SIZE_T size = 0;
+ LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList = NULL;
+ fSuccess = cHandlesToInherit &lt; 0xFFFFFFFF / sizeof(HANDLE) &amp;&amp;
+            lpStartupInfo-&gt;cb == sizeof(*lpStartupInfo);
+ if (!fSuccess) {
+  SetLastError(ERROR_INVALID_PARAMETER);
+ }
+ if (fSuccess) {
+  fSuccess = InitializeProcThreadAttributeList(NULL, 1, 0, &amp;size) ||
+             GetLastError() == ERROR_INSUFFICIENT_BUFFER;
+ }
+ if (fSuccess) {
+  lpAttributeList = reinterpret_cast&lt;LPPROC_THREAD_ATTRIBUTE_LIST&gt;
+                                (HeapAlloc(GetProcessHeap(), 0, size));
+  fSuccess = lpAttributeList != NULL;
+ }
+ if (fSuccess) {
+  fSuccess = InitializeProcThreadAttributeList(lpAttributeList,
+                    1, 0, &amp;size);
+ }
+ if (fSuccess) {
+  fInitialized = TRUE;
+  fSuccess = UpdateProcThreadAttribute(lpAttributeList,
+                    0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                    rgHandlesToInherit,
+                    cHandlesToInherit * sizeof(HANDLE), NULL, NULL);
+ }
+ if (fSuccess) {
+  STARTUPINFOEX info;
+  <a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/06/28/433341.aspx">ZeroMemory</a>(&amp;info, sizeof(info));
+  info.StartupInfo = *lpStartupInfo;
+  info.StartupInfo.cb = sizeof(info);
+  info.lpAttributeList = lpAttributeList;
+  fSuccess = CreateProcess(lpApplicationName,
+                           lpCommandLine,
+                           lpProcessAttributes,
+                           lpThreadAttributes,
+                           bInheritHandles,
+                           dwCreationFlags | EXTENDED_STARTUPINFO_PRESENT,
+                           lpEnvironment,
+                           lpCurrentDirectory,
+                           &amp;info.StartupInfo,
+                           lpProcessInformation);
+ }
+ if (fInitialized) DeleteProcThreadAttributeList(lpAttributeList);
+ if (lpAttributeList) HeapFree(GetProcessHeap(), 0, lpAttributeList);
+ return fSuccess;
+}
+</pre>
+<p>
+After some initial sanity checks, we start doing real work.
+</p>
+<p>
+Initializing a <code>PROC_THREAD_ATTRIBUTE_LIST</code>
+is a two-step affair.
+First you call
+<code>Initialize­Proc­Thread­Attribute­List</code>
+with a <code>NULL</code> attribute list in order to determine how
+much memory you need to allocate for a one-entry attribute list.
+After allocating the memory, you call
+<code>Initialize­Proc­Thread­Attribute­List</code>
+a second time to do the actual initialization.
+</p>
+<p>
+After creating the attribute list, you set the one entry
+by calling
+<code>Update­Proc­Thread­Attribute­List</code>.
+</p>
+<p>
+And then it’s off to the races.
+Put that attribute list in a <code>STARTUP­INFO­EX</code>
+structure, set the
+<code>EXTENDED_STARTUPINFO_PRESENT</code> flag,
+and hand everything off to <code>Create­Process</code>.</p>
+
+
+</body>

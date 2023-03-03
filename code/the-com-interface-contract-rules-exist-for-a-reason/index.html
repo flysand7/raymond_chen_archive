@@ -1,0 +1,187 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The COM interface contract rules exist for a reason</h1>  <!-- .entry-meta -->
+
+<p><p>
+Some people believe that the COM rules on interfaces
+are needlessly strict.
+But the rules are there for a reason.
+</p>
+<p>
+Suppose you ship some interface in version N of your product.
+It’s an internal interface,
+not documented to outsiders.
+Therefore, you are free to change it any time you want without
+having to worry about breaking compatibility with any third-party
+plug-ins.
+</p>
+<p>
+But remember that if you change an interface, you need to generate
+a new Interface Identifier (IID).
+Because an interface identifier uniquely identifies the interface.
+(That’s sort of implied by its name, after all.)
+</p>
+<p>
+And this rule applies even to internal interfaces.
+</p>
+<p>
+Suppose you decide to violate this rule and use the same
+IID to represent a slightly different interface in
+version N+1 of your program.
+Since this is an internal interface,
+you have no qualms about doing this.
+</p>
+<p>
+Until you have to write a patch that services both versions.
+</p>
+<p>
+Now your patch is in trouble.
+It can call
+<code>IUnknown::QueryInterface</code>
+and ask for that IID, and it will get something back.
+But you don’t know whether this is the version N interface
+or the version N+1 interface.
+If you’re not even aware that this has happened,
+your patch will probably just assume it has the
+version N+1 interface,
+and strange things happen when it is run on version N.
+</p>
+<p>
+Debugging this problem is not fun.
+Neither is fixing it.
+Your patch has to use some other cues to decide which
+interface it actually got back.
+If your program has been patched previously,
+you need to have the version numbers of every single patch
+so that you can determine which version of the interface you have.
+</p>
+<p>
+Note that this dependency can be hidden behind other interfaces.
+Consider:
+</p>
+<pre>
+[
+    uuid(“ABC”)
+]
+interface IColorInfo
+{
+    HRESULT GetBackgroundColor([out] COLORREF *pcr);
+    …
+};</pre></p>
+<p>[
+    uuid(“XYZ”)
+]
+interface IGraphicImage
+{
+    …
+    HRESULT GetColorInfo([out] IColorInfo **ppci);
+};
+
+<p>
+Suppose you want to add a new method to the
+<code>IColorInfo</code> interface:
+</p>
+<pre>
+[
+    uuid(“<font color="blue">DEF</font>“)
+]
+interface IColorInfo
+{
+    HRESULT GetBackgroundColor([out] COLORREF *pcr);
+    …
+    <font color="blue">HRESULT AdjustColor(COLORREF clrOld,
+                        COLORREF clrNew);</font>
+};</pre></p>
+<p>[
+    uuid(“XYZ”)
+]
+interface IGraphicImage
+{
+    …
+    HRESULT GetColorInfo([out] IColorInfo **ppci);
+};
+
+<p>
+You changed the interface, but you also changed the IID,
+so everything is just fine, right?
+</p>
+<p>
+No, it isn’t.
+</p>
+<p>
+The <code>IGraphicImage</code> interface is dependent upon the
+<code>IColorInfo</code> interface.
+When you changed the <code>IColorInfo</code> interface,
+you implicitly changed the <code>IGraphicImage::GetColorInfo</code> method,
+since the returned interface is now the
+version N+1 <code>IColorInfo</code> interface.
+</p>
+<p>
+Consider a patch written with the
+version N+1 header files.
+</p>
+<pre>
+void AdjustGraphicColorInfo(IGraphicImage* pgi,
+                            COLORREF clrOld, COLORREF clrNew)
+{
+ IColorInfo *pci;
+ if (SUCCEEDED(pgi-&gt;GetColorCount(&amp;pci)) {
+  pci-&gt;AdjustColor(clrOld, clrNew);
+  pci-&gt;Release();
+ }
+}
+</pre>
+<p>
+If run against version N, the call to
+<code>IGraphicImage::GetColorCount</code> will return a
+version N <code>IColorInfo</code>, and that version
+doesn’t support the <code>IColorInfo::AdjustColor</code>
+method.
+But you’re going to call it anyway.
+Result: Walking off the end of the version N vtable
+and calling into space.
+</p>
+<p>
+The quick solution is to change the IID for the
+<code>IGraphicImage</code> function to reflect the
+change on the <code>IColorInfo</code> interface
+on which it depends.
+</p>
+<pre>
+[
+    uuid(“<font color="blue">UVW</font>“)
+]
+interface IGraphicImage
+{
+    …
+    HRESULT GetColorInfo([out] IColorInfo **ppci);
+};
+</pre>
+<p>
+A more robust fix would be to change
+the <code>IGraphicImage::GetColorInfo</code> method
+so that you pass the interface you want to receive.
+</p>
+<pre>
+[
+    uuid(“<font color="blue">RST</font>“)
+]
+interface IGraphicImage
+{
+    …
+    HRESULT GetColorInfo(<font color="blue">[in] REFIID riid,
+                         [iid_is(riid), out] void** ppv</font>);
+};
+</pre>
+<p>
+This allows interfaces on which <code>IGraphicImage</code> depends
+to change without requiring a change to
+the <code>IGraphicImage</code> interface itself.
+Of course, the implementation needs to change to respond to the
+new value of <code>IID_IColorInfo</code>.
+But now the caller can feel safe in the knowledge that when it asks
+for an interface, it’s actually getting it and not something else
+that coincidentally has the same name.
+</p></p>
+
+
+</body>

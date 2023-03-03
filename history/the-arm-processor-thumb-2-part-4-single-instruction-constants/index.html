@@ -1,0 +1,83 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ARM processor (Thumb-2), part 4: Single-instruction constants</h1>  <!-- .entry-meta -->
+
+<p>I noted last time that ARM is very proud of its barrel shifter. <a href="/history/the-arm-processor-thumb-2-part-3-addressing-modes" title="The ARM processor (Thumb-2), part 3: Addressing modes"> We saw it being used in the effective address calculator</a>. Another place it makes itself known is in the calculation of constants in a single-instruction.</p>
+<p>First, the easy case: An unsigned 8-bit immediate, which gives you constants 0 through 255.</p>
+<pre>    movs    Rd, #imm8       ; Rd = imm8 and set <i>some</i> flags
+</pre>
+<p>Only the sign flag (N) and zero flag (Z) are updated to match the value. The carry (C) and overflow (V) flags are unaffected. This 16-bit encoding is available only for low registers.</p>
+<p>ARM has dedicated instructions for loading constants. In classic RISC architectures, loading constants is typically done by performing arithmetic against a hard-coded zero register:</p>
+<pre>    lda     Rd, nnnn(zero)  ; Alpha AXP
+    addi    rd, zero, nnnn  ; MIPS
+    addi    rd, 0, nnnn     ; PowerPC
+</pre>
+<p>ARM doesn’t have a dedicated zero register, and it doesn’t have enough encoding space for a 16-bit immediate, so it has to come up with something else.</p>
+<p>It does it by showing off its barrel shifter.</p>
+<p>You can take your 8-bit unsigned immediate and shift it left by up to 24 positions, thereby allowing you to create any 32-bit constant where the span from the lowest to highest set bit is at most 8 positions.</p>
+<p>There are also a few special transformations:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Pattern</th>
+<th>Notes</th>
+</tr>
+<tr>
+<td><code>0x000000AB</code></td>
+<td>Copy to positions 7:0 (nop).</td>
+</tr>
+<tr>
+<td><code>0x00AB00AB</code></td>
+<td>Copy to positions 23:16 and 7:0.</td>
+</tr>
+<tr>
+<td><code>0xAB00AB00</code></td>
+<td>Copy to positions 31:24 and 15:8.</td>
+</tr>
+<tr>
+<td><code>0xABABABAB</code></td>
+<td>Copy to all bytes.</td>
+</tr>
+</tbody>
+</table>
+<p>These special transforms are handy for setting up a register to fill memory with a repeating pattern. For example,</p>
+<pre>    mov     r0, #0x20202020     ; ASCII spaces
+    mov     r0, #0x00200020     ; UTF-16 spaces
+    mov     r0, #0xfefefefe     ; debug fill value
+</pre>
+<p>The naïve way of encoding these constants would be to have an 8-bit immediate and a 5-bit shift amount (to encode shifts 0 through 24), and using shifts above 24 to encode the special transformations, for a total encoding space of 8 + 5 = 13 bits. But Thumb-2 manages to encode all of these constants in just 12 bits.</p>
+<p>The trick is to realize that the 8 + 5 encoding has a lot of redundancy. The constant 4096, for example, could be encoded eight different ways. It could be <code>1 &lt;&lt; 12</code>, or <code>2 &lt;&lt; 11</code>, up to <code>128 &lt;&lt; 5</code>. The Thumb-2 encoding exploits this redundancy by requiring that the 8-bit value being shifted have a 1 in bit 7.¹ This forces a unique representation for all of the shift scenarios (in our case, <code>128 &lt;&lt; 5</code>), and allows bit 7 of the constant to be used to help encode the shift amount.</p>
+<p><b>Related reading</b>: <a href="https://devblogs.microsoft.com/oldnewthing/20120629-00/?p=7253"> How did real-mode Windows patch up return addresses to discarded code segments</a>? Another example of squeezing ten pounds of flour into a five-pound bag.</p>
+<pre>    mov     Rd, #imm12      ; Rd = decode(imm12)
+    movs    Rd, #imm12      ; Rd = decode(imm12), set <i>some</i> flags
+</pre>
+<p>If you ask for flags to be updated, then the sign flag (N) and zero flag (Z) are updated to match the generated constant. The overflow (V) flag is unchanged, and the carry (C) flag is updated in a complicated way you probably don’t care about.²</p>
+<p>But wait, we’re not done with generating constants:</p>
+<pre>    mvn     Rd, #imm12      ; Rd = ~decode(imm12)
+    mvns    Rd, #imm12      ; Rd = ~decode(imm12), set <i>some</i> flags
+</pre>
+<p>In addition to all of the special constants that can be generated with <code>MOV</code>, you can use the <code>MVN</code> instruction to generate the bitwise NOT of them all.³</p>
+<p>The <code>MVN</code> is commonly used to generate small negative numbers:</p>
+<pre>    mvn     Rd, #0          ; Rd = -1
+    mvn     Rd, #1          ; Rd = -2
+</pre>
+<p>But wait, we’re still not done yet!</p>
+<pre>    mov     Rd, #imm16      ; Rd = imm16
+</pre>
+<p>There is also a special encoding that loads a 16-bit unsigned value.</p>
+<p>As we saw last time, if you’re writing assembly by hand, you can just write <code>LDR Rd, =#nnn</code> and the assembler will figure out which <code>MOV</code>, <code>MVN</code>, or (worst case) <code>LDR</code> instruction will get you the value you want. It will disassemble as <code>MOV</code>, <code>MVN</code>, or <code>LDR</code> based on what the assembler ultimately chose.</p>
+<p>Finally, there’s another constant-generating function for replacing the upper 16 bits of a register:</p>
+<pre>    ; move top
+    movt    Rd, #imm16      ; Rd[31:16] = imm16
+                            ; Rd[15: 0] unchanged
+</pre>
+<p>The upper 16 bits of the destination register are replaced by the 16-bit immediate, and the lower 16 bits are left unchanged. This instruction is usually paired with the <code>#imm16</code> version of the <code>MOV</code> instruction:</p>
+<pre>    mov     Rd, #efgh
+    movt    Rd, #abcd       ; Rd = abcdefgh
+</pre>
+<p>Of all these ways of generating constants, the <code>#imm12</code> constants can also be used as immediate arguments to arithmetic operations. We’ll start looking at those arithmetic operations next.</p>
+<p>¹ This means that you cannot use the shift-encoding format for constants less than 128. But that’s okay, because those constants can use the “nop” transformation.</p>
+<p>² It’s an artifact of the way the constant is generated internally: If you request a special transformation (or no transformation), then the carry flag is unchanged. If you request a shift, it is internally treated as a <i>rotate right</i> of the unshifted value, and the carry flag consequently matches the high bit of the result.</p>
+<p>³ If you request flags to be updated, then the sign and zero flags reflect the result <i>after</i> bitwise negation, but the carry flag reflects the result <i>before</i> bitwise negation.</p>
+
+
+</body>

@@ -1,0 +1,150 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Generating tooltip text dynamically</h1>  <!-- .entry-meta -->
+
+<p>
+Our multiplexed tooltip right now is displaying the same
+string for all items.
+Let’s make it display something a bit more interesting
+so it’s more obvious that what we’re doing is actually working.
+</p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ ...
+ <font color="blue"><strike>// ti.lpszText = TEXT("Placeholder tooltip");</strike>
+ ti.lpszText = LPSTR_TEXTCALLBACK;</font>
+ ...
+}
+<font color="blue">LRESULT
+OnNotify(HWND hwnd, int idFrom, NMHDR *pnm)
+{
+ if (pnm-&gt;hwndFrom == g_hwndTT) {
+  switch (pnm-&gt;code) {
+  case TTN_GETDISPINFO:
+   {
+    NMTTDISPINFO *pdi = (NMTTDISPINFO *)pnm;
+    if (g_iItemTip &gt;= 0) {
+     // szText is 80 characters, so %d will fit
+     wsprintf(pdi-&gt;szText, TEXT("%d"), g_iItemTip);
+    } else {
+     pdi-&gt;szText[0] = TEXT('\0');
+    }
+    pdi-&gt;lpszText = pdi-&gt;szText;
+   }
+   break;
+  }
+ }
+ return 0;
+}</font>
+// Add to WndProc
+<font color="blue"> HANDLE_MSG(hwnd, WM_NOTIFY, OnNotify);</font>
+</pre>
+<p>
+Instead of providing fixed tooltip text,
+we generate it on the fly by setting the text to
+<code>LPSTR_TEXTCALLBACK</code>
+and producing the text in response to the
+<code>TTN_GETDISPINFO</code> notification.
+The technique of generating tooltip text dynamically is
+useful in scenarios other than this.
+For example, the tooltip text may change based
+on some state that changes often
+(“Back to &lt;insert name of previous page&gt;”)
+or the tooltip text may be slow or expensive to compute
+(“Number of pages: 25”).
+In both cases, updating the tooltip text lazily is the
+correct thing to do,
+since it falls into the “pay for play” model:
+Only if the user asks for a tooltip does the program go to
+the extra effort of producing one.
+</p>
+<p>
+Now that you’ve played with the program a bit,
+let’s tweak it every so slightly to illustrate a point I made
+last time:
+We’ll make the <code>+</code>
+and <code>-</code> keys add and remove colored bars.
+This lets you see how the tooltip code updates itself
+when items move around.
+</p>
+<pre>
+<font color="blue">void
+InvalidateItems(HWND hwnd, int iItemMin, int iItemMax)
+{
+ RECT rc;
+ SetRect(&amp;rc, 0, g_cyItem * iItemMin,
+         g_cxItem, g_cyItem * iItemMax);
+ InvalidateRect(hwnd, &amp;rc, TRUE);
+}
+void
+UpdateTooltipFromMessagePos(HWND hwnd)
+{
+ DWORD dwPos = GetMessagePos();
+ POINT pt = { GET_X_LPARAM(dwPos),
+              GET_Y_LPARAM(dwPos) };
+ ScreenToClient(hwnd, &amp;pt);
+ UpdateTooltip(pt.x, pt.y);
+}
+void
+OnChar(HWND hwnd, TCHAR ch, int cRepeat)
+{
+ switch (ch) {
+ case TEXT('+'):
+  g_cItems += cRepeat;
+  InvalidateItems(hwnd, g_cItems - cRepeat, g_cItems);
+  UpdateTooltipFromMessagePos(hwnd);
+  break;
+ case TEXT('-'):
+  if (cRepeat &gt; g_cItems) cRepeat = g_cItems;
+  g_cItems -= cRepeat;
+  InvalidateItems(hwnd, g_cItems, g_cItems + cRepeat);
+  UpdateTooltipFromMessagePos(hwnd);
+  break;
+ }
+}</font>
+// Add to WndProc
+<font color="blue"> HANDLE_MSG(hwnd, WM_CHAR, OnChar);</font>
+</pre>
+<p>
+We have a few new helper functions.
+The first invalidates the rectangle associated with a
+range of items.
+(Conforming to Hungarian convention, the term “Max”
+refers to the first element outside the range.
+In other words, “Min/Max” is
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/02/18/75652.aspx">
+endpoint-exclusive</a>.)
+Controls that manage sub-elements will almost always have
+a function like
+<code>InvalidateItems</code>
+in order to trigger a repaint when a
+sub-element changes its visual appearance.
+</p>
+<p>
+The next helper function is <code>UpdateTooltipFromMessagePos</code>
+which pretty much does what it says:
+It takes the message position and passes those coordinates
+(suitably converted) to <code>UpdateTooltip</code> in order
+to keep everything in sync.
+Finally, the <code>WM_CHAR</code> handler adds or removes items
+based on what the user typed (taking autorepeat into account).
+Whenever we change the number of items, we update the tooltip
+because one of the items that was added or removed may have been
+the one beneath the cursor.
+</p>
+<p>
+There is an important subtlety to the
+<code>UpdateTooltipFromMessage</code> function:
+Remember that the message position retrieved via
+<code>GetMessagePos</code> applies to the most recent
+message retrieved from the message queue.
+Messages delivered via <code>SendMessage</code>
+bypass the message queue and therefore do not update
+the queue message position.
+Once again, we see by a different means that
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/05/30/423202.aspx">
+you can’t simulate input with <code>SendMessage</code></a>.</p>
+
+
+</body>

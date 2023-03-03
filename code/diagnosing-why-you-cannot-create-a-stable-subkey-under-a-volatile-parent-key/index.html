@@ -1,0 +1,41 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Diagnosing why you cannot create a stable subkey under a volatile parent key</h1>  <!-- .entry-meta -->
+
+<p>A customer encountered crashes in their program’s initialization code. They weren’t able to reproduce the problem in-house, but their failure logs suggested it was coming from here: </p>
+<pre>
+var settingsKey =
+    Registry.CurrentUser.CreateSubKey(
+        "Software\\Contoso\\Common Settings\\Drawing Preferences");
+</pre>
+<p>The call was failing with <code>System.IO.IO­Exception: Cannot create a stable subkey under a volatile parent key</code>. The corresponding Win32 error code is <code>ERROR_CHILD_MUST_BE_VOLATILE</code>. </p>
+<p>First of all, what does this error mean? </p>
+<p>This error means exactly what is says: You cannot create a stable (non-volatile) subkey under a volatile parent key. All children of a volatile key must themselves be volatile. </p>
+<p>Okay, but why is the parent key volatile? </p>
+<p>We don’t know for sure which key is the volatile parent, but it’s one of <code>Software</code>, <code>Software\\­Contoso</code>, or <code>Software\\­Contoso\\­Common Settings</code>. We can probably rule out <code>Software</code> since that key is pre-created by the system. That leaves the other two Contoso keys. But they are intended to hold persistent settings. Why would anybody create those keys as volatile? That would defeat the purpose of the keys. </p>
+<p>Ah, but perhaps the parent keys were created volatile by mistake. An often-overlooked detail of the <code>Reg­Create­Key­Ex</code> function (which is therefore also a detail of the <code>Create­Sub­Key</code> CLR method) is that if you ask for the key to be created as volatile, then the volatility applies to <i>all</i> keys created by the call. This means two things: </p>
+<ul>
+<li>If the key already exists, then its stability is unchanged.     If it was volatile before, then it remains volatile.     If it was stable before, then it remains stable. </li>
+<li>If the key doesn’t already exist, then not only is     the new key volatile, but the volatility also applies to     any parent keys that didn’t already exist. </li>
+</ul>
+<p>By searching the code for any attempts to create volatile keys, we found this one that seemed suspicious: </p>
+<pre>
+var sessionSettings =
+    Registry.CurrentUser.CreateSubKey(
+        "Software\\Contoso\\Common Settings\\Current Session",
+        RegistryOptions.Volatile);
+</pre>
+<p>The intent of this code was to create a volatile <code>Current Session</code> key to hold the user’s temporary settings that should be discarded when the user logs off. However, if the <code>Contoso\\Common Settings</code> key doesn’t yet exist, this will create not only a volatile <code>Current Session</code>, but also a volatile <code>Common Settings</code> key, and possibly even a volatile <code>Contoso</code> key! </p>
+<p>My theory as to what is going on is that the failures are occurring on machines where the call to create the <code>Current Session</code> key (1) occurs when the <code>Common Settings</code> key does not already exist, (2) comes before the call to create the <code>Drawing Preferences</code> key, and (3) ends up being the call that creates the <code>Common Settings</code> key as a volatile key. One possibility is that this is the first time any program developed by Contoso has been run by this user, which means that none of the Contoso keys exist at the point the program starts. Another possibility is that the user, in a perhaps misguided attempt to fix a problem with a Contoso-developed program, deleted the entire <code>Common Settings</code> key, or possibly even the entire <code>Contoso</code> key. </p>
+<p>The code to create the <code>Current Session</code> key should do so in two steps. First, create the stable parent key. Second, create the volatile subkey. </p>
+<pre>
+var commonSettings =
+    Registry.CurrentUser.CreateSubKey(
+        "Software\\Contoso\\Common Settings");
+var sessionSettings = commonSettings.CreateSubKey(
+        "Current Session",
+        RegistryOptions.Volatile);
+</pre>
+<p>(Translating this to raw Win32 is left as an exercise for the reader.) </p>
+
+
+</body>

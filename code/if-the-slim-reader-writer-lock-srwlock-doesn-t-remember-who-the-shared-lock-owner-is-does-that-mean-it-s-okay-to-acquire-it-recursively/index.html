@@ -1,0 +1,132 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If the slim reader/writer lock (SRWLOCK) doesn’t remember who the shared lock owner is, does that mean it’s okay to acquire it recursively?</h1>  <!-- .entry-meta -->
+
+<p>The slim reader/writer lock (SRWLOCK) synchronization object was introduced in Windows Vista and allows threads to acquire the lock either in shared or exclusive modes. Multiple simultaneous shared acquisitions are permitted from different threads, but an exclusive acquisition cannot coexist with any other acquisition (either shared or exclusive).</p>
+<p>Some sacrifices had to be made in order for the slim reader/writer lock to be small and fast. It doesn’t support lock upgrades or downgrades (converting a shared lock to exclusive or vice versa), or recursive acquisition (acquiring a lock when the calling thread already possesses a lock).</p>
+<p>Since the slim reader/writer lock is the size of a pointer, and a successful shared acquisition returns control to the caller, this means that all of the state for recording shared lock acquisitions must fit into a single pointer-sized variable. In particular, there is not enough room to record all of the threads that have acquired the lock in shared mode. I’ve seen it argued that this proves that it’s actually okay to acquire the lock recursively in shared mode, since there’s no way the operating system could detect that you broke the rules. Besides, shared locks can be taken by multiple threads concurrently, so why should concurrent acquisition by the same thread be any different?</p>
+<p>While it’s true that there’s no way the operating system can detect that you broke the rules, there is no requirement that the operating system do this detection. There can be other consequences of breaking the rules.</p>
+<p>Although slim reader/writer locks are neither fair nor FIFO, <a href="/code/how-fair-are-srw-locks-particularly-when-there-are-both-readers-and-writers" title="How fair are SRW locks, particularly when there are both readers and writers?"> the current implementation is <i>mostly</i> fair and FIFO</a>. If the lock is held in shared mode and there is an exclusive waiter, then shared locks queue up behind the exclusive waiter rather than piggybacking off the existing shared wait. (We followed the same policy when we <a href="/code/creating-other-types-of-synchronization-objects-that-can-be-used-with-co-await-part-9-the-shared-mutex-continued" title="Creating other types of synchronization objects that can be used with co_await, part 9: The shared mutex (continued)"> wrote our asynchronous version of a slim reader/writer lock</a>.) This avoids a situation where a highly-contended resource is constantly being acquired briefly by multiple threads in shared mode, with overlapping acquisition lifetimes, causing the exclusive acquirer to be locked out indefinitely.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th style="border: 1px black; border-style: none solid solid none;">Thread 1</th>
+<th style="border: 1px black; border-style: none solid solid none;">Thread 2</th>
+<th style="border: 1px black; border-style: none solid solid none;">Thread 3</th>
+<th style="border-bottom: solid 1px black;">Thread 4</th>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;"> </td>
+<td rowspan="2" style="border: solid 1px black; background-color: #eaf7fb;">Acquired shared</td>
+<td style="border-right: solid 1px black;"> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;">Try acquire exclusive</td>
+<td rowspan="2" style="border: solid 1px black; background-color: #eaf7fb;">Acquired shared</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;">(still waiting)</td>
+<td style="border-right: solid 1px black;"> </td>
+<td rowspan="2" style="border: solid 1px black; background-color: #eaf7fb;">Acquired shared</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;"> </td>
+<td rowspan="2" style="border: solid 1px black; background-color: #eaf7fb;">Acquired shared</td>
+<td style="border-right: solid 1px black;"> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;"> </td>
+<td rowspan="2" style="border: solid 1px black; background-color: #eaf7fb;">Acquired shared</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;">(still waiting)</td>
+<td style="border-right: solid 1px black;"> </td>
+<td rowspan="2" style="border: solid 1px black; background-color: #eaf7fb;">Acquired shared</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;"> </td>
+<td rowspan="2" style="border: solid 1px black; background-color: #eaf7fb;">Acquired shared</td>
+<td style="border-right: solid 1px black;"> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: #eaf7fb;">Acquired shared</td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>To avoid this problem, the SRWLock makes a shared acquisition attempt queue up behind any pending exclusive waiter. In the above scenario, we get this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th style="border: 1px black; border-style: none solid solid none;">Thread 1</th>
+<th style="border: 1px black; border-style: none solid solid none;">Thread 2</th>
+<th style="border: 1px black; border-style: none solid solid none;">Thread 3</th>
+<th style="border-bottom: solid 1px black;">Thread 4</th>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;"> </td>
+<td rowspan="2" style="border: solid 1px black; background-color: #eaf7fb;">Acquired shared</td>
+<td style="border-right: solid 1px black;"> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;">Try acquire exclusive</td>
+<td rowspan="2" style="border-right: solid 1px black;">Try acquire shared<br/>
+(still waiting)</td>
+<td> </td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black; background-color: #ff7878;">Acquired exclusive</td>
+<td style="border-right: solid 1px black;"> </td>
+<td rowspan="2">Try acquire shared<br/>
+(still waiting)</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;"> </td>
+<td style="border-right: solid 1px black;"> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;"> </td>
+<td rowspan="2" style="border: solid 1px black; background-color: #eaf7fb;">Acquired shared<br/>
+ </td>
+<td rowspan="2" style="border: solid 1px black; background-color: #eaf7fb;">Acquired shared<br/>
+ </td>
+<td rowspan="2" style="border: solid 1px black; background-color: #eaf7fb;">Acquired shared<br/>
+ </td>
+</tr>
+</tbody>
+</table>
+<p>Now you can see what can go wrong if you <a href="/code/the-case-of-the-srwlock-violation-in-a-thread-pool-work-item" title="The case of the SRWLock violation in a thread pool work item"> attempt a recursive shared acquisition</a>: Your second shared acquisition waits for the pending exclusive waiter. The pending exclusive waiter is waiting for the first shared acquisition to be released. And the first shared acquisition can’t be released until it regains control of the thread from the second shared acquisition. Three-party circular deadlock.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th colspan="2" style="border: 1px black; border-style: none solid solid none;">Thread 1</th>
+<th style="border-bottom: solid 1px black;">Thread 2</th>
+</tr>
+<tr>
+<td colspan="2" style="border-right: solid 1px black;"> </td>
+<td rowspan="2" style="border-right: solid 1px black; background-color: #eaf7fb;">Acquired shared</td>
+</tr>
+<tr>
+<td>Try acquire exclusive</td>
+<td style="border-right: solid 1px black;">⇗</td>
+</tr>
+<tr>
+<td>(still waiting)</td>
+<td style="border-right: solid 1px black;">⇐</td>
+<td style="border-right: solid 1px black; background-color: #eaf7fb;">Try acquire shared</td>
+</tr>
+</tbody>
+</table>
+<p>The Application Verifier detects and reports attempted recursive acquisitions to help you find them before they cause problems in production. As I noted <a href="/code/is-it-okay-to-acquire-an-srwlock-recursively-and-why-not" title="Is it okay to acquire an SRWLOCK recursively? (And why not?)"> some time ago</a>, one of my colleagues remarked,</p>
+<blockquote class="q"><p>We hit a deadlock in production due to erroneous recursive acquisition. It is fiendishly difficult to debug. I would put it in the “immediate fix” category.</p></blockquote>
+<p><b>Bonus chatter</b>: Recursive exclusive acquisition results in a consistent deadlock, so you might wonder why Application Verifier goes to the effort of diagnosing it, seeing as you’d certainly notice that your program is hung.</p>
+<p>First of all, Application Verifier records additional information to help you diagnose the problem: It captures the stack at the point the first acquisition was made. This additional information may help you identify the root cause. For example, maybe there’s a code path out of a function that forgets to release the lock. The acquisition stack trace may help you find that function.</p>
+<p>Second, you may be deadlocking without realizing it. For example, if the deadlock occurs during thread cleanup, you may not notice that your thread never exits. It just manifests itself as a thread leak. Furthermore, if there was any other cleanup code that is expected to be running on the thread after the erroneous deadlock, then that cleanup code will never run. These leaks may go unnoticed until you find that your production system’s memory usage slowly increases and its performance slowly decreases, until it finally hits a resource exhaustion failure after being left running for days. Bugs that require days to reproduce are not anybody’s idea of fun.</p>
+
+
+</body>

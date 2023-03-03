@@ -1,0 +1,105 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If I have multiple attached keyboards, how can I read input from each one individually?</h1>  <!-- .entry-meta -->
+
+<p><a href="https://msdn.microsoft.com/library/windows/desktop/ms645536(v=vs.85).aspx">Raw Input</a> is a feature of Windows that lets you obtain keyboard, mouse, or generic HID input. Okay, the generic HID input is nice, but the thing that is interesting today is the fact that the keyboard and mouse input is tagged with the device that generated it. This means that if you have multiple keyboards connected to your computer (say, the laptop integrated keyboard plus an external USB keyboard), you can distinguish the two input sources. </p>
+<p>Let’s do it. </p>
+<p>Remember that Little Programs do very little to no error checking. </p>
+<p>As usual, start with <a href="https://blogs.msdn.microsoft.com/oldnewthing/20030723-00/?p=43073">the scratch program</a> and make these change: </p>
+<pre>
+<font color="blue">#include &lt;strsafe.h&gt;</font>
+
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  <font color="blue">g_hwndChild = CreateWindow(TEXT("listbox"), NULL,
+      LBS_HASSTRINGS | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+      0, 0, 0, 0, hwnd, NULL, g_hinst, 0);
+
+  RAWINPUTDEVICE dev;
+  dev.usUsagePage = 1;
+  dev.usUsage = 6;
+  dev.dwFlags = 0;
+  dev.hwndTarget = hwnd;
+  RegisterRawInputDevices(&amp;dev, 1, sizeof(dev));</font>
+
+  return TRUE;
+}
+
+void
+OnDestroy(HWND hwnd)
+{
+  <font color="blue">RAWINPUTDEVICE dev;
+  dev.usUsagePage = 1;
+  dev.usUsage = 6;
+  dev.dwFlags = RIDEV_REMOVE;
+  dev.hwndTarget = hwnd;
+  RegisterRawInputDevices(&amp;dev, 1, sizeof(dev));</font>
+
+  PostQuitMessage(0);
+}
+</pre>
+<p>First, we create a list box which we will use to display the input we receive. </p>
+<p>Next, we register our window to receive raw keyboard input. The magic numbers for keyboard are Usage Page 1 and Usage 6. These magic numbers come from the USB HID specification. </p>
+<p>The flip side of the coin is that we unregister when our window is destroyed. </p>
+<p>Now the fun part: Receiving the input! </p>
+<pre>
+#define HANDLE_WM_INPUT(hwnd, wParam, lParam, fn) \
+  ((fn)((hwnd), GET_RAWINPUT_CODE_WPARAM(wParam), \
+        (HRAWINPUT)(lParam)), 0)
+
+void OnInput(HWND hwnd, WPARAM code, HRAWINPUT hRawInput)
+{
+  UINT dwSize;
+  GetRawInputData(hRawInput, RID_INPUT, nullptr,
+                  &amp;dwSize, sizeof(RAWINPUTHEADER));
+  RAWINPUT *input = (RAWINPUT *)malloc(dwSize);
+  GetRawInputData(hRawInput, RID_INPUT, input,
+                  &amp;dwSize, sizeof(RAWINPUTHEADER));
+  if (input-&gt;header.dwType == RIM_TYPEKEYBOARD) {
+    TCHAR prefix[80];
+    prefix[0] = TEXT('\0');
+    if (input-&gt;data.keyboard.Flags &amp; RI_KEY_E0) {
+        StringCchCat(prefix, ARRAYSIZE(prefix), TEXT("E0 "));
+    }
+    if (input-&gt;data.keyboard.Flags &amp; RI_KEY_E1) {
+        StringCchCat(prefix, ARRAYSIZE(prefix), TEXT("E1 "));
+    }
+
+    TCHAR buffer[256];
+    StringCchPrintf(buffer, ARRAYSIZE(buffer),
+        TEXT("%p, msg=%04x, vk=%04x, scanCode=%s%02x, %s"),
+        input-&gt;header.hDevice,
+        input-&gt;data.keyboard.Message,
+        input-&gt;data.keyboard.VKey,
+        prefix,
+        input-&gt;data.keyboard.MakeCode,
+        (input-&gt;data.keyboard.Flags &amp; RI_KEY_BREAK)
+            ? TEXT("release") : TEXT("press"));
+    ListBox_AddString(g_hwndChild, buffer);
+  }
+  DefRawInputProc(&amp;input, 1, sizeof(RAWINPUTHEADER));
+  free(input);
+}
+
+...
+    HANDLE_MSG(hwnd, WM_INPUT, OnInput);
+</pre>
+<p>When we get the <code>WM_INPUT</code> message, we use the <code>Get­Raw­Input­Data</code> function to convert the raw input handle to a raw input structure. This involves the standard two-step of first finding out how much memory you need, then allocating that memory and trying again. </p>
+<p>Do note that if you are going to use a preallocated buffer (for example, to handle the common case where the raw input fits in less than 80 bytes), your buffer still must be properly aligned for a <code>RAWINPUT</code> structure. This is one of the basic ground rules, but it’s worth calling out explicitly because you are going to be tempted to preallocate the buffer. We didn’t have to worry about it here because the <code>malloc</code> function guarantees that the allocated buffer is suitably aligned. </p>
+<p>Next, we confirm that the input is keyboard input. This is theoretically not necessary because the only input we registered for is keyboard input, but I feel better checking for it, because somebody might do a <code>Register­Raw­Input­Devices</code> and register some other type of input, and I don’t want to get faked out. </p>
+<p>After verifying that we do indeed have keyboard input, we extract the payload: </p>
+<ul>
+<li>The device handle tells us which keyboard generated the input. 
+<li>The Message is the window message that was generated. 
+<li>The VKey is the virtual key code. 
+<li>The MakeCode is the scan code. 
+<li>The Flags provide other information:     
+<ul>
+<li>Which         <a href="http://www.win.tue.nl/~aeb/linux/kbd/scancodes-1.html">        prefixes</a>         are present on the scan code.     
+<li>Whether this is a make (press) or break (release).     </li></li></ul>
+</li></li></li></li></li></ul>
+<p>Finally, we call <code>Def­Raw­Input­Proc</code> to allow default processing to occur. This lets the keypress enter the normal input system. </p>
+<p>Note that although there’s a <code>Get­Raw­Input­Device­List</code> function which lets you find all the keyboard devices, that is not useful in practice because modern computers have a ton of special-purpose keyboards hiding inside them. For example, the volume control knobs on your laptop might actually be a tiny two-button keyboard. </p>
+
+
+</body>

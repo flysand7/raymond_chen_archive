@@ -1,0 +1,907 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The crazy world of stripping diacritics</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s Little Program strips diacritics from a Unicode string.
+Why?
+Hey, I said that Little Programs require little to no motivation.
+It might come in handy in a spam filter, since it was popular,
+at least for a time, to put random accent marks on spam subject
+lines in order to sneak past keyword filters.
+(It doesn’t seem to be popular any more.)
+</p>
+<p>
+This is basically a C-ization of
+<a href="http://www.siao2.com/2005/02/19/376617.aspx">
+the C# code originally written by Michael Kaplan</a>.
+Don’t forget to read
+<a href="http://www.siao2.com/2007/05/14/2629747.aspx">
+the follow-up discussion that notes that this can result in strange
+results</a>.
+</p>
+<p>
+First, let’s create our dialog box.
+Note that I intentionally give it a huge font
+so that the diacritics are easier to see.
+</p>
+<pre>
+// scratch.h
+#define IDD_SCRATCH 1
+#define IDC_SOURCE 100
+#define IDC_SOURCEPOINTS 101
+#define IDC_DEST 102
+#define IDC_DESTPOINTS 103
+// scratch.rc
+#include &lt;windows.h&gt;
+#include "scratch.h"
+IDD_SCRATCH DIALOGEX 0, 0, 320, 88
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+Caption "Stripping diacritics"
+FONT 20, "MS Shell Dlg"
+BEGIN
+    LTEXT "Original:", -1, 4, 8, 38, 10
+    EDITTEXT IDC_SOURCE, 46, 6, 270, 12, ES_AUTOHSCROLL
+    LTEXT "", IDC_SOURCEPOINTS, 46, 22, 270, 12
+    LTEXT "Modified:", -1, 4, 40, 38, 10
+    EDITTEXT IDC_DEST, 46, 38, 270, 12, ES_AUTOHSCROLL
+    LTEXT "", IDC_DESTPOINTS, 46, 54, 270, 12
+    DEFPUSHBUTTON "OK", IDOK, 266, 70, 50, 14
+END
+</pre>
+<p>
+Now the program that uses the dialog box.
+</p>
+<pre>
+// scratch.cpp
+#define STRICT
+#define UNICODE
+#define _UNICODE
+#include &lt;windows.h&gt;
+#include &lt;windowsx.h&gt;
+#include &lt;strsafe.h&gt;
+#include "scratch.h"
+#define MAXSOURCE 64
+void SetDlgItemCodePoints(HWND hwnd, int idc, PCWSTR psz)
+{
+  wchar_t szResult[MAXSOURCE * 4 * 5];
+  szResult[0] = 0;
+  PWSTR pszResult = szResult;
+  size_t cchResult = ARRAYSIZE(szResult);
+  HRESULT hr = S_OK;
+  for (; SUCCEEDED(hr) &amp;&amp; *psz; psz++) {
+    wchar_t szPoint[6];
+    hr = StringCchPrintf(szPoint, ARRAYSIZE(szPoint), L"%04x ", *psz);
+    if (SUCCEEDED(hr)) {
+      hr = StringCchCatEx(pszResult, cchResult, szPoint, &amp;pszResult, &amp;cchResult, 0);
+    }
+  }
+  SetDlgItemText(hwnd, idc, szResult);
+}
+</pre>
+<p>
+The <code>Set­Dlg­Item­Code­Points</code>
+function takes a UTF-16 string and prints all the code points.
+This is just to help visualize the result;
+it’s not part of the actual diacritic-removal algorithm.
+</p>
+<pre>
+void OnUpdate(HWND hwnd)
+{
+  wchar_t szSource[MAXSOURCE];
+  GetDlgItemText(hwnd, IDC_SOURCE, szSource, ARRAYSIZE(szSource));
+  wchar_t szDest[MAXSOURCE * 4];
+  int cchActual = NormalizeString(NormalizationKD,
+                                  szSource, -1,
+                                  szDest, ARRAYSIZE(szDest));
+  if (cchActual &lt;= 0) szDest[0] = 0;
+  WORD rgType[ARRAYSIZE(szDest)];
+  GetStringTypeW(CT_CTYPE3, szDest, -1, rgType);
+  PWSTR pszWrite = szDest;
+  for (int i = 0; szDest[i]; i++) {
+    if (!(rgType[i] &amp; C3_NONSPACING)) {
+      *pszWrite++ = szDest[i];
+    }
+  }
+  *pszWrite = 0;
+  SetDlgItemText(hwnd, IDC_DEST, szDest);
+  SetDlgItemCodePoints(hwnd, IDC_SOURCEPOINTS, szSource);
+  SetDlgItemCodePoints(hwnd, IDC_DESTPOINTS, szDest);
+}
+</pre>
+<p>
+Okay, here’s where the actual work happens.
+We put the source string into Normalization Form KD.
+This decomposes the diacritics so that we can identify them
+with <code>Get­String­TypeW</code>
+and then strip them out.
+</p>
+<p>
+Of course, in real life, you wouldn’t hard-code the array sizes
+like I did here, but this is just a Little Program,
+and Little Programs are allowed to take shortcuts.
+</p>
+<p>
+The rest of the program is just a framework to get into that
+function.
+</p>
+<pre>
+INT_PTR CALLBACK DlgProc(HWND hwnd, UINT wm,
+                         WPARAM wParam, LPARAM lParam)
+{
+  switch (wm)
+  {
+  case WM_INITDIALOG:
+    return TRUE;
+  case WM_COMMAND:
+    switch (GET_WM_COMMAND_ID(wParam, lParam)) {
+    case IDC_SOURCE:
+      switch (GET_WM_COMMAND_CMD(wParam, lParam)) {
+    case EN_UPDATE:
+      OnUpdate(hwnd);
+      break;
+    }
+    break;
+    case IDOK:
+      EndDialog(hwnd, 0);
+      return TRUE;
+  }
+  break;
+  case WM_CLOSE:
+    EndDialog(hwnd, 0);
+    return TRUE;
+  }
+  return FALSE;
+}
+int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPWSTR lpCmdLine, int nShowCmd)
+{
+  DialogBox(hinst, MAKEINTRESOURCE(IDD_SCRATCH), nullptr, DlgProc);
+  return 0;
+}
+</pre>
+<p>
+Okay, let’s take this program for a spin.
+Here are some interesting characters to try:
+</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th colspan="3">Original character</th>
+<th colspan="3">Resulting character</th>
+</tr>
+<tr>
+<td align="center">ª</td>
+<td>00AA</td>
+<td>Feminine ordinal indicator</td>
+<td align="center">a</td>
+<td>0061</td>
+<td>Latin small letter a</td>
+</tr>
+<tr>
+<td align="center">¹</td>
+<td>00B1</td>
+<td>Superscript one</td>
+<td align="center">1</td>
+<td>0031</td>
+<td>Digit one</td>
+</tr>
+<tr>
+<td align="center">½</td>
+<td>00BD</td>
+<td>Vulgar fraction one half</td>
+<td align="center">1⁄2</td>
+<td>0031 2044 0032</td>
+<td>Digit one + Fraction slash + Digit two</td>
+</tr>
+<tr>
+<td align="center">ı</td>
+<td>0131</td>
+<td>Latin small letter dotless i</td>
+<td align="center">ı</td>
+<td>0131</td>
+<td>Latin small letter dotless i</td>
+</tr>
+<tr>
+<td align="center">Ø</td>
+<td>00D8</td>
+<td>Latin capital letter O with stroke</td>
+<td align="center"></td>
+<td></td>
+<td>Disappears!</td>
+</tr>
+<tr>
+<td align="center">ł</td>
+<td>0142</td>
+<td>Latin small letter l with stroke</td>
+<td align="center">ł</td>
+<td>0142</td>
+<td>Latin small letter l with stroke</td>
+</tr>
+<tr>
+<td align="center">ŀ</td>
+<td>0140</td>
+<td>Latin small letter l with middle dot</td>
+<td align="center">l·</td>
+<td>006C 00B7</td>
+<td>Latin small letter l + middle dot</td>
+</tr>
+<tr>
+<td align="center">æ</td>
+<td>00E6</td>
+<td>Latin small letter ae</td>
+<td align="center">æ</td>
+<td>00E6</td>
+<td>Latin small letter ae</td>
+</tr>
+<tr>
+<td align="center">Ή</td>
+<td>0389</td>
+<td>Greek capital letter Eta with tonos</td>
+<td align="center">Η</td>
+<td>0397</td>
+<td>Greek capital letter Eta</td>
+</tr>
+<tr>
+<td align="center">А</td>
+<td>0410</td>
+<td>Cyrillic capital letter А</td>
+<td align="center">А</td>
+<td>0410</td>
+<td>Cyrillic capital letter А</td>
+</tr>
+<tr>
+<td align="center">Å</td>
+<td>00C5</td>
+<td>Latin capital letter A with ring above</td>
+<td align="center">A</td>
+<td>0041</td>
+<td>Latin capital letter A</td>
+</tr>
+<tr>
+<td align="center">Ａ</td>
+<td>FF21</td>
+<td>Fullwidth Latin capital letter A</td>
+<td align="center">A</td>
+<td>0041</td>
+<td>Latin capital letter A</td>
+</tr>
+<tr>
+<td align="center">①</td>
+<td>2460</td>
+<td>Circled digit one</td>
+<td align="center">1</td>
+<td>0031</td>
+<td>Digit one</td>
+</tr>
+<tr>
+<td align="center">➀</td>
+<td>2780</td>
+<td>Dingbat circled sans-serif digit one</td>
+<td align="center">➀</td>
+<td>2780</td>
+<td>Dingbat circled sans-serif digit one</td>
+</tr>
+<tr>
+<td align="center">®</td>
+<td>00AE</td>
+<td>Registered sign</td>
+<td align="center">®</td>
+<td>00AE</td>
+<td>Registered sign</td>
+</tr>
+<tr>
+<td align="center">Ⓡ</td>
+<td>24c7</td>
+<td>Circled Latin capital letter R</td>
+<td align="center">R</td>
+<td>0052</td>
+<td>Latin capital letter R</td>
+</tr>
+<tr>
+<td align="center">𝖕</td>
+<td>D835 DD95</td>
+<td>Mathematical bold Fraktur small p</td>
+<td align="center">p</td>
+<td>0070</td>
+<td>Latin small letter p</td>
+</tr>
+<tr>
+<td align="center">ｬ</td>
+<td>FF6C</td>
+<td>Halfwidth Katakana letter small Ya</td>
+<td align="center">ャ</td>
+<td>30E3</td>
+<td>Katakana letter small Ya</td>
+</tr>
+<tr>
+<td align="center">ャ</td>
+<td>30E3</td>
+<td>Katakana letter small Ya</td>
+<td align="center">ャ</td>
+<td>30E3</td>
+<td>Katakana letter small Ya</td>
+</tr>
+<tr>
+<td align="center">ゴ</td>
+<td>30B4</td>
+<td>Katakana letter Go</td>
+<td align="center">コ</td>
+<td>30B3</td>
+<td>Katakana letter Ko</td>
+</tr>
+<tr>
+<td align="center">“</td>
+<td>201C</td>
+<td>Left double quotation mark</td>
+<td align="center">“</td>
+<td>201C</td>
+<td>Left double quotation mark</td>
+</tr>
+<tr>
+<td align="center">”</td>
+<td>201D</td>
+<td>Right double quotation mark</td>
+<td align="center">”</td>
+<td>201D</td>
+<td>Right double quotation mark</td>
+</tr>
+<tr>
+<td align="center">„</td>
+<td>201E</td>
+<td>Double low-9 quotation mark</td>
+<td align="center">„</td>
+<td>201E</td>
+<td>Double low-9 quotation mark</td>
+</tr>
+<tr>
+<td align="center">‟</td>
+<td>201F</td>
+<td>Double high-reversed-9 quotation mark</td>
+<td align="center">‟</td>
+<td>201F</td>
+<td>Double high-reversed-9 quotation mark</td>
+</tr>
+<tr>
+<td align="center">″</td>
+<td>2033</td>
+<td>Double prime</td>
+<td align="center">′′</td>
+<td>2032 2032</td>
+<td>Prime + Prime</td>
+</tr>
+<tr>
+<td align="center">‵</td>
+<td>2035</td>
+<td>Reverse prime</td>
+<td align="center">‵</td>
+<td>2035</td>
+<td>Reverse prime</td>
+</tr>
+<tr>
+<td align="center">‹</td>
+<td>2039</td>
+<td>Single left-pointing angle quotation mark</td>
+<td align="center">‹</td>
+<td>2039</td>
+<td>Single left-pointing angle quotation mark</td>
+</tr>
+<tr>
+<td align="center">«</td>
+<td>00AB</td>
+<td>Left-pointing double angle quotation mark</td>
+<td align="center">«</td>
+<td>00AB</td>
+<td>Left-pointing double angle quotation mark</td>
+</tr>
+<tr>
+<td align="center">—</td>
+<td>2014</td>
+<td>Em-dash</td>
+<td align="center">—</td>
+<td>2014</td>
+<td>Em-dash</td>
+</tr>
+<td align="center">‼</td>
+<td>203C</td>
+<td>Double exclamation mark</td>
+<td align="center">!!</td>
+<td>0021 0021</td>
+<td>Exclamation mark + Exclamation mark</td>
+
+</table>
+<p>
+There are some interesting quirks here.
+Mind you, this is what the Unicode Consortium says,
+so if you think they are wrong,
+you can take it up with them.
+</p>
+<p>
+The superscript-like characters are converted to their plain
+versions.
+Enclosed alphabetics are also converted,
+but not the ® symbol.
+Fullwidth forms of Latin letters
+are converted to their halfwidth equivalents.
+On the other hand, halfwidth Katakana characters are expanded to their
+fullwidth equivalents.
+But small Katakana does not convert to their large equivalents.
+</p>
+<p>
+The Ø disappears completely! What’s up with that?
+The character code for Ø is reported as
+<code>C3_ALPHA | C3_NONSPACING | C3_DIACRITIC</code>,
+and since we are removing nonspacing characters,
+this causes it to be removed.
+(Why is Ø nonspacing? It occupies space!)
+For whatever reason, it does not decompose into
+O + Combining Solidus Overlay.
+On the other hand, the Polish ł remains intact
+because it is reported as
+<code>C3_ALPHA | C3_DIACRITIC</code>.
+Poland wins and Norway loses?
+</p>
+<p>
+The diacritic removal ignores linguistic rules.
+The Swedish Å decomposes into a capital A and a combining
+ring above,
+even though in Swedish, the character is considered nondecomposable.
+(Just like the capital letter Q in English
+does not decompose into an O and a tail.)
+Katakana Go suffers a similar ignoble fate,
+<a href="http://www.siao2.com/2007/05/14/2629747.aspx">
+converting to Katakana Ko</a>,
+which is linguistically nonsensical.
+But then again, removing diacritics
+<i>is already linguistically nonsensical</i>.
+Nonsensical operation is nonsensical.
+</p>
+<p>
+There is no attempt to unify look-alike characters from different
+scripts.
+Look-alike characters in the Greek and Cyrillic alphabets
+are not mapped to their Latin doppelgängers.
+</p>
+<p>
+The infamous Turkish dotless i does not turn into a dotted i.
+(And the lowercase Latin i does not decompose into a combining dot and a dotless i.)
+</p>
+<p>
+Finally, I tried a selection of punctuation marks.
+Most of them pass through unchanged,
+with the exception of the double prime and double exclamation mark
+which each decompose into a pair of singles.
+(But double quotation marks do not decompose into a pair of singles.)
+</p>
+<p>
+Okay, but the goal of this exercise was spam detection,
+so we are actually interested in mapping as far as possible
+all the way down to plain ASCII.
+We’d like to convert, for example,
+the look-alike characters in the Cyrillic and Greek alphabets
+to the Latin characters they resemble.
+</p>
+<p>
+So let’s try something else.
+If we want to convert to ASCII,
+then just convert to ASCII!
+</p>
+<pre>
+#define CP_ASCII 20127
+void OnUpdate(HWND hwnd)
+{
+  wchar_t szSource[MAXSOURCE];
+  GetDlgItemText(hwnd, IDC_SOURCE, szSource, ARRAYSIZE(szSource));
+  char szDest[MAXSOURCE * 2];
+  int cchActual = WideCharToMultiByte(CP_ASCII, 0, szSource, -1,
+                              szDest, ARRAYSIZE(szDest), 0, 0);
+  if (cchActual &lt;= 0) szDest[0] = 0;
+  SetDlgItemTextA(hwnd, IDC_DEST, szDest);
+  SetDlgItemCodePoints(hwnd, IDC_SOURCEPOINTS, szSource);
+}
+</pre>
+<p>
+We can extend the table above with a new column.
+</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th colspan="3">Original character</th>
+<th colspan="3">KD character</th>
+<th colspan="3">ASCII character</th>
+</tr>
+<tr>
+<td align="center">ª</td>
+<td>00AA</td>
+<td>Feminine ordinal indicator</td>
+<td align="center">a</td>
+<td>0061</td>
+<td>Latin small letter a</td>
+<td align="center">a</td>
+<td>0061</td>
+<td>Latin small letter a</td>
+</tr>
+<tr>
+<td align="center">¹</td>
+<td>00B1</td>
+<td>Superscript one</td>
+<td align="center">1</td>
+<td>0031</td>
+<td>Digit one</td>
+<td align="center">1</td>
+<td>0031</td>
+<td>Digit one</td>
+</tr>
+<tr>
+<td align="center">½</td>
+<td>00BD</td>
+<td>Vulgar fraction one half</td>
+<td align="center">1⁄2</td>
+<td>0031 2044 0032</td>
+<td>Digit one + Fraction slash + Digit two</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">ı</td>
+<td>0131</td>
+<td>Latin small letter dotless i</td>
+<td align="center">ı</td>
+<td>0131</td>
+<td>Latin small letter dotless i</td>
+<td align="center">i</td>
+<td>0069</td>
+<td>Latin small letter i</td>
+</tr>
+<tr>
+<td align="center">Ø</td>
+<td>00D8</td>
+<td>Latin capital letter O with stroke</td>
+<td align="center"></td>
+<td></td>
+<td>Disappears!</td>
+<td align="center">O</td>
+<td>004F</td>
+<td>Latin capital letter O</td>
+</tr>
+<tr>
+<td align="center">ł</td>
+<td>0142</td>
+<td>Latin small letter l with stroke</td>
+<td align="center">ł</td>
+<td>0142</td>
+<td>Latin small letter l with stroke</td>
+<td align="center">l</td>
+<td>006C</td>
+<td>Latin small letter l</td>
+</tr>
+<tr>
+<td align="center">ŀ</td>
+<td>0140</td>
+<td>Latin small letter l with middle dot</td>
+<td align="center">l·</td>
+<td>006C 00B7</td>
+<td>Latin small letter l + middle dot</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">æ</td>
+<td>00E6</td>
+<td>Latin small letter ae</td>
+<td align="center">æ</td>
+<td>00E6</td>
+<td>Latin small letter ae</td>
+<td align="center">a</td>
+<td>0061</td>
+<td>Latin small letter a</td>
+</tr>
+<tr>
+<td align="center">Ή</td>
+<td>0389</td>
+<td>Greek capital letter Eta with tonos</td>
+<td align="center">Η</td>
+<td>0397</td>
+<td>Greek capital letter Eta</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">А</td>
+<td>0410</td>
+<td>Cyrillic capital letter А</td>
+<td align="center">А</td>
+<td>0410</td>
+<td>Cyrillic capital letter А</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">Å</td>
+<td>00C5</td>
+<td>Latin capital letter A with ring above</td>
+<td align="center">A</td>
+<td>0041</td>
+<td>Latin capital letter A</td>
+<td align="center">A</td>
+<td>0041</td>
+<td>Latin capital letter A</td>
+</tr>
+<tr>
+<td align="center">Ａ</td>
+<td>FF21</td>
+<td>Fullwidth Latin capital letter A</td>
+<td align="center">A</td>
+<td>0041</td>
+<td>Latin capital letter A</td>
+<td align="center">A</td>
+<td>0041</td>
+<td>Latin capital letter A</td>
+</tr>
+<tr>
+<td align="center">①</td>
+<td>2460</td>
+<td>Circled digit one</td>
+<td align="center">1</td>
+<td>0031</td>
+<td>Digit one</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">➀</td>
+<td>2780</td>
+<td>Dingbat circled sans-serif digit one</td>
+<td align="center">➀</td>
+<td>2780</td>
+<td>Dingbat circled sans-serif digit one</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">®</td>
+<td>00AE</td>
+<td>Registered sign</td>
+<td align="center">®</td>
+<td>00AE</td>
+<td>Registered sign</td>
+<td align="center">R</td>
+<td>0052</td>
+<td>Latin capital letter R</td>
+</tr>
+<tr>
+<td align="center">Ⓡ</td>
+<td>24c7</td>
+<td>Circled Latin capital letter R</td>
+<td align="center">R</td>
+<td>0052</td>
+<td>Latin capital letter R</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">𝖕</td>
+<td>D835 DD95</td>
+<td>Mathematical bold Fraktur small p</td>
+<td align="center">p</td>
+<td>0070</td>
+<td>Latin small letter p</td>
+<td align="center">??</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">ｬ</td>
+<td>FF6C</td>
+<td>Halfwidth Katakana letter small Ya</td>
+<td align="center">ャ</td>
+<td>30E3</td>
+<td>Katakana letter small Ya</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">ャ</td>
+<td>30E3</td>
+<td>Katakana letter small Ya</td>
+<td align="center">ャ</td>
+<td>30E3</td>
+<td>Katakana letter small Ya</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">ゴ</td>
+<td>30B4</td>
+<td>Katakana letter Go</td>
+<td align="center">コ</td>
+<td>30B3</td>
+<td>Katakana letter Ko</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">“</td>
+<td>201C</td>
+<td>Left double quotation mark</td>
+<td align="center">“</td>
+<td>201C</td>
+<td>Left double quotation mark</td>
+<td align="center">“</td>
+<td>0022</td>
+<td>Quotation mark</td>
+</tr>
+<tr>
+<td align="center">”</td>
+<td>201D</td>
+<td>Right double quotation mark</td>
+<td align="center">”</td>
+<td>201D</td>
+<td>Right double quotation mark</td>
+<td align="center">“</td>
+<td>0022</td>
+<td>Quotation mark</td>
+</tr>
+<tr>
+<td align="center">„</td>
+<td>201E</td>
+<td>Double low-9 quotation mark</td>
+<td align="center">„</td>
+<td>201E</td>
+<td>Double low-9 quotation mark</td>
+<td align="center">“</td>
+<td>0022</td>
+<td>Quotation mark</td>
+</tr>
+<tr>
+<td align="center">‟</td>
+<td>201F</td>
+<td>Double high-reversed-9 quotation mark</td>
+<td align="center">‟</td>
+<td>201F</td>
+<td>Double high-reversed-9 quotation mark</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">″</td>
+<td>2033</td>
+<td>Double prime</td>
+<td align="center">′′</td>
+<td>2032 2032</td>
+<td>Prime + Prime</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+</tr>
+<tr>
+<td align="center">′</td>
+<td>2032</td>
+<td>Prime</td>
+<td align="center">′</td>
+<td>2032</td>
+<td>Prime</td>
+<td align="center">‘</td>
+<td>0027</td>
+<td>Apostrophe</td>
+</tr>
+<tr>
+<td align="center">‵</td>
+<td>2035</td>
+<td>Reverse prime</td>
+<td align="center">‵</td>
+<td>2035</td>
+<td>Reverse prime</td>
+<td align="center">`</td>
+<td>0060</td>
+<td>Grave accent</td>
+</tr>
+<tr>
+<td align="center">‹</td>
+<td>2039</td>
+<td>Single left-pointing angle quotation mark</td>
+<td align="center">‹</td>
+<td>2039</td>
+<td>Single left-pointing angle quotation mark</td>
+<td align="center">&lt;</td>
+<td>003C</td>
+<td>Less-than sign</td>
+</tr>
+<tr>
+<td align="center">«</td>
+<td>00AB</td>
+<td>Left-pointing double angle quotation mark</td>
+<td align="center">«</td>
+<td>00AB</td>
+<td>Left-pointing double angle quotation mark</td>
+<td align="center">&lt;</td>
+<td>003C</td>
+<td>Less-than sign</td>
+</tr>
+<tr>
+<td align="center">—</td>
+<td>2014</td>
+<td>Em-dash</td>
+<td align="center">—</td>
+<td>2014</td>
+<td>Em-dash</td>
+<td align="center">–</td>
+<td>002D</td>
+<td>Hyphen-minus</td>
+</tr>
+<td align="center">‼</td>
+<td>203C</td>
+<td>Double exclamation mark</td>
+<td align="center">!!</td>
+<td>0021 0021</td>
+<td>Exclamation mark + Exclamation mark</td>
+<td align="center">?</td>
+<td></td>
+<td>No conversion</td>
+
+</table>
+<p>
+There are some interesting differences here.
+</p>
+<p>
+Some characters fail to convert to ASCII outright.
+This is not unexpected for the Japanese characters,
+is mildly unexpected for the
+look-alikes in the Cyrillic and Greek alphabets,
+and is surprising for some characters like double prime,
+double exclamation point,
+enclosed alphanumerics,
+and vulgar fractions
+because they had ASCII decompositions in Normalization Form KD,
+but converting directly into ASCII refused to use them.
+</p>
+<p>
+But the dotless i gets its dot back.
+</p>
+<p>
+Another weird thing you might notice is that the æ converts
+to just the a.
+This goes contrary to the expectations of
+American English,
+because words which historically use the æ and œ
+are largely
+respelled in American English to use just the e.
+(Encyclopædia → encyclopedia,
+fœtus → fetus.)
+Mysteries abound.
+</p>
+<p>
+If your real goal is to map every character to its nearest ASCII
+look-alike,
+then all these code page games are just beating around the bush.
+The way to go is to use the Unicode Confusables database.
+There is a
+<a href="http://www.unicode.org/Public/security/revision-05/confusables.txt">
+huge data file</a>
+and
+<a href="http://www.unicode.org/reports/tr39/#Confusable_Detection">
+instructions on how to use it</a>.
+There’s also
+<a href="http://unicode.org/cldr/utility/confusables.jsp">
+a nice Web site</a>
+that lets you explore the confusables database interactively.
+</p>
+<p>
+Or you could just take the sledgehammer approach:
+If there are a significant number of characters outside the Latin alphabet
+and punctuation and you are expecting English text,
+then just reject it as likely spam.
+</p>
+<p>
+ಠ_ಠ</p>
+
+
+</body>

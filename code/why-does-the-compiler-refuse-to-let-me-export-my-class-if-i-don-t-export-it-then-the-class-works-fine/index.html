@@ -1,0 +1,101 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does the compiler refuse to let me export my class? If I don’t export it, then the class works fine.</h1>  <!-- .entry-meta -->
+
+<p>Consider the following class:</p>
+<pre>class Node
+{
+public:
+ Node();
+ // ... public methods ...
+
+private:
+ std::vector&lt;std::unique_ptr&lt;Node&gt;&gt; children;
+};
+</pre>
+<p>This class works great as long as you don’t try to export it. Adding the <code>__declspec(dllexport)</code> declaration specifier causes the compiler to get mad.</p>
+<pre>class <span style="color: blue;">__declspec(dllexport)</span> Node
+{
+public:
+ Node();
+ // ... public methods ...
+
+private:
+ std::vector&lt;std::unique_ptr&lt;Node&gt;&gt; children;
+};
+</pre>
+<p>The Visual C++ compiler now freaks out with</p>
+<pre style="white-space: pre-wrap;">xutility(1784): error C2280: 'std::unique_ptr&lt;Node, std::default_delete&lt;_Ty&gt;&gt; &amp;std::unique_ptr&lt;_Ty, std::default_delete&lt;_Ty&gt;&gt;::<wbr/>operator =(const std::unique_ptr&lt;_Ty, std::default_delete&lt;_Ty&gt;&gt; &amp;)': attempting to reference a deleted function
+        with
+        [
+            _Ty=Node
+        ]
+memory(1969): note: see declaration of 'std::unique_ptr&lt;Node, std::default_delete&lt;_Ty&gt;&gt;::operator ='
+        with
+        [
+            _Ty=Node
+        ]
+memory(1969): note: 'std::unique_ptr&lt;Node, std::default_delete&lt;_Ty&gt;&gt; &amp;std::unique_ptr&lt;_Ty, std::default_delete&lt;_Ty&gt;&gt;::<wbr/>operator =(const std::unique_ptr&lt;_Ty, std::default_delete&lt;_Ty&gt;&gt; &amp;)': function was explicitly deleted
+        with
+        [
+            _Ty=Node
+        ]
+...
+vector(1044): note: while compiling class template member function 'void std::vector&lt;std::unique_ptr&lt;Node, std::default_delete&lt;_Ty&gt;&gt;, std::allocator&lt;std::unique_ptr&lt;_Ty, std::default_delete&lt;_Ty&gt;&gt;&gt;&gt;::<wbr/>_Copy_assign(const std::vector&lt;std::unique_ptr&lt;_Ty, std::default_delete&lt;_Ty&gt;&gt;, std::allocator&lt;std::unique_ptr&lt;_Ty, std::default_delete&lt;_Ty&gt;&gt;&gt;&gt; &amp;, std::false_type)'
+        with
+        [
+            _Ty=Node
+        ]
+vector(1062): note: see reference to function template instantiation 'void std::vector&lt;std::unique_ptr&lt;Node, std::default_delete&lt;_Ty&gt;&gt;, std::allocator&lt;std::unique_ptr&lt;_Ty, std::default_delete&lt;_Ty&gt;&gt;&gt;&gt;::<wbr/>_Copy_assign(const std::vector&lt;std::unique_ptr&lt;_Ty, std::default_delete&lt;_Ty&gt;&gt;, std::allocator&lt;std::unique_ptr&lt;_Ty, std::default_delete&lt;_Ty&gt;&gt;&gt;&gt; &amp;, std::false_type)' being compiled
+        with
+        [
+            _Ty=Node
+        ]
+node.h(11): note: see reference to class template instantiation 'std::vector&lt;std::unique_ptr&lt;Node, std::default_delete&lt;_Ty&gt;&gt;, std::allocator&lt;std::unique_ptr&lt;_Ty, std::default_delete&lt;_Ty&gt;&gt;&gt;&gt;' being compiled
+        with
+        [
+            _Ty=Node
+        ]
+</pre>
+<p>Let’s simplify the error messages by taking out the default template parameters and the method return values, and performing the substitutions.</p>
+<pre style="white-space: pre-wrap;">xutility(1784): error C2280: 'std::unique_ptr&lt;Node&gt;::<wbr/>operator=(const std::unique_ptr&lt;Node&gt; &amp;)': attempting to reference a deleted function
+memory(1969): note: see declaration of 'std::unique_ptr&lt;Node&gt;::operator='
+memory(1969): note: 'std::unique_ptr&lt;Node&gt;::<wbr/>operator=(const std::unique_ptr&lt;Node&gt; &amp;)': function was explicitly deleted
+...
+vector(1044): note: while compiling class template member function 'void std::vector&lt;std::unique_ptr&lt;Node&gt;&gt;::<wbr/>_Copy_assign(const std::vector&lt;std::unique_ptr&lt;Node&gt;&gt; &amp;, std::false_type)'
+vector(1062): note: see reference to function template instantiation 'void std::vector&lt;std::unique_ptr&lt;Node&gt;&gt;::<wbr/>_Copy_assign(const std::vector&lt;std::unique_ptr&lt;Node&gt;&gt; &amp;, std::false_type)' being compiled
+node.h(11): note: see reference to class template instantiation 'std::vector&lt;std::unique_ptr&lt;Node&gt;&gt;' being compiled
+</pre>
+<p>What the compiler is trying to tell you is that it’s instantiating the <code>std::</code><code>vector</code> template with <code>std::</code><code>unique_ptr&lt;Node&gt;</code> as the type parameter, and it ran into trouble with the copy assignment operator. In order to copy the vector, it needs to copy each element, but <code>std::</code><code>unique_ptr&lt;Node&gt;</code> deleted its copy assignment operator.</p>
+<p>Okay, that makes sense. You can’t copy a vector of move-only objects. <!-- backref: Why does <CODE>std::is_copy_constructible</CODE> report that a vector of move-only objects is copy constructible? --> We saw that last time. But why does this problem occur only when you try to export the class? Shouldn’t it always be a problem?</p>
+<p>Template methods are instantiated on demand, and if you never try to copy the vector of move-only objects, then the copy assignment operator will never be invoked, and the compiler will never encounter the situation where it needs to copy a non-copyable object.</p>
+<p>That piano is perfectly safe, as long as you <a href="https://www.youtube.com/watch?v=gUsJXwE73QU"> don’t play B4</a>.</p>
+<p>Exporting a class forces the compiler to generate code for <i>every method</i>, just in case some other module tries to call it. In particular, the compiler must generate the <code>Node</code> copy constructor and copy assignment operator, but it can’t, and that’s why you’re getting the error.</p>
+<p>Exporting the class forces the compiler to play every note on the piano, just in case somebody ever presses it.</p>
+<p>To fix this problem, make your class explicitly non-copyable and non-copy-assignable.</p>
+<pre>class Node
+{
+public:
+ Node();
+
+ <span style="color: blue;">Node(Node const&amp;) = delete;
+ Node&amp; operator=(Node const&amp;) = delete;</span>
+
+ // ... public methods ...
+private:
+ std::vector&lt;std::unique_ptr&lt;Node&gt;&gt; children;
+};
+</pre>
+<p>This removes the methods from the class, so the compiler won’t try to export them. Those methods didn’t work anyway, so removing them doesn’t cause any harm. It also makes the error messages much more comprehensible.</p>
+<pre>void f(const Node&amp; v)
+{
+  auto copy = v;
+}
+</pre>
+<p>Instead of some horrible 50-line error message, you get a very direct explanation of the problem:</p>
+<pre>error C2280: 'Node::Node(const Node &amp;)': attempting to reference a deleted function
+note: see declaration of 'Node::Node'
+note: 'Node::Node(const Node &amp;)': function was explicitly deleted
+</pre>
+
+
+</body>

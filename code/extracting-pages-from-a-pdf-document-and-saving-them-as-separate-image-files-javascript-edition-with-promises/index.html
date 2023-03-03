@@ -1,0 +1,74 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Extracting pages from a PDF document and saving them as separate image files, JavaScript edition with Promises</h1>  <!-- .entry-meta -->
+
+<p><!-- backref: Extracting pages from a PDF document and saving them as separate image files, C# edition -->Last time, we converted the C# version of the <a href="https://github.com/Microsoft/Windows-universal-samples/tree/v1.0.11/Samples/PdfDocument">PDF Document</a> sample program so that it saved the pages to disk as image files. Today we’ll port those changes to JavaScript with Promises. </p>
+<pre>
+function viewPage() {
+  WinJS.log &amp;&amp; WinJS.log("", "sample", "status");
+
+  var pageNumber = parseInt(pageNumberBox.value, 10);
+  if (isNaN(pageNumber) || (pageNumber &lt; 1) ||
+    (pageNumber &gt; pdfDocument.pageCount)) {
+    WinJS.log &amp;&amp; WinJS.log("Invalid page number.", "sample", "error");
+    return;
+  }
+
+  output.src = "";
+  progressControl.style.display = "block";
+
+  // Convert from 1-based page number to 0-based page index.
+  var pageIndex = pageNumber - 1;
+
+  var page = pdfDocument.getPage(pageIndex);
+
+  <font color="blue">var picker = new Windows.Storage.Pickers.FileSavePicker();
+  picker.fileTypeChoices["PNG image"] = [".png"];
+  picker.pickSaveFileAsync().then(outfile =&gt; {
+    if (outfile) {
+      outfile.openTransactedWriteAsync().then(transaction =&gt; {
+        var options = new PdfPageRenderOptions();
+        options.destinationHeight = page.size.height * 2;
+        options.destinationWidth = page.size.width * 2;
+        page.renderToStreamAsync(transaction.stream, options).then(() =&gt; {
+          transaction.close();
+        });
+      });
+    }
+  })</font>.done(() =&gt; {
+    page.close();
+    // Delete the code that sets the blob into the image
+    progressControl.style.display = "none";
+  });
+}
+</pre>
+<p>This is an uninspired direct translation of the C# code to JavaScript. We can imbue it with a little JavaScript inspiration by flattening the promise chain a bit. </p>
+<pre>
+  <font color="blue">var transaction;</font>
+  var picker = new Windows.Storage.Pickers.FileSavePicker();
+  picker.fileTypeChoices["PNG image"] = [".png"];
+  picker.pickSaveFileAsync().then(outfile =&gt; {
+    if (outfile) {
+      <font color="blue">return outfile.openTransactedWriteAsync();</font>
+    }
+  })<font color="blue">.then(trans =&gt; {
+    transaction = trans;
+    if (transaction) {</font>
+        var options = new PdfPageRenderOptions();
+        options.destinationHeight = page.size.height * 2;
+        options.destinationWidth = page.size.width * 2;
+        <font color="blue">return page.renderToStreamAsync(transaction.stream, options);
+    }
+  }).then(() =&gt; {
+    transaction &amp;&amp;</font> transaction.close();<font color="blue">
+  })</font>.done(() =&gt; {
+    page.close();
+    // Delete the code that sets the blob into the image
+    progressControl.style.display = "none";
+  });
+</pre>
+<p>Instead of nesting the promises, I chained them, and each step of the chain checks whether the previous step succeeded before proceeding. (If not, then that step does nothing.) </p>
+<p>Alternatively, I could’ve thrown the Promise into an error state, but WinRT tries to reserve exceptions for unrecoverable errors, primarily out-of-memory conditions for a small allocation, or a programmer error. Errors that a program is expected to recover from are generally reported by an in-API mechanism. (There are notable exceptions to this principle, primarily in the I/O area.) </p>
+<p>Anyway, you may have noticed that I used arrow functions, which are feature of ES6. Next time, I’m going to take it even further. </p>
+
+
+</body>

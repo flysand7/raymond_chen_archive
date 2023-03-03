@@ -1,0 +1,116 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Dragging a shell object, part 4: Adding a prettier drag icon</h1>  <!-- .entry-meta -->
+
+<p><p>
+You may have noticed that the drag feedback is rather sad-looking.
+Just a box, maybe with a plus sign or an arrow; you don’t
+even know what it is you’re dragging.
+</p>
+<p>
+Let’s fix that.  We’ll drag the icon of the file around.
+We’ll need to add the drag image to the data object.
+</p>
+<pre>
+void OnLButtonDown(HWND hwnd, BOOL fDoubleClick, int x, int y, UINT keyFlags)
+{
+  IDataObject *pdto;
+  if (SUCCEEDED(<font color="blue">GetDataObjectOfFileWithCuteIcon(
+                hwnd, g_pszTarget, &amp;pdto))</font>) {
+     IDropSource *pds = new CDropSource();
+     …
+</pre>
+<p>
+This new function <code>GetDataObjectOfFileWithCuteIcon</code>
+creates the data object and then attaches the cute icon to it.
+</p>
+<pre>
+HRESULT GetDataObjectOfFileWithCuteIcon(HWND hwnd,
+ LPCWSTR pszPath, IDataObject **ppdto)
+{
+  HRESULT hr = GetUIObjectOfFile(hwnd, pszPath,
+                    IID_IDataObject, (void**)ppdto);
+  if (SUCCEEDED(hr)) {
+    IDragSourceHelper *pdsh;
+    if (SUCCEEDED(CoCreateInstance(CLSID_DragDropHelper, NULL, CLSCTX_ALL,
+                                   IID_IDragSourceHelper, (void**)&amp;pdsh))) {
+      SHDRAGIMAGE sdi;
+      if (CreateDragImage(pszPath, &amp;sdi)) {
+        pdsh-&gt;InitializeFromBitmap(&amp;sdi, *ppdto);
+        DeleteObject(sdi.hbmpDragImage);
+      }
+      pdsh-&gt;Release();
+    }
+  }
+  return hr;
+}
+</pre>
+<p>
+We use the
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/programmersguide/shell_basics/shell_basics_programming/transferring/dataobject.asp">
+shell drag/drop helper object</a>
+to attach the bitmap to the data object.
+The shell drag/drop helper object requires that the data object
+be able to accept arbitrary blobs, but fortunately, the standard
+shell data object does this.
+</p>
+<p>
+The nasty part is generating the drag image.
+This is not the fun part, and you’re not going to learn anything
+from this function.  It just has to be written.
+</p>
+<pre>
+BOOL CreateDragImage(LPCWSTR pszPath, SHDRAGIMAGE *psdi)
+{
+  psdi-&gt;hbmpDragImage = NULL;
+  SHFILEINFOW sfi;
+  HIMAGELIST himl = (HIMAGELIST)
+    SHGetFileInfoW(pszPath, 0, &amp;sfi, sizeof(sfi), SHGFI_SYSICONINDEX);
+  if (himl) {
+    int cx, cy;
+    ImageList_GetIconSize(himl, &amp;cx, &amp;cy);
+    psdi-&gt;sizeDragImage.cx = cx;
+    psdi-&gt;sizeDragImage.cy = cy;
+    psdi-&gt;ptOffset.x = cx;
+    psdi-&gt;ptOffset.y = cy;
+    psdi-&gt;crColorKey = CLR_NONE;
+    HDC hdc = CreateCompatibleDC(NULL);
+    if (hdc) {
+      psdi-&gt;hbmpDragImage = CreateBitmap(cx, cy, 1, 32, NULL);
+      if (psdi-&gt;hbmpDragImage) {
+        HBITMAP hbmPrev = SelectBitmap(hdc, psdi-&gt;hbmpDragImage);
+        ImageList_Draw(himl, sfi.iIcon, hdc, 0, 0, ILD_NORMAL);
+        SelectBitmap(hdc, hbmPrev);
+      }
+      DeleteDC(hdc);
+    }
+  }
+  return psdi-&gt;hbmpDragImage != NULL;
+}
+</pre>
+<p>
+To create the drag image, we ask
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/functions/shgetfileinfo.asp">
+the <code>SHGetFileInfo</code> function</a>
+to give us the imagelist handle and icon index
+for the icon that represents the file.
+The icon size in the imagelist goes into
+<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/structures/shdragimage.asp">
+the <code>SHDRAGIMAGE</code> structure</a>
+as the bitmap dimensions and as the cursor point.
+(We put the cursor at the bottom right corner of the image.)
+Since we are creating an alpha-blended bitmap, we don’t need
+a color-key.
+Finally, we create a memory DC to house an ARGB bitmap into which
+we draw the icon.
+</p>
+<p>
+If you run this program, you should see the icon for a text file
+being dragged around as you drag your throwaway file around
+the screen.
+</p>
+<p>
+Next time, a way to make somebody else do the heavy lifting for you.
+</p></p>
+
+
+</body>

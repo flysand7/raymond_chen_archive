@@ -1,0 +1,608 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: The lifetime of objects involved in the coroutine function</h1>  <!-- .entry-meta -->
+
+<p>We <a href="/code/c-coroutines-managing-the-reference-count-of-the-coroutine-state" title="C++ coroutines: Managing the reference count of the coroutine state"> finally</a> hooked up the last missing piece of our coroutine promise implementation. Before we can look at the tradeoffs we’ve made, let’s step back and follow the lifetime of the various objects involved in the coroutine function.</p>
+<p>Suppose we have a coroutine that goes like this:</p>
+<pre>task SomeCoroutine(Parameter p)
+{
+    Local1 l1;
+    co_await l1.Method();
+    co_return l1.Result();
+}
+</pre>
+<p>The coroutine state will look something like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="See descriptive text">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<th>Coroutine state</th>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">bookkeeping</td>
+</tr>
+<tr>
+<td>promise</td>
+<td style="margin-right: 1ex;">
+
+</td>
+<td style="border: solid 1px black; line-height: 120%;">(you write this)</td>
+</tr>
+<tr>
+<td rowspan="3">coroutine frame</td>
+<td rowspan="3" style="margin-right: 1ex;">
+
+</td>
+<td style="border: solid 1px black; border-bottom: none;"><code>Parameter p</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-style: none solid;"><code>Local l1</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-top: none;">temporaries</td>
+</tr>
+</tbody>
+</table>
+<p>The coroutine state consists of three parts: Compiler-defined bookkeeping to keep track of the progress of the coroutine, the promise object (which you define), and the frame (which contains the parameters, locals, and any temporaries).</p>
+<p>We’ve written two kinds of promises, and they look like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="See descriptive text">
+<tbody>
+<tr>
+<th>Coroutine state</th>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<th>Coroutine state</th>
+</tr>
+<tr>
+<td style="border: solid 1px black;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black;">bookkeeping</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>shared_ptr</code></td>
+<td>→</td>
+<td style="border: solid 1px black; border-bottom: none;"><code>ReturnValue</code></td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid;"><code>ReturnValue</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none;"><code>Parameter p</code></td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none;">other stuff</td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid;">other stuff</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-style: none solid;"><code>Local l1</code></td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none;"><code>Parameter p</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-top: none;">temporaries</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid;"><code>Local l1</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none;">temporaries</td>
+</tr>
+</tbody>
+</table>
+<p>The first kind is the simple one, where the promise object is a <code>shared_<wbr/>ptr</code> to a <code>result_<wbr/>holder</code> object, and the <code>result_<wbr/>holder</code> holds the return value and other internal bookkeeping. In the first kind of promise, there are two allocations, one for the coroutine state, and one for the <code>result_<wbr/>holder</code>.</p>
+<p>The second kind is the one where we inlined the <code>result_<wbr/>holder</code> object into the promise. In the second kind of promise, there is just one allocation, namely for the coroutine state. The promises consists of the <code>result_<wbr/>holder</code> itself, so there is no second allocation.</p>
+<p>Let’s track the memory usage and object lifetimes.</p>
+<p>When you call the coroutine, the first thing that happens it that the compiler allocates a coroutine state and sets up some bookkeeping. In the diagrams, boxes shaded in blue contain live data, whereas boxes in light gray represent uninitialized memory. Solid lines delimit allocated memory, and dotted lines go around memory that has not yet been allocated.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="See descriptive text">
+<tbody>
+<tr>
+<th>Coroutine state</th>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<th>Coroutine state</th>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; color: #c0c0c0;"><code>shared_ptr</code></td>
+<td style="color: #c0c0c0;">⤍</td>
+<td style="border: dotted 1px #c0c0c0; border-bottom: none; color: #c0c0c0;"><code>ReturnValue</code></td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>ReturnValue</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none; color: #c0c0c0;"><code>Parameter p</code></td>
+<td> </td>
+<td style="border: dotted 1px #c0c0c0; border-top: none; color: #c0c0c0;">other stuff</td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;">other stuff</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>Local l1</code></td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; color: #c0c0c0;"><code>Parameter p</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>Local l1</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+</tr>
+</tbody>
+</table>
+<p>At the start of the coroutine, the compiler allocates the coroutine state, but only the compiler bookkeeping portion is live. The promise and the frame remain still uninitialized.</p>
+<p>Next, the parameters are moved into the coroutine frame. If a parameter is a reference, then only the reference is moved. In our example, this means that <code>Parameter</code> is constructed.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="See descriptive text">
+<tbody>
+<tr>
+<th>Coroutine state</th>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<th>Coroutine state</th>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; color: #c0c0c0;"><code>shared_ptr</code></td>
+<td style="color: #c0c0c0;">⤍</td>
+<td style="border: dotted 1px #c0c0c0; border-bottom: none; color: #c0c0c0;"><code>ReturnValue</code></td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>ReturnValue</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>Parameter p</code></td>
+<td> </td>
+<td style="border: dotted 1px #c0c0c0; border-top: none; color: #c0c0c0;">other stuff</td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;">other stuff</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>Local l1</code></td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>Parameter p</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>Local l1</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+</tr>
+</tbody>
+</table>
+<p>At this point, the coroutine bookkeeping and the <code>Parameter</code> in the coroutine state have been initialized.</p>
+<p>Next, the compiler constructs the promise object. In our first example, the constructor for the promise object also constructs the <code>shared_ptr</code>, which creates the promise state object that holds space for the <code>Return­Value</code> as well as other promise bookkeeping. In our second example, the promise state is inlined into the promise. Again, memory is reserved for the <code>Return­Value</code>, but nothing is in it yet.</p>
+<p>This is what we have so far:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="See descriptive text">
+<tbody>
+<tr>
+<th>Coroutine state</th>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<th>Coroutine state</th>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #bbebff;"><code>shared_ptr</code></td>
+<td>→</td>
+<td style="border: solid 1px black; border-bottom: none; color: #c0c0c0;"><code>ReturnValue</code></td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>ReturnValue</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>Parameter p</code></td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; background-color: #bbebff;">other stuff</td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; background-color: #bbebff;">other stuff</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>Local l1</code></td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>Parameter p</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>Local l1</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+</tr>
+</tbody>
+</table>
+<p>In the first example, the <code>shared_<wbr/>ptr</code> for the promise object has been initialized, and it points to a newly-allocated <code>result_<wbr/>holder</code>. In that <code>result_<wbr/>holder</code>, the bookkeeping is initialized, but the return value portion remains uninitialized. The return value won’t get initialized until the coroutine exits either by reaching a <code>co_return</code> or by exiting with an exception.</p>
+<p>In the second example, the promise object is itself just a <code>result_<wbr/>holder</code>; there is no <code>shared_<wbr/>ptr</code> and no second allocation. Again, the bookkeeping for the <code>result_<wbr/>holder</code> has been initialized, but the portion that holds the return value won’t get initialized until there is something to return.</p>
+<p>As the coroutine runs, local variables and temporaries are constructed and destructed according to the usual rules of the C++ language. Those local variables and temporaries appear and disappear in the frame. In our example, this means that <code>Local</code> gets constructed in the frame, and then a temporary is created to hold the return value from <code>l1.Method()</code>. We then go through the standard <code>co_await</code> machinery: From that temporary value, we obtain an awaiter, which is another temporary value, which also goes into the frame. The awaiter arranges for the coroutine to resume, and at the resumption, the temporaries are destructed.</p>
+<p>Just before the <code>co_return</code>, we have this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="See descriptive text">
+<tbody>
+<tr>
+<th>Coroutine state</th>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<th>Coroutine state</th>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #bbebff;"><code>shared_ptr</code></td>
+<td>→</td>
+<td style="border: solid 1px black; border-bottom: none; color: #c0c0c0;"><code>ReturnValue</code></td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>ReturnValue</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>Parameter p</code></td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; background-color: #bbebff;">other stuff</td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; background-color: #bbebff;">other stuff</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-style: none solid; background-color: #bbebff;"><code>Local l1</code></td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>Parameter p</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; background-color: #bbebff;"><code>Local l1</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+</tr>
+</tbody>
+</table>
+<p>In both versions of the coroutine state, the compiler bookkeeping remains initialized, as well as the bookkeeping for the <code>result_<wbr/>holder</code>, the captured parameter, and the local variable. In the first example, we also have a <code>shared_<wbr/>ptr</code> to the <code>result_<wbr/>holder</code>, but in the second example, <code>result_<wbr/>holder</code> is embedded in the coroutine state, so no pointer or second allocation is required. In the frame, the parameter remains initialized as well as the local. The temporary is now uninitialized because the lifetime of the temporary has ended.</p>
+<p>We now reach the <code>co_return</code>. The <code>co_return</code>‘d value is Let’s say that the <code>Result()</code> method returns a <code>Return­Value</code> object by value. That rvalue reference to the <code>Return­Value</code> is passed to the promise’s <code>return_<wbr/>value</code> method. In our first example, the promise move-constructs the <code>Return­Value</code> in the external promise state. In our second example, the promise move-constructs it in the embedded promise state.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="See descriptive text">
+<tbody>
+<tr>
+<th>Coroutine state</th>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<th>Coroutine state</th>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #bbebff;"><code>shared_ptr</code></td>
+<td>→</td>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>ReturnValue</code></td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; background-color: #bbebff;"><code>ReturnValue</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>Parameter p</code></td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; background-color: #bbebff;">other stuff</td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; background-color: #bbebff;">other stuff</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-style: none solid; background-color: #bbebff;"><code>Local l1</code></td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>Parameter p</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; background-color: #bbebff;"><code>Local l1</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+</tr>
+</tbody>
+</table>
+<p>At this point, the <code>Return­Value</code> object in the <code>result_<wbr/>holder</code> is initialized. In the first example, the <code>result_<wbr/>holder</code> is external to the coroutine state; in the second example, it is embedded inside the coroutine state.</p>
+<p>At the end of the <code>co_return</code> statement, the temporary <code>Return­Value</code> is destructed. This <code>Return­Value</code> does not have a lifetime that extends across a suspension point, so it doesn’t have to go into the coroutine frame. It can just go on the regular stack.</p>
+<p>The coroutine now completes, and any remaining local variables are destructed. In this case, it means that the <code>Local</code> in the coroutine frame is now destructed. The coroutine frame now consists only of the compiler bookkeeping, the promise, and the parameters. All of the locals and temporaries have been destructed. The memory for them is just sitting around unused.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="See descriptive text">
+<tbody>
+<tr>
+<th>Coroutine state</th>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<th>Coroutine state</th>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; background-color: #bbebff;"><code>shared_ptr</code></td>
+<td>→</td>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>ReturnValue</code></td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; background-color: #bbebff;"><code>ReturnValue</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>Parameter p</code></td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; background-color: #bbebff;">other stuff</td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; background-color: #bbebff;">other stuff</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>Local l1</code></td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>Parameter p</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>Local l1</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+</tr>
+</tbody>
+</table>
+<p>The code paths diverge significally when the coroutine completes. In our first version, our <code>final_<wbr/>suspend</code> allows the coroutine state to be destroyed. Destroying the coroutine state destructs the promise, then the parameters, then the bookkeeping, following the usual C++ rule of destructing in reverse order of construction.</p>
+<p>In our second version, our <code>final_<wbr/>suspend</code> keeps the coroutine state alive because the caller has a reference to it via the task. The objects now look like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="See descriptive text">
+<tbody>
+<tr>
+<th style="color: #c0c0c0;">Coroutine state</th>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<th>Coroutine state</th>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; color: #c0c0c0;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; color: #c0c0c0;"><code>shared_ptr</code></td>
+<td style="color: #c0c0c0;">⤍</td>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>ReturnValue</code></td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; background-color: #bbebff;"><code>ReturnValue</code></td>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; border-bottom: none; color: #c0c0c0;"><code>Parameter p</code></td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; background-color: #bbebff;">other stuff</td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; background-color: #bbebff;">other stuff</td>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; border-style: none dotted; color: #c0c0c0;"><code>Local l1</code></td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>Parameter p</code></td>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; border-top: none; color: #c0c0c0;">temporaries</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>Local l1</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+</tr>
+</tbody>
+</table>
+<p>In the first version, the entire coroutine state has been destroyed and deallocated, leaving only the <code>result_<wbr/>holder</code> with the <code>Return­Value</code> and a little bit of result holder bookkeeping. But in the second version, the coroutine state is still allocated, with live compiler bookkeeping, a live promise, and the live captured parameter. The live compiler bookeeping says “This coroutine has suspended at its <code>final_<wbr/>suspend</code>. If you resume the coroutine, it will self-destruct.”</p>
+<p>In both cases, the <code>result_<wbr/>holder</code> (either external or embedded) is kept alive by the <code>task</code> that we returned to our caller.</p>
+<p>The caller’s <code>co_await</code> copies (in the first case) or moves (in the second case) the result out of the <code>Return­Value</code>.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="See descriptive text">
+<tbody>
+<tr>
+<th style="color: #c0c0c0;">Coroutine state</th>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<th>Coroutine state</th>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; color: #c0c0c0;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; background-color: #bbebff;">bookkeeping</td>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; color: #c0c0c0;"><code>shared_ptr</code></td>
+<td style="color: #c0c0c0;">⤍</td>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>ReturnValue</code></td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; background-color: #bbebff;">(<code>ReturnValue</code>)</td>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; border-bottom: none; color: #c0c0c0;"><code>Parameter p</code></td>
+<td> </td>
+<td style="border: solid 1px black; border-top: none; background-color: #bbebff;">other stuff</td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; background-color: #bbebff;">other stuff</td>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; border-style: none dotted; color: #c0c0c0;"><code>Local l1</code></td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-bottom: none; background-color: #bbebff;"><code>Parameter p</code></td>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; border-top: none; color: #c0c0c0;">temporaries</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-style: none solid; color: #c0c0c0;"><code>Local l1</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: solid 1px black; border-top: none; color: #c0c0c0;">temporaries</td>
+</tr>
+</tbody>
+</table>
+<p>There is no change to the first version of our coroutine implementation, because copying the <code>Return­Value</code> doesn’t modify the original. But in the second version, moving the <code>Return­Value</code> to the caller causes the <code>Return­Value</code> inside the embedded <code>result_<wbr/>holder</code> to become empty. It is still initialized, but it holds nothing of interest.</p>
+<p>And finally, the caller destructs the task, which causes the last bit to disappear. In the first case, the shared promise state destructs, which means that the result holder bookkeeping and <code>Return­Value</code> both destruct, and then the memory for the <code>result_<wbr/>holder</code> is freed. In the second case, we go through coroutine state destruction, which as we noted earlier destructs the coroutine state destructs the promise, then the parameters, then the bookkeeping.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="See descriptive text">
+<tbody>
+<tr>
+<th style="color: #c0c0c0;">Coroutine state</th>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<th style="color: #c0c0c0;">Coroutine state</th>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; color: #c0c0c0;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: dotted 1px #c0c0c0; color: #c0c0c0;">bookkeeping</td>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; color: #c0c0c0;"><code>shared_ptr</code></td>
+<td style="color: #c0c0c0;">⤍</td>
+<td style="border: dotted 1px #c0c0c0; border-bottom: none; color: #c0c0c0;"><code>ReturnValue</code></td>
+<td style="width: 2em;"> </td>
+<td style="border: dotted 1px #c0c0c0; border-style: none dotted; color: #c0c0c0;">(<code>ReturnValue</code>)</td>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; border-bottom: none; color: #c0c0c0;"><code>Parameter p</code></td>
+<td> </td>
+<td style="border: dotted 1px #c0c0c0; border-top: none; color: #c0c0c0;">other stuff</td>
+<td style="width: 2em;"> </td>
+<td style="border: dotted 1px #c0c0c0; border-top: none; color: #c0c0c0;">other stuff</td>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; border-style: none dotted; color: #c0c0c0;"><code>Local l1</code></td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: dotted 1px #c0c0c0; border-bottom: none; color: #c0c0c0;"><code>Parameter p</code></td>
+</tr>
+<tr>
+<td style="border: dotted 1px #c0c0c0; border-top: none; color: #c0c0c0;">temporaries</td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: dotted 1px #c0c0c0; border-style: none dotted; color: #c0c0c0;"><code>Local l1</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="width: 2em;"> </td>
+<td style="border: dotted 1px #c0c0c0; border-top: none; color: #c0c0c0;">temporaries</td>
+</tr>
+</tbody>
+</table>
+<p>Next time, we’ll compare the two designs and identify pros and cons.</p>
+
+
+</body>

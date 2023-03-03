@@ -1,0 +1,99 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why are HANDLE return values so inconsistent?</h1>  <!-- .entry-meta -->
+
+<p>
+If you look at the various functions that return <code>HANDLE</code>s,
+you’ll see that some of them return <code>NULL</code>
+(like <code>CreateThread</code>)
+and some of them return <code>INVALID_HANDLE_VALUE</code>
+(like <code>CreateFile</code>).
+You have to check the documentation to see what each particular function
+returns on failure.</p>
+<p>
+Why are the return values so inconsistent?</p>
+<p>
+The reasons, as you may suspect, are historical.</p>
+<p>
+The values were chosen to be compatible with 16-bit Windows.
+The 16-bit functions <code>OpenFile</code>, <code>_lopen</code> and
+<code>_lcreat</code> return <code>-1</code> on failure, so the 32-bit
+<code>CreateFile</code> function returns <code>INVALID_HANDLE_VALUE</code>
+in order to facilitate porting code from Win16.</p>
+<p>
+(Armed with this, you can now answer the following trivia
+question: Why do I call <code>CreateFile</code>
+when I’m not actually creating a file?  Shouldn’t it be called
+<code>OpenFile</code>?  Answer:  Yes, <code>OpenFile</code> would have
+been a better name, but
+<a href="http://msdn.microsoft.com/library/en-us/fileio/base/openfile.asp">
+that name was already taken</a>.)</p>
+<p>
+On the other hand, there are no Win16 equivalents for
+<code>CreateThread</code> or <code>CreateMutex</code>, so they
+return <code>NULL</code>.</p>
+<p>
+Since the precedent had now been set for inconsistent return values,
+whenever a new function got added, it was a bit of a toss-up whether
+the new function returned <code>NULL</code> or
+<code>INVALID_HANDLE_VALUE</code>.</p>
+<p>
+This inconsistency has multiple consequences.</p>
+<p>
+First, of course, you have to be careful to check the return values
+properly.</p>
+<p>
+Second, it means that if you write a generic handle-wrapping class,
+you have to be mindful of two possible “not a handle” values.</p>
+<p>
+Third, if you want to pre-initialize a <code>HANDLE</code> variable,
+you have to initialize it in a manner compatible with the function
+you intend to use.  For example, the following code is wrong:</p>
+<pre>
+HANDLE h = NULL;
+if (UseLogFile()) {
+    h = CreateFile(...);
+}
+DoOtherStuff();
+if (h) {
+   Log(h);
+}
+DoOtherStuff();
+if (h) {
+    CloseHandle(h);
+}
+</pre>
+<p>This code has two bugs.  First, the return value from
+<code>CreateFile</code> is checked incorrectly.  The code above
+checks for <code>NULL</code> instead of <code>INVALID_HANDLE_VALUE</code>.
+Second, the code initializes the <code>h</code> variable incorrectly.
+Here’s the corrected version:</p>
+<pre>
+HANDLE h = INVALID_HANDLE_VALUE;
+if (UseLogFile()) {
+    h = CreateFile(...);
+}
+DoOtherStuff();
+if (h != INVALID_HANDLE_VALUE) {
+   Log(h);
+}
+DoOtherStuff();
+if (h != INVALID_HANDLE_VALUE) {
+    CloseHandle(h);
+}
+</pre>
+<p>
+Fourth, you have to be particularly careful with the
+<code>INVALID_HANDLE_VALUE</code> value:
+By coincidence, the value <code>INVALID_HANDLE_VALUE</code>
+happens to be numerically equal to the pseudohandle returned by
+<code>GetCurrentProcess()</code>.
+Many kernel functions accept pseudohandles, so if
+if you mess up
+and accidentally call, say, <code>WaitForSingleObject</code> on a
+failed <code>INVALID_HANDLE_VALUE</code> handle, you will actually
+end up waiting on your own process.  This wait will, of course,
+never complete, because a process is signalled when it exits,
+so you ended up waiting for yourself.</p>
+
+
+</body>

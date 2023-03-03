@@ -1,0 +1,66 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++/WinRT gotcha: Setting properties incorrectly</h1>  <!-- .entry-meta -->
+
+<p>Getting and setting a Windows Runtime property looks like this:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Language</th>
+<th>Getter</th>
+<th>Setter</th>
+</tr>
+<tr>
+<td>C#</td>
+<td><tt>v = o.Property;</tt></td>
+<td><tt>o.Property = 42;</tt></td>
+</tr>
+<tr>
+<td>C++/CX</td>
+<td><tt>v = o-&gt;Property;</tt></td>
+<td><tt>o-&gt;Property = 42;</tt></td>
+</tr>
+<tr>
+<td>C++/WinRT</td>
+<td><tt>v = o.Property();</tt></td>
+<td><tt>o.Property(42);</tt></td>
+</tr>
+<tr>
+<td>JavaScript</td>
+<td><tt>v = o.property;</tt></td>
+<td><tt>o.property = 42;</tt></td>
+</tr>
+<tr>
+<td>Python</td>
+<td><tt>v = o.property</tt></td>
+<td><tt>o.property = 42</tt></td>
+</tr>
+</tbody>
+</table>
+<p>Somebody is the odd man out.</p>
+<p>All the projections use a simple member access to read a property and a simple assignment statement to set a property, with the exception of C++/WinRT, which uses a function call in both places.</p>
+<p>That’s because the standard C++ language doesn’t have “properties”, and C++/WinRT is a projection of the Windows Runtime into standard C++. (C++/CX gets away with it because it’s not standard C++.)</p>
+<p>If you’re translating existing code from one of the other languages to C++/WinRT, you may realize that properties need to change to function calls, but in your haste (or tiredness), you mistakenly convert <code>o.Property = 42</code> to</p>
+<pre>    o.Property() = 42;
+</pre>
+<p>Fortunately, this gives you a compiler error because you cannot assign to an integer value.</p>
+<p>Unfortunately, if the property has a non-primitive type, you don’t get an error.</p>
+<pre>    o.Name() = L"Fred";
+    // oops: Should be o.Name(L"Fred");
+
+    lv.Background() = greenBrush;
+    // oops: Should be lv.Background(greenBrush);
+</pre>
+<p>That’s because you are assigning to the temporary object returned by the property getter method, and that temporary object has an assignment operator.</p>
+<p>The above code breaks down like this:</p>
+<pre>    auto name = o.Name();
+    name = L"Fred";
+    // destruct temporary "name"
+
+    auto background = lv.Background();
+    background = greenBrush;
+    // destruct temporary "background"
+</pre>
+<p>Congratulations, you updated a temporary that was immediately destructed. Total waste of time.</p>
+
+
+</body>

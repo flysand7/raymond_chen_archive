@@ -1,0 +1,259 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Modernizing our simple program that retrieves information about the items in the Recycle Bin</h1>  <!-- .entry-meta -->
+
+<p>
+Last time,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/08/30/10202076.aspx">
+we wrote a simple program to print various properties of the items
+in the Recycle Bin</a>,
+and we did so in the classical style,
+using item ID lists and <code>IShell­Folder</code>s.
+One thing you may have noticed is that a lot of functions take
+the combination of an <code>IShell­Folder</code> and a
+<code>PCUITEMID_CHILD</code>.
+In the shell namespace, operations on items usually happen
+by means of the pair (folder, child),
+and one of the common mistakes made by beginners is
+failing to keep track of the pairing and passing child pidls
+to the wrong parent folder.
+</p>
+<p>
+Even if you’re not a beginner and are good at keeping track of
+which child pidls correspond to which parent folders,
+it’s still extra work you have to do,
+and it means that a lot of functions take two parameters in order to
+describe one thing.
+</p>
+<p>
+Enter <code>IShell­Item</code>.
+</p>
+<p>
+The <code>IShell­Item</code> encapsulates the pair (folder, child).
+This solves two problems:
+</p>
+<ol>
+<li>You only have to pass one thing around (the <code>IShell­Item</code>)
+    instead of two (the <code>IShell­Folder</code> and the
+    <code>PCUITEMID_CHILD</code>).
+<li>By keeping track of the two items as a single unit,
+    it reduces the risk that you’ll accidentally use a child pidl
+    with the wrong parent folder.
+</li></li></ol>
+<p>
+Another complexity of the classic shell interface is that there
+are a bunch of ways of obtaining COM objects from a shell folder:
+</p>
+<ul>
+<li><code>IShell­Folder::Bind­To­Object</code>
+<li><code>IShell­Folder::Bind­To­Storage</code>
+<li><code>IShell­Folder::Create­View­Object</code>
+<li><code>IShell­Folder::Get­UI­Object­Of</code>
+<li><code>IUnknown::Query­Interface</code>
+    (thanks to the desktop special case we saw last time).
+</li></li></li></li></li></ul>
+<p>
+The <code>IShell­Item::Bind­To­Handler</code>
+interface hides these
+special-cases by dealing with them under the covers so you don’t have to.
+You just call <code>IShell­Item::Bind­To­Handler</code>
+and it figures
+out where to get the object and what weird special cases apply.
+(It also takes care of the weird <code>S_FALSE</code> return value
+from <code>IShell­Folder::Enum­Objects</code>.)
+</p>
+<p>
+And then there’s the annoyance of
+<code>IShell­Folder::Get­Display­Name­Of</code>
+using
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/08/23/218837.aspx">
+the kooky <code>STRRET</code> structure</a>.
+The <code>IShell­Item::Get­Display­Name</code>
+function encapsulates that
+away for you by doing the work to convert that <code>STRRET</code>
+into a boring string pointer.
+</p>
+<p>
+First up in modernizing our sample program
+is to change <code>Bind­To­Csidl</code> to return a shell item
+instead of a shell folder.
+</p>
+<pre>
+HRESULT BindToCsidlItem(int csidl, IShellItem ** ppsi)
+{
+ *ppsi = NULL;
+ HRESULT hr;
+ PIDLIST_ABSOLUTE pidl;
+ hr = SHGetSpecialFolderLocation(NULL, csidl, &amp;pidl);
+ if (SUCCEEDED(hr)) {
+  <font color="blue">hr = SHCreateShellItem(NULL, NULL, pidl, ppsi);</font>
+  CoTaskMemFree(pidl);
+ }
+ return hr;
+}
+</pre>
+<p>
+But wait, since we’re modernizing, we may as well upgrade to
+<code>SHGet­Known­Folder­ID­List</code>:
+</p>
+<pre>
+HRESULT BindToKnownFolderItem(REFKNOWNFOLDER rfid, IShellItem ** ppsi)
+{
+ *ppsi = NULL;
+ HRESULT hr;
+ PIDLIST_ABSOLUTE pidl;
+ hr = SHGetKnownFolderIDList(rfid, 0, NULL, &amp;pidl);
+ if (SUCCEEDED(hr)) {
+  <font color="blue">hr = SHCreateShellItem(NULL, NULL, pidl, ppsi);</font>
+  CoTaskMemFree(pidl);
+ }
+ return hr;
+}
+</pre>
+<p>
+Hey wait, there’s a function for this already in Windows 7!
+It’s called <code>SHGet­Known­Folder­Item</code>.
+Yay, now we can delete the function entirely.
+</p>
+<p>
+Next, we convert <code>Print­Display­Name</code> to use
+<code>IShell­Item</code> and the item-based display name flags
+<code>SIGDN</code>.
+</p>
+<pre>
+void PrintDisplayName(IShellItem *psi, SIGDN sigdn, PCTSTR pszLabel)
+{
+ LPWSTR pszName;
+ HRESULT hr = psi-&gt;GetDisplayName(sigdn, &amp;pszName);
+ if (SUCCEEDED(hr)) {
+  _tprintf(TEXT("%s = %ws\n"), pszLabel, pszName);
+  CoTaskMemFree(pszName);
+ }
+}
+</pre>
+<p>
+And then we convert <code>Print­Detail</code> to use
+<code>IShell­Item</code>.
+Oh wait, now we’ve hit a snag:
+The <code>IShell­Item</code> interface doesn’t have a helper method
+that wraps <code>IShell­Folder2::Get­Details­Ex</code>.
+Fortunately, there is a way to ask <code>IShell­Item</code> to
+regurgitate the <code>IShell­Folder</code>
+and <code>PITEMID_CHILD</code>
+that it is wrapping:
+You use the
+<code>IParent­And­Item::Get­Parent­And­Item</code>
+method.
+</p>
+<pre>
+void PrintDetail(IShellItem *psi,
+    const SHCOLUMNID *pscid, PCTSTR pszLabel)
+{
+ <font color="blue">IParentAndItem *ppni;
+ HRESULT hr = psi-&gt;QueryInterface(IID_PPV_ARGS(&amp;ppni));
+ if (SUCCEEDED(hr)) {
+  IShellFolder *psf;
+  PITEMID_CHILD pidl;
+  hr = ppni-&gt;GetParentAndItem(NULL, &amp;psf, &amp;pidl);
+  if (SUCCEEDED(hr)) {</font>
+   VARIANT vt;
+   hr = psf-&gt;GetDetailsEx(pidl, pscid, &amp;vt);
+   if (SUCCEEDED(hr)) {
+    hr = VariantChangeType(&amp;vt, &amp;vt, 0, VT_BSTR);
+    if (SUCCEEDED(hr)) {
+     _tprintf(TEXT("%s: %ws\n"), pszLabel, V_BSTR(&amp;vt));
+    }
+    VariantClear(&amp;vt);
+   }
+   <font color="blue">psf-&gt;Release();
+   CoTaskMemFree(pidl);
+  }
+ }</font>
+}
+</pre>
+<p>
+Wow, it looks like we lost ground there.
+Ah, but Windows Vista extends <code>IShell­Item</code> with the
+<code>IShell­Item2</code> interface, and that has a bunch of new
+methods for retrieving properties.
+</p>
+<pre>
+void PrintDetail(<font color="blue">IShellItem2</font> *psi,
+    const SHCOLUMNID *pscid, PCTSTR pszLabel)
+{
+  <font color="blue">PROPVARIANT vt;
+  HRESULT hr = psi-&gt;GetProperty(*pscid, &amp;vt);</font>
+  if (SUCCEEDED(hr)) {
+   hr = VariantChangeType(&amp;vt, &amp;vt, 0, VT_BSTR);
+   if (SUCCEEDED(hr)) {
+    _tprintf(TEXT("%s: %ws\n"), pszLabel, V_BSTR(&amp;vt));
+   }
+   <font color="blue">PropVariantClear(&amp;vt);</font>
+  }
+ }
+}
+</pre>
+<p>
+But wait, there’s more.
+There’s a special accessor just for retrieving properties as strings!
+</p>
+<pre>
+void PrintDetail(IShellItem2 *psi2,
+    const SHCOLUMNID *pscid, PCTSTR pszLabel)
+{
+ <font color="blue">LPWSTR pszValue;
+ HRESULT hr = psi2-&gt;GetString(*pscid, &amp;pszValue);</font>
+ if (SUCCEEDED(hr)) {
+  _tprintf(TEXT("%s: %ws\n"), pszLabel, pszValue);
+  <font color="blue">CoTaskMemFree(pszValue);</font>
+ }
+}
+</pre>
+<p>
+Okay, that’s more like it.
+Now let’s update the main program.
+</p>
+<pre>
+int __cdecl _tmain(int argc, PTSTR *argv)
+{
+ HRESULT hr = CoInitialize(NULL);
+ if (SUCCEEDED(hr)) {
+  IShellItem *psiRecycleBin;
+  hr = SHGetKnownFolderItem(FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT,
+                            NULL, IID_PPV_ARGS(&amp;psiRecycleBin));
+  if (SUCCEEDED(hr)) {
+   IEnumShellItems *pesi;
+   hr = psiRecycleBin-&gt;BindToHandler(NULL, BHID_EnumItems,
+                                     IID_PPV_ARGS(&amp;pesi));
+   if (<font color="blue">hr == S_OK</font>) {
+    IShellItem *psi;
+    while (pesi-&gt;Next(1, &amp;psi, NULL) == S_OK) {
+     IShellItem2 *psi2;
+     if (SUCCEEDED(psi-&gt;QueryInterface(IID_PPV_ARGS(&amp;psi2)))) {
+      _tprintf(TEXT("------------------\n"));
+      PrintDisplayName(psi2, SIGDN_PARENTRELATIVE,
+                             TEXT("ParentRelative"));
+      PrintDisplayName(psi2, SIGDN_NORMALDISPLAY, TEXT("Normal"));
+      PrintDisplayName(psi2, SIGDN_FILESYSPATH, TEXT("FileSys"));
+      PrintDetail(psi2, &amp;SCID_OriginalLocation, TEXT("Original Location"));
+      PrintDetail(psi2, &amp;SCID_DateDeleted, TEXT("Date deleted"));
+      PrintDetail(psi2, &amp;PKEY_Size, TEXT("Size"));
+      psi2-&gt;Release();
+     }
+     psi-&gt;Release();
+    }
+   }
+   psiRecycleBin-&gt;Release();
+  }
+  CoUninitialize();
+ }
+ return 0;
+}
+</pre>
+<p>
+Okay, so now we know how to enumerate the contents of the Recycle Bin
+and obtain properties of the items in it.
+How do we purge or restore items?
+We’ll look at that next time.</p>
+
+
+</body>

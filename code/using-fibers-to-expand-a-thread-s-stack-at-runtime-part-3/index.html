@@ -1,0 +1,99 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using fibers to expand a thread’s stack at runtime, part 3</h1>  <!-- .entry-meta -->
+
+<p>We’ve been working on a <code>Run­On­Fiber</code> function that creates a fiber with a large stack and runs the lambda on it. This is handy if you have a function that requires a lot of stack, and you’re not sure whether your caller provided enough.</p>
+<p><a href="/code/using-fibers-to-expand-a-thread-s-stack-at-runtime-part-2"> The version we developed</a> assumed that the only thing of interest that is returned from the lambda is its return value. But you might have additional context that needs to be returned, such as the Win32 last-error code or the C runtime <code>errno</code>.</p>
+<p>We can adapt our existing version to capture additional state about the fiber so it can be transferred to the original thread.</p>
+<pre><span style="color: blue;">DWORD RunOnFiberTypeNeutral(
+    LPFIBER_START_ROUTINE fiberProc,</span>
+    void* parameter,
+    <span style="color: blue;">HANDLE* originalFiber</span>)
+{
+  unique_fiber workFiber{ CreateFiberEx(0, EXTRA_STACK_SIZE, 0,
+      <span style="color: blue;">fiberProc</span>, parameter) };
+
+  if (!workFiber) return <span style="color: blue;">GetLastError()</span>;
+
+  unique_thread_as_fiber threadFiber;
+  if (!IsThreadAFiber()) {
+    threadFiber.reset(ConvertThreadToFiber(nullptr));
+    if (!threadFiber) {
+      return <span style="color: blue;">GetLastError()</span>;
+    }
+  }
+
+  <span style="color: blue;">*originalFiber = GetCurrentFiber();</span>
+
+  SwitchToFiber(workFiber.get());
+  return <span style="color: blue;">ERROR_SUCCESS</span>;
+}
+
+template&lt;typename RetType&gt;
+RetType RunOnFiberWorker(
+    <span style="color: blue;">RetType</span> (*callback)(void*),
+    void* parameter,
+    RetType failureValue)
+{
+  <span style="color: blue;">static_assert(std::is_trivially_copyable_v&lt;RetType&gt;);
+  static_assert(std::is_trivially_destructible_v&lt;RetType&gt;);</span>
+
+  struct State
+  {
+    <span style="color: blue;">RetType</span> (*callback)(void*);
+    void* parameter;
+    <span style="color: blue;">RetType capturedValue;
+    int capturedErrno{};
+    DWORD capturedError{};</span>
+    HANDLE originalFiber;
+
+    void FiberProc()
+    {
+      <span style="color: blue;">capturedValue = callback(parameter);
+      capturedErrno = errno;
+      capturedError = GetLastError();</span>
+      SwitchToFiber(originalFiber);
+    }
+  } state{ callback, parameter,
+                 <span style="color: blue;">std::move(failureValue), errno</span> };
+
+  <span style="color: blue;">DWORD error = RunOnFiberTypeNeutral(
+    [](void* parameter)
+    {
+      reinterpret_cast&lt;State*&gt;(parameter)-&gt;FiberProc();
+    }, &amp;state, &amp;state.originalFiber);
+  if (error != ERROR_SUCCESS) {
+    state.capturedError = error;
+  }</span>
+
+  <span style="color: blue;">SetLastError(state.capturedError);
+  errno = state.capturedErrno;
+  return std::move(state.capturedValue);</span>
+}
+</pre>
+<p>Since this template may be used with different <code>RetType</code>s, we factor out the part that is type-independent into a <code>Run­On­Fiber­Type­Neutral</code> helper. There is a bit of trickiness in the helper function: We make sure to capture the error code immediately and return it explicitly. This is important because the destructors for the <code>unique_fiber</code> and <code>unique_thread_as_fiber</code> may change the value of <code>Get­Last­Error()</code>, so we need to grab it while we still can.</p>
+<p>We expand the state shared with the fiber to include not only the return value of the callback, but also the <code>Get­Last­Error()</code> and <code>errno</code> values as they were at the completion of the callback.</p>
+<p>When all is said and done, we restore the error code and <code>errno</code> to the current thread and then return the value that was captured from the execution of the callback.</p>
+<p>If <code>Run­On­Fiber­Type­Neutral</code> fails, then we take the error code and put it into the <code>capturedError</code> so that the normal cleanup code will apply it to the thread before returning.</p>
+<p>I’m assuming that if anything goes wrong with <code>Create­Fiber</code> or <code>Convert­Thread­To­Fiber</code>, then the <code>failureValue</code> and existing Win32 error code are sufficient to explain what went wrong. I leave setting the <code>errno</code> as an exercise.</p>
+<p>Note that we require that the return value type be trivially copyable and trivially destructible. Trivial copyability is required so that we can return it without disturbing the Win32 last-error code or <code>errno</code>. Trivial destructibility is required so that we can destruct the <code>failureValue</code> parameter and the <code>capturedValue</code> without disturbing the Win32 last-error code or <code>errno</code>.</p>
+<p>This requirement is not a problem in practice, because a return type that requires nontrivial copy or destructor operations is going to trigger invisible code execution for temporary objects, which is likely to affect ephemeral thread-local state. In that case, you cannot rely on the Win32 last-error code or the <code>errno</code> value anyway, so there’s no reason to try to preserve that value from the fiber back to the original thread.</p>
+<p>We do not, however, require that the return value type be trivially constructible. Instead, we accept a <code>failureValue</code> and use that if something goes wrong with setting up the fiber. We are careful to <code>std::move</code> the value around, even though that doesn’t really mean anything for trivially-copyable types. But it’ll come in handy later. Typically, the return type in these cases is a simple scalar, like an integer.</p>
+<p>Here’s the new <code>Run­On­Fiber</code> function that accepts a <code>failure­Value</code>:</p>
+<pre>template&lt;typename Lambda<span style="color: blue;">, typename RetType</span>&gt;
+<span style="color: blue;">RetType</span> RunOnFiber(
+    Lambda&amp;&amp; lambda,
+    <span style="color: blue;">RetType failureValue</span>)
+{
+  using Type = std::remove_reference_t&lt;Lambda&gt;;
+  <span style="color: blue;">using RetType = decltype(lambda());</span>
+  return RunOnFiberWorker<span style="color: blue;">&lt;RetType&gt;</span>([](void* parameter)
+    {
+      return (*reinterpret_cast&lt;Type*&gt;(parameter))();
+    }, &amp;lambda, <span style="color: blue;">std::move(failureValue)</span>);
+}
+</pre>
+<p>Note that the above code does not work if the lambda returns a reference. I’ll leave that as an exercise.</p>
+<p>Next time, we’ll look at another error-reporting mechanism: C++ exceptions.</p>
+
+
+</body>

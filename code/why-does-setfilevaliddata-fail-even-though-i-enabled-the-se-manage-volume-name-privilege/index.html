@@ -1,0 +1,49 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does SetFileValidData fail even though I enabled the SE_MANAGE_VOLUME_NAME privilege?</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that their call to <a href="https://blogs.msdn.microsoft.com/oldnewthing/20110922-00/?p=9573"><code>Set­File­Valid­Data</code></a> was failing with <code>ERROR_PRIVILEGE_NOT_HELD</code> despite the fact that they held the privilege whose name is defined by the symbol <code>SE_MANAGE_VOLUME_NAME</code>. (Note that the “name” in “manage volume name” doesn’t mean that you are managing the name of the volume; rather it means “This is the name of the privilege for managing volumes.”) </p>
+<p>The customer was kind enough to <a href="https://blogs.msdn.microsoft.com/oldnewthing/20131018-00/?p=2893">reduce</a> the problem to a simple program: </p>
+<pre>
+#include &lt;windows.h&gt;
+
+int main(int argc, char** argv)
+{
+ // This succeeds
+ HANDLE h = CreateFileW(L"test", GENERIC_WRITE, 0, nullptr,
+   CREATE_ALWAYS, FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
+   nullptr);
+
+ LARGE_INTEGER newSize;
+ newSize.QuadPart = 256 * 1024 * 10;
+ // This succeeds
+ SetFilePointerEx(h, newSize, nullptr, FILE_BEGIN);
+
+ // This succeeds
+ SetEndOfFile(h);
+
+ HANDLE hToken;
+ // This succeeds
+ OpenProcessToken(GetCurrentProcess(),
+      TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &amp;hToken);
+
+ // This succeeds
+ <a href="https://msdn.microsoft.com/library/windows/desktop/aa446619(v=vs.85).aspx">SetPrivilege</a>(hToken, SE_MANAGE_VOLUME_NAME, TRUE);
+
+ // This succeeds
+ CloseHandle(hToken);
+
+ // This fails with ERROR_PRIVILEGE_NOT_HELD
+ SetFileValidData(h, newSize.QuadPart);
+
+ CloseHandle(h);
+
+ return 0;
+}
+</pre>
+<p>The answer is hidden in <a href="https://msdn.microsoft.com/library/windows/desktop/aa365544(v=vs.85).aspx">the documentation for the <code>Set­File­Valid­Data</code> function</a>: </p>
+<blockquote class="q"><p>A caller must have the <b>SE_MANAGE_VOLUME_NAME</b> privilege enabled when opening a file initially. </p></blockquote>
+<p>The program didn’t enable the manage volume privilege until after it had already created the file handle. </p>
+<p>This requirement that the privilege be active at the point the handle is created becomes less surprising when you realize that the general policy for kernel object security is that security is checked at the time handles are created, rather than when they are used. </p>
+
+
+</body>

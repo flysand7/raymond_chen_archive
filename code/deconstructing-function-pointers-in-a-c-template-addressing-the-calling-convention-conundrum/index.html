@@ -1,0 +1,130 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Deconstructing function pointers in a C++ template, addressing the calling convention conundrum</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/deconstructing-function-pointers-in-a-c-template-trying-to-address-the-calling-convention-conundrum"> tried</a> to create a partial specialization for a template type that has a function pointer template parameter with a specific calling convention, but have the partial specialization disappear if the calling convention is identical to <code>cdecl</code>, so that the compiler won’t complain about a duplicate definition.</p>
+<p>I couldn’t make the partial specialization disappear, but I could try the next best thing: Move it to somewhere harmless.</p>
+<p>I can give the <code>FunctionTraits</code> a second template parameter. If the calling conventions are the same, then I use a different second template parameter so that the partial specializations end up different. But if the calling conventions are different, then I use the same second template parameter, so that the function signature is the thing that makes the partial specializations different.</p>
+<pre>template&lt;typename F<span style="color: blue;">, int = 0</span>&gt;
+struct FunctionTraits;
+
+template&lt;typename R, typename... Args&gt;
+struct FunctionTraits&lt;R(CC_CDECL*)(Args...)<span style="color: blue;">, 0</span>&gt;
+    : FunctionTraitsBase&lt;R, Args...&gt;
+{
+  using Pointer = R(CC_CDECL*)(Args...);
+  using CallingConvention = CallingConventions::Cdecl;
+};
+
+template&lt;typename R, typename... Args&gt;
+struct FunctionTraits&lt;R(CC_STDCALL*)(Args...),
+    <span style="color: blue;">std::is_same_v&lt;
+        CallingConventions::Cdecl,
+        CallingConventions::Stdcall&gt; ? 1 : 0</span>&gt;
+    : FunctionTraitsBase&lt;R, Args...&gt;
+{
+  using Pointer = R(CC_STDCALL*)(Args...);
+  using CallingConvention = CallingConventions::Stdcall;
+};
+</pre>
+<p>If <code>cdecl</code> and <code>stdcall</code> are different, then the two partial specializations are</p>
+<pre>struct FunctionTraits&lt;R(CC_CDECL*)(Args...), 0&gt;
+</pre>
+<p>and</p>
+<pre>struct FunctionTraits&lt;R(CC_STDCALL*)(Args...), 0&gt;
+</pre>
+<p>Since <code>cdecl</code> and <code>stdcall</code> are different, the two function pointer types are not the same, and we therefore are defining two different partial specializations.</p>
+<p>On the other hand, if <code>cdecl</code> and <code>stdcall</code> are the same, then the two partial specializations come out to</p>
+<pre>struct FunctionTraits&lt;R(*)(Args...), 0&gt;
+</pre>
+<p>and</p>
+<pre>struct FunctionTraits&lt;R(*)(Args...), 1&gt;
+</pre>
+<p>Since <code>cdecl</code> and <code>stdcall</code> are the same, the two function pointer types are identical, but the integers are different, so we are still defining two different partial specializations.</p>
+<p>Since the default value for the second template parameter is the integer <code>0</code>, the <code>, 1</code> partial specialization will never be used. But that’s okay, because it’s identical to the <code>, 0</code> specialization anyway.</p>
+<p>Repeat for the other calling conventions, using unique integers for each, and also repeat for the <code>noexcept</code> and variadic versions. This means we write out the same partial specialization a total of twenty times, each slightly different. We’ll use a macro to generate them.</p>
+<pre>#if defined(__GNUC__) || defined(__clang__)
+  #define CC_CDECL __attribute__((cdecl))
+  #define CC_STDCALL __attribute__((stdcall))
+  #define CC_FASTCALL __attribute__((fastcall))
+  #define CC_VECTORCALL __attribute__((vectorcall))
+  #if defined(__INTEL_COMPILER)
+    #define CC_REGCALL __attribute__((regcall))
+  #else
+    #define CC_REGCALL CC_CDECL
+  #endif
+#elif defined(_MSC_VER) || defined(__INTEL_COMPILER)
+  #define CC_CDECL __cdecl
+  #define CC_STDCALL __stdcall
+  #define CC_FASTCALL __fastcall
+  #define CC_VECTORCALL __vectorcall
+  #if defined(__INTEL_COMPILER)
+    #define CC_REGCALL __regcall
+  #else
+    #define CC_REGCALL CC_CDECL
+  #endif
+#else
+  #define CC_CDECL
+  #define CC_STDCALL
+  #define CC_FASTCALL
+  #define CC_VECTORCALL
+  #define CC_REGCALL
+#endif
+
+struct CallingConventions
+{
+    using Cdecl = void(CC_CDECL*)();
+    using Stdcall = void(CC_STDCALL*)();
+    using Fastcall = void(CC_FASTCALL*)();
+    using Vectorcall = void(CC_VECTORCALL*)();
+    using Regcall = void(CC_REGCALL*)();
+};
+
+template&lt;typename R, typename... Args&gt;
+struct FunctionTraitsBase
+{
+   using RetType = R;
+   using ArgTypes = std::tuple&lt;Args...&gt;;
+   static constexpr std::size_t ArgCount = sizeof...(Args);
+   template&lt;std::size_t N&gt;
+   using NthArg = std::tuple_element_t&lt;N, ArgTypes&gt;;
+};
+
+template&lt;typename F, int = 0&gt;
+struct FunctionTraits;
+
+#define MAKE_TRAITS2(Unique, CC, CCName, Noexcept, ArgList)   \
+template&lt;typename R, typename... Args&gt;                        \
+struct FunctionTraits&lt;R(CC*)ArgList noexcept(Noexcept),       \
+      std::is_same_v&lt;CallingConventions::Cdecl,               \
+                     CallingConventions::CCName&gt;              \
+                     ? Unique : 0&gt;                            \
+    : FunctionTraitsBase&lt;R, Args...&gt;                          \
+{                                                             \
+  using Pointer = R(CC*)ArgList noexcept(Noexcept);           \
+  using CallingConvention = CallingConventions::CCName;       \
+  constexpr static bool IsNoexcept = Noexcept;                \
+  constexpr static bool IsVariadic =                          \
+    !std::is_same_v&lt;void(*)ArgList, void(*)(Args...)&gt;;        \
+}
+
+#define MAKE_TRAITS(Unique, CC, CCName) \
+        MAKE_TRAITS2(Unique, CC, CCName, true, (Args...)); \
+        MAKE_TRAITS2(Unique, CC, CCName, true, (Args..., ...)); \
+        MAKE_TRAITS2(Unique, CC, CCName, false, (Args...)); \
+        MAKE_TRAITS2(Unique, CC, CCName, false, (Args..., ...))
+
+MAKE_TRAITS(0, CC_CDECL, Cdecl);
+MAKE_TRAITS(1, CC_STDCALL, Stdcall);
+MAKE_TRAITS(2, CC_FASTCALL, Fastcall);
+MAKE_TRAITS(3, CC_VECTORCALL, Vectorcall);
+MAKE_TRAITS(4, CC_REGCALL, Regcall);
+
+#undef MAKE_TRAITS
+#undef MAKE_TRAITS2
+</pre>
+<p>Only the Intel compiler supports <code>regcall</code>, so for the other compilers, I treat it like <code>cdecl</code>, which lets the existing machinery kick in and remove <code>regcall</code> from the active partial specializations.</p>
+<p>We pull a sneaky trick here by assigning the unique value <code>0</code> to <code>cdecl</code>: The value of <code>0</code> is the “Please use it” value. The macro recognizes that <code>Cdecl</code> is the same as <code>cdecl</code> and switches to the uniquifier to render the specialization moot, but the provided uniquifier of zero is in fact the value that makes the specialization active.</p>
+<p>But wait, this isn’t the only way to solve the problem. Next time, I’ll rewind and try a different direction.</p>
+
+
+</body>

@@ -1,0 +1,239 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you want to receive a message that is broadcast to top-level windows, you need a top-level window</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to suppress autorun from a wizard page. They started with <a href="http://msdn.microsoft.com/en-us/library/bb776825.aspx">this page on MSDN</a> but found that their wizard page did not receive the <code>Query­Cancel­Auto­Play</code> message. </p>
+<pre>
+default: 
+  if (g_uQueryCancelAutoPlay == 0) { 
+    g_uQueryCancelAutoPlay = 
+      RegisterWindowMessage(TEXT("QueryCancelAutoPlay"));
+  } 
+  if (uMsg &amp;&amp; uMsg == g_uQueryCancelAutoPlay) { 
+    SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, TRUE);          
+    return TRUE;    
+  }
+  break;
+</pre>
+<p>The customer reported that their dialog procedure never received the <code>Query­Cancel­Auto­Play</code> message. They even called <code>Change­Window­Message­Filter­Ex</code> to explicitly allow the <code>g_uQuery­Cancel­Auto­Play</code> message to be received, but that didn’t help. </p>
+<p>The original code had other issues which distracted me from the actual problem. The source of the problem is hidden  in their opening statement: They are trying to receive this message <i>in a wizard</i>, which means that this dialog procedure does not correspond to a top-level window. It is a child dialog inside the wizard. </p>
+<p>Since broadcast messages go only to top-level windows, you need to have a top-level window that can receive the message. Creating your own top-level window will not work in this case, because <code>Query­Cancel­Auto­Play</code> is sent only to the foreground window. Therefore, you will have to subclass your existing top-level window so you can snoop in on the messages. You can find the top-level window by calling <code>Get­Ancestor(hwnd, GA_ROOT)</code>, and you can use <code>Set­Window­Subclass</code> to intercept the messages. </p>
+<p>You need to be careful about this, because you don’t want to reject autoplay unconditionally. You should reject autoplay only when your page is the active page. It would be bad if the “Please insert the DVD” page suppressed autorun even before the user reached that page, or after the used moved beyond that page all the way to “Congratulations. Everything is ready to go.” </p>
+<p>Therefore, you need to listen for the <code>PSN_SET­ACTIVE</code> and <code>PSN_KILL­ACTIVE</code> notifications. When your page becomes active, you subclass the root window; when it is no longer active, you remove the subclass. Alternatively, you can set and clear a flag, and have the subclass function check the flag to see whether it should respond to the message or let it go through. </p>
+<p>Okay, let’s do it. First, let’s have a three-page wizard that doesn’t try to do anything fancy with autoplay. </p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;commctrl.h&gt;
+
+HINSTANCE g_hinst;
+
+// For demonstration purposes only. In real life, of course,
+// you would check if the correct DVD is inserted.
+
+bool IsCorrectDVD()
+{
+  SYSTEMTIME st;
+  GetSystemTime(&amp;st);
+  return st.wMinute % 2 == 0;
+}
+
+INT_PTR CALLBACK WelcomeDlgProc(
+    HWND hdlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+  switch (message) {
+  case WM_NOTIFY:
+    {
+      LPNMHDR pnmh = (LPNMHDR)lParam;
+      switch (pnmh-&gt;code) {
+      case PSN_SETACTIVE:
+        PropSheet_SetWizButtons(pnmh-&gt;hwndFrom, PSWIZB_NEXT);
+        return TRUE;
+      }
+    }
+    break;
+  }
+  return FALSE;
+}
+
+INT_PTR CALLBACK InsertDlgProc(
+    HWND hdlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+  switch (message) {
+  case WM_NOTIFY:
+    {
+      LPNMHDR pnmh = (LPNMHDR)lParam;
+      switch (pnmh-&gt;code) {
+      case PSN_SETACTIVE:
+        PropSheet_SetWizButtons(pnmh-&gt;hwndFrom, PSWIZB_BACK | PSWIZB_NEXT);
+        return TRUE;
+      case PSN_WIZNEXT:
+        if (!IsCorrectDVD()) {
+           MessageBox(hdlg, TEXT("Please insert the correct DVD."),
+                      TEXT("Error"), MB_OK);
+           SetWindowLongPtr(hdlg, DWLP_MSGRESULT, -1);
+           return TRUE;
+        }
+        break;
+      }
+    }
+    break;
+  }
+  return FALSE;
+}
+
+INT_PTR CALLBACK FinishedDlgProc(
+    HWND hdlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+  switch (message) {
+  case WM_NOTIFY:
+    {
+      LPNMHDR pnmh = (LPNMHDR)lParam;
+      switch (pnmh-&gt;code) {
+      case PSN_SETACTIVE:
+        PropSheet_SetWizButtons(pnmh-&gt;hwndFrom, PSWIZB_FINISH);
+        return TRUE;
+      }
+    }
+    break;
+  }
+  return FALSE;
+}
+
+HPROPSHEETPAGE CreateWizardPage(PCTSTR dialogTemplate, DLGPROC dlgProc)
+{
+  PROPSHEETPAGE psp = { sizeof(psp) };
+  psp.hInstance = g_hinst;
+  psp.lParam = 0;
+  psp.dwFlags = PSP_DEFAULT;
+  psp.pszTemplate = dialogTemplate;
+  psp.pfnDlgProc = dlgProc;
+  return CreatePropertySheetPage(&amp;psp);
+}
+
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+  HPROPSHEETPAGE pages[3] = {
+    CreateWizardPage(MAKEINTRESOURCE(1), WelcomeDlgProc),
+    CreateWizardPage(MAKEINTRESOURCE(2), InsertDlgProc),
+    CreateWizardPage(MAKEINTRESOURCE(3), FinishedDlgProc),
+  };
+
+  PROPSHEETHEADER psh = { sizeof(psh) };
+  psh.hInstance = hinst;
+  psh.dwFlags = PSH_WIZARD;
+  psh.pszCaption = TEXT("Awesome Wizard");
+  psh.phpage = pages;
+  psh.nPages = 3;
+  PropertySheet(&amp;psh);
+  return 0;
+}
+
+// scratch.rc
+#include &lt;windows.h&gt;
+#include &lt;commctrl.h&gt;
+
+1 DIALOGEX 0, 0, WIZ_CXDLG, WIZ_CYDLG
+STYLE DS_SHELLFONT | WS_CHILD
+FONT 8, "MS Shell Dlg 2"
+BEGIN
+    LTEXT "Welcome.", -1, 0, 8, 216, 38
+END
+
+2 DIALOGEX 0, 0, WIZ_CXDLG, WIZ_CYDLG
+STYLE DS_SHELLFONT | WS_CHILD
+FONT 8, "MS Shell Dlg 2"
+BEGIN
+    LTEXT "Insert DVD.", -1, 0, 8, 216, 38
+END
+
+3 DIALOGEX 0, 0, WIZ_CXDLG, WIZ_CYDLG
+STYLE DS_SHELLFONT | WS_CHILD
+FONT 8, "MS Shell Dlg 2"
+BEGIN
+    LTEXT "Finished.", -1, 0, 8, 216, 38
+END
+</pre>
+<p>So far, so boring. The Welcome page enables the Next button; the Insert page has both Back and Next buttons; the Finished page has a Finish button. If the user clicks Next on the Insert page, but the correct DVD is not inserted, then display an error message and stay on the page. </p>
+<p>Okay, now the problem: If the user inserts the DVD when instructed, it will autoplay, so let’s suppress autoplay while the Insert page is displayed. </p>
+<pre>
+<font color="blue">LRESULT CALLBACK MainWindowSubclassProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR uIdSubclass,
+    DWORD_PTR dwRefData)
+{
+  static UINT wmQueryCancelAutoPlay;
+
+  if (wmQueryCancelAutoPlay == 0) {
+    wmQueryCancelAutoPlay =
+      RegisterWindowMessage(TEXT("QueryCancelAutoPlay"));
+  }
+
+  if (message &amp;&amp; message == wmQueryCancelAutoPlay) {
+    HWND hwndPropSheet = (HWND)dwRefData;
+    PropSheet_PressButton(hwndPropSheet, PSBTN_NEXT);
+    return TRUE;
+  }
+  return DefSubclassProc(hwnd, message, wParam, lParam);
+}</font>
+
+INT_PTR CALLBACK InsertDlgProc(
+    HWND hdlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+  <font color="blue">HWND hwndRoot;</font>
+  switch (message) {
+  case WM_NOTIFY:
+    {
+      LPNMHDR pnmh = (LPNMHDR)lParam;
+      switch (pnmh-&gt;code) {
+      case PSN_SETACTIVE:
+        PropSheet_SetWizButtons(pnmh-&gt;hwndFrom, PSWIZB_BACK | PSWIZB_NEXT);
+        <font color="blue">hwndRoot = GetAncestor(hdlg, GA_ROOT);
+        SetWindowSubclass(hwndRoot, MainWindowSubclassProc, 0, (DWORD_PTR)pnmh-&gt;hwndFrom);
+        SetWindowLongPtr(hdlg, DWLP_USER, (LPARAM)hwndRoot);</font>
+        return TRUE;
+      case PSN_WIZNEXT:
+        if (!IsCorrectDVD()) {
+           MessageBox(hdlg, TEXT("Please insert the correct DVD."),
+                      TEXT("Error"), MB_OK);
+           SetWindowLongPtr(hdlg, DWLP_MSGRESULT, -1);
+           return TRUE;
+        }
+        break;
+      <font color="blue">case PSN_KILLACTIVE:
+        hwndRoot = (HWND)SetWindowLongPtr(hdlg, DWLP_USER, 0);
+        RemoveWindowSubclass(hwndRoot, MainWindowSubclassProc, 0);</font>
+        break;
+      }
+    }
+    break;
+  }
+  return FALSE;
+}
+</pre>
+<p>Our subclass procedure receives the property sheet window as its reference data. It checks whether the message is <code>Query­Cancel­Auto­Play</code>. If so, then it presses the Next button in the property sheet and returns <code>TRUE</code> to cancel the autoplay. </p>
+<p><b>Exercise</b>: I thought you returned a value from a dialog procedure by using <code>Set­Window­Long­Ptr</code> with <code>DWLP_MSG­RESULT</code>, but here, we’re just returning <code>TRUE</code> directly. What’s going on? </p>
+<p>The dialog procedure for the page installs the subclass when the page is activated, and it removes the subclass when the page is deactivated. The window to be subclassed is the root window for the wizard. We save that in our <code>DWLP_USER</code> so we know which window to unsubclass when we lose activation. Note also that we pass the property sheet as the reference data for <code>Set­Window­Subclass</code>, so that the subclass procedure has the correct window handle for the <code>Prop­Sheet_Press­Button</code> macro. </p>
+<p>By the way, as a courtesy, the property sheet manager forwards the following messages to all pages: </p>
+<ul>
+<li><code>WM_DISPLAY­CHANGE</code>
+<li><code>WM_SETTINGS­CHANGE</code>
+<li><code>WM_SYS­COLOR­CHANGE</code> </li></li></li></ul>
+<p>And it forwards the following messages to the active page: </p>
+<ul>
+<li><code>WM_ACTIVATE­APP</code>
+<li><code>WM_ACTIVATE</code>
+<li><code>WM_DEVICE­CHANGE</code>
+<li><code>WM_ENABLE</code>
+<li><code>WM_END­SESSION</code>
+<li><code>WM_PALETTE­CHANGED</code> (but only if the     <code>wParam</code> is not the property sheet itself,     to     <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/dd145214(v=vs.85).aspx">    avoid an infinite palette realization loop</a>) 
+<li><code>WM_QUERY­END­SESSION</code>
+<li><code>WM_QUERY­NEW­PALETTE</code> </li></li></li></li></li></li></li></li></ul>
+<p>But for other messages (like <code>Query­Cancel­Auto­Play</code>), you’re on your own. </p>
+<p>Armed with this knowledge, you can answer this question, which as it happens, arrived eight months later from the same customer! </p>
+<blockquote class="q"><p>We have a scenario where we need some pages of a wizard to know that a <code>WM_POWER­BROADCAST</code> message has arrived. What is the best way to pass this message to the wizard pages? Also, how would we ensure that this message only gets forwarded to the page that is currently active? </p></blockquote>
+
+
+</body>

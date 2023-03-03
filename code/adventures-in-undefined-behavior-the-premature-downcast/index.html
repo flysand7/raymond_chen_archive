@@ -1,0 +1,119 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Adventures in undefined behavior: The premature downcast</h1>  <!-- .entry-meta -->
+
+<p>
+A customer encountered the following problem:
+</p>
+<pre>
+class Shape
+{
+public:
+    virtual bool Is2D() { return false; }
+};
+class Shape2D : public Shape
+{
+public:
+    virtual bool Is2D() { return true; }
+};
+Shape *FindShape(Cookie cookie);
+void BuyPaint(Cookie cookie)
+{
+    Shape2D *shape = static_cast&lt;Shape2D *&gt;(FindShape(cookie));
+    if (shape-&gt;Is2D()) {
+       .. do all sorts of stuff ...
+    }
+}
+</pre>
+<p>
+The <code>Buy­Paint</code> function converts the cookie back
+to a <code>Shape</code> object, and then checks if the object
+is a <code>Shape2D</code> object by calling <code>Is­2D</code>.
+If so, then it does some more stuff to figure out what type of paint
+to buy.
+</p>
+<p>
+(Note to nitpickers:
+The actual scenario was not like this, but I presented it this way
+to illustrate the point.
+If you say “You should’ve
+used RTTI” or “You should’ve had a BuyPaint method on the Shape class”,
+then you’re missing the point.)
+</p>
+<p>
+The programmers figured they’d save some typing by casting the
+result of <code>Find­Shape</code> to a <code>Shape2D</code>
+right away,
+because after all, since <code>Is­2D</code> is a virtual
+method, it will call the right version of the function,
+either <code>Shape::Is­2D</code>
+or <code>Shape2D::Is­2D</code>,
+depending on the actual type of the underlying object.
+</p>
+<p>
+But when compiler optimizations were turned on, they discovered
+that the call to <code>Is­2D</code> was optimized away,
+and the <code>Buy­Paint</code> function merely assumed
+that it was always operating on a <code>Shape2D</code> object.
+It then ended up trying to buy paint even for one-dimensional objects
+like points and lines.
+</p>
+<p>
+Compiler optimization bug?
+Nope.
+Code bug due to reliance on undefined behavior.
+</p>
+<p>
+The C++ language says (9.3.1)
+“If a nonstatic member function of a class <code>X</code>
+is called for an object that is not of type <code>X</code>,
+or of a type derived from <code>X</code>, the behavior is undefined.”
+In other words,
+if you are invoking a method on an object of type <code>X</code>,
+then you are promising that it really is of type <code>X</code>,
+or a class derived from it.
+</p>
+<p>
+The code above violates this rule,
+because it is invoking the <code>Is­2D</code> method
+on a <code>Shape2D*</code>,
+which therefore comes with the promise
+“This really is a <code>Shape2D</code> object
+(or something derived from it).”
+But this is a promise the code cannot deliver on, because the
+object returned by <code>Find­Shape</code> might be a simple
+<code>Shape</code>.
+</p>
+<p>
+The compiler ran with the (false) promise and said,
+“Well, since you are guaranteeing that the object is at least
+a <code>Shape2D</code>,
+and since I have studied your code and determined that no
+classes which further derive from <code>Shape2D</code> override
+the <code>Is­2D</code> method,
+I have therefore proved that the <i>final overrider</i> is
+<code>Shape2D::Is­2D</code> and can therefore
+inline that method.”
+</p>
+<p>
+Result: The compiler inlines <code>Shape2D::Is­2D</code>,
+which returns <code>true</code>, so the “if” test can be optimized out.
+The compiler can assume that <code>Buy­Paint</code> is always
+called with cookies that represent two-dimensional objects.
+</p>
+<p>
+The fix is to do the annoying typing that the original authors
+were trying to avoid:
+</p>
+<pre>
+void BuyPaint(Cookie cookie)
+{
+    Shape *shape = FindShape(cookie);
+    if (shape-&gt;Is2D()) {
+      Shape2D *shape2d = static_cast&lt;Shape2D *&gt;(shape);
+       .. do all sorts of stuff (with shape2d) ...
+    }
+}
+</pre>
+
+
+</body>

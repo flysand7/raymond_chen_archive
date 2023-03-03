@@ -1,0 +1,62 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What happens to the contents of a memory-mapped file when a process is terminated abnormally?</h1>  <!-- .entry-meta -->
+
+<p>Bart wonders <a href="https://web.archive.org/web/20100130070610/http://blogs.msdn.com/oldnewthing/pages/407234.aspx#1165882"> what happens to the dirty contents of a memory-mapped file when an application is terminated abnormally</a>.</p>
+<p>From the kernel’s point of view, there isn’t much difference between a normal and an abnormal termination. In fact, the last thing that <code>Exit­Process</code> does is <code>Terminate­Process(Get­Current­Process(),
+Exit­Code)</code>, so in a very real sense the two operations are identical from the kernel’s point of view. The only difference is that in a controlled termination, DLLs get their <code>DLL_<wbr/>PROCESS_<wbr/>DETACH</code> notifications, whereas in an abnormal termination, they don’t. But given that the advice for DLLs is to do as little as possible during process termination (including suppressing normal cleanup), the difference even there is negligible.</p>
+<p>Therefore, the real question is <i>What happens to the dirty contents of a memory-mapped file when an application exits without closing the handle?</i></p>
+<p>If a process exits without closing all its handles, the kernel will close them on the process’s behalf. Now, in theory, the kernel could change its behavior depending on why a handle is closed—skipping some steps if the handle is being closed as part of cleanup and performing additional ones if it came from an explicit <code>Close­Handle</code> call. So it’s theoretically possible that the unwritten memory-mapped data may be treated differently. (Although it does violate the principle of <a href="https://devblogs.microsoft.com/oldnewthing/20090216-00/?p=19133"> not keeping track of information you don’t need</a>. But as we’ve seen, <a href="https://devblogs.microsoft.com/oldnewthing/20100322-00/?p=14533"> sometimes you have to violate a principle</a>.)</p>
+<p>But there’s also the guarantee that multiple memory-mapped views of the same local file are <i>coherent</i>; that is, that <a href="https://devblogs.microsoft.com/oldnewthing/20031007-00/?p=42263"> changes made to one view are immediately reflected in other views</a>. Therefore, if there were another view of that memory-mapped file which you neglected to close manually, any changes you had made to that view would still be visible in other views, so the contents were not lost. It’s not like the kernel is going to fire up its time machine and say, “Okay, those writes to the memory-mapped file which this terminated application made, I’m going to go back and undo them even though I had already shown them to other applications.”</p>
+<p>In other words, in the case where the memory-mapped view is to a local file, and there happens to be another view on the file, then the changes are not discarded, since they are being kept alive by that other view.</p>
+<p>Therefore, if the kernel were to discard unflushed changes to the memory-mapped view, it would have to have not one but two special-cases. One for the “this handle is being closed implicitly due to an application exiting without closing all its handles” case and another for the “this handle being closed implicitly due to an application exiting without closing all its handles when the total number of active views is less than two.”</p>
+<p>I don’t know what the final answer is, but if the behavior were any different from the process closing the handle explicitly, it would require two special-case behaviors in the kernel. I personally consider this unlikely. Certainly if I were writing an operating system, I wouldn’t bother writing these two special cases.</p>
+<p>If you think like the memory manager, then you come to the same conclusion from a different direction. If you think about the lifetime of a committed page, there are a small set of operations each page type needs to perform.</p>
+<ul>
+<li><i>Page in</i>: Produce the contents of the page.</li>
+<li><i>Make dirty</i>: The page has been written to for the first time.</li>
+<li><i>Page out dirty</i>: The page is about to be removed from memory. The application has written to the page since it was paged in.</li>
+<li><i>Page out clean</i>: The page is about to be removed from memory. The application has not written to the page since it was paged in.</li>
+<li><i>Decommit dirty</i>: The page is about to be freed and it was written to since it was paged in.</li>
+<li><i>Decommit clean</i>: The page is about to be freed and it was not written to since it was paged in.</li>
+</ul>
+<p>The different types of committed pages implement these operations in different ways. Because, after all, that’s what makes them different.</p>
+<ul>
+<li>Zero-initialized memory
+<ul>
+<li><i>Page in</i>: Fill the page with zeroes.</li>
+<li><i>Make dirty</i>: Locate a free page in the swap file, assign it to this page, set type to “allocated memory”.</li>
+<li><i>Page out dirty</i>: (never happens)</li>
+<li><i>Page out clean</i>: Do nothing.</li>
+<li><i>Decommit dirty</i>: (never happens)</li>
+<li><i>Decommit clean</i>: Do nothing.</li>
+</ul>
+</li>
+<li>Allocated memory
+<ul>
+<li><i>Page in</i>: Read page contents from swap file.</li>
+<li><i>Make dirty</i>: Do nothing.</li>
+<li><i>Page out dirty</i>: Write page contents to swap file.</li>
+<li><i>Page out clean</i>: Do nothing.</li>
+<li><i>Decommit dirty</i>: Free the page from the swap file.</li>
+<li><i>Decommit clean</i>: Free the page from the swap file.</li>
+</ul>
+</li>
+<li>Memory-mapped file
+<ul>
+<li><i>Page in</i>: Read page contents from file.</li>
+<li><i>Make dirty</i>: Do nothing.</li>
+<li><i>Page out dirty</i>: Write page contents to file.</li>
+<li><i>Page out clean</i>: Do nothing.</li>
+<li><i>Decommit dirty</i>: Write page contents to file.</li>
+<li><i>Decommit clean</i>: Do nothing.</li>
+</ul>
+</li>
+</ul>
+<p>There are other types of pages (such as <i>copy-on-write pages</i>, the <i>null page</i>, and <i>physical pages</i>, but they aren’t relevant here.)</p>
+<p>Note that these operations apply to the pages and not to the address space. <a href="https://devblogs.microsoft.com/oldnewthing/20040810-00/?p=38203"> Memory can be committed without being visible in the address space</a>, and a single page can be visible in multiple address spaces at once, or even <a href="https://devblogs.microsoft.com/oldnewthing/20031007-00/?p=42263"> multiple times within the same address space</a>! The reason two views onto the same local file are coherent is that they are merely two manifestations of the same underlying committed page. The part of the memory manager that manages committed memory doesn’t know where in the address space (if anywhere) the memory is going to be mapped, nor does it know why the requested operation is taking place (beyond the circumstances implied by the operation itself).</p>
+<p>When a memory-mapped file page is decommitted, the appropriate <i>Decommit function</i> is called, and if the page is dirty, then the contents are flushed to the underlying file. It doesn’t know why the decommit happened, so it can’t perform any special shortcuts depending on the circumstances that led to the decommit.</p>
+<p>Consider a memory-mapped file with two views. One view closes normally. The page is still committed (the second view is still using it), so no <i>Decommit</i> happens yet. Then the process which was using the second view terminates abnormally. The <i>Decommit</i> must still be treated as a normal (not abnormal) decommit, because the first process did terminate normally, and therefore is under the not unreasonable expectation that its changes will make it into the file. In order to protect against discarding changes which earlier (now-closed) views had made, an extra bit would have to be carried for each committed page that says, “This page contains data that we promised to write back to the file (because somebody wrote to it and then closed the view normally).” You would set this flag on every page in a view when you close the view normally, or if you close the view due to abnormal process termination if there are other still-running processes that are using the view (because the changes are visible to them), and you would clear this flag after each <i>Page out</i> operation. Then you could add another type of decommit, <i>Decommit leaked</i>, which is used when a page that contains no changes from properly-closed views is decommitted because the last remaining reference to it was from a process that terminated abnormally.</p>
+<p>You could do all this work in your memory manager, but why bother? It’s additional bookkeeping just to <a href="https://devblogs.microsoft.com/oldnewthing/20070719-00/?p=25943"> optimize the case where somebody is doing something wrong</a>.</p>
+
+
+</body>

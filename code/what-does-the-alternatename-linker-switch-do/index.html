@@ -1,0 +1,35 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What does the /ALTERNATENAME linker switch do?</h1>  <!-- .entry-meta -->
+
+<p>There’s an undocumented switch for the Microsoft Visual Studio linker known as <code>/ALTERNATENAME</code>. Despite being undocumented, people use it a lot. So what is it?</p>
+<p>This is effectively a command line switch version of <a href="/code/what-s-the-deal-with-oldnames-lib" title="What does the /ALTERNATENAME linker switch do?"> the <code>OLDNAMES.LIB</code> library</a>. When you say <code>/ALTERNATENAME:X=Y</code>, then this tells the linker that if it is looking for a symbol named <code>X</code> and can’t find it, then before giving up, it should redirect it to the symbol <code>Y</code> and try again.</p>
+<p>The C runtime library uses this mechanism for various sneaky purposes. For example, there’s a part that goes</p>
+<pre>BOOL (WINAPI * const _pDefaultRawDllMain)(HANDLE, DWORD, LPVOID) = NULL;
+#if defined (_M_IX86)   
+#pragma comment(linker, "/alternatename:__pRawDllMain=__pDefaultRawDllMain")   
+#elif defined (<a href="https://devblogs.microsoft.com/oldnewthing/20150727-00/?p=90821" title="The Itanium processor, part 1: Warming up">_M_IA64</a>) || defined (_M_AMD64)   
+#pragma comment(linker, "/alternatename:_pRawDllMain=_pDefaultRawDllMain")   
+#else  /* defined (_M_IA64) || defined (_M_AMD64) */   
+#error Unsupported platform   
+#endif  /* defined (_M_IA64) || defined (_M_AMD64) */  
+</pre>
+<p>What this does is say, “If you need a symbol called <code>_pRawDllMain</code>, but you can’t find it, then try again with <code>_pDefaultRawDllMain</code>.” If an object file defines <code>_pRawDllMain</code>, then that definition will be used. Otherwise <code>_pDefaultRawDllMain</code> will be used.</p>
+<p>Note that <code>/ALTERNATENAME</code> is a linker feature and consequently operates on decorated names, since the linker doesn’t understand compiler-specific name-decoration algorithms. This means that you typically have to use different versions of the <code>/ALTERNATENAME</code> switch, depending on what architecture you are targeting. In the above example, the C runtime library knows that <code>__cdecl</code> decoration prepends an underscore on x86, but not on any other platform.</p>
+<p>This use of <code>/ALTERNATENAME</code> here is a way for the compiler to generate hooks into the DLL startup process based on the code being compiled. If there is no <code>_pRawDllMain</code> defined by an object file, then <code>_pDefaultRawDllMain</code> will be used instead, and that version is just a null pointer, which means, “Don’t do anything special.”</p>
+<p>This pattern of using the <code>/ALTERNATENAME</code> switch lets you provide a default value for a function or variable, which others can override if they choose. For example, you might do something like this:</p>
+<pre>void default_error_log() { /* do nothing */ }
+// For expository simplification: assume x86 cdecl
+#pragma comment(linker, "/alternatename:_error_log=_default_error_log")   
+</pre>
+<p>If nobody defines a custom <code>error_log</code> function, then all references to <code>error_log</code> are redirected to <code>default_error_log</code>, and the default error log function does nothing.¹</p>
+<p>The C++/WinRT library uses <code>/ALTERNATENAME</code> for a different purpose. The C++/WinRT library wants to support being used both with and without <code>windows.h</code>, so it contains its own declarations for the Windows functions and structures that it needs.</p>
+<p>But now there’s a problem: If it is used <i>with</i> <code>windows.h</code>, then there are structure definition errors. Therefore, C++/WinRT needs to give its equivalent declarations of Windows structures some other name, to avoid redefinition errors.</p>
+<p>But this in turn means that the function prototypes in the C++/WinRT library need to use the renamed structures, rather than the original Windows structures, in case the C++/WinRT library is used <i>without</i> <code>windows.h</code>. This declaration will in turn create a conflict if the C++/WinRT library is used <i>with</i> <code>windows.h</code> when the real declarations are encountered in <code>windows.h</code>.</p>
+<p>The solution is to rename the C++/WinRT version of Windows functions, too. C++/WinRT gives them a <code>WINRT_IMPL_</code> prefix, so that there is no function declaration collision.</p>
+<p>We now have two parallel universes. There’s the <code>windows.h</code> universe, and the C++/WinRT universe, each with their own structures and functions. The two parallel universes are unified by the <code>/ALTERNATENAME</code> directive, which tells the linker, “If you find yourself looking for the function <code>WINRT_IMPL_GetLastError</code>, try again with <code>GetLastError</code>.” Since nobody defines <code>WINRT_IMPL_GetLastError</code>, the “try again” kicks in, and all of the calls to <code>WINRT_GetLastError</code> end up redirected to the operating system <code>GetLastError</code> function, which is what we wanted in the first place.</p>
+<p>¹ The more traditional way of doing this (that doesn’t rely on undocumented vendor-specific linker features) is to take advantage of <a href="https://devblogs.microsoft.com/oldnewthing/20130107-00/?p=5633" title="Understanding the classical model for linking, groundwork: The algorithm"> the classical model for linking</a>, specifically the part where you can let <a href="https://devblogs.microsoft.com/oldnewthing/20130109-00/?p=5613" title="Understanding the classical model for linking: You can override an LIB with another LIB, and a LIB with an OBJ, but you can’t override an OBJ"> an OBJ override a LIB</a>: What you do is define <code>_pRawDllMain</code> in a separate OBJ file that defines nothing except that one variable, and put that OBJ in the C runtime LIB. If the module provides its own definition of <code>_pRawDllMain</code> in an OBJ file, then that definition is used. Otherwise, the linker will search through the LIBs, and eventually it will find the one in the C runtime LIB and use that one.</p>
+<p>So why does <code>/ALTERNATENAME</code> exist if you could already get this effect via LIBs, and in way that all linkers support, not just the Microsoft C linker?</p>
+<p>C++/WinRT is a header-only library. It has no LIB in which to put these default definitions. It therefore has to use the “command line switch version of a LIB”.</p>
+
+
+</body>

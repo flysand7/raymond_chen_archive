@@ -1,0 +1,84 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">In C++/WinRT, what happens when I treat an <code>IInspectable</code> as or convert one to a <code>bool</code></h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="http://devblogs.microsoft.com/oldnewthing/20191205-00/?p=103183"> weirdness in how C++/CX treats hat pointers in a <code>bool</code> context</a>. Fortunately, C++/WinRT is much less weird.</p>
+<p>The <code>IInspectable</code> type supports a conversion to <code>bool</code> which tests whether the underlying pointer is null. It also supports comparison against <code>nullptr</code> which tests the same thing. And, unlike C++/CX, C++/WinRT uses this conversion for both explicit and contextual conversions.</p>
+<pre>IInspectable p = winrt::box_value(false);
+IInspectable q = winrt::box_value(false);
+
+if (p)                    std::cout &lt;&lt; 1;
+if ((bool)p)              std::cout &lt;&lt; 2;
+if (static_cast&lt;bool&gt;(p)) std::cout &lt;&lt; 3;
+if (p == q)               std::cout &lt;&lt; 4;
+if (p == false)           std::cout &lt;&lt; 5;
+if (!p)                   std::cout &lt;&lt; 6;
+if ((bool)p == (bool)q)   std::cout &lt;&lt; 7;
+</pre>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Condition</th>
+<th>What’s happening</th>
+<th>Result</th>
+</tr>
+<tr>
+<td><tt>if (p)</tt></td>
+<td>Tests <tt>p</tt> against <tt>nullptr</tt>.</td>
+<td>prints <tt>1</tt></td>
+</tr>
+<tr>
+<td><tt>if ((bool)p)</tt></td>
+<td>Tests <tt>p</tt> against <tt>nullptr</tt>.</td>
+<td>prints <tt>2</tt></td>
+</tr>
+<tr>
+<td><tt>if (static_cast&lt;bool&gt;(p))</tt></td>
+<td>Tests <tt>p</tt> against <tt>nullptr</tt>.</td>
+<td>prints <tt>3</tt></td>
+</tr>
+<tr>
+<td><tt>if (p == q)</tt></td>
+<td>Compares two objects for identity.</td>
+<td>does not print</td>
+</tr>
+<tr>
+<td><tt>if (p == false)</tt></td>
+<td colspan="2">Not allowed (compiler error).</td>
+</tr>
+<tr>
+<td><tt>if (!p)</tt></td>
+<td>Tests <tt>p</tt> against <tt>nullptr</tt>.</td>
+<td>does not print</td>
+</tr>
+<tr>
+<td><tt>if ((bool)p == (bool)q)</tt></td>
+<td>Tests <tt>p</tt> and <tt>q</tt> against <tt>nullptr</tt>.</td>
+<td>prints 7</td>
+</tr>
+</tbody>
+</table>
+<p>Note that the last case prints <tt>7</tt> but not for the reason you think. It’s not doing any unboxing at all. It’s just checking whether both variables are non-null.</p>
+<pre>IInspectable t = winrt::box_value(true);
+if ((bool)p == (bool)t)   std::cout &lt;&lt; 8; // prints 8!
+</pre>
+<p><b>Bonus chatter</b>: There is a little quirk in the <code>p == false</code> case. My understanding is that prior to C++11, <code>false</code> was a legal <i>null pointer constant</i>, but the rules in C++11 were tightened so that <code>false</code> is no longer a null pointer context.</p>
+<p>Microsoft’s Visual Studio C++ compiler, however, continues to accept <code>false</code> as a null pointer constant, even in non-permissive mode. This means that if you’re using Microsoft’s Visual Studio C++ compiler, the fifth row of the table is slightly different:</p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Condition</th>
+<th>What’s happening</th>
+<th>Result</th>
+</tr>
+<tr>
+<td><tt>if (p == false)</tt></td>
+<td><code>false</code> converted to <code>IInspectable{ nullptr }</code> <br/>
+and compared with <code>p</code></td>
+<td>does not print</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+
+
+</body>

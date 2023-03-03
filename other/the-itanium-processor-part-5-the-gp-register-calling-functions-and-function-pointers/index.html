@@ -1,0 +1,89 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Itanium processor, part 5: The GP register, calling functions, and function pointers</h1>  <!-- .entry-meta -->
+
+<p>We saw a brief mention of the <var>gp</var> register last time, where we saw it used when we calculated the address of a global variable. </p>
+<p>The only addressing mode supported by the Itanium processor is register indirect (possibly with post-increment). There is no absolute addressing mode. If you want to access a global variable, you need to calculate its address, and the convention for this is that the <var>gp</var> register points to the module’s global variables. If you want to access a global variable stored at offset <var>n</var> in the global data segment, you do it in two steps: </p>
+<pre>
+        addl    r30 = n, gp ;;    // r30 -&gt; global variable
+        ld4     r30 = [r30]       // load 4 bytes from the global variable
+</pre>
+<p>The name <var>gp</var> stands for <i>global pointer</i> since it is the pointer used to access global variables. (Note that since immediates are signed, the range of values of <var>n</var> is −2MB to +2MB.) </p>
+<p>Those of you familiar with the PowerPC will recognize this model, since it is very similar to the Table of Contents model, except that Itanium uses a single table of contents for the entire module, as opposed to the PowerPC which gives each function its own table of contents. </p>
+<p>The Itanium <var>addl</var> instruction is limited to a 22-bit immediate, which provides a reach of 4<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/06/11/9725386.aspx">MB</a>. This means that the above pattern is viable only for 4MB of global variables. Since some modules have more than 4MB of global data, the compiler separates global data into two categories, <i>large</i> and <i>small</i>. Small data objects are stored directly in the global data segment, but large data objects are not. Instead, the large data object is placed outside the global data segment, and <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/01/20/60603.aspx">all that is placed in the global data segment is a pointer to the large object</a>. This means that accessing a large object actually takes three instructions. </p>
+<pre>
+        addl    r30 = n, gp ;; // r30 -&gt; global variable forwarder
+        ld8     r30 = [r30] ;; // r30 -&gt; global variable
+        ld4     r30 = [r30]    // load 4 bytes from the global variable
+</pre>
+<p>We see that it is vitally important that the <var>gp</var> register be set properly. Otherwise, the code has no idea where its global variables are. The Itanium calling convention says that on entry to a function, the <var>gp</var> register must be set to that function’s global pointer. </p>
+<p>Okay, so if you’re going to call a function, how do you know what global pointer it expects? </p>
+<p>Since all functions in the same module share the same global variables, the answer is easy if you are calling a function within the same module: You don’t need to do anything special with <var>gp</var>, since the caller’s <var>gp</var> is the same as the callee’s <var>gp</var>. You also don’t need to perform an indirect call; you know where the target is and can use a direct <code>br.call OtherFunction</code>.¹ </p>
+<p>On the other hand, if you are calling a function through a function pointer, then the target of the call might belong to another module. How are you supposed to know what the target function wants <var>gp</var> to be? </p>
+<p>The answer is that on Itanium, a function pointer is not the address of the first instruction. Rather, it is a pointer to a structure containing two pointers. The first pointer in the structure points to the first instruction of the target function. The second pointer is the target function’s <var>gp</var>. Therefore, calling a function through a function pointer looks like this: </p>
+<pre>
+        // suppose the function pointer is in r30
+        ld8     r31 = [r30], 8 ;;       // get the function address
+                                        // then add 8 to r30
+        ld8     gp = [r30]              // get the function's gp
+        mov     b6 = r31                // move to branch register
+        br.call.dptk.many rp = b6 ;;    // call function in b6
+        or      gp = r41, r0            // gp = r41 OR 0 = r41
+</pre>
+<p>First, we load the address of the first instruction into the <var>r31</var> register, using a post-increment addressing mode so that <var>r30</var> after the instruction points to the callee’s <var>gp</var>. </p>
+<p>Next, we load the <var>gp</var> register with the caller’s <var>gp</var>. Simultaneously, we move <var>r31</var> to <var>b6</var> so that we can use it as the target of the <var>br.call</var>. (Branch registers cannot be the target of a <var>ld8</var> instruction, which is why we needed to use <var>r31</var> as a middle-man.) </p>
+<p>Now that <var>gp</var> is set up properly, we can call the function through the branch register. </p>
+<p>After the call returns, the <var>gp</var> register is now whatever value is left over by the function we called. We need to set <var>gp</var> to the current function’s global pointer, which for the sake of example we’ll assume had been saved in the <var>r41</var> register. </p>
+<p>There’s yet another wrinkle: <a href="http://blogs.msdn.com/b/oldnewthing/archive/2006/07/21/673830.aspx">The naïve imported function</a>. In the case of an imported function not declared with the <code>dllimport</code> attribute, the compiler doesn’t know that the function is imported. It acts as if the function is part of the current module. On x86, this is simulated by making a stub function which jumps to the real (imported) function. On Itanium, the same thing is done, with a stub function that looks like this: </p>
+<pre>
+.ImportedFunction:
+        addl    r30 = n, gp ;;      // r30 -&gt; function descriptor
+        ld8     r31 = [r30], 8;;    // get the function address
+                                    // then add 8 to r30
+        ld8     gp = [r30]          // get the function's gp
+        mov     b6 = r31            // move to branch register
+        br.cond.sptk.many b6 ;;     // jump there
+</pre>
+<p>The stub function loads the <var>gp</var> register with the value expected by the imported function then jumps to the imported function. Unconditional computed jumps are encoded as conditional jumps where the qualifying predicate is <var>p0</var>, which is always true. </p>
+<p>The possibility that any function is really a stub function for an imported function this creates a problem for the compiler: Since any function could be an imported function in disguise, the compiler must assume that <i>any function</i> is potentially imported and therefore may result in the <var>gp</var> register being trashed. Therefore, the compiler needs to restore the <var>gp</var> register after <i>any</i> function call. </p>
+<p>Now, the above pessimistic assumption can be relaxed if the compiler has other information available to it. For example, if the function being called is in the same translation unit, then the compiler can see by inspection that the target function is not a stub and therefore can elide the restoration of <var>gp</var>. Similarly, if link-time code generation is enabled, then the linker can see all the code in the module and see whether the target function is a stub or a real function. </p>
+<p><b>Exercise</b>: How does tail-call elimination affect this optimization? </p>
+<p><b>Bonus reading</b>: <a href="http://msdn.microsoft.com/en-us/magazine/bb985017.aspx"><i>Programming for 64-bit Windows</i></a> which spends nearly all its time talking about the <var>gp</var> register. </p>
+<p><p>¹ The direct call instruction has a reach of 16MB, so if the function you want to call is too far away, the linker redirects the <var>br.call</var> to a stub function which in turn jumps to the final destination. </p>
+<pre>
+    br.call.dptk.many stub_for_OtherFunction
+...
+
+stub_for_OtherFunction:
+    ... jump to OtherFunction ...
+</pre>
+<p>You have a few options for jumping to the function. </p>
+<ul>
+<li>If the stub is within 16MB of the target,     it can use a <var>br.cond</var> direct jump: </li></ul>
+<pre>
+stub_for_OtherFunction:
+    br.cond.sptk.many OtherFunction
+</pre>
+<ul>
+<li>The stub can load the target address     from the data segment and use an indirect jump: </li></ul>
+<pre>
+stub_for_OtherFunction:
+    addl r3 = n, gp ;;  // look up the function address
+    ld8  r3 = [r3] ;;   // fetch it
+    mov  b6 = r3 ;;     // prepare to jump there
+    br.cond.sptk.many b6 ;; // and off we go
+</pre>
+<ul>
+<li>The stub can load the target address offset     from data stored in the code segment,     then apply the offset to the current instruction     pointer to determine the target: </li></ul>
+<pre>
+stub_for_OtherFunction:
+    mov  r3 = iip ;;    // get current location
+    addl r3 = n, r3 ;;  // find the offset
+    ld8  r2 = [r3] ;;   // load the offset
+    addl r2 = r2, r3 ;; // apply to current location
+    mov  b6 = r2 ;;     // prepare to jump there
+    br.cond.sptk.many b6 ;; // and off we go
+</pre>
+<p>This last case is tricky because the Itanium conventions forbid relocations in the code segment; all code is position-independent. Therefore, the data in the code segment must not be relocatable. We work around this by storing an offset rather than the absolute address and applying the offset at runtime. </p>
+
+
+</p></body>

@@ -1,0 +1,224 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Fixing the crash that seems to be on a <code>std::move</code> operation</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at a crash that was root-caused to <a href="/code/the-mystery-of-the-crash-that-seems-to-be-on-a-std-move-operation" title="The mystery of the crash that seems to be on a std::move operation"> an order of evaluation bug if compiled as C++14</a>. One solution to the problem is to switch to C++17 mode, but presumably the customer isn’t willing to make that drastic a change to their product yet. Maybe there’s something we can do that is less disruptive.</p>
+<pre>    // std::shared_ptr&lt;Test&gt; test;
+    <span style="border: solid 1px black;">test</span>-&gt;harness-&gt;callAndReport([<span style="border: solid 1px black;">test2 = std::move(test)</span>]() ...);
+</pre>
+<p>The problem here is that we move the pointer out of the <code>test</code> when building the lambda, while at the same time fetching the pointer from the <code>test</code> in order to locate the function to call. In C++14, these two operations are not sequenced, so there is no guarantee on the order of evaluation, even though our code depends on it:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid 1px black;"><code>test</code></td>
+<td colspan="2" style="text-align: left;">← need this to happen</td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>operator-&gt;</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>harness</code></td>
+<td> </td>
+<td>before this happens</td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>operator-&gt;</code></td>
+<td> </td>
+<td style="border: solid 1px black;"><code>test2 = std::move(test)</code></td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>callAndReport</code></td>
+<td> </td>
+<td style="border: solid 1px black;">lambda constructed</td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+</tr>
+<tr>
+<td colspan="3" style="border: solid 1px black;">function call</td>
+</tr>
+</tbody>
+</table>
+<p>We’ll have to break the large expression (with unspecified order of evaluation) into two expressions that force the desired order of evaluation.</p>
+<p>We need the retrieval of the object referenced by <code>test</code> to happen before the evaluation of <code>test2 = std::move(test)</code>. So let’s write it out explicitly in the order we want the operations to happen, as two separate statements to enforce sequencing.</p>
+<p>There are a few ways of doing this, depending on where we want to break the chain in the above diagram.</p>
+<p>We could break it as soon as possible:</p>
+<pre>    <span style="color: blue;">auto&amp; original_test = *test; // get this before we std::move(test)
+    original_test.</span>harness-&gt;callAndReport([test2 = std::move(test)]() ...);
+</pre>
+<p>An equivalent, perhaps less weird version, is this:</p>
+<pre>    <span style="color: blue;">auto test_ptr = test.get(); // get this before we std::move(test)
+    test_ptr</span>-&gt;harness-&gt;callAndReport([test2 = std::move(test)]() ...);
+</pre>
+<p>Both of these force the sequencing of the “figure out what <code>test</code> points to” to happen before the rest of the expression:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid 1px black;"><code>test</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>operator-&gt;</code></td>
+<td> </td>
+</tr>
+<tr>
+<td colspan="3">
+<hr/>
+</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>harness</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>operator-&gt;</code></td>
+<td> </td>
+<td style="border: solid 1px black;"><code>test2 = std::move(test)</code></td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>callAndReport</code></td>
+<td> </td>
+<td style="border: solid 1px black;">lambda constructed</td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+</tr>
+<tr>
+<td colspan="3" style="border: solid 1px black;">function call</td>
+</tr>
+</tbody>
+</table>
+<p>Perhaps even less weird-looking is sequencing after the acquisition of the <code>harness</code>.</p>
+<pre>    <span style="color: blue;">auto&amp; harness = test-&gt;harness; // get this before we std::move(test)
+    harness</span>-&gt;callAndReport([test2 = std::move(test)]() ...);
+</pre>
+<p>This moves the explicit sequencing a little later in the evaluation of the left column:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid 1px black;"><code>test</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>operator-&gt;</code></td>
+<td> </td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>harness</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td colspan="3">
+<hr/>
+</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>operator-&gt;</code></td>
+<td> </td>
+<td style="border: solid 1px black;"><code>test2 = std::move(test)</code></td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>callAndReport</code></td>
+<td> </td>
+<td style="border: solid 1px black;">lambda constructed</td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+</tr>
+<tr>
+<td colspan="3" style="border: solid 1px black;">function call</td>
+</tr>
+</tbody>
+</table>
+<p>It doesn’t really matter where we put it, as long as it definitely sequences the read of <code>test</code> ahead of its modification by move-assignment.</p>
+<p>But maybe we’re trying too hard.</p>
+<p>The problem with the original code was that it was being too clever, using <code>std::move</code> to transfer the <code>std::shared_ptr</code> into the lambda and avoid bumping and then dropping the reference count. But what did we really save?</p>
+<p>Let’s look at the entire (repaired) function and evaluate its effect on the <code>std::shared_ptr</code>:</p>
+<pre>void polarity_test(std::shared_ptr&lt;Test&gt; test)
+{
+    auto&amp; harness = test-&gt;harness; // get this before we std::move(test)
+    harness-&gt;callAndReport([test2 = std::move(test)]() mutable
+    {
+        ...
+    });
+}
+</pre>
+<p>The <code>test</code> is destructed at the end of the function, and that’s unavoidable.</p>
+<p>The <code>test2</code> is copy-constructed from <code>test</code>, and it destructs when the lambda is destroyed.</p>
+<p>I checked gcc, clang, MSVC, and icc, and none of them optimize out the <code>test</code> destructor, not even in simple cases like this:</p>
+<pre>void simple(std::shared_ptr&lt;int&gt; p)
+{
+    p.reset();
+    // run the destructor now
+}
+</pre>
+<p>For gcc, clang, and icc, the reason is that the call site is responsible for destructing parameters, and the call site doesn’t know what the ultimate fate of the <code>shared_ptr</code> is. (That changes if the call is inlined, though.)</p>
+<p>So all you’re really saving by moving the <code>test</code> into the lambda is the increment of the reference count. It turns out incrementing the reference count of a <code>shared_ptr</code> isn’t that bad. It’s a null pointer test and an interlocked increment.</p>
+<p>This doesn’t appear to be a performance-sensitive code path. Indeed, it looks like a test! The simplest solution is probably just to avoid the optimization and copy the <code>shared_ptr</code>.</p>
+<pre>    test-&gt;harness-&gt;callAndReport([<span style="color: blue;">test2 = test</span>]() ...);
+</pre>
+<p><b>Reminder</b>: C++17 strengthened the order of evaluation rules and now requires that for function calls, determining the function to call must be performed before the arguments are evaluated.</p>
+
+
+</body>

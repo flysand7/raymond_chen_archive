@@ -1,0 +1,96 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How soon is too soon to report progress from a C++/WinRT coroutine that implements a Windows Runtime asynchronous operation with progress?</h1>  <!-- .entry-meta -->
+
+<hr/>
+<p>A customer discovered a problem with their C++/WinRT coroutine that generates progress.</p>
+<pre>IAsyncOperationWithProgress&lt;UpdateResult, bool&gt;
+    SomeClass::UpdateAsync()
+{
+    auto lifetime = get_strong();
+    auto progress = co_await get_progress_token();
+
+    // Tell the caller that we are preparing
+    progress(false);
+
+    Prepare();
+
+    // Tell the caller that we have finished preparing
+    progress(true);
+
+    // ... more work ...
+
+    co_return UpdateResult(/* something */);
+}
+</pre>
+<p>This is a simple coroutine that generates progress notifications to tell the caller when we have entered and exited the “Prepare” stage. The caller looks like this:</p>
+<pre>auto op = someClass.UpdateAsync();
+op.Progress([](auto&amp;&amp;, bool started)
+{
+    if (started) ReallyImportantFunction();
+});
+auto result = co_await op;
+</pre>
+<p>The expectation is that the two progress events would be received by the Progress event handler in the calling code. However, running the code in the debugger suggests that the <code>Update­Async</code> function runs synchronously until well past the two calls to <code>progress(...)</code>, which means that the caller has hooked up its Progress event handler too late, and it never realizes that the operation has reached the “started” state, and the <code>Really­Important­Function()</code> never runs.</p>
+<p>What’s going on, and what can we do about it?</p>
+<p>The customer’s analysis is correct. This is an inherent hazard of hot-start coroutines. Even if you add a <code>co_await resume_background()</code> or a <code>co_await resume_after(1s)</code> to allow the caller to regain control and hook up its Progress event handler, there’s still the chance that the caller hasn’t quite gotten around to doing it by the time you raise the “started” progress event.¹</p>
+<p>You should try to design your operations so that progress reports are just a courtesy, and missing a progress report is not fatal.</p>
+<p>If you need guaranteed progress delivery, you can work around this behavior in a few ways.</p>
+<p>One idea is to use the ability for the caller to obtain provisional results:</p>
+<pre>// idl
+
+runtimeclass UpdateResult
+{
+    String NewName { get; };
+    Flavor NewFlavor { get; };
+
+    <span style="color: #08f;">// Add a new member
+    Boolean UpdateStarted { get; };</span>
+}
+
+// implementation
+
+IAsyncOperationWithProgress&lt;UpdateResult, bool&gt;
+    SomeClass::UpdateAsync()
+{
+    auto lifetime = get_strong();
+    auto progress = co_await get_progress_token();
+
+    // Set the provisional result and notify the caller.
+    UpdateResult result;
+    result.Started(false);
+    progress.set_result(result);
+    progress(false);
+
+    Prepare();
+
+    // Let the caller know that we have finished preparing.
+    result.Started(true);
+    progress(true);
+
+    // ... more work ...
+
+    co_return result;
+}
+</pre>
+<p>The idea here is that we report the progress in two ways. One is via the Progress event on the <code>IAsyncOperation</code>. The other is as a new property of the operation result.²</p>
+<p>Windows Runtime asynchronous operations with progress can report provisional results prior to completion, and callers can obtain those provision results by calling <code>GetResults()</code> while the operation is still running. On the implementation side, C++/WinRT lets you publish provisional results by calling <code>set_result()</code> on the progress token.</p>
+<p>The consuming side would look like this:</p>
+<pre>auto op = someClass.UpdateAsync();
+op.Progress([](auto&amp;&amp;, bool started)
+{
+    if (started) ReallyImportantFunction();
+});
+
+<span style="color: #08f;">// Check if the update started before we were able
+// to register for the Progress event.
+if (op.GetResults().UpdateStarted()) ReallyImportantFunction():</span>
+
+auto result = co_await op;
+</pre>
+<p>Note that there is a race condition here where the update starts after we register the Progress event handler but before we check the provisional results. In that case, we will call <code>Really­Important­Function()</code> twice. In our customer’s case, it was harmless to call it twice, but in the more general case, you may need to add additional logic to avoid calling <code>Really­Important­Function()</code> twice.</p>
+<p>But really, you shouldn’t put critical information in the Progress event payload. Next time, we’ll look at alternate designs for critical progress notifications.</p>
+<p>¹ For example, the caller thread may have lost its quantum just before it was able to hook up the Progress event handler.</p>
+<p>² If the original operation result was not a runtime class, you can create a new runtime class that consists of the original operation result, plus the new <code>UpdateStarted</code> property. Alternatively, you can make the operation result a Windows Runtime <code>struct</code>, but Windows Runtime <code>struct</code>s are value types, so you will have to do a <code>progress.set_result()</code> each time you update the <code>result</code> to update the copy.</p>
+
+
+</body>

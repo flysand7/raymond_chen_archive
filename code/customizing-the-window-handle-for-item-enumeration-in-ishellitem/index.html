@@ -1,0 +1,91 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Customizing the window handle for item enumeration in IShellItem</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, I showed how to <a href="https://blogs.msdn.microsoft.com/oldnewthing/20150126-00/?p=44833">customize the enumeration flags used when enumerating items with <code>IShell­Item</code></a>. This controls the <code>grfFlags</code> parameter passed to <a href="https://msdn.microsoft.com/library/windows/desktop/bb775066(v=vs.85).aspx">the <code>IShell­Folder::</code><code>Enum­Objects</code> method</a>, but what about the <code>hwndOwner</code> parmaeter? How to do you customize the window handle? </p>
+<p>The window handle for the enumeration comes from the site of the enumerator. </p>
+<p>There’s no real reason you were expected to know this. </p>
+<p>Here’s a Little Program that demonstrates. It is basically the program we used <a href="https://blogs.msdn.microsoft.com/oldnewthing/20150126-00/?p=44833">last time</a>, but translated from ATL to WRL (because that lets me <a href="https://msdn.microsoft.com/library/jj822931.aspx">use the <code>Runtime­Class</code> template</a>.) </p>
+<pre>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;shlwapi.h&gt;
+#include &lt;knownfolders.h&gt;
+#include &lt;wrl/client.h&gt;
+#include &lt;wrl/implements.h&gt;
+#include &lt;stdio.h&gt;    // Horrors! Mixing stdio and C++!
+
+namespace wrl = Microsoft::WRL;
+
+class COleWindow : public wrl::RuntimeClass&lt;
+    wrl::RuntimeClassFlags&lt;wrl::ClassicCom&gt;, IOleWindow&gt;
+{
+public:
+  HRESULT RuntimeClassInitialize(HWND hwnd)
+  {
+    m_hwnd = hwnd;
+    return S_OK;
+  }
+
+  STDMETHODIMP GetWindow(_Out_ HWND* phwnd)
+  {
+    *phwnd = m_hwnd;
+    return S_OK;
+  }
+
+  STDMETHODIMP ContextSensitiveHelp(BOOL /* fEnterMode */)
+  {
+    return E_NOTIMPL;
+  }
+
+private:
+  HWND m_hwnd;
+};
+</pre>
+<p>The <code>COleWindow</code> class is a simple object which implements the <code>IOleWindow</code> interface. It coughs up the window handle you gave it at initialization. </p>
+<p>We can use this object to provide a window for enumeration. Remember that Little Programs do little to no error checking. </p>
+<pre>
+int __cdecl wmain(int argc, wchar_t** argv)
+{
+  <a href="https://blogs.msdn.microsoft.com/oldnewthing/20110830-00/?p=9773">CCoInitialize</a> init;
+
+  if (argc &lt; 2) return 0;
+
+  HWND hwnd = CreateWindowW(L"static", L"Title",
+      WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+      CW_USEDEFAULT, CW_USEDEFAULT,
+      nullptr, nullptr, <a href="https://devblogs.microsoft.com/oldnewthing/">HINST_THISCOMPONENT</a>, 0);
+
+  wrl::ComPtr&lt;IShellItem&gt; folder;
+  SHCreateItemFromParsingName(argv[1], nullptr,
+                              IID_PPV_ARGS(&amp;folder));
+
+  wrl::ComPtr&lt;IEnumShellItems&gt; enumerator;
+  folder-&gt;BindToHandler(nullptr, BHID_EnumItems,
+                           IID_PPV_ARGS(&amp;enumerator));
+
+  wrl::ComPtr&lt;IUnknown&gt; site;
+  wrl::MakeAndInitialize&lt;COleWindow&gt;(&amp;site, hwnd);
+  IUnknown_SetSite(enumerator.Get(), site.Get());
+
+  wrl::ComPtr&lt;IShellItem&gt; item;
+  while (enumerator-&gt;Next(1, item.ReleaseAndGetAddressOf(),
+                             nullptr) == S_OK) {
+    PWSTR name;
+    item-&gt;GetDisplayName(SIGDN_NORMALDISPLAY, &amp;name);
+    wprintf(L"%s\n", name);
+    CoTaskMemFree(name);
+  }
+
+  return 0;
+}
+</pre>
+<p>First, we create a window so we have something to pass to <code>IShell­Folder::</code><code>Enum­Objects</code>. In real life, this is the window you want to use for any UI that is displayed as part of the enumeration. </p>
+<p>Next, we take the path from the command line and convert it to an <code>IShellItem</code>. This is not new. </p>
+<p>Once we have the folder as an <code>IShellItem</code>, we ask for its enumerator. If you wanted to customize the flags passed to the <code>IShell­Folder::</code><code>Enum­Objects</code> method, here’s where you would <a href="https://blogs.msdn.microsoft.com/oldnewthing/20150126-00/?p=44833">pass a customizing <code>IBindCtx</code></a>. </p>
+<p>And then the new part: Before calling any enumeration methods, we create a <code>COleWindow</code> object and set it as the enumerator’s site. This tells the enumerator where to get its window from. </p>
+<p>We have nothing else interesting in our site, but in a real program, your site would probably implement <code>IService­Provider</code> in order to be a full-fledged site chain. </p>
+<p>Finally, we use the enumerator in the usual manner and (for demonstration purposes) print out the names of the resulting objects. </p>
+
+
+</body>

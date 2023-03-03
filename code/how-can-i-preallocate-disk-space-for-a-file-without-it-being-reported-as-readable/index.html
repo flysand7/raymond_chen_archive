@@ -1,0 +1,42 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I preallocate disk space for a file without it being reported as readable?</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to create a file with the following properties: </p>
+<ul>
+<li>The file has a known maximum size.     (The file is a log file, and when the log file gets full,     the program closes the log file and creates a new one.) 
+<li>Disk space for the log file should be preallocated up to     the maximum size. 
+<li>Aside from the fact that disk space for the maximum size has     been preallocated,     the file should behave like a normal file:     Code that reads the log file should be able to read up to     the last written byte, but if they try to read past the     last written byte, they should get “end of file reached”. </li></li></li></ul>
+<p>The last requirement exists because there are third party tools that read the log files, and those tools are just going to use traditional file I/O to access the log file. </p>
+<p>The customer suggested an analogy: “If we were operating on <code>std::vector</code>, then what I’m looking for is  <code>vector.reserve()</code> to expand the vector’s capacity, and <code>vector.push_back()</code> to append entries. Code that iterates over the vector or reads the <code>vector.size()</code> see only the vector elements that have been pushed onto the vector.” </p>
+<p>The file system team responded with this solution: </p>
+<p>Use <a href="https://msdn.microsoft.com/library/windows/desktop/aa365539(v=vs.85).aspx">the <code>Set­File­Information­By­Handle</code> function</a>, passing function code <code>File­Allocation­Info</code> and <a href="https://msdn.microsoft.com/library/windows/desktop/aa364214(v=vs.85).aspx">a <code>FILE_ALLOCATION_INFO</code> structure</a>. “Note that this will decrease fragmentation, but because each write is still updating the file size there will still be synchronization and metadata overhead caused at each append.” </p>
+<p>The effect of setting the file allocation info lasts only as long as you keep the file handle open. When you close the file handle, all the preallocated space that you didn’t use will be freed. </p>
+<p>Here goes a Little Program. Remember, Little Programs do little to no error checking. </p>
+<pre>
+#include &lt;windows.h&gt;
+
+int __cdecl main(int argc, char** argv)
+{
+  auto h = CreateFile(L"test.txt", GENERIC_ALL,
+    FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+    FILE_ATTRIBUTE_NORMAL, nullptr);
+  FILE_ALLOCATION_INFO info;
+  info.AllocationSize.QuadPart =
+    1024LL * 1024LL * 1024LL * 100; // 100<a href="https://blogs.msdn.microsoft.com/oldnewthing/20090611-00/?p=17933">GB</a>
+  SetFileInformationByHandle(h, FileAllocationInfo,
+    &amp;info, sizeof(info));
+  for (int i = 0; i &lt; 10; i++) {
+    DWORD written;
+    WriteFile(h, "hello\r\n", 7, &amp;written, nullptr);
+    Sleep(5000);
+  }
+  CloseHandle(h);
+  return 0;
+}
+</pre>
+<p>This program creates a file and preallocates 100GB of disk space for it. It then writes to the file very slowly. While the program is running, you can do a <code>type test.txt</code> to read the contents of the file, and it will print only the contents that were written. Watch the free disk space on the drive, and you’ll see that it drops by 100GB while the program is running, and then most of the disk space comes back when the program exits. </p>
+<p>The preallocated disk space is also released when you call <code>Set­End­Of­File</code>. </p>
+<p>There’s a special gotcha about setting the file allocation info: If you set the file allocation info to a nonzero value, then the file contents will be forced into nonresident data, <a href="https://blogs.technet.microsoft.com/askcore/2009/10/16/the-four-stages-of-ntfs-file-growth/">even if it would have fit inside the MFT</a>. </p>
+
+
+</body>

@@ -1,0 +1,76 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">I called AdjustTokenPrivileges, but I was still told that a necessary privilege was not held</h1>  <!-- .entry-meta -->
+
+<p>A customer had a service running as Local System and wanted to change some token information. The information that they wanted to change required <code>Se­Tcb­Privilege</code>, so they adjusted their token privileges to enable that privilege, but the call still failed with <code>ERROR_</code><code>PRIVILEGE_</code><code>NOT_</code><code>HELD</code>: “A required privilege is not held by the client.”</p>
+<p>Here’s sketch of their code. All function calls succeed except the last one.</p>
+<pre>HANDLE processToken;
+OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS,
+    &amp;processToken);
+
+HANDLE newToken;
+DuplicateTokenEx(processToken, TOKEN_ALL_ACCESS, nullptr,
+    SECURITY_MAX_IMPERSONATION_LEVEL, TokenPrimary, &amp;newToken);
+
+TOKEN_PRIVILEGES privileges;
+privileges.PrivilegeCount = 1;
+privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+LookupPrivilegeValue(nullptr, SE_TCB_NAME,
+    &amp;privileges.Privileges[0].Luid);
+
+AdjustTokenPrivileges(newToken, FALSE, &amp;privileges, 0,
+    nullptr, nullptr);
+
+DWORD sessionId = ...;
+SetTokenInformation(newToken, TokenSessionId, &amp;sesionId,
+    sizeof(sessionId)); // FAILS!
+</pre>
+<p>This fails because we adjusted the privileges of the wrong token!</p>
+<p>The TCB privilege needs to be enabled on the token that is performing the operation, not the token that is the target of the operation. Because you need privileges to <i>do things</i>, not to <i>have things done to you</i>.</p>
+<p>The security folks explained that the correct order of operations is</p>
+<ol>
+<li><code>Impersonate­Self()</code>.</li>
+<li><code>Open­Thread­Token()</code>.</li>
+<li><code>Adjust­Token­Privileges(threadToken)</code>.</li>
+<li>Do the thing you wanna do. (In this case, duplicate the token and change the session ID.)</li>
+<li>Close the thread token.</li>
+<li><code>Revert­To­Self()</code>.</li>
+</ol>
+<p>The overall sequence therefore goes like this:</p>
+<pre>void DoSomethingAwesome()
+{
+ if (ImpersonateSelf(SecurityImpersonation)) {
+  HANDLE threadToken;
+  if (OpenThreadToken(GetCurrentThread(), TOKEN_ALL_ACCESS,
+                      TRUE, &amp;threadToken)) {
+   TOKEN_PRIVILEGES privileges;
+   privileges.PrivilegeCount = 1;
+   privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+   if (LookupPrivilegeValue(nullptr, SE_TCB_NAME,
+                            &amp;privileges.Privileges[0].Luid)) {
+    if (AdjustTokenPrivileges(newToken, FALSE, &amp;privileges, 0,
+                              nullptr, nullptr)) {
+     // Now do the thing you wanna do.
+     HANDLE newToken;
+     if (DuplicateTokenEx(threadToken, TOKEN_ALL_ACCESS, nullptr,
+                          SECURITY_MAX_IMPERSONATION_LEVEL,
+                          TokenPrimary, &amp;newToken)) {
+      DWORD sessionId = ...;
+      if (SetTokenInformation(newToken, TokenSessionId,
+                              &amp;sesionId, sizeof(sessionId))) {
+       // Hooray
+      }
+      CloseHandle(newToken);
+     }
+    }
+   }
+   CloseHandle(threadToken);
+  }
+  RevertToSelf();
+ }
+}
+</pre>
+<p>Of course, in real life, you probably would use RAII types to ensure that handles get closed and to remember to <code>Revert­To­Self()</code> after a successful <code>Impersonate­Self()</code>.</p>
+<p> </p>
+
+
+</body>

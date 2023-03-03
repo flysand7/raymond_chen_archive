@@ -1,0 +1,43 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">COM asynchronous interfaces, part 4: Doing work while waiting for the asynchronous operation</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/com-asynchronous-interfaces-part-3-abandoning-the-operation-after-a-timeout" title="COM asynchronous interfaces, part 3: Abandoning the operation after a timeout"> learned how to abandon an asynchronous operation after a timeout</a>. But maybe we want to do some useful work while waiting for the operation. (For example, maybe you want to initiate multiple asynchronous operations and let them run in parallel, and then collect the results later.)</p>
+<p>As before, we check on the completion state of the asynchronous call by using the <code>ISynchronize</code> interface on the call object. But this time, we call <code>ISynchronize:;<wbr/>Wait</code> with a timeout of zero, which means that it doesn’t actually wait. It just reports on whether the operation has completed. In other words, passing a wait time of zero lets you poll. (Note that cancellation counts as completion.)</p>
+<p>Let’s make these changes to our original program.</p>
+<pre>int main(int, char**)
+{
+  winrt::init_apartment(winrt::apartment_type::multi_threaded);
+
+  auto pipe = CreateSlowPipeOnOtherThread();
+
+  winrt::com_ptr&lt;::AsyncIPipeByte&gt; call;
+  auto factory = pipe.as&lt;ICallFactory&gt;();
+  winrt::check_hresult(factory-&gt;CreateCall(
+    __uuidof(::AsyncIPipeByte), nullptr,
+    __uuidof(::AsyncIPipeByte),
+    reinterpret_cast&lt;::IUnknown**&gt;(call.put())));
+
+  printf("Beginning the Pull\n");
+  winrt::check_hresult(call-&gt;Begin_Pull(100));
+
+  printf("Doing something else for a while...\n");
+  <span style="color: blue;">auto sync = call.as&lt;::ISynchronize&gt;();
+  while (sync-&gt;Wait(COWAIT_DEFAULT, 0) == RPC_S_CALLPENDING) {
+    printf("Doing important stuff...\n");
+    Sleep(250);
+  }</span>
+
+  printf("Getting the answer\n");
+  BYTE buffer[100];
+  ULONG actual;
+  winrt::check_hresult(call-&gt;Finish_Pull(buffer, &amp;actual));
+  printf("Pulled %lu bytes\n", actual);
+
+  return 0;
+}
+</pre>
+<p>The previous program did some fixed amount of work before waiting for the answer. But this version busies itself with important work as long as the operation is not yet complete.</p>
+<p>So far, all of our calls to the slow pipe object have been to a thread that is still responsive. Next time, we’ll look at how to initiate asynchronous operations and avoid blocking if the server thread is hung.</p>
+
+
+</body>

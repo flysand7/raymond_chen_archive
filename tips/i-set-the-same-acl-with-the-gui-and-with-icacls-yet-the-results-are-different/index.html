@@ -1,0 +1,40 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">I set the same ACL with the GUI and with <code>icacls</code>, yet the results are different</h1>  <!-- .entry-meta -->
+
+<p>A customer found that if they used the GUI and the <code>icacls</code> program to deny Delete permission to a folder, the results were different, even though the resulting ACLs are the same.</p>
+<p>Create a user, say, <i>Bob</i>, and create a folder, say, <code>C:\test</code>.</p>
+<p><b>With the GUI</b></p>
+<ul>
+<li>Right-click the folder and select <i>Properties</i>.</li>
+<li>Go the <i>Security</i> tab, click <i>Advanced</i>.</li>
+<li>Click the <i>Add</i> button to add a new ACE.</li>
+<li>Select <i>Bob</i> as the Principal.</li>
+<li>Set the <i>Type</i> to <i>Deny</i>.</li>
+<li>Click <i>Show advanced permissions</i>.</li>
+<li>Check <i>Delete</i> and uncheck everything else.</li>
+<li>Click <i>OK</i> a bunch of times to save the changes.</li>
+</ul>
+<p><b>With <code>icacls</code></b></p>
+<ul>
+<li>From a command prompt, type <code>icacls C:\test /deny Bob:D</code></li>
+</ul>
+<p>If you followed the GUI steps, then Bob can open the directory in Explorer. On the other hand, if you followed the <code>icacls</code> steps, then Bob cannot open the directory in Explorer.</p>
+<p>In both cases, running <code>icacls</code> to view the permissions report the same results:</p>
+<pre>C:\&gt; icacls c:\test
+test THISPC\Bob:(DENY)(D)
+     BUILTIN\Administrators:(I)(OI)(CI)(F)
+     NT AUTHORITY\SYSTEM:(I)(OI)(CI)(F)
+     BUILTIN\Users:(I)(OI)(CI)(RX)
+     NT AUTHORITY\Authenticated Users:(I)(M)
+     NT AUTHORITY\Authenticated Users:(I)(OI)(CI)(IO)(M)
+</pre>
+<p>How is it possible that the permissions are identical, yet the results are different depending on <i>how</i> you set the permissions?</p>
+<p>The problem is that your tools are lying to you. The Deny ACE on the directory is not what <code>icacls</code> reports.</p>
+<p>If you change the security with the GUI, then the Deny ACE is <code>0x00010000</code> = <code>DELETE</code>. But if you change it with the <code>icacls</code> program, then the Deny ACE is is <code>0x00110000</code> = <code>DELETE | SYNCHRONIZE</code>.</p>
+<p>So the <code>icacls</code> program is lying when it says that it denied Delete (D) permission. It actually denied both Delete and Synchronize.</p>
+<p>And then on top of that, the <code>icacls</code> program is lying when it says that the actual ACE is a Deny D. It’s hiding the denied <code>SYNCHRONIZE</code> access.</p>
+<p>And it’s that denied <code>SYNCHRONIZE</code> access which is the difference. Explorer cannot open a folder where <code>SYNCHRONIZE</code> is denied. (And the command prompt cannot <code>chdir</code> into such a directory either.)</p>
+<p>I’m guessing that the <code>icacls</code> is doing this extra work as a courtesy, but it also makes diagnosing problems more difficult.</p>
+
+
+</body>

@@ -1,0 +1,163 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Even if you have a lock, you can borrow some lock-free techniques</h1>  <!-- .entry-meta -->
+
+<p>
+Even if you prefer to use a lock
+(after all, they are much easier to program),
+you can borrow some lock-free techniques.
+For example, consider this:
+</p>
+<pre>
+CRITICAL_SECTION g_cs;
+GORILLADATA g_data;
+void PokeGorilla(double intensity)
+{
+  EnterCriticalSection(&amp;g_cs);
+  DeformGorilla(intensity, &amp;g_data);
+  Reticulate(&amp;g_data.spline);
+  int stress = CalculateTension(&amp;g_data.spline);
+  if (stress &lt; 25)      g_data.mood = RELAXED;
+  else if (stress &lt; 50) g_data.mood = ANNOYED;
+  else                  g_data.mood = ANGRY;
+  DeleteObject(g_data.hbmGorilla);
+  g_data.hbmGorilla = RenderGorilla(&amp;g_data);
+  LeaveCriticalSection(&amp;g_cs);
+}
+</pre>
+<p>
+There are some concerns here.
+First of all, there’s the lock hierarchy issue:
+If reticulating a spline takes the geometry lock,
+that may violate our lock hierarchy.
+</p>
+<p>
+If the lock <code>g_cs</code> is a hot lock,
+you may be concerned that all this gorilla stuff will
+hold the lock for too long.
+Maybe rendering a gorilla is a slow and complicated
+operation because it’s hard to get the fur just right.
+</p>
+<p>
+These issues become less onerous if you switch to a lock-free
+algorithm, but that’s an awful lot of work, and it’s hard to
+get right.
+But maybe you can do just 20% of the work to get 80% of the benefit.
+</p>
+<p><pre>
+void PokeGorilla(double intensity)
+{
+  <font color="blue">// Capture
+  EnterCriticalSection(&amp;g_cs);
+  GORILLADATA data = g_data; // typo fixed
+  LeaveCriticalSection(&amp;g_cs);
+  // Recalculate based on captured data</font>
+  DeformGorilla(intensity, &amp;data);
+  Reticulate(&amp;data.spline);
+  int stress = CalculateTension(&amp;data.spline);
+  if (stress &lt; 25)      data.mood = RELAXED;
+  else if (stress &lt; 50) data.mood = ANNOYED;
+  else                  data.mood = ANGRY;
+  data.hbmGorilla = RenderGorilla(&amp;data);
+  <font color="blue">// Commit
+  EnterCriticalSection(&amp;g_cs);
+  HBITMAP hbmToDelete = g_data.hbmGorilla;
+  g_data = data;
+  LeaveCriticalSection(&amp;g_cs);</font>
+  DeleteObject(hbmToDelete);
+}
+</pre>
+<p>
+Here, we use the capture/try/commit model.
+We capture the state of the gorilla into a local variable,
+then perform our update based on that captured state.
+The spline reticulation takes place without any locks held,
+which avoids introducing a lock hierarchy violation.
+And rendering the gorilla is done without any locks held,
+which avoids introducing a choke point on the lock.
+After the calculations are done, we then re-enter the lock
+and commit the changes.
+</p>
+<p>
+This pattern uses a last-writer-wins model.
+If another thread pokes the gorilla while we are still
+calculating the previous gorilla state, we will overwrite
+that gorilla state when we complete.
+For some scenarios, that’s acceptable.
+But maybe the gorilla’s emotional state needs to be an accumulation
+of all the times he’s ben poked.
+We want to detect that somebody has poked the gorilla while we
+were busy calculating so that we can incorporate that new information
+into the final result.
+</p>
+<p>
+To do that, we introduce
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/12/10152296.aspx">
+a change counter</a>.
+</p>
+<pre>
+<font color="blue">LONG g_lCounter;</font>
+void PokeGorilla(double intensity)
+{
+  <font color="blue">BOOL fSuccess;
+  do {</font>
+    // Capture
+    EnterCriticalSection(&amp;g_cs);
+    GORILLADATA data = g_data; // typo fixed
+    <font color="blue">LONG lCounter = g_lCounter;</font>
+    LeaveCriticalSection(&amp;g_cs);
+    // Recalculate based on captured data
+    DeformGorilla(intensity, &amp;data);
+    Reticulate(&amp;data.spline);
+    int stress = CalculateTension(&amp;data.spline);
+    if (stress &lt; 25)      data.mood = RELAXED;
+    else if (stress &lt; 50) data.mood = ANNOYED;
+    else                  data.mood = ANGRY;
+    data.hbmGorilla = RenderGorilla(&amp;data);
+    // Commit
+    EnterCriticalSection(&amp;g_cs);
+    HBITMAP hbmToDelete;
+    <font color="blue">if (lCounter == g_lCounter)
+    {</font>
+      hbmToDelete = g_data.hbmGorilla;
+      g_data = data;
+      <font color="blue">g_lCounter++;
+      fSuccess = TRUE;
+    } else {
+      hbmToDelete = data.hbmGorilla;
+      fSuccess = FALSE;
+    }</font>
+    LeaveCriticalSection(&amp;g_cs);
+    DeleteObject(hbmToDelete);
+  <font color="blue">} while (!fSuccess);</font>
+}
+</pre>
+<p>
+In addition to the regular gorilla data,
+we also associate a change counter that is incremented
+each time somebody pokes the gorilla.
+In real life, you might want to make the change counter
+part of the <code>GORILLA­DATA</code> structure.
+(Actually, in real life, you probably shouldn’t poke a gorilla.)
+In a lock-free algorithm, we would
+<code>Interlocked­Compare­Exchange­Release</code>
+the lock counter to see if the lock counter changed
+(and if not, to update it with the new lock counter).
+But since a <code>GORILLA­DATA</code> structure
+cannot be updated atomically,
+we have to use our critical section to perform the
+comparison-and-update.
+</p>
+<p>
+Even though we used a lock, we still follow the lock-free pattern.
+If the gorilla has been poked while we were busy processing our own poke,
+then we throw away the results of our computations and start over,
+so that our poke can be accumulated with the previous pokes.
+</p>
+<p>
+<b>Exercise</b>:
+What constraints must be applied to the
+<code>GORILLADATA</code> structure for this technique to work?
+</p></p>
+
+
+</body>

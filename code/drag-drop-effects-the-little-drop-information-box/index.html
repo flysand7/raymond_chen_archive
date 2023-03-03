@@ -1,0 +1,70 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Drag/drop effects: The little drop information box</h1>  <!-- .entry-meta -->
+
+<p>Explorer’s drag/drop effects include a little message information box as part of the drop effect. For example, it will start with the message <i>Move to ⸢folder⸥</i>, but if you hold the <kbd>Ctrl</kbd> key, the message changes to <i>Copy to ⸢folder⸥</i>. How can you get a piece of that action?</p>
+<p>As we saw last time, <a href="/code/using-explorer-s-fancy-drag-drop-effects-in-your-own-programs" title="Using Explorer's fancy drag/drop effects in your own programs"> the visual drag/drop feedback effects used by Explorer are available for general use</a>, via an object know as the shell drop target helper.</p>
+<p>Let’s take our scratch program and teach it how to add the fancy information box.</p>
+<p>The information box is configured by the <code>DROP­DESCRIPTION</code> structure which is associated with the <code>CFSTR_<wbr/>DROP­DESCRIPTION</code> clipboard format.</p>
+<pre>#include &lt;strsafe.h&gt;
+
+HRESULT SetDropDescription(
+    IDataObject* dataObject, DROPIMAGETYPE type,
+    PCWSTR message = nullptr, PCWSTR insert = nullptr)
+{
+    wil::unique_hglobal_ptr&lt;DROPDESCRIPTION&gt; data(
+        reinterpret_cast&lt;DROPDESCRIPTION*&gt;(
+            GlobalAlloc(GPTR, sizeof(DROPDESCRIPTION))));
+    RETURN_IF_NULL_ALLOC(data);
+    data-&gt;type = type;
+    RETURN_IF_FAILED(StringCchCopyEx(data-&gt;szMessage, ARRAYSIZE(data-&gt;szMessage),
+        message, nullptr, nullptr, STRSAFE_IGNORE_NULLS));
+    RETURN_IF_FAILED(StringCchCopyEx(data-&gt;szInsert, ARRAYSIZE(data-&gt;szInsert),
+        insert, nullptr, nullptr, STRSAFE_IGNORE_NULLS));
+    FORMATETC fmte = { (CLIPFORMAT)RegisterClipboardFormat(CFSTR_DROPDESCRIPTION),
+        nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+    STGMEDIUM med = { TYMED_HGLOBAL };
+    med.hGlobal = data.get();
+    RETURN_IF_FAILED(dataObject-&gt;SetData(&amp;fmte, &amp;med, true));
+    data.release();
+    return S_OK;
+}
+</pre>
+<p>We allocate a <code>DROP­DESCRIPTION</code> structure as an <code>HGLOBAL</code> and copy the drop image type, optional message, and optional message insertion into the structure before setting the data into the data object.</p>
+<p>You can read the documentation for <code>DROP­DESCRIPTION</code> for details on how the message and message insertion interact. For this example, we’ll just use a simple message with no insertions.</p>
+<pre>struct SimpleDropTarget
+{
+    ...
+
+    STDMETHOD DragLeave()
+    {
+        <span style="color: blue;">if (dto) SetDropDescription(dto.get(), DROPIMAGE_INVALID);</span>
+        dto = nullptr;
+        return helper-&gt;DragLeave();
+    }
+
+
+    HRESULT CalculateFeedback(
+        DWORD grfKeyState,
+        DWORD* pdwEffect)
+    {
+        if (grfKeyState &amp; MK_CONTROL) {
+            *pdwEffect = DROPEFFECT_COPY;
+            <span style="color: blue;">SetDropDescription(dto.get(), DROPIMAGE_COPY,
+                L"Copy with awesomesauce.");</span>
+        }
+        else {
+            *pdwEffect = DROPEFFECT_MOVE;
+            <span style="color: blue;">SetDropDescription(dto.get(), DROPIMAGE_MOVE,
+                L"Move with awesomesauce.");</span>
+        }
+        return S_OK;
+    }
+
+};
+</pre>
+<p>When we calculate the feedback, we also set the drop description to tell the user what will happen when the drop happens. We also clear the drop description (by setting it to “invalid” with an empty message)¹ when the user decided not to drop it onto our drop target after all. This ensures that our custom description doesn’t hang around and accidentally get shown for other drop targets that don’t set a description.</p>
+<p>So there you have it, drag feedback done the same way that Explorer does it.</p>
+<p>¹ There is no way to remove data from a data object, so the best you can do is replace the data with new data that says “Nevermind.”</p>
+
+
+</body>

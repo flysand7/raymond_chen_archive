@@ -1,0 +1,97 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Jumping into the middle of an instruction is not as strange as it sounds</h1>  <!-- .entry-meta -->
+
+<p>Reuben Harris and Monte Davidoff spent time <a href="http://altairbasic.org/"> disassembling Bill Gates’s original Altair BASIC</a>. In an interview with <i>The Register</i>, Harris was impressed with the code, noting with some admiration, “<a href="https://www.theregister.com/2001/05/15/could_bill_gates_write_code/">I found a jump instruction that jumped to the middle of another instruction</a>.”¹</p>
+<p>You can find the targets of those jumps <a href="http://altairbasic.org/int_dis_4.htm"> in the error handling code</a>: Search for “Three common errors.”</p>
+<p>The trick here is that the 8080 uses variable-length instructions. The instruction sequence in question goes like this:</p>
+<pre>01CD    1E0C    OutOfMemory:    MVI E,0C
+01CF    01                      LXI B,....
+
+01D0    1E02    SyntaxError:    MVI E,02
+01D2    01                      LXI B,....
+
+01D3    1E14    DivideByZero:   MVI E,14
+</pre>
+<p>The 8080 processor has 8-bit registers named <code>A</code>, <code>B</code>, <code>C</code>, <code>D</code>, <code>E</code>, <code>H</code>, and <code>L</code>. Six of these registers can be paired up to create 16-bit pseudo-registers: <code>BC</code>, <code>DE</code> and <code>HL</code>.</p>
+<p>The <i>load extended immediate</i> <code>LXI</code> instruction is a three-byte instruction which loads a 16-bit immediate value into a register pair. The first byte specifies the opcode and the destination register pair (in the above example, the <code>BC</code> register pair), and the second and third bytes form the 16-bit immediate.</p>
+<p>The <i>move immediate</i> <code>MVI</code> instruction is a two-byte instruction which loads an 8-bit immediate value into a single 8-bit register. The first byte specifies the opcode and the destination register (in the above example, the <code>E</code> register), and the second byte is the 8-bit immediate.</p>
+<p>Let’s write out the byte stream that results from jumping to the three labels:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>Address</td>
+<td>Code byte</td>
+<td><code>JMP<br/>
+OutOfMemory</code></td>
+<td><code>JMP<br/>
+SyntaxError</code></td>
+<td><code>JMP<br/>
+DivideByZero</code></td>
+</tr>
+<tr>
+<td><code>01CD</code></td>
+<td><code>1E</code></td>
+<td rowspan="2" style="border: solid black 1px;" valign="middle"><code>MVI E,0C</code></td>
+</tr>
+<tr>
+<td><code>01CE</code></td>
+<td><code>0C</code></td>
+</tr>
+<tr>
+<td><code>01CF</code></td>
+<td><code>01</code></td>
+<td rowspan="3" style="border: solid black 1px;" valign="middle"><code>LXI B,021E</code></td>
+</tr>
+<tr>
+<td><code>01D0</code></td>
+<td><code>1E</code></td>
+<td rowspan="2" style="border: solid black 1px;" valign="middle"><code>MVI E,02</code></td>
+</tr>
+<tr>
+<td><code>01D1</code></td>
+<td><code>02</code></td>
+</tr>
+<tr>
+<td><code>01D2</code></td>
+<td><code>01</code></td>
+<td rowspan="3" style="border: solid black 1px;" valign="middle"><code>LXI B,141E</code></td>
+<td rowspan="3" style="border: solid black 1px;" valign="middle"><code>LXI B,141E</code></td>
+</tr>
+<tr>
+<td><code>01D3</code></td>
+<td><code>1E</code></td>
+<td rowspan="2" style="border: solid black 1px;" valign="middle"><code>MVI E,14</code></td>
+</tr>
+<tr>
+<td><code>01D4</code></td>
+<td><code>14</code></td>
+</tr>
+</tbody>
+</table>
+<p>If you jump to <code>01CD</code>, then the CPU performs a <code>MVI E,0C</code>, and then it interprets the <code>01</code> as the start of an <code>LXI B</code> instruction, and the next two bytes are treated as the 16-bit immediate operand. On the other hand, if you jump to <code>01D0</code>, then the bytes that used to be the 16-bit immediate operand of the <code>LXI B</code> instruction are now treated as an <code>MVI E,02</code> instruction.</p>
+<p>You see the same thing happen at <code>01D3</code>, which hides a two-byte instruction inside the 16-bit immediate operand of another <code>LXI B</code> instruction. If instruction falls through from above, then the CPU executes an <code>LXI B,141E</code>, but if you jump directly to <code>1D3</code>, then the CPU executes a <code>MVI E,14</code>.</p>
+<p>In both cases, the <code>LXI B</code> is just a garbage instruction. It loads some nonsense value into the <code>BC</code> register pair. The code doesn’t care; that register wasn’t holding anything useful anyway. The purpose of the instruction is to soak up the next two bytes and prevent them from being treated as another instruction.</p>
+<p>Harris expressed some surprise at finding this, but really, it is a pretty common trick when hand-writing assembly for processors with variable-length instructions: If you want to hide a 1-byte instruction, look for another instruction with a 1-byte immediate, and hide the instruction in the immediate. If you want to hide a 2-byte instruction, hide it inside an instruction with a 2-byte immediate.</p>
+<p>The “cloaking” instruction should do something harmless. Instructions like “compare with immediate” work great, since they typically affect only flags, and most of the time, there’s nothing interesting in the flags anyway. However, the 8080 does not have a “compare with 16-bit immediate” instruction, so we have to make do with “load 16-bit immediate” into a register we don’t care about.</p>
+<p>On the 6502, the typical instruction for soaking up one or two bytes is the <i>bit test</i> <code>BIT</code> instruction. The argument is the address of the memory to test (either a 1-byte zero page address or a 2-byte absolute address), and the rest of the test goes into the flags register. Executing a garbage <code>BIT</code> instruction therefore reads a byte from some garbage memory location and then sets flags according to the value read. If the flags are subsequently ignored, then this is basically a three-byte <code>NOP</code>.</p>
+<p>Microsoft 6502 BASIC had <a href="https://www.pagetable.com/?p=774"> a special macro <code>SKIP2</code></a> for generating the first byte of the <code>BIT</code> instruction.</p>
+<p>This hacky usage of the <code>BIT</code> instruction is arguably <a href="https://retrocomputing.stackexchange.com/a/11132"> more popular than its designed purpose as a bit-testing instruction</a>!² (Related: <a href="/history/the-hunt-for-a-faster-syscall-trap"> The hunt for a faster syscall trap</a>.)</p>
+<p>One thing to watch out for is that the CPU does perform a load from the memory address that is the argument to the <code>BIT</code> instruction, so make sure that the two bytes, when reinterpreted as an address, don’t produce an address in an I/O-mapped region. Otherwise, you’ll be issuing inadvertent hardware commands. (The 6502 has no memory manager, so you don’t have to worry about access violations.)</p>
+<p>The trick of “soaking up” bytes to generate multiple entry points to a function was employed in 16-bit Windows. For example, you had this sequence:</p>
+<pre>DelAtom:
+    mov     cl, 2
+    db      0BBh        ; mov bx, imm16
+AddAtom:
+    mov     cl, 1
+    db      0BBh        ; mov bx, imm16
+FindAtom:
+    mov     cl, 0
+    db      0BBh        ; mov bx, imm16
+</pre>
+<p>The three functions all have the same parameters, and they share a lot of code, so the entry points merely set up a function code in the <code>cl</code> register and all fall through to a common implementation.</p>
+<p>So, yeah, jumping into the middle of an instruction. It’s a cool trick, but it’s not novel. It was rather commonly employed in the early days of personal computing.</p>
+<p>¹ For some reason, that quotation has made its way into online dictionaries as <a href="https://www.lexico.com/definition/jump_instruction"> a citation for <i>jump instruction</i></a>.</p>
+<p>² If you’ve done significant work on the 6502, the machine code for this instruction (<code>2C</code>) is probably burned into your brain.</p>
+
+
+</body>

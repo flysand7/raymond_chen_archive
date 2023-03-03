@@ -1,0 +1,65 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Promise constructors</h1>  <!-- .entry-meta -->
+
+<p>So far, all of our coroutine promises have had only a default constructor. But the standard actually gives the promise access to the coroutine parameters, if it wants them.¹</p>
+<p>If somebody declares a coroutine that uses your promise, say,</p>
+<pre>simple_task&lt;void&gt; Awesome(int x, int y)
+{
+    ...
+}
+</pre>
+<p>the compiler first looks for a promise constructor that accepts those parameters, prefixed if applicable by the hidden <code>*this</code> parameter. In this example, it tries to construct a <code>simple_promise(x, y)</code>. Standard overload rules apply, so the actual constructor could take two integer lvalues, or one integer lvalue and one integer by value, or maybe it takes two <code>long</code>s, since integers are implicitly convertible to <code>long</code>. This gives your coroutine an opportunity to snoop on the parameters. For example, you might have a promise that detects that one of the parameters is a <code>Logger</code>, in which case it uses that logging object for its own internal logging.</p>
+<p>If no suitable constructor can be found, then the compiler falls back to using the default constructor for the promise.</p>
+<p>You might say, “Well, that’s interesting, but it has no effect on me because my only constructor is the default constructor, so that’s the only one the compiler will ever use.”</p>
+<p>You’d be wrong.</p>
+<p>Because the compiler will autogenerate a copy constructor.</p>
+<p>Somebody could create a coroutine like this:</p>
+<pre>simple_task&lt;void&gt; Weirdo(simple_promise&lt;void&gt; wha)
+{
+    ...
+}
+</pre>
+<p>If they do that, then the compiler will look for a promise constructor that takes a <code>simple_promise&lt;void&gt;</code> parameter, and it will find one: The copy constructor. The promise for the coroutine will therefore be <i>copy-constructed</i> from the <code>wha</code> parameter, which is probably not what you were expecting.</p>
+<p>On the other hand, the fact that they are passing your private promise type as a parameter suggests that they are intentionally messing with the internals and therefore deserve what they get.</p>
+<p>However, an unwitting developer might stumble into this case if they create a generic type similar to <code>std::any</code>:</p>
+<pre>struct Object
+{
+    template&lt;typename T&gt;
+    operator T() { return std::any_cast&lt;T&gt;(o); }
+
+    template&lt;typename T&gt;
+    Object&amp; operator=(T&amp;&amp; other)
+    { o = std::forward&lt;T&gt;(other); return *this; }
+
+private:
+    std::any o;
+};
+</pre>
+<p>This is a generic type that can hold any value, and you can get the same value out by converting to the thing you hope is inside.</p>
+<p>Which means that it can try to convert to <code>simple_promise</code>.</p>
+<pre>simple_task&lt;void&gt; Print(Object o)
+{
+    ...
+}
+</pre>
+<p>The compiler will see that an <code>Object</code> can be passed to the <code>simple_<wbr/>promise</code> copy constructor, which will try to convert the <code>Object</code> to a <code>simple_<wbr/>promise</code> in order to copy it. The conversion will (probably) fail with a <code>std::<wbr/>bad_<wbr/>any_<wbr/>cast</code>, and your program crashes for a totally mysterious reason. You’ll be looking at the crash dumps wondering, “Why is this code trying to convert my <code>Object</code> to a <code>simple_<wbr/>promise</code>?”</p>
+<p>Let’s fix that by explicitly denying copying.</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_promise_base
+    {
+        ...
+
+        <span style="color: blue;">simple_promise_base() = default;
+        simple_promise_base(simple_promise_base const&amp;) = delete;
+        void operator=(simple_promise_base const&amp;) = delete;</span>
+
+        ...
+    };
+</pre>
+<p>I’m going to declare this the nominal end of what turned into a 47-part series on coroutines,² because I’m pretty sure you’re all sick of coroutines by now. There are still some other topics related to coroutines that aren’t connected to this series, so you’re not out of the woods yet. And there’s generators, which is deserving of its own series, but I’ll wait until the outrage dies down.</p>
+<p>¹ Be aware that this is a dark corner of the language specification that not all implementations agree on. The specification says that the parameters are passed as lvalues, but gcc passes them as their original reference class, and MSVC doesn’t pass them at all until you <a href="https://devblogs.microsoft.com/cppblog/c-coroutines-in-visual-studio-2019-version-16-8/" title="C++ Coroutines in Visual Studio 2019 Version 16.8"> upgrade to version 16.8 or higher</a>, set <code>/std:c++latest</code>, and omit the legacy <code>/await</code> flag.</p>
+<p>I get the impression that the gcc behavior is a bug, rather than a feature, because setting <code>-pedantic</code> does not cause gcc to switch to the standard-conforming behavior.</p>
+<p>² Or 48 parts if you count <a href="https://devblogs.microsoft.com/oldnewthing/20210226-00/?p=104911" title="What does error E_ILLEGAL_DELEGATE_ASSIGNMENT mean?"> the prologue article about <code>E_<wbr/>ILLEGAL_<wbr/>DELEGATE_<wbr/>ASSIGNMENT</code></a>.</p>
+
+
+</body>

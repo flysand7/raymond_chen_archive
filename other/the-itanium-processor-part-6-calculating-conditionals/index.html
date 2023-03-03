@@ -1,0 +1,249 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Itanium processor, part 6: Calculating conditionals</h1>  <!-- .entry-meta -->
+
+<p>The Itanium does not have a flags register. A flags register creates implicit dependencies between instructions, which runs contrary to the highly parallel model the Itanium was designed for. Instead of implicitly setting a register after computations, the Itanium has explicit comparison operations that put the comparison result into dedicated predicate registers. </p>
+<p>Here’s a simple fragment that performs some operation if two registers are equal. </p>
+<pre>
+        cmp.eq p6, p7 = r32, r33 ;;
+(p6)    something
+</pre>
+<p>The <var>cmp</var> instruction compares two values and sets the two specified predicate registers as follows: </p>
+<ul>
+<li><var>p6</var> is <var>true</var> if the     values satisfy the condition, or <var>false</var>     if they do not satisfy the condition. 
+<li><var>p7</var> is set to the opposite of <var>p6</var> </li></li></ul>
+<p>The comparison operation generates two results, one which holds the nominal result and one which holds the opposite. This lets you conditionalize both sides of a branch. </p>
+<pre>
+        cmp.eq p6, p7 = r32, r33 ;;
+(p6)    something // executes if they are equal
+(p7)    something // executes if they are not equal
+</pre>
+<p>There is also a <var>cmp4</var> instruction which compares two 32-bit values, in which case only the least-significant 32 bits participate in the comparison. </p>
+<p>The comparands can be either two registers or an immediate and a register. The immediate is an 8-bit sign-extended value, though the final value may be interpreted as unsigned depending on the comparison type. </p>
+<p>There are three comparison types: </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>type</th>
+<th>meaning</th>
+</tr>
+<tr>
+<td>eq</td>
+<td>equality</td>
+</tr>
+<tr>
+<td>lt</td>
+<td>signed less than</td>
+</tr>
+<tr>
+<td>ltu</td>
+<td>unsigned less than</td>
+</tr>
+</table>
+<p>The first destination predicate register receives result of the test, and the second gets the opposite of the result. </p>
+<p>These are the only comparisons you will see in disassembly, but the compiler can manufacture other types of comparisons. For example, if the compiler wants to perform a <var>ge</var> comparison, it can just do a <var>lt</var> comparison and flip the order of the two predicates. </p>
+<p>More generally, the compiler can synthesize the other integer comparisons as follows: </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>imaginary opcode</th>
+<th>meaning</th>
+<th colspan="2">synthesized as</th>
+</tr>
+<tr>
+<td><var>cmp.ne p, q = a, b</var></td>
+<td>not equal</td>
+<td colspan="2"><var>cmp.eq q, p = a, b</var></td>
+</tr>
+<tr>
+<td><var>cmp.ge p, q = a, b</var></td>
+<td>signed greater than or equal</td>
+<td colspan="2"><var>cmp.lt q, p = a, b</var></td>
+</tr>
+<tr>
+<td rowspan="2"><var>cmp.gt p, q = a, b</var></td>
+<td rowspan="2">signed greater than</td>
+<td><var>cmp.lt p, q = b, a</var></td>
+<td>if <var>a</var> is a register</td>
+</tr>
+<tr>
+<td><var>cmp.lt q, p = a − 1, b</var></td>
+<td>if <var>a</var> is an immediate</td>
+</tr>
+<tr>
+<td rowspan="2"><var>cmp.le p, q = a, b</var></td>
+<td rowspan="2">signed less than or equal</td>
+<td><var>cmp.lt q, p = b, a</var></td>
+<td>if <var>a</var> is a register</td>
+</tr>
+<tr>
+<td><var>cmp.lt p, q = a − 1, b</var></td>
+<td>if <var>a</var> is an immediate</td>
+</tr>
+<tr>
+<td><var>cmp.geu p, q = a, b</var></td>
+<td>unsigned greater than or equal</td>
+<td colspan="2"><var>cmp.ltu q, p = a, b</var></td>
+</tr>
+<tr>
+<td rowspan="2"><var>cmp.gtu p, q = a, b</var></td>
+<td rowspan="2">unsigned greater than</td>
+<td><var>cmp.ltu p, q = b, a</var></td>
+<td>if <var>a</var> is a register</td>
+</tr>
+<tr>
+<td><var>cmp.ltu q, p = a − 1, b</var></td>
+<td>if <var>a</var> is an immediate</td>
+</tr>
+<tr>
+<td rowspan="2"><var>cmp.leu p, q = a, b</var></td>
+<td rowspan="2">unsigned less than or equal</td>
+<td><var>cmp.ltu q, p = b, a</var></td>
+<td>if <var>a</var> is a register</td>
+</tr>
+<tr>
+<td><var>cmp.ltu p, q = a − 1, b</var></td>
+<td>if <var>a</var> is an immediate</td>
+</tr>
+</table>
+<p>These syntheses rely on the identities </p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse">
+<tr>
+<td><var>x</var> &gt; <var>y</var></td>
+<td> ⇔ </td>
+<td><var>y</var> &lt; <var>x</var></td>
+</tr>
+<tr>
+<td><var>x</var> ≤ <var>y</var></td>
+<td> ⇔ </td>
+<td>¬(<var>x</var> &gt; <var>y</var>)</td>
+</tr>
+<tr>
+<td><var>x</var> ≤ <var>y</var></td>
+<td> ⇔ </td>
+<td><var>x</var> − 1 &lt; <var>y</var></td>
+<td>for integers <var>x</var> and <var>y</var>, assuming no overflow</td>
+</tr>
+<tr>
+<td><var>x</var> ≥ <var>y</var></td>
+<td> ⇔ </td>
+<td><var>y</var> ≤ <var>x</var></td>
+</tr>
+</table>
+<p>The next level of complexity is the parallel comparisons. These perform a comparison and combine the result with the values already in the destination predicates. </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>opcode</th>
+<th>meaning</th>
+<th>really</th>
+</tr>
+<tr>
+<td><var>cmp.xx.or p, q = a, b</var></td>
+<td><var>p</var> = <var>p</var> || (<var>a</var> xx <var>b</var>)<br/> <var>q</var> = <var>q</var> || (<var>a</var> xx <var>b</var>)</td>
+<td>if (<var>a</var> xx <var>b</var>) then         <var>p</var> = <var>q</var> = <var>true</var></td>
+</tr>
+<tr>
+<td><var>cmp.xx.orcm p, q = a, b</var></td>
+<td><var>p</var> = <var>p</var> || ¬(<var>a</var> xx <var>b</var>)<br/> <var>q</var> = <var>q</var> || ¬(<var>a</var> xx <var>b</var>)</td>
+<td>if ¬(<var>a</var> xx <var>b</var>) then         <var>p</var> = <var>q</var> = <var>true</var></td>
+</tr>
+<tr>
+<td><var>cmp.xx.and p, q = a, b</var></td>
+<td><var>p</var> = <var>p</var> &amp;&amp; (<var>a</var> xx <var>b</var>)<br/> <var>q</var> = <var>q</var> &amp;&amp; (<var>a</var> xx <var>b</var>)</td>
+<td>if ¬(<var>a</var> xx <var>b</var>) then         <var>p</var> = <var>q</var> = <var>false</var></td>
+</tr>
+<tr>
+<td><var>cmp.xx.andcm p, q = a, b</var></td>
+<td><var>p</var> = <var>p</var> &amp;&amp; ¬(<var>a</var> xx <var>b</var>)<br/> <var>q</var> = <var>q</var> &amp;&amp; ¬(<var>a</var> xx <var>b</var>)</td>
+<td>if (<var>a</var> xx <var>b</var>) then         <var>p</var> = <var>q</var> = <var>false</var></td>
+</tr>
+<tr>
+<td><var>cmp.xx.or.andcm p, q = a, b</var></td>
+<td><var>p</var> = <var>p</var> || (<var>a</var> xx <var>b</var>)<br/> <var>q</var> = <var>q</var> &amp;&amp; ¬(<var>a</var> xx <var>b</var>)</td>
+<td>if (<var>a</var> xx <var>b</var>) then         <var>p</var> = <var>true</var>,         <var>q</var> = <var>false</var></td>
+</tr>
+<tr>
+<td><var>cmp.xx.and.orcm p, q = a, b</var></td>
+<td><var>p</var> = <var>p</var> &amp;&amp; (<var>a</var> xx <var>b</var>)<br/> <var>q</var> = <var>q</var> || ¬(<var>a</var> xx <var>b</var>)</td>
+<td>if ¬(<var>a</var> xx <var>b</var>) then         <var>p</var> = <var>false</var>,         <var>q</var> = <var>true</var></td>
+</tr>
+</table>
+<p>The <i>meaning</i> column describes how it is convenient to think of the operations, but the <i>really</i> column describes how they actually work. </p>
+<p>The <code>orcm</code> and <code>andcm</code> versions take the complement of the comparison, which is handy because some of the synthesized comparisons involve taking the opposite of the specified result. </p>
+<p>These parallel comparisons get their name because they are designed to have multiple copies executed in parallel. Consequently, they are an exception to the general rule that you can write to a register only once per instruction group. If all writes to a predicate register are AND-like (i.e., <code>and</code> or <code>andcm</code>) or all writes are OR-like (i.e., <code>or</code> or <code>orcm</code>), then the writes are allowed to coexist within a single instruction group. (This is where the <i>actually</i> column comes in handy. You can see that all AND-like operations either do nothing or set the predicate to <var>false</var>, and that all OR-like operations either do nothing or set the predicate to <var>true</var>. That’s why they can run in parallel: If multiple conditions pass, they all do the same thing, so it doesn’t matter which one goes first.) </p>
+<p>Executing them in parallel lets you perform multiple tests in a single cycle. For example: </p>
+<pre>
+ x =  ... calculate x ...;
+ y =  ... calculate y ...;
+ z =  ... calculate z ...;
+ if (x == 0 || y == 0 || z == 0) {
+   something_is_zero;
+ } else {
+   all_are_nonzero;
+ }
+</pre>
+<p>could be compiled as </p>
+<pre>
+        ... calculate x in r29 ...
+        ... calculate y in r30 ...
+        ... calculate z in r31 ...
+        cmp.eq p6, p7 = +1, r0 ;; // set p6 = false, p7 = true
+
+        cmp.eq.or.andcm p6, p7 = r29, r0 // p6 = p6 || x == 0
+                                         // p7 = p7 &amp;&amp; x != 0
+        cmp.eq.or.andcm p6, p7 = r30, r0 // p6 = p6 || y == 0
+                                         // p7 = p7 &amp;&amp; y != 0
+        cmp.eq.or.andcm p6, p7 = r31, r0 ;; // p6 = p6 || z == 0
+                                         // p7 = p7 &amp;&amp; z != 0
+
+(p6)    something_is_zero
+(p7)    all_are_nonzero
+</pre>
+<p>First, we calculate the values of <var>x</var>, <var>y</var> and <var>z</var>. At the same time, we prime the parallel comparison: we compare the constant +1 against register <var>r0</var>, which is the hard-coded zero register. This comparison always fails, so we set <var>p6</var> to <var>false</var> and <var>p7</var> to <var>true</var>. </p>
+<p>Now we perform the three comparisons in parallel. We check if <var>r29</var>, <var>r30</var>, and <var>r31</var> are zero. If any of them is zero, then <var>p6</var> becomes <var>true</var> and <var>p7</var> becomes <var>false</var>. If all are nonzero, then nothing changes, so <var>p6</var> stays <var>false</var> and <var>p7</var> stays <var>true</var>. </p>
+<p>Finally, we act on the calculated predicates. </p>
+<p>Notice that the parallel comparison lets us calculate and combine all the parts of the test in a single cycle. In a flags-based architecture, we would have to perform a comparison, test the result, then perform another comparison, test the result, then perform the last comparison, and test the result one last time. That’s a sequence of six dependent operations, which is difficult to parallelize. (And most likely consume three branch prediction slots instead of just one.) </p>
+<p>The last wrinkle in the comparison instructions is the so-called unconditional comparison. This special instruction violates the rule that a predicated instruction has no effect if the predicate is false. </p>
+<pre>
+(qp)    cmp.xx.unc p, q = r, s
+</pre>
+<p>Even though there is a qualifying predicate, this comparison is executed unconditionally (as indicated by the <code>unc</code> suffix). The behavior of an unconditional comparison is </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse">
+<tr>
+<td><var>p</var> = <var>qp</var> &amp;&amp; (<var>r</var> xx <var>s</var>)</td>
+</tr>
+<tr>
+<td><var>p</var> = <var>qp</var> &amp;&amp; ¬(<var>r</var> xx <var>s</var>)</td>
+</tr>
+</table>
+<p>In other words, if the qualifying predicate is <var>true</var>, then the instruction behaves as normal. But if the qualifying predicate is <var>false</var>, then the result of the comparison is considered <var>false</var> for all branches, regardless of the actual test. </p>
+<p>This formulation is handy when you are nesting predicates. Consider: </p>
+<pre>
+ x =  ... calculate x ...;
+ y =  ... calculate y ...;
+ if (x == 0) {
+  x_is_zero;
+ } else {
+  x_is_nonzero;
+  if (y == 0) {
+   x_is_nonzero_and_y_is_zero;
+  } else {
+   both_are_nonzero;
+  }
+ }
+</pre>
+<p>This can be compiled like this: </p>
+<pre>
+        ... calculate x in r30 ...
+        ... calculate y in r31 ...
+
+        cmp.eq p6, p7 = r30, r0 ;;
+(p6)    x_is_zero
+(p7)    x_is_nonzero
+(p7)    cmp.eq.unc p8, p9 = r31, r0 ;;
+(p8)    x_is_nonzero_and_y_is_zero
+(p9)    both_are_nonzero
+</pre>
+<p>After calculating <var>x</var> and <var>y</var>, we check whether <var>x</var> is zero. If it is, then we execute <var>x_is_zero</var>. If not, then we execute <var>x_is_nonzero</var>. Next, we check whether <var>y</var> is zero, and we do so via an unconditional comparison. That way, if we are in the case that <var>x</var> is zero, then both <var>p8</var> and <var>p9</var> are set to <var>false</var>. Now we can use <var>p8</var> and <var>p9</var> to select between the final two branches. (Or if <var>x</var> is zero, neither gets selected.) </p>
+<p>We’ll see later that the unconditional comparison is also useful in register rotation. </p>
+<p>So that’s a quick tour of the Itanium conditional instructions. Next time, we’ll start looking at speculation. </p>
+
+
+</body>

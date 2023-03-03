@@ -1,0 +1,42 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Not actually crossing the airtight hatchway: Harmless out-of-bounds read that is never disclosed</h1>  <!-- .entry-meta -->
+
+<p>A security vulnerability report arrived that went something like this:</p>
+<blockquote class="q"><p>By passing a specifically malformed payload, an attacker can trigger an out-of-bounds read. By this means, a remote attacker can cause the disclosure of sensitive information. An attacker can combine this with other vulnerabilities to achieve remote code execution.</p></blockquote>
+<p>The finder also included some reverse-compiled output¹ highlighting the point at which the out-of-bounds read occurred.</p>
+<p>Anyway, it appears that the out-of-bounds read was discovered by using a memory debugging tool that does strict validations of every memory access. But consumers in the wild don’t run programs in such an environment.</p>
+<p>When run on an actual consumer machine, the program uses the standard operating system heap manager, and the standard operating system heap manager does things like pad allocations to maintain alignment. Those extra bytes are technically off-limits, but they will always be there.</p>
+<p>In this case, what happens is that the code allocates a block of memory, then reads past the end of it by a tiny amount, well within the heap padding, so it’s reading uninitialized heap memory. No denial of service is possible here because the heap padding saves you.</p>
+<p>The next thing the code does is validate that the buffer is valid. This validation fails because the memory block is too small, and the operation fails. The value read from the uninitialized heap memory is not returned, so it is never disclosed to anybody.</p>
+<p>Here’s a sketch. Assume that the <code>checked_*</code> functions reject the request if the operation fails.</p>
+<pre>struct ITEMSLIST
+{
+  uint32_t itemCount;
+  ITEM items[<a href="/code/why-do-some-structures-end-with-an-array-of-size-1">ANYSIZE_ARRAY</a>];
+};
+
+auto list = (ITEMSLIST*)checked_malloc(byteCount);
+checked_read(list, byteCount);
+
+auto requiredSize =
+    checked_add(offsetof(ITEMSLIST, items) +
+                checked_mult(sizeof(ITEM), header-&gt;itemCount));
+checked_require(byteCount &gt;= requiredSize);
+
+... do stuff with the items ...
+</pre>
+<p>If the <code>byteCount</code> is less than <code>sizeof(uint32_t)</code>, then the code under-allocates the <code>list</code> and tries to read the <code>itemCount</code> from it. Oh no, we are at risk of disclosing heap memory!</p>
+<p>But then the code checks that the header size is large enough to hold the specified number of items, and seeing as the header size is not even large enough to hold the header, it certainly isn’t large enough to hold any items. So the request is rejected.</p>
+<p>Note that the invalid <code>itemCount</code> never leaves the function. The value of <code>itemCount</code> is heap garbage, but whatever value it has will always fail the <code>byteCount &gt;= requiredSize</code> test (assuming it manages to pass the <code>checked_</code><code>mult</code> test), so the call will always be rejected. And the rogue value of <code>itemCount</code> is not exposed, so whatever garbage value happened to be there never escapes. What happens in parameter validation <a href="https://theweek.com/articles/459434/brief-history-what-happens-vegas-stays-vegas"> stays in parameter validation</a>.</p>
+<p>The finder jumped the gun: They found an out-of-bounds read but didn’t study it to see whether it was exploitable. They immediately concluded that there was information disclosure, and then tacked on a remote code execution for good measure.</p>
+<p>What they found is a defect, but it has no security implications. It’s just a bug.</p>
+<p>When informed that the issue as not exploitable and therefore has no security implications, they went ahead and issued a security bulletin anyway.</p>
+<p>Six months later, the same organization found the same issue in a different component. We again told them that it was not exploitable and therefore has no security implications. The second time, they withdrew their plans to issue a bulletin.</p>
+<p>So I’m not sure what changed over there, but at least they stopped issuing bogus bulletins for this category of issue.</p>
+<p><b>Bonus chatter</b>: This category of false alarm is quite common. People use various analysis tools to identify issues and immediately file a report without evaluating whether the issue actually is a vulnerability. They subscribe to the shotgun approach: File tons of potential issues, and let Microsoft figure out which ones are valid. Why do the extra work if you can externalize it!</p>
+<p>¹ The reverse-compiled output has meaningless variable names like <code>v1</code>, <code>v2</code> and <code>v3</code>, and object member accesses are expressed in the form <code>(int*)((BYTE*)v40 + 0x20)</code>.</p>
+<p>A note to people who send reverse-compiled output: Please include the original assembly language, and annotate that. Otherwise, we have to take your reverse-compiled output and try to re-compile it to assembly language in a way that matches the actual binary, and then re-reverse-compile it back to the original source code. These steps can be quite complicated because of compiler optimizations. (Also because people often fail to provide enough build number information to let us identify exactly which binary you are reverse-compiling, forcing us to keep trying all the different patched versions of the binary until we find a match or become exhausted.)</p>
+<p>If you’re using IDA Pro’s Hex-Rays decompiler, you can right-click and say “Copy comments to disassembly.” That will take your comments in the reverse-compiled code and apply them to the corresponding lines of assembly.</p>
+
+
+</body>

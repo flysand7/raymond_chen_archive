@@ -1,0 +1,101 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">ia64 – misdeclaring near and far data</h1>  <!-- .entry-meta -->
+
+<p>As I mentioned yesterday,
+the ia64 is a very demanding architecture.
+Today I’ll discuss another way that lying to the compiler will
+come back and bite you.</p>
+<p>
+The ia64 does not have an absolute addressing mode.
+Instead, you access your global variables through the r1
+register, nicknamed “gp” (global pointer).
+This register always points to your global variables.
+For example, if you had three global variables, one
+of them might be kept at [gp+0], the second at [gp+8]
+and the third at [gp+16].
+</p>
+<p>
+(I believe the Win32 MIPS calling convention also used this technique.)
+</p>
+<p>
+On the ia64,
+there is a limitation in the “addl” instruction: You can only
+add constants up to 22 bits, which comes out to 4MB.
+So you can have only 4MB of global variables.
+</p>
+<p>
+Well, it turns out that some people want more than 4MB of
+global variables.  Fortunately, these people don’t have
+one million DWORD variables.  Rather, they have a few
+really big global arrays.
+</p>
+<p>
+The ia64 compiler solves this problem by splitting global
+variables into two categories, “small” and “large”.
+(The boundary between “small” and “large” can be set by
+a compiler flag. I believe the default is to treat anything
+larger than 8 bytes as “large”.)
+</p>
+<p>
+The code to access a “small” variable goes like this:
+</p>
+<pre>
+        addl    r30 = -205584, gp;; // r30 -&gt; global variable
+        ld4     r30 = [r30]         // load a DWORD from the global variable
+</pre>
+<p>
+(The gp register actually points into the middle of your global
+variables, so that both positive and negative offsets can be used.
+In this case, the variable happened to live at a negative offset
+from gp.)
+</p>
+<p>
+By comparison, “large” global variables are accessed through a
+two-step process.  First, the variable itself is allocated in a
+separate section of the file.  Second, a pointer to the variable
+is placed into the “small” globals variables section of the
+module.  As a result, accessing a “large” global variable requires
+an added level of indirection.
+</p>
+<pre>
+        addl    r30 = -205584, gp;; // r30 -&gt; global variable forwarder
+        ld8     r30 = [r30];;       // r30 -&gt; global variable
+        ld4     r30 = [r30]         // load a DWORD from the global variable
+</pre>
+<p>
+If you leave the size of an object unspecified, like</p>
+<pre>
+extern BYTE b[];
+</pre>
+<p>then the compiler plays it safe and assumes the variable is large.
+If it turns out that the variable is small,
+the forwarder pointer will still be there, and the code will
+do the double-indirection to fetch something that could have
+been accessed with a single indirection.
+The code is slightly less efficient, but at least it still works.
+</p>
+<p>
+On the other hand,
+if you misdeclare the object as being small when it is actually
+large, then you end up in trouble.
+For example, if you write</p>
+<pre>
+    extern BYTE b;
+</pre>
+<p>in one file, and</p>
+<pre>
+    extern BYTE b[256];
+</pre>
+<p>in another, then files that include the first header will think
+the object is small and generate “small” code to access it, but
+files that include the second header will think it is large.
+And if the object turns out to be large after all, the code that
+used the first header file will fail pretty spectacularly.
+</p>
+<p>
+So don’t do that. When you declare a variable, make sure to declare
+it accurately. Otherwise the ia64 will catch you in a lie,
+and you will pay.</p>
+
+
+</body>

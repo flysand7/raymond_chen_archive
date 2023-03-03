@@ -1,0 +1,77 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The SuperH-3, part 10: Control transfer</h1>  <!-- .entry-meta -->
+
+<p>Yes, we have once again reached the point where we have to talk about branch delay slots. I will defer to the background information I provided <a href="https://devblogs.microsoft.com/oldnewthing/"> when the issue arose in the discussion of the MIPS R4000</a>. Basically, the branch delay slot is an instruction that occurs in the instruction stream after a branch. That instruction executes even when the branch is taken. (Of course, if the branch is not taken, the instruction executes normally as well.)</p>
+<p>On the SH-3, the single-instruction branch delay slot is not sufficient to cover for the pipeline bubble created by a branch. Due to the pipeline structure, two instructions have already been fetched by the time the processor determines whether the branch is taken. The first such instruction goes into the branch delay slot, and the second one is converted to a <code>nop</code>. So even if you fill the branch delay slot, you still get a one-cycle stall for the discarded instruction. Therefore, you should prefer to structure branches so that they are normally not taken.</p>
+<p>Okay, here we go.</p>
+<pre>    BT      label   ; branch if T=1, reach is 256 bytes, squash the delay slot
+    BT/S    label   ; branch if T=1, reach is 256 bytes
+
+    BF      label   ; branch if T=0, reach is 256 bytes, squash the delay slot
+    BF/S    label   ; branch if T=0, reach is 256 bytes
+</pre>
+<p>The <i>branch if true</i> and <i>branch if false</i> test the <var>T</var> flag and branch if it is set (true) or clear (false). This particular branch is interesting because you get to choose whether you want the instruction in the delay slot to execute. Note that you already paid for the delay slot, so choosing not to execute it doesn’t make things run any faster. The processor just converts the instruction to a <code>nop</code> and you waste a cycle.¹</p>
+<pre>    BRA     label   ; branch always, reach is 4KB
+    BRAF    Rn      ; branch to PC + Rn + 4
+    JMP     @Rn     ; branch to Rn
+
+    BSR     label   ; branch always, reach is 4KB, PR = return address
+    BSRF    Rn      ; branch to PC + Rn + 4, PR = return address
+    JSR     @Rn     ; branch to Rn, PR = return address
+
+    RTS             ; branch to PR
+</pre>
+<p>These instructions perform unconditional branches, either to a specific address within 4KB (<i>branch always</i>), to an address relative to the current program counter (<i>branch always far</i>), or to an address provided by a register (<i>jump</i>). The <code>xSR</code> instructions branch to a subroutine and record the return address in the special <var>pr</var> register. And of course after you branch to a subroutine, you need a way to get back, hence <code>RTS</code> <i>return from subroutine</i>.</p>
+<p>The extra +4 in the <code>BRAF</code> and <code>BSRF</code> are due to pipelining. By the time the processor determines that the branch needs to be taken, the program counter has already moved ahead two instructions.</p>
+<p>The Microsoft compiler doesn’t use the <code>BSR</code> instruction because the linker is very likely to put the branch target outside the 4KB reach of the <code>BSR</code> instruction.</p>
+<p>The Microsoft compiler uses the <code>BRAF</code> instruction in just one specific scenario (which we’ll look at later), and it doesn’t appear to use <code>BSRF</code> at all. The <code>BRAF</code> and <code>BSRF</code> instructions appear to be useful for writing position-independent code.</p>
+<p><b>Watch out</b>: Even though the <code>JMP</code> and <code>JSR</code> instructions use an <code>@</code>, there is no memory access going on. I don’t know why the mnemonic uses an <code>@</code>.</p>
+<p>Note that the <code>BT</code> and <code>BF</code> instructions have a very limited reach. If you need to branch further, you’ll have to use a trick like branching to a branch, or reversing the sense of the test to jump over a branch instruction with greater reach.</p>
+<pre>    ; BT toofar
+
+    ; option 1: branch to a branch (trampoline)
+    BT      trampoline
+...
+trampoline:
+    BRA      toofar+2
+    delay_slot_instruction ; move first instruction of toofar here
+
+    ; option 2: reverse the sense and jump over a branch
+
+    BF      skip
+    BRA     toofar+2
+    delay_slot_instruction ; move first instruction of toofar here
+skip:
+</pre>
+<p>The SH-3 deals with branch delay slots slightly differently from the MIPS R4000. The SH-3 temporarily disables interrupts between the branch instruction and its delay slot, so you cannot get interrupted in the branch delay slot.</p>
+<p>If an exception occurs on the instruction in the branch delay slot, the exception is raised, and assuming the kernel fixes the problem, execution resumes at the branch instruction. This is safe because the branch instructions are all restartable; the only register modification is to <var>pr</var>, but none of the <code>xSR</code> instructions consume <var>pr</var>, so it’s okay to re-execute them; you just set <var>pr</var> twice to the same value.</p>
+<p>Some instructions are disallowed in a branch delay slot.</p>
+<ul>
+<li>Another branch instruction. Because duh.</li>
+<li>A <code>TRAPA</code> instruction. Sorry, no system calls in a branch delay slot. If you want to make a system call and return, you’ll have to code the system call before the <code>RTS</code> and drop a <code>nop</code> into the branch delay slot.</li>
+<li>An instruction that uses PC-relative addressing. Because the program counter has already moved to the branch target, so your PC-relative address isn’t what you think it is.</li>
+</ul>
+<p>The last case is subtle. It means that the branch delay slot cannot contain a load of a value from a PC-relative address, nor can you use <code>MOVA</code> to load the address of a PC-relative value. If you need to pass a large constant as a parameter to a function, you’ll have to do it ahead of the <code>JSR</code> and find something else to put in the delay slot.</p>
+<p>If you put a disallowed instruction in a branch delay slot, the processor will raise an <i>illegal slot instruction</i> exception.</p>
+<p>When it comes time to return from a subroutine, you often have two choices. You can use the <code>RTS</code> instruction or an equivalent <code>JMP @</code>:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Allowed</th>
+<th>Not allowed</th>
+</tr>
+<tr>
+<td><tt>lds.l @r15+, pr</tt><br/>
+<tt>rts</tt></td>
+<td><tt>mov.l @r15+, r1</tt><br/>
+<tt>jmp @r1</tt></td>
+</tr>
+</tbody>
+</table>
+<p>Both sequences are equivalent: They transfer control to the address popped off the stack. They just use a different register to do it. However, Windows requires that you use the first sequence. This is necessary so that function unwinding can be performed by the kernel in the case of an exception.</p>
+<p>It’s probably in your best interest to use the first version anyway, because it will work well with the return address predictor, should the SuperH ever gain one.</p>
+<p><a href="https://devblogs.microsoft.com/oldnewthing/20190819-00/?p=102790"> Next time we’ll look at atomic operations</a>, more specifically the lack of them.</p>
+<p>¹ Technically, you are wasting <i>another</i> cycle, because a taken branch already suffers a loss of one cycle for the discarded second prefetched instruction. You’re increasing the taken-branch cost from one cycle to two.</p>
+
+
+</body>

@@ -1,0 +1,197 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a task completion source for a C++ coroutine: Failing to produce a result</h1>  <!-- .entry-meta -->
+
+<p>So far, we’ve been working on <a href="/code/creating-a-task-completion-source-for-a-c-coroutine-producing-nothing" title="Creating a task completion source for a C++ coroutine: Producing nothing"> building a <code>result_holder</code> that can hold any type of result. But what about errors? </a></p>
+<p>Because maybe you have code that’s waiting for a result, and the code that’s supposed to produce the result realizes that it messed up and wants to say, “Sorry, no result today.”</p>
+<p>We can do that by storing a <code>std::<wbr/>exception_<wbr/>ptr</code> as a possible result. This means that our result is no longer merely an optional value, but rather it’s a variant, since it could be empty, or it could have a value, or it could have an exception. It also means that <code>ready</code> needs to become a discriminant.</p>
+<pre>template&lt;typename T&gt;
+struct result_holder_state :
+    async_helpers::awaitable_state&lt;result_holder_state&lt;T&gt;&gt;
+{
+    <span style="color: blue;">enum class result_kind {
+        unset,
+        value,
+        exception,
+    };
+
+    std::atomic&lt;result_kind&gt; kind{ result_kind::unset };</span>
+
+    struct wrapper
+    {
+        T value;
+    };
+
+    <span style="color: blue;">union variant
+    {
+        variant() {}
+        ~variant() {}
+
+        wrapper wrap;
+        std::exception_ptr ex;
+    } result;</span>
+
+    result_holder_state() {}
+    result_holder_state(result_holder_state const&amp;) = delete;
+    void operator=(result_holder_state const&amp;) = delete;
+
+    ~result_holder_state()
+    {
+        <span style="color: blue;">switch (kind.load(std::memory_order_relaxed)) {
+        case result_kind::value:
+            result.wrap.~wrapper();
+            break;
+        case result_kind::exception:
+            result.ex.~exception_ptr();
+            break;
+        }</span>
+    }
+
+    using typename result_holder_state::extra_await_data;
+    using typename result_holder_state::node_list;
+
+    bool fast_claim(extra_await_data const&amp;) noexcept
+    {
+        return kind.load(std::memory_order_acquire)
+            <span style="color: blue;">!= result_kind::unset</span>;
+    }
+
+    bool claim(extra_await_data const&amp;) noexcept
+    {
+        return kind.load(std::memory_order_relaxed)
+            <span style="color: blue;">!= result_kind::unset</span>;
+    }
+
+    void set_result(node_list&amp; list, T v)
+    {
+        if (<span style="color: blue;">kind.load(std::memory_order_relaxed)
+            == result_kind::unset</span>) {
+            new (std::addressof(result.wrap))
+                wrapper{ std::forward&lt;T&gt;(v) };
+            <span style="color: blue;">kind.store(result_kind::value</span>,
+                std::memory_order_release);
+            this-&gt;resume_all(list);
+        }
+    }
+
+    <span style="color: blue;">void set_exception(
+        node_list&amp; list, std::exception_ptr ex)
+    {
+        if (kind.load(std::memory_order_relaxed)
+            == result_kind::unset) {
+            new (std::addressof(result.ex))
+                std::exception_ptr{ std::move(ex) };
+            kind.store(result_kind::exception,
+                std::memory_order_release);
+            this-&gt;resume_all(list);
+        }
+    }</span>
+
+    T get_result()
+    {
+        <span style="color: blue;">switch (kind.load(std::memory_order_relaxed)) {
+        case result_kind::value:
+            return result.wrap.value;
+        case result_kind::exception:
+            std::rethrow_exception(result.ex);
+        }
+        std::terminate(); // shouldn't get here</span>
+    }
+};
+</pre>
+<p>There isn’t much exciting going on here. It’s just changing the things that need to be changed: Instead of a simple <code>bool</code> tracking what is in the <code>result</code>, we use a discriminant which starts out <code>unset</code>. Cleaning up our variant requires us to call the appropriate destructor for the contents of the <code>result</code>, and setting the result requires us to update the discriminant.</p>
+<p>Setting an exception is the same as setting a value, except that we put the result in to the <code>ex</code> member instead of the <code>wrap</code> wrapper.</p>
+<p>When it comes time to fetch the result, we check what we have. If we have a value, we return it. If we have an exception, we rethrow it. (Otherwise, something went wrong and we terminate.)</p>
+<p>The <code>result_<wbr/>holder</code> itself is basically the same, just with an extra method for storing the exception.</p>
+<pre>template&lt;typename T&gt;
+struct result_holder
+    : async_helpers::awaitable_sync_object&lt;
+        result_holder_state&lt;T&gt;&gt;
+{
+    using typename result_holder::state;
+
+    void set_result(T result) const noexcept
+    {
+        this-&gt;action_impl(&amp;state::set_result,
+            std::move(result));
+    }
+
+    <span style="color: blue;">void set_exception(std::exception_ptr ex) const noexcept
+    {
+        this-&gt;action_impl(&amp;state::set_exception,
+            std::move(ex));
+    }</span>
+};
+</pre>
+<p>The Windows Runtime <code>IAsync­Operation</code> can be awaited only once, but you can use this <code>result_<wbr/>holder</code> to make it possible to await multiple times.</p>
+<pre>template&lt;typename T&gt;
+result_holder&lt;T&gt; MakeMultiAwaitable(IAsyncOperation&lt;T&gt; async)
+{
+    result_holder&lt;T&gt; holder;
+    async.Completed([holder, async](auto, auto status) {
+        try {
+            switch (status) {
+            case AsyncStatus::Completed:
+                holder.set_result(async.GetResults());
+                break;
+            case AsyncStatus::Canceled:
+                throw hresult_canceled();
+            case AsyncStatus::Error:
+                throw_hresult(async.ErrorCode());
+            }
+        } catch (...) {
+            holder.set_exception(std::current_exception());
+        }
+    });
+    return holder;
+}
+</pre>
+<p>You would use it something like this:</p>
+<pre>class MyClass
+{
+    result_holder&lt;Widget&gt; widget_result;
+
+    MyClass()
+    {
+        // Kick off initialization but don't wait for it.
+        widget_result = MakeMultiAwaitable(InitializeAsync());
+    }
+
+    IAsyncOperation&lt;Widget&gt; InitializeAsync();
+
+    IAsyncAction DoSomethingAsync()
+    {
+        // Wait for the widget that InitializeAsync produced.
+        // rethrow any exception that occurred during initialization.
+        auto widget = co_await widget_result;
+        ... do something interesting ...
+    }
+};
+</pre>
+<p>More generally, you would do something like this:</p>
+<pre>void CalculateResult(result_holder&lt;Widget&gt;&amp; holder)
+{
+    try
+    {
+        /* do a bunch of calculations */
+        widget = /* the answer */;
+        holder.set_result(widget);
+    } catch (...) {
+        holder.set_exception(std::current_exception());
+    }
+}
+</pre>
+<p>You know what this looks like?</p>
+<p>A coroutine!</p>
+<pre>result_holder&lt;Widget&gt; CalculateResult()
+{
+    /* do a bunch of calculations */
+    widget = /* the answer */;
+    co_return widget;
+
+    /* exception is captured into the result_holder */
+}
+</pre>
+<p>So I guess it’s time to learn how to create our own coroutines. The dive into the deep end begins next time.</p>
+
+
+</body>

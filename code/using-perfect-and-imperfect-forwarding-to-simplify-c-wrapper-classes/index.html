@@ -1,0 +1,157 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using perfect (and imperfect) forwarding to simplify C++ wrapper classes</h1>  <!-- .entry-meta -->
+
+<p>There may be cases where you have a C++ class that wants to wrap another C++ class that is contained as a member. In C++/WinRT, this can happen if your C++ class wants to act like an <code>IVector</code>, but <a href="/code/windows-runtime-objects-are-represented-by-their-default-interface-so-choose-your-default-interface-wisely" title="Windows Runtime objects are represented by their default interface, so choose your default interface wisely"> with some bonus methods or extra functionality</a>.</p>
+<pre>// MIDL
+
+runtimeclass ItemCollection : [default] <a href="/code/the-windows-runtime-idl-compiler-lets-you-abbreviate-some-interface-names">IVector</a>&lt;Item&gt;
+{
+    String ToJson();
+}
+</pre>
+<p>The implementation of this will probably consist of an internal <code>IVector</code> that forwards all of the <code>Item­Collection</code>‘s <code>IVector</code> methods, plus one additional method for producing JSON.</p>
+<pre>// C++/WinRT
+
+namespace winrt::Contoso::implementation
+{
+    struct ItemCollection : ItemCollectionT&lt;ItemCollection&gt;
+    {
+        Windows::Foundation::Collections::IIterator&lt;Contoso::Item&gt; First()
+        {
+            return m_items.First();
+        }
+
+        Contoso::Item GetAt(uint32_t index)
+        {
+            return m_items.GetAt(index);
+        }
+
+        uint32_t Size()
+        {
+            return m_items.Size();
+        }
+
+        bool IndexOf(Contoso::Item const&amp; value, uint32_t&amp; index)
+        {
+            return m_items.IndexOf(value, index);
+        }
+
+        uint32_t GetMany(uint32_t startIndex, array_view&lt;Contoso::Item&gt; items)
+        {
+            return m_items.GetMany(startIndex, items);
+        }
+
+        // And our bonus method
+        hstring ToJson();
+
+    private:
+        Windows::Foundation::Collections::IVector&lt;Contoso::Item&gt; m_items;
+    };
+}
+</pre>
+<p>It’s annoying that there’s so much boilerplate to do the method forwarding, and that we have to keep looking up the parameters and return types so that each forwarder has the correct signature. Fortunately, we can use perfect forwarding to write most of them for us:</p>
+<pre>namespace winrt::Contoso::implementation
+{
+    struct ItemCollection : ItemCollectionT&lt;ItemCollection&gt;
+    {
+        template&lt;typename...Args&gt; decltype(auto) First(Args&amp;&amp;... args)
+        {
+            return m_items.First(std::forward&lt;Args&gt;(args)...);
+        }
+
+        template&lt;typename...Args&gt; decltype(auto) GetAt(Args&amp;&amp;... args)
+        {
+            return m_items.GetAt(std::forward&lt;Args&gt;(args)...);
+        }
+
+        template&lt;typename...Args&gt; decltype(auto) Size(Args&amp;&amp;... args)
+        {
+            return m_items.Size(std::forward&lt;Args&gt;(args)...);
+        }
+
+        template&lt;typename...Args&gt; decltype(auto) IndexOf(Args&amp;&amp;... args)
+        {
+            return m_items.IndexOf(std::forward&lt;Args&gt;(args)...);
+        }
+
+        template&lt;typename...Args&gt; decltype(auto) GetMany(Args&amp;&amp;... args)
+        {
+            return m_items.GetMany(std::forward&lt;Args&gt;(args)...);
+        }
+
+        // And our bonus method
+        hstring ToJson();
+
+    private:
+        Windows::Foundation::Collections::IVector&lt;Contoso::Item&gt; m_items;
+    };
+}
+</pre>
+<p>Using perfect forwarding means that we don’t have to remember the types and number of parameters for each of the methods, or what the methods return. Furthermore, if there are multiple overloads of a method, a single perfect forwarder covers them all!</p>
+<pre>template&lt;typename...Args&gt; decltype(auto) Name(Args&amp;&amp; args)
+{
+    return m_widget.Name(std::forward&lt;Args&gt;(args)...);
+}
+</pre>
+<p>This forwarder forwards both the property setter and getter to the <code>m_widget</code>.</p>
+<p>We can take some shortcuts here, because we know that the parameters to C++/WinRT Windows Runtime methods are safe to pass through as lvalues, so we can get rid of the <code>std::forward</code>. (Indeed, our original wrapper methods didn’t try to preserve rvalue-ness.)</p>
+<p>We also know that the return value from C++/WinRT Windows Runtime methods are not C++ references, so we can simplify the <code>decltype(auto)</code> to <code>auto</code>. This gives us</p>
+<pre>namespace winrt::Contoso::implementation
+{
+    struct ItemCollection : ItemCollectionT&lt;ItemCollection&gt;
+    {
+        template&lt;typename...Args&gt; auto First(Args&amp;&amp;... args)
+        {
+            return m_items.First(args...);
+        }
+
+        template&lt;typename...Args&gt; auto GetAt(Args&amp;&amp;... args)
+        {
+            return m_items.GetAt(args...);
+        }
+
+        template&lt;typename...Args&gt; auto Size(Args&amp;&amp;... args)
+        {
+            return m_items.Size(args...);
+        }
+
+        template&lt;typename...Args&gt; auto IndexOf(Args&amp;&amp;... args)
+        {
+            return m_items.IndexOf(args...);
+        }
+
+        template&lt;typename...Args&gt; auto GetMany(Args&amp;&amp;... args)
+        {
+            return m_items.GetMany(args...);
+        }
+
+        // And our bonus method
+        hstring ToJson();
+
+    private:
+        Windows::Foundation::Collections::IVector&lt;Contoso::Item&gt; m_items;
+    };
+}
+</pre>
+<p>Finally, we can take advantage of C++20 <a href="https://devblogs.microsoft.com/cppblog/abbreviated-function-templates-and-constrained-auto/"> abbreviated function templates</a>, which now makes the forwarder small enough to fit on one line:</p>
+<pre>namespace winrt::Contoso::implementation
+{
+    struct ItemCollection : ItemCollectionT&lt;ItemCollection&gt;
+    {
+        auto First(auto&amp;&amp;... args) { return m_items.First(args...); }
+        auto GetAt(auto&amp;&amp;... args) { return m_items.GetAt(args...); }
+        auto Size(auto&amp;&amp;... args) { return m_items.Size(args...); }
+        auto IndexOf(auto&amp;&amp;... args) { return m_items.IndexOf(args...); }
+        auto GetMany(auto&amp;&amp;... args) { return m_items.GetMany(args...); }
+
+        // And our bonus method
+        hstring ToJson();
+
+    private:
+        Windows::Foundation::Collections::IVector&lt;Contoso::Item&gt; m_items;
+    };
+}
+</pre>
+
+
+</body>

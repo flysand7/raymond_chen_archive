@@ -1,0 +1,27 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why are hidden files with a leading tilde treated as super-hidden?</h1>  <!-- .entry-meta -->
+
+<p>Open a command prompt and perform the following operations: </p>
+<pre>
+C:&gt; cd /d %USERPROFILE%\Desktop
+C:\Users\Bob\Desktop&gt; echo 12345 &gt; ~test.txt
+C:\Users\Bob\Desktop&gt; attrib +h ~test.txt
+</pre>
+<p>This creates a hidden file called <code>~test.txt</code> on the desktop. Configure Explorer to show hidden files. Observe that the <code>~test.txt</code> file does not appear. </p>
+<p>But wait, there’s more, if you’re running Windows 7 (but not Windows 8 or higher): Configure Explorer to show both hidden files and protected system files. The <code>~test.txt</code> file will now appear, and it will be dimmed because it is hidden. Use <kbd>Ctrl</kbd>+<kbd>C</kbd> and <kbd>Ctrl</kbd>+<kbd>V</kbd> to create a copy of the file. Observe that the copy has both the hidden and system attributes, even though the original did not have the system attribute. </p>
+<p>A customer discovered this behavior and wanted to know <a href="https://blogs.msdn.microsoft.com/oldnewthing/20160329-00/?p=93214">whether it was a bug or a feature</a> (or a buggy feature). </p>
+<p>There are multiple things going on here, so let’s take them separately. </p>
+<p>First, why doesn’t <code>~test.txt</code> appear on the desktop even though Explorer is configured to show hidden files? </p>
+<p>This behavior dates back to Windows Vista. If there is a hidden file whose name begins with a tilde, then Explorer treats it as if the system and hidden attributes are both set, causing the file to be treated as <a href="https://blogs.msdn.microsoft.com/oldnewthing/20140317-00/?p=1493">super-hidden</a>. That’s why you have to disable “Hide protected operating system files” in order to see them. </p>
+<p>Why does this rule exist? </p>
+<p>In practice, hidden files that begin with a tilde are temporary files, usually to represent auto-saved contents, or as part of a write-rename-delete save operation. These files are not intended to be user-manipulated, so Explorer treats them as super-hidden so that the user won’t be tempted to rename or delete them and mess up the operation of the program that created them. </p>
+<p>Second, why does copying these artificially-super-hidden files cause the copy to become super-hidden for real? </p>
+<p>This is a case where Explorer faked itself out. </p>
+<p>The code that creates item IDs for files reads the file attributes and records them for future reference. It is this code that checks for the leading tilde and if found internally sets the <code>FILE_ATTRIBUTE_SYSTEM</code> flag on the item it created. This is what causes hidden files beginning with a tilde to be treated as super-hidden. </p>
+<p>The problem is that this code ends up doing too good a job of fooling the rest of the shell. There is no flag anywhere that says, “Psst, by the way, the system attribute you see on this item? Yeah, it’s a total fabrication. The real file doesn’t have that attribute.” </p>
+<p>When it comes time to copy the file, the shell looks at the item ID and says, “Well, it says here that the original has the system attribute, so I’ll set the system attribute on the copy.” The shell copy engine doesn’t know that <a href="http://tvtropes.org/pmwiki/pmwiki.php/Main/TheCakeIsALie">the attribute is a lie</a>. </p>
+<p>This problem was fixed in Windows 8 as a side-effect of a re-write of the way the shell copy engine copies files. The shell now uses the <code>Copy­File2</code> function to copy files, relying on the kernel function to do the heavy lifting, and using the callback function to monitor progress and possibly cancel the operation. The kernel function doesn’t know about these mysterious shell item IDs. All it knows how to do is copy files, and it obtains the attributes directly from the source file, which as we recall is marked hidden but not system. </p>
+<p><b>Bonus chatter</b>: The “heavy lifting” alluded to above can be quite substantial. In addition to copying the file contents, it also copies the alternate data streams and file attributes, and can also take advantage of things like <a href="https://technet.microsoft.com/en-us/library/hh831628(v=ws.11).aspx">copy offload</a>. </p>
+
+
+</body>

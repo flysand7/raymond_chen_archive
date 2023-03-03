@@ -1,0 +1,115 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I trigger an EN_UPDATE notification for all of my edit controls when the user’s locale information changes?</h1>  <!-- .entry-meta -->
+
+<p>A customer had a dialog box with a bunch of edit controls. Some of these edit controls contained floating-point values, and the code parses them by calling a locale-sensitive parser, so that users in the United States (say) can use the period as the decimal marker, whereas users in Germany can use the comma. The user might change the locale settings from US-style to Germany-style, and the customer wants to handle this change by updating the text in all of the edit controls to match the new locale settings. </p>
+<p>The customer decided that the way to do this was to handle the <code>WM_</code><code>SETTING­CHANGE</code> message, and the customer concluded that they could get everything to work if only they could cajole every edit control into generating a <code>EN_</code><code>UPDATE</code> notification when this happened. The existing handling for this message would finish the work. (I don’t quite see how, but that’s what they said.) </p>
+<p>The literal answer to the question is that you can just send the <code>EN_</code><code>UPDATE</code> notification yourself. </p>
+<pre>
+void SendFakeEnUpdateNotification(HWND hwndEdit)
+{
+  FORWARD_WM_COMMAND(
+    GetParent(hwndEdit), GetDlgCtrlID(hwndEdit), hwndEdit,
+    EN_UPDATE, SendMessage);
+}
+</pre>
+<p>You can find all the edit controls by enumerating them. </p>
+<pre>
+void GenerateFakeEnUpdateNotificationsForChildWindows(HWND hdlg)
+{
+  EnumChildWindows(hdlg, [](HWND hwnd, LPARAM lParam)
+  {
+    auto hdlg = reinterpret_cast&lt;HWND&gt;(lParam);
+    wchar_t className[10];
+    if (GetClassName(hwnd, className, 10) == 4 &amp;&amp;
+        CompareStringOrdinal(className, -1,
+                             L"edit", -1, TRUE) == CSTR_EQUAL) {
+      FORWARD_WM_COMMAND(
+        hdlg, GetDlgCtrlID(hwndEdit), hwndEdit,
+        EN_UPDATE, SendMessage);
+    }
+    return TRUE;
+  }, reinterpret_cast&lt;LPARAM&gt;(hdlg));
+}
+</pre>
+<p>This enumerates all the child windows, picks out the edit controls, and generates a fake <code>EN_</code><code>UPDATE</code> notification on their behalf. </p>
+<p>But you can do better. </p>
+<p>For example, instead of sending a fake <code>EN_</code><code>UPDATE</code> notification, you may as well just go straight to the code that handles the notification. If your dialog procedure says </p>
+<pre>
+  case WM_COMMAND:
+    switch (GET_WM_COMMAND_ID(wParam, lParam)) {
+    // These three edit controls are the ones that
+    // contain decimal values.
+    case IDC_VALUE1:
+    case IDC_VALUE3:
+    case IDC_VALUE5:
+      switch (GET_WM_COMMAND_CMD(wParam, lParam)) {
+      case EN_UPDATE:
+        OnEditUpdate(GET_WM_COMMAND_HWND(wParam, lParam));
+        break;
+      ...
+      }
+      break;
+      ...
+    }
+    ...
+  }
+</pre>
+<p>then you can just call your <code>On­Edit­Update</code> method directly. </p>
+<pre>
+void TriggerEditUpdateChildWindows(HWND hdlg)
+{
+  EnumChildWindows(hdlg, [](HWND hwnd, LPARAM lParam)
+  {
+    auto hdlg = reinterpret_cast&lt;HWND&gt;(lParam);
+    wchar_t className[10];
+    if (GetClassName(hwnd, className, 10) == 4 &amp;&amp;
+        CompareStringOrdinal(className, -1,
+                             L"edit", -1, TRUE) == CSTR_EQUAL) {
+      <font color="blue">OnEditUpdate(hwnd);</font>
+    }
+    return TRUE;
+  }, reinterpret_cast&lt;LPARAM&gt;(hdlg));
+}
+</pre>
+<p>In fact, you can do even better still. As written, we’re overloading the <code>EN_</code><code>UPDATE</code> notification, which means that the <code>On­Edit­Update</code> message needs to decide what got updated, and detect that this was just a fake update for the purpose of updating the decimal separator. Why not just call that function directly? </p>
+<pre>
+void TriggerEditUpdateChildWindows(HWND hdlg)
+{
+  EnumChildWindows(hdlg, [](HWND hwnd, LPARAM lParam)
+  {
+    auto hdlg = reinterpret_cast&lt;HWND&gt;(lParam);
+    wchar_t className[10];
+    if (GetClassName(hwnd, className, 10) == 4 &amp;&amp;
+        CompareStringOrdinal(className, -1,
+                             L"edit", -1, TRUE) == CSTR_EQUAL) {
+      <font color="blue">UpdateDecimalSeparator(hwnd);</font>
+    }
+    return TRUE;
+  }, reinterpret_cast&lt;LPARAM&gt;(hdlg));
+}
+</pre>
+<p>Wait, you can do even better still. </p>
+<p>You already know which three edit controls you need to update: They’re <code>IDC_</code><code>VALUE1</code>, <code>IDC_</code><code>VALUE3</code>, and <code>IDC_</code><code>VALUE5</code>. So you can just update them. </p>
+<pre>
+void UpdateDecimalSeparators(HWND hdlg)
+{
+  static const int editsWithDecimals[] = {
+    IDC_VALUE1, IDC_VALUE3, IDC_VALUE5 };
+  for (int id : editsWithDecimals) {
+    UpdateDecimalSeparator(GetDlgItem(hdlg, id));
+  }
+}
+</pre>
+<p>In fact, it’s highly likely that you already obtained these child window handles and have stashed them away in member variables. </p>
+<pre>
+void UpdateDecimalSeparators(HWND hdlg)
+{
+  UpdateDecimalSeparator(m_hwndValue1);
+  UpdateDecimalSeparator(m_hwndValue3);
+  UpdateDecimalSeparator(m_hwndValue5);
+}
+</pre>
+<p>There you go. No need to generate a fake notification (that may confuse other parts of your program). If you want to update the decimal separator in three edit controls, then just update the decimal separator in three edit controls. </p>
+
+
+</body>

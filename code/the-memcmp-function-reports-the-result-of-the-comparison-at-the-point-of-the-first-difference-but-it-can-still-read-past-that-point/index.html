@@ -1,0 +1,134 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The memcmp function reports the result of the comparison at the point of the first difference, but it can still read past that point</h1>  <!-- .entry-meta -->
+
+<p>
+This story originally involved a more complex data structure,
+but that would have required too much explaining (with relatively
+little benefit since the data structure was not related to the
+moral of the story),
+so I’m going to retell it with
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/10/08/9904646.aspx">
+double null-terminated strings</a>
+as the data structure instead.
+</p>
+<p>
+Consider the following code to compare two double-null-terminated
+strings for equality:
+</p>
+<pre>
+size_t SizeOfDoubleNullTerminatedString(const char *s)
+{
+  const char *start = s;
+  for (; *s; s += strlen(s) + 1) { }
+  return s - start + 1;
+}
+BOOL AreDoubleNullTerminatedStringsEqual(
+    const char *s, const char *t)
+{
+ size_t slen = SizeOfDoubleNullTerminatedString(s);
+ size_t tlen = SizeOfDoubleNullTerminatedString(t);
+ return slen == tlen &amp;&amp; memcmp(s, t, slen) == 0;
+}
+</pre>
+<p>
+“Aha, this code is inefficient.
+Since the <code>memcmp</code> function stops comparing
+as soon as it finds a difference, I can skip the call
+to
+<code>SizeOfDoubleNullTerminatedString(t)</code>
+and simply write
+</p>
+<pre>
+BOOL AreDoubleNullTerminatedStringsEqual(
+    const char *s, const char *t)
+{
+ return memcmp(s, t, SizeOfDoubleNullTerminatedString(s)) == 0;
+}
+</pre>
+<p>
+because we can never read past the end of <code>t</code>:
+If the strings are equal, then <code>tlen</code>
+will be equal to <code>slen</code> anyway,
+so the buffer size is correct.
+And if the strings are different,
+the difference will be found at or before the end of <code>t</code>,
+since it is not possible for a double-null-terminated string to be
+a prefix of another double-null-terminated string.
+In both cases, we never read past the end of <code>t</code>.”
+</p>
+<p>
+This analysis is based on a flawed assumption,
+namely, that <code>memcmp</code> compares byte-by-byte
+and does not look at bytes beyond the first point of difference.
+The <code>memcmp</code> function makes no such guarantee.
+It is permitted to read all the bytes from both buffers
+before reporting the result of the comparison.
+</p>
+<p>
+In fact, most implementations of <code>memcmp</code> <i>do</i>
+read past the point of first difference.
+Your typical library will try to compare the two buffers
+in register-sized chunks rather than byte-by-byte.
+(This is particularly convenient on x86 thanks to the
+block comparison instruction <code>rep cmpsd</code> which
+compares two memory blocks in <code>DWORD</code>-sized chunks,
+and x64 doubles your fun with <code>rep cmpsq</code>.)
+Once it finds two chunks which differ,
+it then studies the bytes within the chunks to determine what
+the return value should be.
+</p>
+<p>
+(Indeed,
+people with free time on their hands or simply enjoy a challenge
+will
+<a href="http://justin.harmonize.fm/index.php/2009/05/exploring-memcmp/">
+try to outdo the runtime library</a>
+with
+fancy-pants <code>memcmp</code> algorithms which compare
+the buffers in larger-than-normal chunks by doing things
+like comparing via SIMD registers.)
+</p>
+<p>
+To illustrate, consider an implementation of <code>memcmp</code>
+which uses 4-byte chunks.
+Typically, memory comparison functions do some preliminary work
+to get the buffers aligned, but let’s ignore
+that part since it isn’t interesting.
+The inner loop goes like this:</p>
+<pre>
+while (length &gt;= 4)
+{
+ int32 schunk = *(int32*)s;
+ int32 tchunk = *(int32*)t;
+ if (schunk != tchunk) {
+   -- difference found - calculate and return result
+ }
+ length -= 4;
+ s += 4;
+ t += 4;
+}
+</pre>
+<p>Let’s compare the strings <tt>s = "a\0b\0\0"</tt> and <tt>t = "a\0\0"</tt>.
+The size of the double-null-terminated string <code>s</code> is 4,
+so the memory comparison goes like this:
+First we read four bytes from <code>s</code> into <code>schunk</code>,
+resulting in (on a little-endian machine) <code>0x00620061</code>.
+Next, we read four bytes from <code>t</code> into <code>tchunk</code>,
+resulting in <code>0x??000061</code>.
+Oops, we read one byte past the end of the buffer.
+</p>
+<p>
+If <code>t</code> happened to sit right at the end of a page, and
+the next page was uncommitted memory, then you take an access violation
+while trying to read <code>tchunk</code>.
+Your optimization turned into a crash.
+</p>
+<p>
+Remember, when you say that a buffer is a particular size,
+the
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/03/20/555511.aspx">
+basic ground rules of programming</a>
+say that it really has to be that size.</p>
+
+
+</body>

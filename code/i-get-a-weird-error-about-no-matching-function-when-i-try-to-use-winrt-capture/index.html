@@ -1,0 +1,146 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">I get a weird error about no matching function when I try to use winrt::capture</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/the-c-winrt-capture-function-helps-you-interoperate-with-the-com-abi-world" title='The C++/WinRT "capture" function helps you interoperate with the COM ABI world'> using the C++/WinRT <code>capture</code> to call COM ABI methods from C++/WinRT</a>. But sometimes, you follow the cookbook to the letter, and it still fails:</p>
+<pre>winrt::com_ptr&lt;IServiceProvider&gt; provider = ...;
+
+auto top = winrt::capture&lt;IShellBrowser&gt;
+    (provider, &amp;IServiceProvider::QueryService, SID_STopLevelBrowser);
+</pre>
+<p>Here, we are asking <code>capture</code> to invoke the <code>QueryService</code> method on the provided <code>IServiceProvider</code>, passing <code>SID_STopLevelBrowser</code> as the first parameter, and passing a <code>REFIID</code> + <code>void**</code> pair as the second and third parameters.</p>
+<p>And yet, when you try it, you get these strange errors. From the Microsoft compiler:</p>
+<pre style="white-space: pre-wrap;">error C2672: 'capture': no matching overloaded function found
+error C2783: 'void capture(F,Args &amp;&amp;...)': could not deduce template argument for 'F'
+</pre>
+<p>Somehow, the Microsoft compiler thinks we’re trying to use the functor overload.</p>
+<p>From clang:</p>
+<pre style="white-space: pre-wrap;">error: no matching function for call to 'capture'
+    auto top = winrt::capture&lt;IShellBrowser&gt;
+               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+note: candidate template ignored: couldn't infer template argument 'O'
+    auto capture(com_ptr&lt;O&gt; const&amp; object, M method, Args&amp;&amp;...args)
+         ^
+note: candidate template ignored: substitution failure [with T = IShellBrowser, F = winrt::com_ptr&lt;IServiceProvider&gt;]: deduced incomplete pack &lt;(no value), const GUID &amp;&gt; for template parameter 'Args'
+        auto capture(F function, Args&amp;&amp;...args)
+             ^
+</pre>
+<p>The gcc compiler says</p>
+<pre>error: no matching function for call to 'capture&lt;IShellBrowser&gt;(winrt::com_ptr&lt;IServiceProvider&gt;&amp;, &lt;unresolved overloaded function type&gt;, const GUID&amp;)'
+    (provider, &amp;IServiceProvider::QueryService, SID_STopLevelBrowser);
+                                                                    ^
+note: candidate: 'auto winrt::capture(F, Args&amp;&amp; ...) [with T = IShellBrowser; F = winrt::com_ptr&lt;IServiceProvider&gt;; Args = {}]'
+    auto capture(F function, Args&amp;&amp;...args)
+         ^~~~~~~
+note:   candidate expects 1 argument, 3 provided
+
+note: candidate: 'template&lt;class T, class O, class M, class ... Args&gt; auto winrt::capture(const winrt::com_ptr&lt;O&gt;&amp;, M, Args&amp;&amp; ...)'
+    auto capture(com_ptr&lt;O&gt; const&amp; object, M method, Args&amp;&amp;...args)
+         ^~~~~~~
+note:   template argument deduction/substitution failed:
+note:   couldn't deduce template parameter 'M'
+    (provider, &amp;IServiceProvider::QueryService, SID_STopLevelBrowser);
+</pre>
+<p>What’s going on?</p>
+<p>The Microsoft compiler’s error message is least helpful. It looks like the Microsoft compiler has selected the functor overload for some reason, but then it rejects the functor because it can’t deduce the first parameter type <code>F</code>. But our first parameter is <code>provider</code>, which should be easily deduced to a <code>winrt::com_ptr&lt;IServiceProvider&gt;</code>.</p>
+<p>It all makes no sense. And why is it not using the overload we want?</p>
+<p>The clang error at least tried both overloads, but for the first overload it deduced <code>Args = {}</code>, which is strange because we passed a total of three arguments, so the last two should end up in the <code>Args</code>. It somehow just lost those arguments in the cushions of the couch or something.</p>
+<p>The failed application of the second overload has an enigmatic phrase “deduced incompete pack 〈(no value), <code>const GUID &amp;</code>〉 for template parameter ‘<code>Args</code>‘”. Somehow, it thinks that <code>&amp;IServiceProvider::QueryService</code> has no value?</p>
+<p>The gcc error steers us closer to the root cause when it mentions in its error message that the parameter list that it saw was</p>
+<pre style="white-space: pre-wrap;">capture&lt;IShellBrowser&gt;(winrt::com_ptr&lt;IServiceProvider&gt;&amp;, &lt;unresolved overloaded function type&gt;, const GUID&amp;)
+</pre>
+<p>Unresolved overloaded function type. That’s strange. Let’s take a closer look at <code>IServiceProvider</code>. Here it is, after removing a bunch of RPC and other macro noise:</p>
+<pre>MIDL_INTERFACE("6d5140c1-7436-11ce-8034-00aa006009fa")
+IServiceProvider : public IUnknown
+{
+public:
+    virtual HRESULT QueryService( 
+        REFGUID guidService,
+        REFIID riid,
+        void **ppvObject) = 0;
+    
+    template &lt;class Q&gt;
+    HRESULT QueryService(REFGUID guidService, Q** pp)
+    {
+        return QueryService(guidService, __uuidof(Q), (void **)pp);
+    }
+};
+</pre>
+<p>Holy cow, somebody added a “helpful” overload of <code>IServiceProvider::QueryService</code> that takes only two parameters and manufactures the missing <code>REFIID</code> parameter.</p>
+<p>That’s why we are getting an error: The expression <code>&amp;IServiceProvider::QueryService</code> is ambiguous because it could be referring to the three-parameter method, or it could be referring to an entire family of templated methods (which in turn need to be specialized).</p>
+<p>Sometimes being helpful backfires.¹</p>
+<p>To be fair, this helpful method was added because the <code>IID_PPV_ARGS</code> helper macro hadn’t yet been invented. Nowadays, people just write</p>
+<pre>serviceProvider-&gt;QueryService(guidService, IID_PPV_ARGS(&amp;q));
+</pre>
+<p>and don’t even realize that there’s a helper method available to them.</p>
+<p>One way to work around this unwanted helper is to resolve the ambiguity explicitly:</p>
+<pre>auto top = winrt::capture&lt;IShellBrowser&gt;
+    (provider,
+     static_cast&lt;HRESULT (STDMETHODCALLTYPE IServiceProvider::*)(REFGUID, REFIID, void**)&gt;
+         (&amp;IServiceProvider::QueryService),
+     SID_STopLevelBrowser);
+</pre>
+<p>This is, however, a horrible monstrosity of a cast.</p>
+<p>One option is to use a helper lambda.</p>
+<pre>auto top = winrt::capture&lt;IShellBrowser&gt;(
+     [](auto&amp;&amp; provider, auto&amp;&amp;... args) { return provider-&gt;QueryService(args...); },
+     provider,
+     SID_STopLevelBrowser);
+</pre>
+<p>If you’re going to be doing this a lot, you can write a helper function:</p>
+<pre>inline HRESULT CapturableQueryService(
+    IServiceProvider* provider,
+    REFGUID service,
+    REFIID riid,
+    void**ppv)
+{
+    return provider-&gt;QueryService(service, riid, ppv);
+}
+
+auto top = winrt::capture&lt;IShellBrowser&gt;(CapturableQueryService, provider.get(), SID_STopLevelBrowser);
+</pre>
+<p>In fact, there’s a prewritten function that comes with the system that is basically this: <a href="https://docs.microsoft.com/windows/win32/api/shlwapi/nf-shlwapi-iunknown_queryservice"> <code>IUnknown_QueryService</code></a>. The <code>IUnknown_QueryService</code> function is more general, because it accepts an <code>IUnknown*</code> as its first parameter and will perform the <code>QueryInterface</code> to <code>IServiceProvider</code>.</p>
+<p>Finally, in what might be the simplest option, you can give the result of that monster cast a name and let everybody use that name.</p>
+<pre>inline constexpr HRESULT (STDMETHODCALLTYPE IServiceProvider::*ServiceProviderQueryServiceMethod)(REFGUID, REFIID, void**)
+    = &amp;IServiceProvider::QueryService;
+
+auto top = winrt::capture&lt;IShellBrowser&gt;
+    (provider, ServiceProviderQueryServiceMethod, SID_STopLevelBrowser);
+</pre>
+<p>¹ The <code>IUnknown</code> and <code>IAgileReference</code> interfaces have the same problem:</p>
+<pre>MIDL_INTERFACE("00000000-0000-0000-C000-000000000046")
+IUnknown
+{
+public:
+    virtual HRESULT QueryInterface(
+                REFIID riid,
+                void **ppvObject) = 0;
+    virtual ULONG AddRef(void) = 0;
+    virtual ULONG Release(void) = 0;
+
+    <span style="color: blue;">template&lt;class Q&gt; 
+    HRESULT
+    QueryInterface(Q** pp)
+    {
+        return QueryInterface(__uuidof(Q), (void **)pp);
+    }</span>
+};                                                                            
+
+MIDL_INTERFACE("C03F6A43-65A4-9818-987E-E0B810D2A6F2")
+IAgileReference : public IUnknown
+{
+public:
+    virtual HRESULT Resolve(
+                REFIID riid,
+                void **ppvObjectReference) = 0;
+
+    <span style="color: blue;">template&lt;class Q&gt; 
+    HRESULT Resolve(_COM_Outptr_ Q** pp)
+    {
+        return Resolve(__uuidof(Q), (void **)pp);
+    }</span>
+};
+</pre>
+<p>However, you are unlikely to run into problems with these interfaces in C++/WinRT code, because C++/WinRT already provides native support for <code>IUnknown</code> (via <code>com_ptr</code>) and <code>IAgileReference</code> (via <code>agile_ref</code>), so you’re not going to have to drop to the ABI to use them.</p>
+
+
+</body>

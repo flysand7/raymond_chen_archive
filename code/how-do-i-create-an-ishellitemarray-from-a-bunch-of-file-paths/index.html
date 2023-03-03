@@ -1,0 +1,113 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I create an IShellItemArray from a bunch of file paths?</h1>  <!-- .entry-meta -->
+
+<p>
+The <code>IFile­Operation</code> interface accepts bulk operations
+in the form of an <code>IShell­Item­Array</code>.
+So how do you take a list of file names and convert them
+into an
+<code>IShell­Item­Array</code>?
+</p>
+<p>
+There is no
+<code>SHCreate­Shell­Item­Array­From­Paths</code>
+function, but there is a
+<code>SHCreate­Shell­Item­Array­From­ID­Lists</code>,
+and we know how to convert a path to an ID list,
+namely via
+<code>SHParse­Display­Name</code>.
+So lets
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/08/04/9856634.aspx">
+snap two blocks together</a>.
+</p>
+<pre>
+#define UNICODE
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/02/12/71851.aspx">_UNICODE</a>
+#define STRICT
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/24/10387757.aspx">STRICT_TYPED_ITEMIDS</a>
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;wrl/client.h&gt;
+// <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">class CCoInitialize incorporated by reference</a>
+template&lt;typename T&gt;
+HRESULT CreateShellItemArrayFromPaths(
+    UINT ct, T rgt[], IShellItemArray **ppsia)
+{
+ *ppsia = nullptr;
+ PIDLIST_ABSOLUTE *rgpidl = new(std::nothrow) PIDLIST_ABSOLUTE[ct];
+ HRESULT hr = rgpidl ? S_OK : E_OUTOFMEMORY;
+ int cpidl;
+ for (cpidl = 0; SUCCEEDED(hr) &amp;&amp; cpidl &lt; ct; cpidl++)
+ {
+  hr = SHParseDisplayName(rgt[cpidl], nullptr, &amp;rgpidl[cpidl], 0, nullptr);
+ }
+ if (SUCCEEDED(hr)) {
+  hr = SHCreateShellItemArrayFromIDLists(cpidl, rgpidl, ppsia);
+ }
+ for (int i = 0; i &lt; cpidl; i++)
+ {
+  CoTaskMemFree(rgpidl[i]);
+ }
+ delete[] rgpidl;
+ return hr;
+}
+</pre>
+<p>
+The
+<code>Create­Shell­Item­Array­From­Paths</code>
+template function takes an array of paths and starts by creating
+a corresponding array of ID lists.
+(If you’re feeling fancy, you can
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/05/03/10415778.aspx">
+use a file system bind context to make simple ID lists</a>.)
+It then pumps this array into the
+<code>SHCreate­Shell­Item­Array­From­ID­Lists</code>
+function to get the item array.
+</p>
+<p>
+Using a template allows you to pass an array of <i>anything</i>
+as the array of paths, as long as it has a conversion to
+<code>PCWSTR</code>.
+So you can pass
+an array of <code>PCWSTR</code> or
+an array of <code>PWSTR</code> or
+an array of <code>BSTR</code> or
+an array of <code>CCom­Heap­Ptr&lt;wchar_t&gt;</code> or
+an array of <code>CStringW</code>
+or whatever else floats your boat.
+</p>
+<p>
+Let’s take this function out for a spin.
+</p>
+<pre>
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ CCoInitialize init;
+ Microsoft::WRL::ComPtr&lt;IShellItemArray&gt; spsia;
+ Microsoft::WRL::ComPtr&lt;IFileOperation&gt; spfo;
+ if (SUCCEEDED(CreateShellItemArrayFromPaths(
+                      argc - 1, argv + 1, &amp;spsia)) &amp;&amp;
+     SUCCEEDED(CoCreateInstance(__uuidof(FileOperation), nullptr,
+                      CLSCTX_ALL, IID_PPV_ARGS(&amp;spfo)))) {
+  spfo-&gt;DeleteItems(spsia.Get());
+  spfo-&gt;PerformOperations();
+ }
+ return 0;
+}
+</pre>
+<p>
+The main program first treats the command line arguments
+as a list of absolute file paths
+and uses our new helper function to create a shell item array
+from them.
+It then passes the shell item array to the
+<code>IFile­Operation::Delete­Items</code> method
+to delete all the items.
+</p>
+<p>
+No magic here.
+Just taking the pieces available and combining them in a
+relatively obvious way.</p>
+
+
+</body>

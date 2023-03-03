@@ -1,0 +1,299 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Do not access the disk in your IContextMenu handler, no really, don't do it</h1>  <!-- .entry-meta -->
+
+<p>
+We saw some time ago that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/05/21/8525411.aspx">
+the number one cause of crashes in Explorer is malware</a>.
+</p>
+<p>
+It so happens that the number one cause of hangs in Explorer
+is disk access from context menu handlers
+(a special case of the more general principle,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/04/15/9549682.aspx">
+you can’t open the file until the user tells you to open it</a>).
+</p>
+<p>
+That’s why I was amused by Memet’s claim that
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/10/05/9903476.aspx#9904591">
+“would hit the disk” is not acceptable for me</a>.
+The feedback I see from customers, either directly
+from
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/05/28/9645162.aspx">
+large multinational corporations with 500ms ping times</a>
+or indirectly
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/08/04/10045651.aspx">
+from individual users who collectively click <i>Send Report</i>
+millions of times a day</a>,
+is that “would hit the disk” ruins a lot of people’s days.
+It may not be acceptable to you, but millions of other people
+would beg to disagree.
+</p>
+<p>
+The Windows team tries very hard to identify unwanted disk accesses
+in Explorer and get rid of them.
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/01/11/350628.aspx#350903">
+We don’t get them all</a>, but at least we try.
+But if the unwanted disk access is coming from a third-party add-on,
+there isn’t much that can be done aside from saying,
+“Don’t do that” and hoping the vendor listens.
+</p>
+<p>
+Every so often, a vendor will come back and ask for advice on avoiding
+disk access in their context menu handler.
+There’s a lot of information packed into that data object that
+contains information gathered from when the disk was accessed originally.
+You can just retrieve that cached data instead of going off and
+hitting the disk again to recalculate it.
+</p>
+<p>
+I’m going to use a boring console application and the clipboard
+rather than building a full
+<code>IContext­Menu</code>,
+since the purpose here is to show how to get data from a data object
+without hitting the disk and not to delve into the details of
+<code>IContext­Menu</code> implementation.
+</p>
+<pre>
+#define UNICODE
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/02/12/71851.aspx">_UNICODE</a>
+#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;propkey.h&gt;
+#include &lt;tchar.h&gt;
+void ProcessDataObject(IDataObject *pdto)
+{
+ ... to be written ...
+}
+int __cdecl _tmain(int argc, PTSTR *argv)
+{
+ if (SUCCEEDED(OleInitialize(NULL))) {
+  IDataObject *pdto;
+  if (SUCCEEDED(OleGetClipboard(&amp;pdto))) {
+   ProcessDataObject(pdto);
+   pdto-&gt;Release();
+  }
+  OleUninitialize();
+ }
+}
+</pre>
+<p>
+Okay, let’s say that we want to check that all the items
+on the clipboard are files and not directories.
+The <code>HDROP</code> way of doing this would be to get
+the path to each of the items in the data object,
+then call <code>Get­File­Attributes</code> on each one to see
+if any of them has the
+<code>FILE_ATTRIBUTE_DIRECTORY</code> flag set.
+But this hits the disk, which makes baby context menu host sad.
+Fortunately, the <code>IShell­Item­Array</code> interface provides
+an easy way to check whether any or all the items in a data object
+have a particular attribute.
+</p>
+<pre>
+void ProcessDataObject(IDataObject *pdto)
+{
+ IShellItemArray *psia;
+ HRESULT hr;
+ hr = SHCreateShellItemArrayFromDataObject(pdto,
+                                          IID_PPV_ARGS(&amp;psia));
+ if (SUCCEEDED(hr)) {
+  SFGAOF sfgaoResult;
+  hr = psia-&gt;GetAttributes(SIATTRIBFLAGS_OR, SFGAO_FOLDER,
+                                                 &amp;sfgaoResult);
+  if (hr == S_OK) {
+   _tprintf(TEXT("Contains a folder\n"));
+  } else if (hr == S_FALSE) {
+   _tprintf(TEXT("Contains no folders\n"));
+  }
+  psia-&gt;Release();
+ }
+}
+</pre>
+<p>
+In this case, we want to see if any item
+(<code>SI­ATTRIB­FLAGS_OR</code>)
+in the data object has
+the <code>SFGAO_FOLDER</code> attribute.
+The <code>IShell­Item­Array::Get­Attributes</code>
+method returns
+<code>S_OK</code> if all of the attributes you requested
+are present in the result.
+Since we asked for only one attribute, and since we asked for
+the result to be the logical <i>or</i> of the individual attributes,
+this means that it returns <code>S_OK</code> if any item is a folder.
+</p>
+<p>
+Okay, fine, but what if the thing you want to know is not expressible
+as a <code>SFGAO</code> flag?
+Well, you can dig into each of the individual items.
+For example, suppose we want to see the size of each item.
+</p>
+<pre>
+#include &lt;strsafe.h&gt;
+void ProcessDroppedObject(IDataObject *pdto)
+{
+ IShellItemArray *psia;
+ HRESULT hr;
+ hr = SHCreateShellItemArrayFromDataObject(pdto,
+                                          IID_PPV_ARGS(&amp;psia));
+ if (SUCCEEDED(hr)) {
+  <font color="blue">IEnumShellItems *pesi;
+  hr = psia-&gt;EnumItems(&amp;pesi);
+  if (SUCCEEDED(hr)) {
+   IShellItem *psi;
+   while (pesi-&gt;Next(1, &amp;psi, NULL) == S_OK) {
+    IShellItem2 *psi2;
+    hr = psi-&gt;QueryInterface(IID_PPV_ARGS(&amp;psi2));
+    if (SUCCEEDED(hr)) {
+     ULONGLONG ullSize;
+     hr = psi2-&gt;GetUInt64(PKEY_Size, &amp;ullSize);
+     if (SUCCEEDED(hr)) {
+      _tprintf(TEXT("Item size is %I64u\n"), ullSize);
+     }
+     psi2-&gt;Release();
+    }
+    psi-&gt;Release();
+   }
+  }</font>
+  psia-&gt;Release();
+ }
+}
+</pre>
+<p>
+I went for <code>IEnum­Shell­Items</code> here,
+even though a <code>for</code> loop
+with <code>IShell­Item­Array::Get­Count</code> and
+<code>IShell­Item­Array::Get­Item­At</code>
+would have worked, too.
+</p>
+<p>
+File system items in data objects cache a bunch of useful pieces
+of information, such as the last-modified time, file creation time,
+last-access time,
+the file size,
+the file attributes, and the file name (both long and short).
+Of course, all of these properties are subject to file system support.
+the shell just takes what’s in the <code>WIN32_FIND_DATA</code>;
+if the values are incorrect
+(for example, if last-access time tracking is disabled),
+then the shell is going to cache the incorrect value.
+But don’t say, “Well, if the cache is no good, then I won’t use it;
+I’ll just go hit the disk”, because if you hit the disk,
+the file system is going to give you the same incorrect value anyway!
+</p>
+<p>
+If you just want to order the combo platter, you can ask for
+<a href="http://msdn.microsoft.com/library/bb760709.aspx">
+<code>PKEY_Find­Data</code></a>, and out will come a
+<code>WIN32_FIND_DATA</code>.
+This might be the easiest way to convert your old-style context menu
+that hits the disk into a new-style context menu that doesn’t hit the
+disk:
+Take your calls to
+<code>Get­File­Attributes</code> and
+<code>Find­First­File</code>
+and convert them into calls into the property system,
+asking for <code>PKEY_File­Attributes</code> or
+<code>PKEY_Find­Data</code>.
+</p>
+<p>
+Okay, that’s the convenient modern way to get information that has
+been cached in the data object provided by the shell.
+What if you’re an old-school programmer?
+Then you get to roll up your sleeves and get your hands dirty with
+the <code>CFSTR_SHELL­ID­LIST</code>
+clipboard format.
+(And if your target is Windows XP or earlier,
+you have to do it this way since the
+<code>IShell­Item­Array</code> interface
+was not introduced until Windows Vista.)
+In fact, the <code>CFSTR_SHELL­ID­LIST</code>
+clipboard format will get your hands so dirty,
+I’m writing a helper class to manage it.
+</p>
+<p>
+First, go back and familiarize yourself with
+<a href="http://msdn.microsoft.com/library/bb773212.aspx">
+the <code>CIDA</code> structure</a>.
+</p>
+<pre>
+// these should look familiar
+#define HIDA_GetPIDLFolder(pida) (LPCITEMIDLIST)(((LPBYTE)pida)+(pida)-&gt;aoffset[0])
+#define HIDA_GetPIDLItem(pida, i) (LPCITEMIDLIST)(((LPBYTE)pida)+(pida)-&gt;aoffset[i+1])
+void ProcessDataObject(IDataObject *pdto)
+{
+ FORMATETC fmte = {
+    (CLIPFORMAT)RegisterClipboardFormat(CFSTR_SHELLIDLIST),
+    NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+ STGMEDIUM stm = { 0 }; // defend against buggy data object
+ HRESULT hr = pdto-&gt;GetData(&amp;fmte, &amp;stm);
+ if (SUCCEEDED(hr) &amp;&amp; stm.hGlobal != NULL) {
+  LPIDA pida = (LPIDA)GlobalLock(stm.hGlobal);
+  if (pida != NULL) { // defend against buggy data object
+   IShellFolder *psfRoot;
+   hr = SHBindToObject(NULL, HIDA_GetPIDLFolder(pida), NULL,
+                       IID_PPV_ARGS(&amp;psfRoot));
+   if (SUCCEEDED(hr)) {
+    for (UINT i = 0; i &lt; pida-&gt;cidl; i++) {
+     IShellFolder2 *psf2;
+     PCUITEMID_CHILD pidl;
+     hr = SHBindToFolderIDListParent(psfRoot,
+                HIDA_GetPIDLItem(pida, i),
+                IID_PPV_ARGS(&amp;psf2), &amp;pidl);
+     if (SUCCEEDED(hr)) {
+      VARIANT vt;
+      if (SUCCEEDED(psf2-&gt;GetDetailsEx(pidl, &amp;PKEY_Size, &amp;vt))) {
+       if (SUCCEEDED(VariantChangeType(&amp;vt, &amp;vt, 0, VT_UI8))) {
+         _tprintf(TEXT("Item size is %I64u\n"), vt.ullVal);
+       }
+       VariantClear(&amp;vt);
+      }
+      psf2-&gt;Release();
+     }
+    }
+    psfRoot-&gt;Release();
+   }
+   GlobalUnlock(stm.hGlobal);
+  }
+  ReleaseStgMedium(&amp;stm);
+ }
+}
+</pre>
+<p>
+I warned you it was going to be ugly.
+</p>
+<p>
+First, we retrieve the <code>CFSTR_SHELL­ID­LIST</code> clipboard
+format from the data object.
+This format takes the form of an <code>HGLOBAL</code>,
+which needs to be <code>Global­Lock</code>‘d
+like all <code>HGLOBAL</code>s
+returned by <code>IData­Object::Get­Data</code>.
+You may notice two defensive measures here.
+First, there is a defense against data objects which return
+success when they actually failed.
+To detect this case, we zero out the <code>STG­MEDIUM</code> and
+make sure they returned something non-<code>NULL</code> in it.
+The second defensive measure is against data objects which
+put an invalid <code>HGLOBAL</code> in the <code>STG­MEDIUM</code>.
+One of the nice things about doing things the
+<code>IShell­Item­Array</code> way is that the shell default
+implementation of <code>IShell­Item­Array</code> has all these
+defensive measures built-in so you don’t have to write them yourself.
+</p>
+<p>
+Anyway, once we get the <code>CIDA</code>,
+we bind to the folder portion, walk through the items,
+and get the size of each item in order to print it.
+Same story, different words.
+</p>
+<p>
+<b>Exercise</b>: Why did we need a separate defensive measure
+for data objects which returned success but left garbage in the
+<code>STG­MEDIUM</code>?
+Why doesn’t the <code>Global­Lock</code> test cover that case, too?</p>
+
+
+</body>

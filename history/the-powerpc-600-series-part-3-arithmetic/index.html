@@ -1,0 +1,167 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The PowerPC 600 series, part 3: Arithmetic</h1>  <!-- .entry-meta -->
+
+<p>Before we start with arithmetic, we need to have a talk about carry. </p>
+<p>The PowerPC uses true carry for both addition and subtraction. This is different from the x86 family of processors, for which the carry flag is actually a borrow bit when used in subtraction. <a href="https://en.wikipedia.org/wiki/Carry_flag#Carry_flag_vs._borrow_flag">You can read more about the difference on Wikipedia</a>. There are some instructions which perform a combined addition and subtraction, and in that case, the only sane choice is to use true carry. (If you had chosen carry as borrow, then it wouldn’t be clear whether the final carry bit represented the carry from the addition or the borrow from subtraction.) </p>
+<p>To emphasize the fact that the PowerPC uses true carry, I will rewrite all subtractions as additions, taking advantage of the twos complement identity </p>
+<pre>
+    -x = ~x + 1
+</pre>
+<p>Okay, now we can do some arithmetic. Let’s start with addition. </p>
+<pre>
+    add     rd, ra, rb      ; rd = ra + rb
+    add.    rd, ra, rb      ; rd = ra + rb, update cr0
+    addo    rd, ra, rb      ; rd = ra + rb, update         XER overflow bits
+    addo.   rd, ra, rb      ; rd = ra + rb, update cr0 and XER overflow bits
+</pre>
+<p>These instructions add two source registers and optionally update the <var>xer</var> register to capture any possible overflow (by appending an <code>o</code>), and also optionally update the <var>cr0</var> register to reflect the sign of the result and any summary overflow (by appending a period). </p>
+<p>I don’t know what they were thinking, using an easily-overlooked mark of punctuation to carry important information. </p>
+<p>There is also a version of the above instruction that takes a signed 16-bit immediate: </p>
+<pre>
+    addi    rd, ra/0, imm16 ; rd = ra/0 + (int16_t)imm16
+</pre>
+<p>Note that this variant does not accept <code>o</code> or <code>.</code> suffixes. </p>
+<p>The <var>ra/0</var> notation means “This can be any general purpose register, but if you ask for <var>r0</var>, you actually get the constant zero.” The register <var>r0</var> is weird like that. Sometimes it stands for itself, but sometimes it reads as zero. As a result, the <var>r0</var> register isn’t used much. </p>
+<p>The assembler lets you write <var>r0</var> through <var>r31</var> as synonyms for the integers 0 through 31, so the following are equivalent: </p>
+<pre>
+    add     r3, r0, r4      ; r3 = r0 + r4
+    add      3,  0,  4      ; r3 = r0 + r4
+    add     r3, r0,  4      ; r3 = r0 + r4
+</pre>
+<p>This can get very confusing. That last example sure looks like you’re setting <var>r3</var> to <var>r0</var> plus 4, but it’s not. The 4 is in a position where a register is expected, so it actually means <var>r4</var>. </p>
+<p>Similarly, you might think you’re adding an immediate to <var>r0</var> when you write </p>
+<pre>
+    addi    r3, r0, 256     ; r3 = r0 + 256, right?
+</pre>
+<p>but nope, the value of 0 as the second operand to <code>addi</code> is interpreted as the constant zero, not register number zero. </p>
+<p>Fortunately, the Windows disassembler always calls registers by their mnemonic rather than by number. </p>
+<p>Wait, we’re not done with addition yet. </p>
+<pre>
+    ; add and set carry
+    addc    rd, ra, rb      ; rd = ra + rb, update carry
+    addc.   rd, ra, rb      ; rd = ra + rb, update carry and cr0
+    addco   rd, ra, rb      ; rd = ra + rb, update carry         and XER overflow bits
+    addco.  rd, ra, rb      ; rd = ra + rb, update carry and cr0 and XER overflow bits
+</pre>
+<p>The “add and set carry” instructions act like the corresponding regular add instructions, except that the also update the carry bit in <var>xer</var> based on whether a carry propagated out of the highest-order bit. </p>
+<pre>
+    ; add extended
+    adde    rd, ra, rb      ; rd = ra + rb + carry, update carry
+    adde.   rd, ra, rb      ; rd = ra + rb + carry, update carry and cr0
+    addeo   rd, ra, rb      ; rd = ra + rb + carry, update carry         and XER overflow bits
+    addeo.  rd, ra, rb      ; rd = ra + rb + carry, update carry and cr0 and XER overflow bits
+</pre>
+<p>The “add extended” instructions act like the corresponding “add and set carry” instructions, except that they also add 1 if the carry bit was set. This makes multiword addition convenient. </p>
+<pre>
+    ; add minus one extended
+    addme   rd, ra          ; rd = ra + carry + ~0, update carry
+    addme.  rd, ra          ; rd = ra + carry + ~0, update carry and cr0
+    addmeo  rd, ra          ; rd = ra + carry + ~0, update carry         and XER overflow bits
+    addmeo. rd, ra          ; rd = ra + carry + ~0, update carry and cr0 and XER overflow bits
+</pre>
+<p>The “add minus one extended” instruction is like “add extended” except that the second parameter is hard-coded to −1. I wrote <code>~0</code> instead of −1 to emphasize that we are using true carry. (This is the combined addition-and-subtraction instruction I alluded to at the top of the article. It adds carry and then subtracts one.) <b>Added</b>: As commenter Neil noted below, through the magic of true carry, this is the same as “subtract zero extended”, which makes it handy for multiword arithmetic. </p>
+<pre>
+    ; add zero extended
+    addze   rd, ra          ; rd = ra + carry, update carry
+    addze.  rd, ra          ; rd = ra + carry, update carry and cr0
+    addzeo  rd, ra          ; rd = ra + carry, update carry         and XER overflow bits
+    addzeo. rd, ra          ; rd = ra + carry, update carry and cr0 and XER overflow bits
+</pre>
+<p>The “add zero extended” instruction is like “add extended” except that the second parameter is hard-coded to zero. </p>
+<p>And then there are some instructions that take signed 16-bit immediates: </p>
+<pre>
+    ; add immediate shifted
+    addis   rd, ra/0, imm16  ; rd = ra/0 + (imm16 &lt;&lt; 16)
+
+    ; add immediate and set carry
+    addic   rd, ra, imm16    ; rd = ra + (int16_t)imm16, update carry
+
+    ; add immediate and set carry and update cr0
+    addic.  rd, ra, imm16    ; rd = ra + (int16_t)imm16, update carry and cr0
+</pre>
+<p>Phew, that was addition. There are also subtraction instructions, which should look mostly familiar now that you’ve seen addition. </p>
+<pre>
+    ; subtract from
+    subf    rd, ra, rb      ; rd = ~ra + rb + 1
+    subf.   rd, ra, rb      ; rd = ~ra + rb + 1, update cr0
+    subfo   rd, ra, rb      ; rd = ~ra + rb + 1, update         XER overflow bits
+    subfo.  rd, ra, rb      ; rd = ~ra + rb + 1, update cr0 and XER overflow bits
+
+    ; subtract from and set carry
+    subfc   rd, ra, rb      ; rd = ~ra + rb + 1, update carry
+    subfc.  rd, ra, rb      ; rd = ~ra + rb + 1, update carry and cr0
+    subfco  rd, ra, rb      ; rd = ~ra + rb + 1, update carry         and XER overflow bits
+    subfco. rd, ra, rb      ; rd = ~ra + rb + 1, update carry and cr0 and XER overflow bits
+
+    ; subtract from extended
+    subfe    rd, ra, rb     ; rd = ~ra + rb + carry, update carry
+    subfe.   rd, ra, rb     ; rd = ~ra + rb + carry, update carry and cr0
+    subfeo   rd, ra, rb     ; rd = ~ra + rb + carry, update carry         and XER overflow bits
+    subfeo.  rd, ra, rb     ; rd = ~ra + rb + carry, update carry and cr0 and XER overflow bits
+
+    ; subtract from minus one extended
+    subfme   rd, ra         ; rd = ~ra + carry + ~0, update carry
+    subfme.  rd, ra         ; rd = ~ra + carry + ~0, update carry and cr0
+    subfmeo  rd, ra         ; rd = ~ra + carry + ~0, update carry         and XER overflow bits
+    subfmeo. rd, ra         ; rd = ~ra + carry + ~0, update carry and cr0 and XER overflow bits
+
+    ; subtract from zero extended
+    subfze   rd, ra         ; rd = ~ra + carry, update carry
+    subfze.  rd, ra         ; rd = ~ra + carry, update carry and cr0
+    subfzeo  rd, ra         ; rd = ~ra + carry, update carry         and XER overflow bits
+    subfzeo. rd, ra         ; rd = ~ra + carry, update carry and cr0 and XER overflow bits
+
+    ; subtract from immediate and set carry
+    subfic  rd, ra, imm16   ; rd = ~ra + (int16_t)imm16 + 1, update carry
+</pre>
+<p>Note that the instruction is “subtract from”, not “subtract”. The second operand is subtracted from the third operand; in other words, the two operands are backwards. Fortunately, the assembler provides a family of synthetic instructions that simply swap the last two operands: </p>
+<pre>
+    subf    rd, rb, ra      ; sub  rd, ra, rb
+    ; similarly "sub.", "subo", and "subo.".
+
+    subfc   rd, rb, ra      ; subc rd, ra, rb
+    ; similarly "subc.", "subco", and "subco.".
+</pre>
+<p>Second problem is that there is no <code>subfis</code> to subtract a shifted immediate, nor is there <code>subfic.</code> to update flags after subtracting from an immediate. But the assembler can synthesize those too: </p>
+<pre>
+    addi    rd, ra/0, -imm16 ; subi   rd, ra/0, imm16
+    addis   rd, ra/0, -imm16 ; subis  rd, ra/0, imm16
+    addic   rd, ra, -imm16   ; subic  rd, ra, imm16
+    addic.  rd, ra, -imm16   ; subic. rd, ra, imm16
+</pre>
+<p>PowerPC’s use of true carry allows this trick to work while still preserving the semantics of carry and overflow. </p>
+<p>We wrap up with multiplication and division. </p>
+<pre>
+    ; multiply low immediate
+    mulli   rd, ra, imm16    ; rd = (int32_t)ra * (int16_t)imm16
+
+    ; multiply low word
+    mullw   rd, ra, rb       ; rd = (int32_t)ra * (int32_t)rb
+    ; also "mullw.", "mullwo", and "mullwo.".
+
+    ; multiply high word
+    mulhw   rd, ra, rb       ; rd = ((int32_t)ra * (int32_t)rb) &gt;&gt; 32
+    ; also "mulhw."
+
+    ; multiply high word unsigned
+    mulhwu  rd, ra, rb       ; rd = ((uint32_t)ra * (uint32_t)rb) &gt;&gt; 32
+    ; also "mulhwu."
+</pre>
+<p>The “multiply low” instructions perform the multiplication and return the low-order 32 bits. The “multiply high” instructions return the high-order 32 bits. </p>
+<p>Finally, we have division: </p>
+<pre>
+    ; divide word
+    divw    rd, ra, rb       ; rd = (int32_t)ra ÷ (int32_t)rb
+    ; also "divw.", "divwo", and "divwo.".
+
+    ; divide word unsigned
+    divwu   rd, ra, rb       ; rd = (uint32_t)ra ÷ (uint32_t)rb
+    ; also "divwu.", "divwuo", and "divwuo.".
+</pre>
+<p>If you try to divide by zero or (for <code>divw</code>) if you try to divide <code>0x80000000</code> by −1, then the results are garbage, and if you used the <code>o</code> version of the instruction, then the overflow flag is set. No trap is generated. (If you didn’t use the <code>o</code> version, then you get no indication that anything went wrong. You just get garbage.) </p>
+<p>There is no modulus instruction. If you want to get the remainder, take the quotient, multiple it by the divisor, and subtract it from the dividend. </p>
+<p>Okay, that was arithmetic. <a href="https://devblogs.microsoft.com/oldnewthing/">Next up</a> are the bitwise logical operators and combining arithmetic and logical operators to load constants. </p>
+<p><b>Bonus snark</b>: For a reduced instruction set computer, it sure has an awful lot of instructions. And we haven’t even gotten to control flow yet. </p>
+
+
+</body>

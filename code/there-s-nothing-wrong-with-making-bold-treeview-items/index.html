@@ -1,0 +1,159 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">There’s nothing wrong with making bold treeview items</h1>  <!-- .entry-meta -->
+
+<p><p>
+Commenter Frans Bouma asks,
+</p>
+<blockquote class="q">
+<a href="http://blogs.msdn.com/oldnewthing/pages/407234.aspx#549386">
+Why is the text of a treenode chopped off
+when you switch the font from normal to bold</a>?
+<a href="http://groups.google.com/group/microsoft.public.dotnet.languages.csharp/browse_frm/thread/79297a46ef22f520/a51c76da39b1437a">
+It apparently is for backwards compatibility</a>
+but I fail to see why this is necessary for backward compatibility…
+</blockquote>
+<p>
+Actually, bold treeview items work just fine.
+Watch:
+</p>
+<p>
+Start with our 
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make these changes:
+</p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  <font color="blue">g_hwndChild = CreateWindow(
+      WC_TREEVIEW, NULL, WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+      TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT,
+      0, 0, 0, 0, hwnd, (HMENU)1, g_hinst, 0);</font></pre></p>
+<p>  TVINSERTSTRUCT tvis;
+  tvis.hParent = TVI_ROOT;
+  tvis.hInsertAfter = TVI_LAST;
+  tvis.item.mask = TVIF_TEXT | TVIF_STATE;
+  tvis.item.stateMask = TVIS_BOLD;
+  tvis.item.state = 0;
+  tvis.item.pszText = TEXT(“First”);</p>
+<p>  tvis.hParent = TreeView_InsertItem(g_hwndChild, &amp;tvis);</p>
+<p>  tvis.item.pszText = TEXT(“Second”);
+  tvis.item.state = TVIS_BOLD;
+  TreeView_InsertItem(g_hwndChild, &amp;tvis);</p>
+<p>  tvis.item.pszText = TEXT(“Third”);
+  tvis.item.state = 0;
+  TreeView_InsertItem(g_hwndChild, &amp;tvis);</p>
+<p>  return TRUE;
+}
+
+<p>
+I elided error checking for expository purposes.
+</p>
+<p>
+This code creates a tree view and populates it as follows:
+</p>
+<ul>
+<li>First
+<ul>
+<li><b>Second</b>
+<li>Third
+</li></li></ul>
+</li></ul>
+<p>
+When you run this program, you can see that the text for all
+the items appears as expected; nothing is truncated.
+</p>
+<p>
+As for the backward compability remark,
+it’s quite simple:
+<i>Every change, no matter how seemingly insignificant,
+has compatibility consequences</i>.
+The common controls are heavily used in third party programs,
+many of which make strange assumptions about how the controls work,
+relying on quirks of implementations in strange ways.
+For example,
+those who have read
+<a href="http://www.awprofessional.com/title/0321440307">
+the first bonus chapter of my book</a>
+will know that even something as seemingly harmless as
+fixing a flicker bug in the status bar resulted in
+a broken status bar in a program from a major software publisher.
+Every change is taken with great trepidation, and the bias is
+to preserve bug-for-bug compatibility.
+</p>
+<p>
+In this case, the issue was with the way the width of the treeview
+item is calculated.
+You can easily imagine programs which worked around the existing behavior
+by artificially padding the item with spaces to compensate for
+the miscalculation.
+If the treeview suddenly fixed the bug,
+these treeview items would now be undesirably large,
+possibly creating a horizontal scroll bar where there previously
+had been none, resulting in 
+bugs like “After upgrading, the last item in my treeview is
+being covered by a scroll bar.”
+We saw something like this before when we looked at
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/02/08/369090.aspx">
+the effects of the <code>DS_SHELLFONT</code> dialog style</a>:
+Fixing the bug described in that article would result in property
+sheet pages coming out undesirably large (because their sizes were
+artificially inflated to compensate for the erroneous calculation).
+</p>
+<p>
+That doesn’t mean the bug can’t get fixed, however.
+Just as the <code>DS_SHELLFONT</code> flag is a signal to say
+that your property sheet page wants to use the new calculations,
+you can tell the tree view
+“Please give me the version of the treeview that fixes the
+font bug” by sending it the <code>CCM_SETVERSION</code> message
+and specifying that you want version 5.
+Similarly, you can opt into version 6 of the common controls
+by providing a manifest.
+</p>
+<p>
+<b>Update</b>:
+I slipped a subtlety into this article which
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/04/06/9532674.aspx#9533858">
+it appears people didn’t pick up on</a>,
+so I’ll make it explicit.
+</p>
+<p>
+The original question was about “switching the font from normal to bold”,
+but there are multiple ways of doing this.
+My sample code used the recommended (declarative) method of setting the
+<code>TVIS_BOLD</code> flag.
+But if you click through the link, you’ll see that
+the original commenter was using the procedural method of
+handling the <code>NM_CUSTOMDRAW</code> notification,
+selecting a new font
+(a boldface variation of the normal font),
+and returning <code>CRF_NEWFONT</code>.
+This is a technique I had illustrated previously with
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/09/16/468800.aspx">
+list views</a>
+and
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/06/27/648493.aspx">
+tool tips</a>.
+</p>
+<p>
+The compatibility behavior is for fonts customized via
+<code>NM_CUSTOMDRAW</code>.
+The declarative method was added specifically to address the bug
+in item size calculations when people change the font procedurally:
+Older versions of the treeview control asked for the custom font
+only when painting; it didn’t ask for the custom font when measuring.
+Adding the font query to version 6 was actually quite risky,
+since the only way to ask the application for the procedurally-applied
+font is to <i>actually go through the motions of drawing it</i>,
+generating a
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/03/27/561924.aspx">
+dummy <code>NM_CUSTOMDRAW</code> notification
+with an empty paint rectangle</a>.
+If an application painted outside the rectangle, you would have seen
+seen random painting on the screen.
+</p></p>
+
+
+</body>

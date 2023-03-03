@@ -1,0 +1,142 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The __fortran calling convention isn't the calling convention used by FORTRAN</h1>  <!-- .entry-meta -->
+
+<p>
+Although the Microsoft C compiler supports a calling convention called
+<code>__fortran</code>,
+that’s just what the calling convention is called;
+its relationship with the FORTRAN programming language is only coincidental.
+The <code>__fortran</code> keyword is now just an old-fashioned
+synonym for <code>__stdcall</code>.
+</p>
+<p>
+Various FORTRAN compilers use different calling conventions;
+the one I describe here applies to the now-defunct
+Microsoft Fortran PowerStation.
+</p>
+<p>
+Fortran Powerstation pushes parameters on the stack right-to-left,
+with callee-cleanup.
+(So far, this matches
+<code>__fortran</code> aka <code>__stdcall</code>.)
+Function names are
+<a href="http://msdn.microsoft.com/en-us/library/aa278674(VS.60).aspx">
+converted to all-uppercase, with an underscore
+at the beginning and <code>@n</code> appended</a>,
+where <code>n</code> is the number of bytes of parameters.
+(This still matches <code>__stdcall</code> aside from the uppercase
+conversion.)
+</p>
+<p>
+As for how the parameters are passed, well, that’s where things
+get weird.
+FORTRAN natively
+<a href="http://msdn.microsoft.com/en-us/library/aa294334(VS.60).aspx">
+passes all parameters by reference</a>.
+This is the source of a famous classic FORTRAN bug known as
+<i>constants aren’t</i>.
+</p>
+<pre>
+      PROGRAM MYSTERY
+      CALL MAGIC(1)
+      PRINT *, 'According to the computer, 3 + 1 is ', ADDUP(3, 1)
+      END
+      FUNCTION ADDUP(I, J)
+      ADDUP = I + J
+      END
+C     What does this subroutine actually do?
+      SUBROUTINE MAGIC(I)
+      I = 9
+      RETURN
+      END
+</pre>
+<p>
+(It’s been a long time since I’ve written a FORTRAN program,
+so I may have gotten some of the details wrong,
+but any errors shouldn’t detract from the fundamental issue.)
+</p>
+<p>
+When you run this program, it says
+</p>
+<pre>
+According to the computer, 3 + 1 is 12
+</pre>
+<p>
+How did that happen?
+We called a function that adds two numbers together,
+and instead of getting 4, we get 12?
+</p>
+<p>
+The reason is the subroutine <code>MAGIC</code>:
+We passed it the constant <code>1</code>,
+and since all FORTRAN parameters are passed by reference,
+the assignment <code>I = 9</code>
+<i>modifies the constant 1</i>.
+In C:
+</p>
+<pre>
+int One = 1;
+int Three = 3;
+int Nine = 9;
+void Magic(int *i) { *i = Nine; }
+int AddUp(int *i, int *j) { return *i + *j; }
+void main()
+{
+ Magic(&amp;One);
+ printf("According to the computer, 3 + 1 is %d\n",
+        AddUp(&amp;Three, &amp;One));
+}
+</pre>
+<p>
+Since <code>Magic</code> modified the constant <code>One</code>,
+any further use of the constant 1 ends up using the value 9!
+(According to the FORTRAN standard,
+modifying a constant results in undefined behavior.)
+</p>
+<p>
+Okay, back to calling conventions.
+Other significant differences between C and FORTRAN:
+In FORTRAN,
+<a href="http://msdn.microsoft.com/en-us/library/aa293547(VS.60).aspx">
+array indices begin at 1, not 0,
+and arrays are stored in column-major order</a>
+rather than row-major as in C.
+</p>
+<p>
+<code>COMPLEX</code> variables in FORTRAN
+<a href="http://msdn.microsoft.com/en-us/library/aa296568(VS.60).aspx">
+are stored as two floating point numbers</a>
+(corresponding to the real and imaginary components).
+</p>
+<p>
+Functions which return <code>COMPLEX</code> or
+<a href="http://msdn.microsoft.com/en-us/library/aa236488(VS.60).aspx">
+<code>CHARACTER*(*)</code></a>
+are internally rewritten as subroutines where the location to store the
+return value is passed as a hidden first parameter.
+(This is analogous to how C returns large structures.)
+</p>
+<p>
+The final commonly-encountered
+weirdness of FORTRAN is that <code>CHARACTER*n</code> data types
+(which are used to hold strings) are
+<a href="http://msdn.microsoft.com/en-us/library/aa236488(VS.60).aspx">
+passed as <i>two</i> parameters</a>:
+The address of the character buffer,
+followed by the size of the buffer (n).
+Note that FORTRAN <code>CHARACTER*n</code> variables are
+fixed-length;
+if you assign a string shorter than the buffer,
+it is padded with spaces.
+There is no null terminator.
+</p>
+<p>
+Anyway, I sort of got carried away with the FORTRAN calling convention.
+It’s definitely more complicated than just sticking
+<code>__fortran</code> in front of your function.
+But at least the <code>__fortran</code> keyword takes care of the
+part that can’t be expressed in C.
+The rest you can manage on your own.</p>
+
+
+</body>

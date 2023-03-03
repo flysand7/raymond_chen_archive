@@ -1,0 +1,165 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: The problem of the synchronous apartment-changing callback</h1>  <!-- .entry-meta -->
+
+<p>Today is a puzzle you can you can try to solve with the information you’ve learned about C++ coroutines and C++/WinRT.</p>
+<p>C++/WinRT uses the <code>IContext­Callback</code> interface to <a href="/code/using-contexts-to-return-to-a-com-apartment-later"> remember the context that initiated a <code>co_await</code> operation</a>, so it can resume execution in the original apartment when the <code>co_await</code> completes.</p>
+<p>The basic idea goes like this:</p>
+<pre>void await_suspend(std::experimental::coroutine_handle&lt;&gt; handle)
+{
+    async.Completed([handle,
+                     <span style="color: blue;">context = CaptureCurrentApartmentContext()</span>]
+                    (auto const&amp;, Windows::Foundation::AsyncStatus)
+    {
+        // When the operation completes, get back to the
+        // original apartment and resume the coroutine there.
+        check_hresult(<a href="https://devblogs.microsoft.com/oldnewthing/20191128-00/?p=103157">InvokeInContext</a>(context.get(), handle));
+    });
+}
+</pre>
+<p>Maybe you see a problem here. I noticed a problem when I studied the C++/WinRT code and meant to do a write-up on it eventually, but then I actually ran into the problem and <a href="https://github.com/microsoft/xlang/issues/544"> alerted Kenny</a>, who promptly <a href="https://github.com/microsoft/xlang/pull/546"> fixed it</a>. (Note: Clicking through gives away the answer.)</p>
+<p>The <code>IContext­Callback::</code><code>Context­Callback</code> method invokes the callback synchronously, and the invoking apartment is stuck waiting for the result. This is good if you want to callback to do some work that you are waiting for, but it’s not good if the caller just wants to fire and forget.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Thread 1</th>
+<td rowspan="6" style="width: 1em;"> </td>
+<th>Thread 2</th>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>co_await something;</code><br/>
+<code>await_suspend();</code></td>
+</tr>
+<tr>
+<td colspan="2">operation continues</td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px black; border-bottom: none;">operation completes<br/>
+<code>InvokeInContext</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>handle();</code><br/>
+coroutine runs to next<br/>
+ suspension point</td>
+<td style="border: 1px black; border-style: none solid; text-align: center; vertical-align: middle; background-color: #ccc; background-image: repeating-linear-gradient(45deg,                   #ccc, #ccc 10px, white 10px, white 20px);">blocked in<br/>
+InvokeInContext</td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px black; border-top: none;"><code>InvokeInContext</code> returns</td>
+</tr>
+</tbody>
+</table>
+<p>In the above diagram, code inside a box represents code being executed on behavior of a coroutine. If the thread does not have a box, then it is available to do other work.</p>
+<p>A synchronous callback means that when this awaiter tries to resume execution, the thread that raised the <code>Completed</code> event is stuck until the continued coroutine reaches a suspension point or completes, because those are the things that cause the coroutine to return at the ABI. This period of time is represented by the shaded section labeled “blocked in Invoke­In­Context”. During this period, the thread is not available to do work.</p>
+<p>This shaded period during which the thread is unresponsive may last for a long time. And that’s a problem if it’s a UI thread.</p>
+<p>Consider the following scenario:</p>
+<pre>IAsyncAction SomethingAsync()
+{
+    co_await resume_background();
+
+    DoBackgroundWork();
+
+    // Get to our UI thread so we can update UI.
+    co_await resume_foreground(Dispatcher());
+
+    UpdateUIStuff();
+
+    co_return;
+}
+</pre>
+<p>This coroutine switches immediately to a background thread, does a bunch of work, and then switches back to the UI thread to update some UI.</p>
+<p>You might decide to use this function like this:</p>
+<pre>IAsyncAction SomethingMoreAsync()
+{
+    // Do all our work on a background thread.
+    co_await resume_background();
+
+    LongBlockingOperation();
+    co_await SomethingAsync();
+    LongBlockingOperation();
+}
+</pre>
+<p>In C++/WinRT, <code>co_await</code> of an <code>IAsync­Action</code> returns control to the same apartment that originated the operation, so all of the <code>Long­Blocking­Operation</code> calls occur on a background thread. Certainly it’s safe to perform long blocking operations on a background thread, right?</p>
+<p>Let’s look more closely at what happens.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>UI thread</th>
+<td rowspan="61" style="width: 1em;"> </td>
+<th>Background thread</th>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>SomethingMoreAsync</code> begins<br/>
+<code>co_await resume_background();</code></td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px black; border-bottom: none;"><code>SomethingMoreAsync</code> resumes</td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: 1px black; border-style: none solid; height: 3em; background-color: #ddd;"><code>LongBlockingOperation()</code></td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px black; border-top: none;"><code>SomethingAsync</code> begins<br/>
+<code>co_await resume_background();</code></td>
+</tr>
+<tr>
+<td> </td>
+<td style="height: 1em;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px black; border-bottom: none;"><code>SomethingAsync</code> resumes</td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: 1px black; border-style: none solid; height: 3em; background-color: #ddd;"><code>DoBackgroundWork()</code></td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px black; border-top: none;"><code>co_await resume_foreground();</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-bottom: none;"><code>SomethingAsync</code> resumes<br/>
+<code>UpdateUIStuff();</code><br/>
+<code>SomethingAsync</code> completes<br/>
+<code>Completed()</code> handler tries to<br/>
+ resume on original context<br/>
+<code>InvokeInContext</code></td>
+<td valign="bottom"><span style="color: red;">⇐</span> things get interesting</td>
+</tr>
+<tr>
+<td rowspan="3" style="border: solid 1px black; border-top: none; text-align: center; vertical-align: middle; background-color: #ccc; background-image: repeating-linear-gradient(45deg,                   #ccc, #ccc 10px, white 10px, white 20px);">blocked in<br/>
+InvokeInContext</td>
+<td style="border: solid 1px black; border-bottom: none;"><code>handle();</code><br/>
+<code>SomethingMoreAsync</code> resumes</td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid; height: 3em; background-color: #ddd;"><code>LongBlockingOperation()</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-top: none;"><code>SomethingMoreAsync</code> completes</td>
+</tr>
+</tbody>
+</table>
+<p>The first part of the sequence goes as you would expect. The <code>Something­More­Async</code> coroutine moves to a background thread and performs a long blocking operation. This is okay, because we’re on a background thread.</p>
+<p>Next, it calls <code>Something­Async</code>, which starts by moving to a background thread. (It’s already on a background thread, but it doesn’t know that.)</p>
+<p>Once rescheduled (redundantly) on a background thread, it does some background work. Again, this background work can take a long time, but that’s okay because we’re on a background thread.</p>
+<p>When the background work is done, <code>Something­Async</code> moves back to the UI thread.</p>
+<p>Once back on the UI thread, <code>Something­Async</code> updates its UI and completes the coroutine.</p>
+<p>Now things get interesting.</p>
+<p>The awaiter for <code>IAsyncAction</code> wants to resume in the original apartment, which in this case means going back to a background thread. It does this by using <code>IContext­Callback::</code><code>Context­Callback</code>, which we wrapped inside <code>Invoke­In­Context</code> for expository purposes.</p>
+<p>The <code>IContext­Callback::</code><code>Context­Callback</code> method invokes the callback synchronously, which means in our case that the call doesn’t return until the resumed coroutine reaches its next suspension point. But before it can complete or perform another <code>co_await</code>, it performs a long blocking operation, believing that since it is on a background thread, long blocking operations are permitted.</p>
+<p>And it’s true that long blocking operations are permitted on a background thread. The problem is that a UI thread is waiting for the background thread.</p>
+<p>The background thread is unwittingly holding up a UI thread.</p>
+<p><a href="https://github.com/microsoft/xlang/pull/546"> The fix</a> is to use <code>IContext­Callback::</code><code>Context­Callback</code> only in the case when we need to return to a UI thread. If we need to return to a background thread, we can use the non-blocking <code>resume_</code><code>background</code> to do that.</p>
+<p>This means that if a background thread needs to return to a UI thread, then the background thread will be held hostage by the coroutine on the UI thread until it completes or suspends. That’s not so bad, because background threads can block. And besides, coroutines on UI threads are not supposed to perform long blocking operations in the first place.</p>
+<p>It also means that if a second UI thread needs to return to an originating UI thread, then the second UI thread will be held hostage by the coroutine on the originating UI thread until it completes or suspends. But that’s not so bad, because, as we noted before, coroutines on UI threads are not supposed to perform long blocking operations in the first place.</p>
+<p>Next time, we’ll look at a coroutine bug in the C++/WinRT library and try to fix it by applying what we’ve learned so far.</p>
+<p> </p>
+
+
+</body>

@@ -1,0 +1,155 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">COM asynchronous interfaces, part 3: Abandoning the operation after a timeout</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/com-asynchronous-interfaces-part-2-abandoning-the-operation" title="COM asynchronous interfaces, part 2: Abandoning the operation"> learned how to abandon an asynchronous operation</a>. But maybe we don’t want to fire and forget so much as wait for a while before finally giving up.</p>
+<p>You can check on the completion state of the asynchronous call by using the <code>ISynchronize</code> interface on the call object. Today, we’re going to use the <code>Wait</code> method to wait for the call to complete, with a timeout.</p>
+<p>Let’s make these changes to our program.</p>
+<pre>int main(int, char**)
+{
+  winrt::init_apartment(winrt::apartment_type::multi_threaded);
+
+  auto pipe = CreateSlowPipeOnOtherThread();
+
+  winrt::com_ptr&lt;::AsyncIPipeByte&gt; call;
+  auto factory = pipe.as&lt;ICallFactory&gt;();
+  winrt::check_hresult(factory-&gt;CreateCall(
+    __uuidof(::AsyncIPipeByte), nullptr,
+    __uuidof(::AsyncIPipeByte),
+    reinterpret_cast&lt;::IUnknown**&gt;(call.put())));
+
+  printf("Beginning the Push\n");
+  BYTE buffer[15] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                      11, 12, 13, 14, 15 };
+  winrt::check_hresult(call-&gt;Begin_Push(buffer, 15));
+
+  <span style="color: blue;">printf("Waiting up to 250ms...\n");
+  auto sync = call.as&lt;::ISynchronize&gt;();
+  if (sync-&gt;Wait(COWAIT_DEFAULT, 250) == S_OK) {</span>
+    auto hr = call-&gt;Finish_Push();
+    printf("Pushed, result is %08x\n", hr);
+  <span style="color: blue;">} else {
+    printf("Took too long!\n");
+    // abandon the operation
+  }</span>
+
+  <span style="color: blue;">Sleep(2000); // so we can see the other thread finish</span>
+  return 0;
+}
+</pre>
+<p>This time, instead of abandoning the operation immediately, we ask <code>ISynchronize::Wait</code> to wait up to 250ms for the call to complete. If it does, then we call <code>Finish_<wbr/>Push</code> to get the result of the <code>Push()</code> call. If it doesn’t, then we just abandon the operation.</p>
+<p>This works, but it could be better. Observe that even though we abandoned the operation, the <code>SlowPipe</code> still goes through with the <code>Push</code>. Instead of abandoning the operation, we can cancel it, to tell the server that it should stop doing any further work on this operation. The server can call <code>CoTestCancel()</code> periodically to see if the operation has been cancelled, and if so, stop and return <code>RPC_<wbr/>E_<wbr/>CALL_<wbr/>CANCELED</code>.</p>
+<pre>struct SlowPipe :
+    winrt::implements&lt;SlowPipe, ::IPipeByte, winrt::non_agile&gt;
+{
+  // exit the STA thread when we destruct
+  ~SlowPipe() {  PostQuitMessage(0); }
+
+  STDMETHODIMP Pull(BYTE* buffer, ULONG size, ULONG* written)
+  {
+    <span style="color: blue;">HRESULT hr = S_OK;</span>
+    printf("Pulling %lu bytes...\n", size);
+    ULONG index;
+    for (index = 0; index &lt; size / 2; index++) {
+      <span style="color: blue;">if (CoTestCancel() == RPC_E_CALL_CANCELED) {
+          hr = RPC_E_CALL_CANCELED;
+          break;
+      }</span>
+      Sleep(100);
+      buffer[index] = 42;
+      printf("Pulled byte %lu of %lu\n", index, size);
+    }
+    *written = index;
+    printf("Finished pulling %lu% of %lu bytes<span style="color: blue;">, hr = %08x</span>\n",
+            index, size<span style="color: blue;">, hr</span>);
+    return <span style="color: blue;">hr</span>;
+  }
+
+  STDMETHODIMP Push(BYTE* buffer, ULONG size)
+  {
+    <span style="color: blue;">HRESULT hr = S_OK;</span>
+    printf("Pushing %lu bytes...\n", size);
+    ULONG index;
+    for (index = 0; index &lt; size; index++) {
+      <span style="color: blue;">if (CoTestCancel() == RPC_E_CALL_CANCELED) {
+          hr = RPC_E_CALL_CANCELED;
+          break;
+      }</span>
+      Sleep(100);
+      printf("Pushed byte %08x\n", buffer[index]);
+    }
+    printf("Finished pushing %lu bytes<span style="color: blue;">, hr = %08x</span>\n",
+           size, <span style="color: blue;">hr</span>);
+    return <span style="color: blue;">hr</span>;
+  }
+};
+</pre>
+<p>Our server now periodically checks whether the call was cancelled, and if so, it abandons the remainder of the operation. The <code>Pull</code> still reports the partial result, in case the caller cares.</p>
+<p>Now we can issue a cancellation from the main thread and see how it alters the behavior of the server.</p>
+<pre>int main(int, char**)
+{
+  winrt::init_apartment(winrt::apartment_type::multi_threaded);
+
+  auto pipe = CreateSlowPipeOnOtherThread();
+
+  winrt::com_ptr&lt;::AsyncIPipeByte&gt; call;
+  auto factory = pipe.as&lt;ICallFactory&gt;();
+  winrt::check_hresult(factory-&gt;CreateCall(
+    __uuidof(::AsyncIPipeByte), nullptr,
+    __uuidof(::AsyncIPipeByte),
+    reinterpret_cast&lt;::IUnknown**&gt;(call.put())));
+
+  printf("Beginning the Push\n");
+  BYTE buffer[15] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                      11, 12, 13, 14, 15 };
+  winrt::check_hresult(call-&gt;Begin_Push(buffer, 15));
+
+  printf("Waiting up to 250ms...\n");
+  auto sync = call.as&lt;::ISynchronize&gt;();
+  if (sync-&gt;Wait(COWAIT_DEFAULT, 250) == S_OK) {
+    auto hr = call-&gt;Finish_Push();
+    printf("Pushed, result is %08x\n", hr);
+  } else {
+    printf("Took too long!\n");
+    <span style="color: blue;">call.as&lt;::ICancelMethodCalls&gt;()-&gt;Cancel(0);</span>
+  }
+
+  Sleep(2000); // so we can see the other thread finish
+  return 0;
+}
+</pre>
+<p>This time, instead of abandoning the operation, we ask <code>ICancel­Method­Calls::<wbr/>Cancel</code> to cancel it with a timeout of zero, which means “immediately.” If you run this version of the program, you’ll see that the slow pipe responds to the cancellation by abandoning the operation partway through.</p>
+<p>At this point, we realize that we didn’t need <code>ISynchronize</code> at all. We could just have gone straight to <code>ICancel­Method­Calls::<wbr/>Cancel</code>, assuming we are willing to accept the fact that the <code>ICancel­Method­Calls::<wbr/>Cancel</code> method takes the timeout in seconds rather than milliseconds.</p>
+<pre>int main(int, char**)
+{
+  winrt::init_apartment(winrt::apartment_type::multi_threaded);
+
+  auto pipe = CreateSlowPipeOnOtherThread();
+
+  winrt::com_ptr&lt;::AsyncIPipeByte&gt; call;
+  auto factory = pipe.as&lt;ICallFactory&gt;();
+  winrt::check_hresult(factory-&gt;CreateCall(
+    __uuidof(::AsyncIPipeByte), nullptr,
+    __uuidof(::AsyncIPipeByte),
+    reinterpret_cast&lt;::IUnknown**&gt;(call.put())));
+
+  printf("Beginning the Push\n");
+  BYTE buffer[15] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                      11, 12, 13, 14, 15 };
+  winrt::check_hresult(call-&gt;Begin_Push(buffer, 15));
+
+  <span style="color: blue;">printf("Waiting up to 1 second...\n");
+  call.as&lt;::ICancelMethodCalls&gt;()-&gt;Cancel(1);
+
+  auto hr = call-&gt;Finish_Push();
+  printf("Pushed, result is %08x\n", hr);</span>
+
+  Sleep(2000); // so we can see the other thread finish
+  return 0;
+}
+</pre>
+<p>The <code>Cancel()</code> method waits for the timeout, in case the operation completes in time. If not, then it issues a cancellation and returns immediately. It doesn’t wait for the server to acknowledge the cancellation; it just issues the cancellation and marks the operation locally as having been cancelled, so that calling the <code>Finish_</code> method will return <code>RPC_<wbr/>E_<wbr/>CALL_<wbr/>CANCELED</code> immediately.</p>
+<p>You can run the program again, but with a 2-second timeout to see the operation run to completion before the timeout elapses.</p>
+<p>So far, we’ve just been sitting around doing nothing while waiting for the operation to complete. Next time, we’ll try doing work in parallel.</p>
+
+
+</body>

@@ -1,0 +1,77 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What happens to a sent message when SendMessageTimeout reaches its timeout?</h1>  <!-- .entry-meta -->
+
+<p>The <code>Send­Message­Timeout</code> function tries to send a message, but gives up if the timeout elapses. What exactly happens when the timeout elapses?
+ It depends.
+ The first case is if the receiving thread never received the message at all. (I.e., if during the period the sender is waiting, the receiving thread never called <code>GetMessage</code>, <code>PeekMessage</code>, or a similar message-retrieval function which dispatches inbound sent messages.) In that case, if the timeout is reached, then the entire operation is canceled; the window manager cleans up everything and makes it look as if the call to <code>SendMessageTimeout</code> never took place. The message is removed from the list of the thread’s non-queued messages, and when it finally gets around to calling <code>GetMessage</code> (or whatever), the message will not be delivered.
+ The second case is if the receiving thread received the message, and the message was delivered to the destination window procedure, but the receiving thread is just slow to process the message and either return from its window procedure or call <code>Reply­Message</code>. In that case, if the timeout is reached, then the sender is released from waiting, but the message is allowed to proceed to completion.
+ Since people seem to like tables, here’s a timeline showing the two cases.</p>
+<table border="1" cellpadding="3" rules="groups" style="border-collapse: collapse">
+<colgroup>
+<col/></colgroup>
+<colgroup>
+<col/></colgroup>
+<colgroup>
+<col/></colgroup>
+<tr>
+<th>Sending thread</th>
+<th>Case 1</th>
+<th>Case 2</th>
+</tr>
+<tr>
+<td><code>SendMessageTimeout(WM_X)</code> called</td>
+<td>… not responding …</td>
+<td>… not responding …</td>
+</tr>
+<tr>
+<td></td>
+<td>… not responding …</td>
+<td>… not responding …</td>
+</tr>
+<tr>
+<td></td>
+<td>… not responding …</td>
+<td><code>GetMessage()</code> called</td>
+</tr>
+<tr>
+<td></td>
+<td>… not responding …</td>
+<td><code>WndProc(WM_X)</code> called</td>
+</tr>
+<tr>
+<td></td>
+<td>… not responding …</td>
+<td><code>WndProc(WM_X)</code> still executing</td>
+</tr>
+<tr>
+<td>timeout elapses</td>
+<td>… not responding …</td>
+<td><code>WndProc(WM_X)</code> still executing</td>
+</tr>
+<tr>
+<td><code>SendMessageTimeout(WM_X)</code> returns</td>
+<td>… not responding …</td>
+<td><code>WndProc(WM_X)</code> still executing</td>
+</tr>
+<tr>
+<td></td>
+<td>… not responding …</td>
+<td><code>WndProc(WM_X)</code> returns</td>
+</tr>
+<tr>
+<td></td>
+<td><code>GetMessage()</code> called</td>
+<td></td>
+</tr>
+<tr>
+<td></td>
+<td>(message <code>WM_X</code> <i>not</i> received)</td>
+<td></td>
+</tr>
+</table>
+<p> Notice that in case 2, the window manager has little choice but to let the window procedure continue with the message. After all, time travel has yet to be perfected, so the window manager can’t go back in time and tell the younger version of itself, (Possibly with a <a href="https://www.youtube.com/watch?v=ZDkdD3jwAS4"> slow-motion “Nooooooooooooo”</a> for dramatic effect.) “No, don’t give him the message; he won’t finish processing it in time!”
+ If you are in case 2 and the message <code>WM_X</code> is a system-defined message that is subject to marshaling, then the data is not unmarshaled until the window procedure  returns. It would be bad to free the memory out from under a window procedure. On the other hand, if the message is a custom message, then you are still on the hook for keeping the values valid until the window procedure is done.</p>
+<p> But wait, how do I know when the window procedure is done? The <code>Send­Message­Timeout</code> function doesn’t tell me! Yup, that’s right. If you need to do cleanup after message processing is complete, you should use the <code>Send­Message­Callback</code> function, which calls you back when the receiving thread completes message processing. When the callback fires, that’s when you do your cleanup. </p>
+
+
+</body>

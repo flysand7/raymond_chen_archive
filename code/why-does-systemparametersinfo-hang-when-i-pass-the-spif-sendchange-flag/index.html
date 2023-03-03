@@ -1,0 +1,96 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does SystemParametersInfo hang when I pass the SPIF_SENDCHANGE flag?</h1>  <!-- .entry-meta -->
+
+<p>
+If you pass the <code>SPIF_SENDCHANGE</code> flag to
+<a href="http://msdn.microsoft.com/library/en-us/sysinfo/base/systemparametersinfo.asp">
+the <code>SystemParametersInfo</code> function</a>,
+it will broadcast
+<a href="http://msdn.microsoft.com/library/en-us/sysinfo/base/wm_settingchange.asp">
+the <code>WM_SETTINGCHANGE</code> message</a>
+with the wParam equal to the system parameter code you passed.
+For example, if you call
+</p>
+<pre>
+SystemParametersInfo(SPI_SETDOUBLECLICKTIME,
+      500, 0, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+</pre>
+<p>
+then the system will broadcast the message
+</p>
+<pre>
+SendMessage(HWND_BROADCAST, WM_SETTINGCHANGE,
+            SPI_SETDOUBLECLICKTIME, 0);
+</pre>
+<p>
+If there is a window that isn’t responding to messages,
+then this broadcast will hang until that unresponsive
+window finally resumes responding to messages or is killed.
+</p>
+<p>
+If you’d rather not be victimed by unresponsive windows,
+you have a few options, but it also may affect your program’s
+expectations.
+</p>
+<p>
+You could issue the <code>SystemParametersInfo</code>
+call on a background thread.  Then your background thread
+is the one that blocks instead of your UI thread.
+</p>
+<p>
+With this message, the background thread can notify the
+main thread when the broadcast finally completes, at which
+point your program now knows that all windows have received
+their notifications and are on board with the new setting.
+</p>
+<p>
+You could issue the <code>SystemParametersInfo</code>
+call without the <code>SPIF_SENDCHANGE</code> flag,
+then manually broadcast the change via
+</p>
+<pre>
+DWORD dwResult;
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/messagesandmessagequeues/messagesandmessagequeuesreference/messagesandmessagequeuesfunctions/sendmessagetimeout.asp">SendMessageTimeout</a>(HWND_BROADCAST, WM_SETTINGCHANGE,
+            SPI_SETDOUBLECLICKTIME, 0,
+            SMTO_ABORTIFHUNG | SMTO_NOTIMEOUTIFNOTHUNG,
+            5000, &amp;dwResult);
+</pre>
+<p>
+This does mean that unresponsive windows will not receive the
+notification that a system parameter has changed.
+This is acceptable if you decide
+that your change in settings was minor enough
+that a program missing the notification is no big deal.
+In other words, when the unresponsive program finally wakes up,
+it will not know that the setting has changed since it missed
+the notification.
+</p>
+<p>
+You can combine the above two methods: Use a background thread
+and send the message with a timeout.
+</p>
+<p>
+Perhaps the best technique is to use
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/MessagesandMessageQueues/MessagesandMessageQueuesReference/MessagesandMessageQueuesFunctions/SendNotifyMessage.asp">
+the <code>SendNotifyMessage</code> function</a>.
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/11/19/266664.aspx">
+As we learned earlier</a>,
+the <code>SendNotifyMessage</code> function
+is like <code>SendMessage</code> except that it doesn’t wait
+for a response.  This lets your program get back work while
+not messing up programs that were momentarily unresponsive
+when you decided to broadcast the notification.
+</p>
+<pre>
+SendNotifyMessage(HWND_BROADCAST, WM_SETTINGCHANGE,
+            SPI_SETDOUBLECLICKTIME, 0);
+</pre>
+<p>
+The downside is that you don’t know when all windows
+have finally received and processed the notification.
+All you know is that someday, they will eventually find out.
+Usually you don’t care about this aspect of the broadcast,
+so this lack of information is not an impediment.</p>
+
+
+</body>

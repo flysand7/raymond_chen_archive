@@ -1,0 +1,72 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Applying a permutation to a vector, part 5</h1>  <!-- .entry-meta -->
+
+<p>Our <a href="https://devblogs.microsoft.com/oldnewthing/"><code>apply_permutation</code> function</a> assumes that the integers form a valid permutation. Let’s add error checking. </p>
+<p>There are two ways the integers could fail to be a permutation: One is that the collection includes a value that is out of range. The other problem case is that all the values are in range, but a value appears more than once. We can detect that when we encounter a single-element cycle when we expected a longer cycle. (Another way of looking at it is that we detect the error when we discover that we’re about to move an item for the second time, because the permutation application algorithm is supposed to move each item only once.) </p>
+<pre>
+template&lt;typename Iter1, typename Iter2&gt;
+void
+apply_permutation(
+    Iter1 first,
+    Iter1 last,
+    Iter2 indices)
+{
+ using T = typename std::iterator_traits&lt;Iter1&gt;::value_type;
+ using Diff = typename std::iterator_traits&lt;Iter2&gt;::value_type;
+ Diff length = std::distance(first, last);
+ for (Diff i = 0; i &lt; length; i++) {
+  Diff current = i;
+  while (i != indices[current]) {
+   Diff next = indices[current];
+   <font color="blue">if (next &lt; 0 || next &gt;= length) {
+    throw std::range_error("Invalid index in permutation");
+   }
+   if (next == current) {
+    throw std::range_error("Not a permutation");
+   }</font>
+   swap(first[current], first[next]);
+   indices[current] = current;
+   current = next;
+  }
+  indices[current] = current;
+ }
+}
+</pre>
+<p>(I added the <code>typename</code> keyword at the suggestion of commenter ildjarn. And I used <code>std::distance</code> to calculate the distance between two iterators. The second change was not technically necessary because <code>std::distance</code> is defined as subtraction when the iterators are random-access, but if you’re going to go with the standard library, you may as well go all the way, right?) </p>
+<p>I switched to the swapping version of the algorithm because that allows me to ensure a useful exit condition in the case of exception: If an exception occurs, the elements in <code>[first, last)</code> have been permuted in an unspecified manner. Even though the resulting order is unspecified, you at least know that no items were lost. It’s the same set of items, just in some other order. The indices, on the other hand, are left in an unspecified state. They won’t be a permutation of the original indices. </p>
+<p>But wait, we can even restore the <code>indices</code> to a permutation of their former selves:¹ We can take the duplicate index and drop it back into <code>indices[i]</code>. That entry optimistically was set to the value we expected to find when we reached the end of the cycle. If we never find that value, then we can put the value we actually found into that slot, thereby correcting our optimistic assumption. </p>
+<pre>
+template&lt;typename Iter1, typename Iter2&gt;
+void
+apply_permutation(
+    Iter1 first,
+    Iter1 last,
+    Iter2 indices)
+{
+ using T = typename std::iterator_traits&lt;Iter1&gt;::value_type;
+ using Diff = typename std::iterator_traits&lt;Iter2&gt;::value_type;
+ Diff length = std::distance(first, last);
+ for (Diff i = 0; i &lt; length; i++) {
+  Diff current = i;
+  while (i != indices[current]) {
+   Diff next = indices[current];
+   if (next &lt; 0 || next &gt;= length) {
+    <font color="blue">indices[i] = next;</font>
+    throw std::range_error("Invalid index in permutation");
+   }
+   if (next == current) {
+    <font color="blue">indices[i] = next;</font>
+    throw std::range_error("Not a permutation");
+   }
+   swap(first[current], first[next]);
+   indices[current] = current;
+   current = next;
+  }
+  indices[current] = current;
+ }
+}
+</pre>
+<p>¹ This is valuable because it improves post-mortem debuggability: You can inspect the <code>indices</code> to look for the out-of-range or duplicate index. </p>
+
+
+</body>

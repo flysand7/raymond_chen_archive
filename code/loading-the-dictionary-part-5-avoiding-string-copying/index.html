@@ -1,0 +1,131 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Loading the dictionary, part 5:  Avoiding string copying</h1>  <!-- .entry-meta -->
+
+<p>
+Looking at the profile for our program so far,
+35% of the CPU time is spent copying strings around.
+Let’s see if we can improve that.
+</p>
+<p>
+The best way to speed up copying strings is not to copy them in
+the first place.  Using a <code>wstring</code> in our
+<code>DictionaryEntry</code> structure forces the <code>vector</code>
+class to copy the string data, when all we really need to copy
+is the pointer and size information.  The actual characters can stay
+put.  C++ has a copy constructor but not a “move” constructor.
+</p>
+<p>
+Let’s use plain string pointers rather than <code>wstring</code>
+objects.  The “copy constructor” for a string pointer is just to
+copy the pointer—exactly what we want here.
+</p>
+<pre>
+struct DictionaryEntry
+{
+ bool Parse(<font color="blue">const WCHAR* begin, const WCHAR* end</font>);
+ <font color="blue">void Destruct() {
+  delete[] m_pszTrad;
+  delete[] m_pszSimp;
+  delete[] m_pszPinyin;
+  delete[] m_pszEnglish;
+ }
+ LPWSTR m_pszTrad;
+ LPWSTR m_pszSimp;
+ LPWSTR m_pszPinyin;
+ LPWSTR m_pszEnglish;</font>
+};
+</pre>
+<p>
+The <code>DictionaryEntry</code> is no longer a structure of
+<code>wstring</code>s but rather is just a structure of
+<code>LPWSTR</code>s, which copy much faster.
+The cost for this, however, is having to free all the strings
+manually in the dictionary destructor (which we will see below).
+</p>
+<p>
+Since we aren’t using <code>wstring</code>s any more, we need
+to allocate the memory for the strings and copy them the old fashioned way.
+</p>
+<pre>
+<font color="blue">LPWSTR AllocString(const WCHAR* begin, const WCHAR* end)
+{
+ int cch = end - begin + 1;
+ LPWSTR psz = new WCHAR[cch];
+ lstrcpynW(psz, begin, cch);
+ return psz;
+}</font>
+bool DictionaryEntry::Parse(
+       <font color="blue">const WCHAR* begin, const WCHAR* end</font>)
+{
+ <font color="blue">const WCHAR* pch = std::find(begin, end, L' ');
+ if (pch &gt;= end) return false;
+ m_pszTrad = AllocString(begin, pch);
+ begin = std::find(pch, end, L'[') + 1;
+ if (begin &gt;= end) return false;
+ pch = std::find(begin, end, L']');
+ if (pch &gt;= end) return false;
+ m_pszPinyin = AllocString(begin, pch);
+ begin = std::find(pch, end, L'/') + 1;
+ if (begin &gt;= end) return false;
+ for (pch = end; *--pch != L'/'; ) { }
+ if (begin &gt;= pch) return false;
+ m_pszEnglish = AllocString(begin, pch);</font>
+ return true;
+}
+</pre>
+<p>
+There isn’t a <code>std::rfind</code> function, so I coded
+up a backwards-search-for-slash loop inline.
+<strong>Exercise</strong>: Why don’t I have to check that
+<code>pch</code> hasn’t underflowed beyond the beginning of the
+string?
+</p>
+<pre>
+class Dictionary
+{
+public:
+ Dictionary();
+ <font color="blue">~Dictionary();</font>
+ int Length() { return v.size(); }
+ const DictionaryEntry&amp; Item(int i) { return v[i]; }
+private:
+ vector&lt;DictionaryEntry&gt; v;
+};
+Dictionary::Dictionary()
+{
+ ...
+   if (cchResult){
+    <font color="blue"><strike>// wstring line(buf, cchResult);</strike></font>
+    DictionaryEntry de;
+    if (de.Parse(<font color="blue">buf, buf + cchResult</font>)) {
+     ...
+}
+<font color="blue">Dictionary::~Dictionary()
+{
+ for (vector&lt;DictionaryEntry&gt;::iterator i = v.begin();
+      i != v.end(); i++) {
+  i-&gt;Destruct();
+ }
+}</font>
+</pre>
+<p>
+The last bits of the change are to get rid of the
+temporary <code>wstring</code> we parsed from, since we don’t
+need it any more, and to free all the strings in the
+<code>Dictionary</code>‘s destructor.
+</p>
+<p>
+This new program clocks in at 120ms
+(or 290ms if you include the time it takes to destroy the
+dictionary).
+Again, we’re twice as fast as the previous version, but still
+haven’t quite crossed the 100ms barrier.
+And the time to destroy the dictionary isn’t starting to be a
+more significant factor.
+But I have another trick up my sleeve.
+</p>
+<p>
+[Raymond is currently on vacation; this message was pre-recorded.]</p>
+
+
+</body>

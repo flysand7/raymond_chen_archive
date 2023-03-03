@@ -1,0 +1,99 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A capturing lambda can be a coroutine, but you have to save your captures while you still can</h1>  <!-- .entry-meta -->
+
+<p>We saw some time ago that <a href="/code/how-do-i-get-the-effect-of-c-s-async-void-in-a-c-coroutine-part-1-why-does-the-obvious-solution-crash"> capturing lambdas which are coroutines result in lifetime issues</a> because the lambda itself returns at the first suspension point, at which point there’s a good chance it will be destructed. After that point, any attempt by the lambda body to access those captured variables is a use-after-free bug.</p>
+<pre>winrt::IAsyncAction DoSomethingInBackgroundAsync()
+{
+    auto a = something();
+    auto b = something();
+    auto c = something();
+
+    auto callback = [a, b, c]()
+        -&gt; winrt::IAsyncAction
+        {
+            co_await winrt::resume_background();
+            DoSomething(a, b, c); // use-after-free bug!
+        };
+    return callback();
+}
+</pre>
+<p>This problem is so insidious that there’s a C++ Core Guideline about it: <a href="https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Rcoro-capture"> CP.51: Do not use capturing lambdas that are coroutines</a>.</p>
+<p>One workaround is to pass the captures as explicit parameters:</p>
+<pre>winrt::IAsyncAction DoSomethingInBackgroundAsync()
+{
+    auto a = something();
+    auto b = something();
+    auto c = something();
+
+    auto callback = <span style="color: blue;">[](auto a, auto b, auto c)</span>
+        -&gt; winrt::IAsyncAction
+        {
+            co_await winrt::resume_background();
+            DoSomething(a, b, c); // use-after-free bug!
+        };
+    return callback(<span style="color: blue;">a, b, c</span>);
+}
+</pre>
+<p>However, this workaround isn’t always available because you may not control the code that invokes the lambda.</p>
+<pre>void RegisterClickHandler(Button const&amp; button, int key)
+{
+    button.Click([key](auto sender, auto args)
+        -&gt; winrt::fire_and_forget
+        {
+            co_await winrt::resume_background();
+            NotifyClick(key);
+        });
+}
+</pre>
+<p>You aren’t the one who invokes the lambda. That lambda is invoked by the Click event, and it passes two parameters (the sender and the event arugments); there’s no way to convince it to pass a <code>key</code> too.</p>
+<p>One idea would be to extract the work into a nested lambda. We control the invoke of the nested lambda and can pass the extra parameter that way.</p>
+<pre>void RegisterClickHandler(Button const&amp; button, int key)
+{
+    button.Click([key](auto sender, auto args)
+        -&gt; winrt::fire_and_forget
+        {
+            <span style="color: blue;">return [](auto sender, auto args, int key)</span>
+            -&gt; winrt::fire_and_forget
+            {
+                co_await winrt::resume_background();
+                NotifyClick(key);
+            }<span style="color: blue;">(std::move(sender), std::move(args), key)</span>;
+        });
+}
+</pre>
+<p>The outer lambda is not a coroutine. It’s just calling another lambda and propagating the return value.</p>
+<p>The inner lambda is a coroutine. To be safe from use-after-free, it is a captureless coroutine, and all of its state is passed as explicit parameters. Here is where we sneak in the extra <code>key</code> parameter.</p>
+<p>Now, I’m working a bit too hard here, because the coroutine body doesn’t use <code>sender</code> or <code>args</code> so I can accept them by universal reference (to avoid a copy) and just ignore them. To make sure I don’t use them by mistake, I’ll leave the parameters anonymous.</p>
+<pre>void RegisterClickHandler(Button const&amp; button, int key)
+{
+    button.Click([key](<span style="color: blue;">auto&amp;&amp;, auto&amp;&amp;</span>)
+        -&gt; winrt::fire_and_forget
+        {
+            return [](<span style="color: blue;">int key</span>)
+            -&gt; winrt::fire_and_forget
+            {
+                co_await winrt::resume_background();
+                NotifyClick(key);
+            }<span style="color: blue;">(key)</span>;
+        });
+}
+</pre>
+<p>But what if I told you there was an easier way, where you can have your capturing lambda be a coroutine?</p>
+<p>The trick is to make copies of your captures into the coroutine frame before the coroutine reaches its first suspension point. (Note that this trick requires eager-started coroutines. Lazy-started coroutines suspend immediately upon creation, so you have no opportunity to copy the captures into the frame.)</p>
+<pre>void RegisterClickHandler(Button const&amp; button, int key)
+{
+    button.Click([key](auto&amp;&amp;, auto&amp;&amp;)
+        -&gt; winrt::fire_and_forget
+        {
+            <span style="color: blue;">auto copiedKey = key;</span>
+            co_await winrt::resume_background();
+            NotifyClick(<span style="color: blue;">copiedKey</span>);
+        });
+}
+</pre>
+<p>We explicitly copy the captured variable into the frame. When execution reaches the first suspension point at the <code>co_await</code>, the captured variables disappear. Lesser coroutine lambdas would tremble in fear, but not us! We laugh at the C++ language and say, “Go ahead, take those captured variables away and turn them into poison. It doesn’t matter because I made my own copy before you turned them evil.”</p>
+<p>The tricky part, though, is making sure that we don’t touch the original already-freed captures and operate only on our local copies. Somebody coming in later and making a change to the function may not realize that the captures are poisoned and try to use them. Oops. Look who’s laughing now.</p>
+<p>Next time we’ll look at a way to make this slightly less error-prone.</p>
+
+
+</body>

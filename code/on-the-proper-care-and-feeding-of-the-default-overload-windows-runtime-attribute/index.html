@@ -1,0 +1,71 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On the proper care and feeding of the default_overload Windows Runtime attribute</h1>  <!-- .entry-meta -->
+
+<p>The Windows Runtime provides a language-independent way of expressing a programming interface. There are many parts to this, but today we’ll look at method overloading. (<a href="https://docs.microsoft.com/en-us/previous-versions/hh441569(v=vs.110)#hh441569collapse_allen-usvs110gifoverloaded-methods">Documentation on overloading Windows Runtime methods</a>.)</p>
+<p>Windows Runtime methods may be freely overloaded by arity: That is, you can define multiple methods with the same name, as long as each one takes a different number of arguments. For usability purposes, it is recommended that you add new parameters to the end, and that the behavior of the shorter-parameter-list function be equivalent to calling the longer-parameter-list function with (scenario-specific) natural defaults for the missing parameters.</p>
+<pre>runtimeclass Widget
+{
+  void Start();
+  void Start(StartMode mode);
+  void Start(StartMode mode, Widget parent);
+}
+</pre>
+<p>In this example, the <code>Start</code> can be called with two parameters to specify a start mode and a parent widget. If you omit the parent widget, then it defaults to null. And if you omit the mode, then it starts in some scenario-specific default mode.</p>
+<p>Here’s another example:</p>
+<pre>runtimeclass DeviceInformation
+{
+  static DeviceWatcher CreateWatcher();
+  static DeviceWatcher CreateWatcher(DeviceClass deviceClass);
+  static DeviceWatcher CreateWatcher(String aqsFilter);
+  static DeviceWatcher CreateWatcher(String aqsFilter,
+                                     IIterable&lt;String&gt; additionalProperties);
+  static DeviceWatcher CreateWatcher(String aqsFilter,
+                                     IIterable&lt;String&gt; additionalProperties,
+                                     DeviceInformationKind kind);
+}
+</pre>
+<p>There are five overloads, and aside from the mysterious <code>DeviceClass</code> overload, they follow the recommended pattern of having each new overload be an extension of the previous overload.</p>
+<p>If you decide to have multiple overloads of a method with the same number of parameters, you get a compiler error:</p>
+<pre style="white-space: pre-wrap;">The 1-parameter overloads of DeviceInformation.<wbr/>CreateWatcher must have exactly one method specified as the default overload by decorating it with Windows.<wbr/>Foundation.<wbr/>Metadata.<wbr/>DefaultOverloadAttribute.
+</pre>
+<p>What is going on here?</p>
+<p>Some programming languages are dynamically-typed. JavaScript and Python are two examples. For these languages, the selection of the overload considers only the number of parameters and not their types. This means that a JavaScript call to</p>
+<pre>DeviceInformation.createWatcher(v);
+</pre>
+<p>is ambiguous: Should <code>v</code> be coerced to a <code>DeviceClass</code> or to a <code>String</code>?</p>
+<p>To resolve the ambiguity, you are required to apply the <code>[default_overload]</code> attribute to one of the methods. But how do you choose which one?</p>
+<p>If you mark one overload as the default, then all other overloads with the same arity become unavailable to dynamically-typed languages. Therefore, the default overload should be chosen so that the functionality of the lost overloads is still available by other means, typically by using one of the other still-present overloads.</p>
+<p>In our example, the functionality of the <code>String</code> overload can be obtained by calling the <code>String, IIterable&lt;String&gt;</code> overload and passing an empty list of properties. On the other hand, the <code>DeviceClass</code> overload is the only way to create a <code>DeviceWatcher</code> that is filtered to a <code>DeviceClass</code>.</p>
+<p>This makes the <code>DeviceClass</code> method the clear winner. Indicate that by applying the <code>default_<wbr/>overload</code> attribute:</p>
+<pre>runtimeclass DeviceInformation
+{
+  static DeviceWatcher CreateWatcher();
+  <span style="color: blue;">[default_overload]</span>
+  static DeviceWatcher CreateWatcher(DeviceClass deviceClass);
+  static DeviceWatcher CreateWatcher(String aqsFilter);
+  static DeviceWatcher CreateWatcher(String aqsFilter,
+                                     IIterable&lt;String&gt; additionalProperties);
+  static DeviceWatcher CreateWatcher(String aqsFilter,
+                                     IIterable&lt;String&gt; additionalProperties,
+                                     DeviceInformationKind kind);
+}
+</pre>
+<p>What if there is no winner because all of the conflicting overloads provide unique functionality not available from other overloads?</p>
+<pre>runtimeclass Widget
+{
+    static Widget Create(Uri source);
+    static Widget Create(IInputStream source);
+}
+</pre>
+<p>Our hypothetical <code>Widget</code> object can be created from a Uri, or created from an input stream. If we mark one as the default overload, then we completely lose access to the other one.</p>
+<p>To solve this problem, give the two versions different names so that they aren’t overloaded.</p>
+<pre>runtimeclass Widget
+{
+    static Widget CreateFromUri(Uri source);
+    static Widget CreateFromStream(IInputStream source);
+}
+</pre>
+<p>Now both creation patterns are available to all languages.</p>
+
+
+</body>

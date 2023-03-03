@@ -1,0 +1,71 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating other types of synchronization objects that can be used with co_await, part 6: The semaphore</h1>  <!-- .entry-meta -->
+
+<p>Our next stop in <a href="/code/creating-other-types-of-synchronization-objects-that-can-be-used-with-co-await-part-3-parallel-resumption" title="Creating other types of synchronization objects that can be used with co_await, part 3: Parallel resumption"> showing off our library for building awaitable synchronization objects</a> is the semaphore. This will look very familiar because a semaphore with a maximum token count of 1 is the same thing as an auto-reset event, so we can just extend our auto-reset event implementation to support multiple tokens.</p>
+<pre>struct awaitable_semaphore_state :
+    async_helpers::awaitable_state&lt;awaitable_semaphore_state&gt;
+{
+    awaitable_semaphore_state(<span style="color: blue;">unsigned int</span> initial)
+    : <span style="color: blue;">tokens</span>(initial) {}
+
+    <span style="color: blue;">std::atomic&lt;unsigned int&gt; tokens;
+
+    static bool transition(
+        unsigned int current, unsigned int&amp; future) noexcept
+    {
+        if (!current) return false;
+        future = current - 1;
+        return true;
+    }</span>
+
+    bool fast_claim(extra_await_data const&amp;) noexcept
+    {
+        <span style="color: blue;">return calc_claim&lt;true&gt;(tokens);</span>
+    }
+
+    bool claim(extra_await_data const&amp;) noexcept
+    {
+        return calc_claim&lt;false&gt;(<span style="color: blue;">tokens</span>);
+    }
+
+    void set(node_list&amp; list) noexcept
+    {
+        if (!resume_one(list)) {
+            <span style="color: blue;">signaled.fetch_add(1, std::memory_order_relaxed);</span>
+        }
+    }
+
+    <span style="color: blue;">void set_many(node_list&amp; list, unsigned int count) noexcept
+    {
+        for (; count &amp;&amp; resume_one(list); --count) { }
+
+        if (count) {
+            tokens.fetch_add(count, std::memory_order_relaxed);
+        }
+    }</span>
+};
+
+struct awaitable_semaphore
+    : async_helpers::awaitable_sync_object&lt;awaitable_semaphore_state&gt;
+{
+    awaitable_semaphore(<span style="color: blue;">unsigned int initial = 0</span>) :
+        awaitable_sync_object(initial) { }
+
+    void set() noexcept
+    {
+        action_impl(&amp;state::set);
+    }
+
+    <span style="color: blue;">void set_many() noexcept
+    {
+        action_impl(&amp;state::set_many);
+    }</span>
+};
+</pre>
+<p>This is basically the same as an auto-reset event, except that the object state is a count of tokens instead of a single boolean value. Claiming a token involves decrementing the token count by one, rather than by “decrementing” a <code>true</code> to a <code>false</code>. Similarly, setting the semaphore increments the token count instead of “incrementing” the <code>false</code> to <code>true</code>.</p>
+<p>Since semaphores can hold more than one token, we don’t have a good “optimistic” value for the success case, so we just use the one-parameter version of <code>calc_claim</code> that uses the atomic variable’s current value as its starting point.</p>
+<p>Semaphores have the extra operation of “set many” which lets you set multiple tokens at once. We implement that by resuming as many waiters as we have tokens to resume, and then adding any leftover tokens to the token count for future consumption.</p>
+<p>Netx time, we’ll look at mutexes and recursive mutexes, which are quirky in the world of coroutines.</p>
+
+
+</body>

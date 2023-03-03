@@ -1,0 +1,121 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you’re going to use an interlocked operation to generate a unique value, you need to use it before it’s gone</h1>  <!-- .entry-meta -->
+
+<p><p>
+Is the
+<code>Interlocked­Increment</code> function broken?
+One person seemed to think so.
+</p>
+<blockquote class="q">
+<p>
+We’re finding that the
+<code>Interlocked­Increment</code> is producing
+duplicate values.
+Are there are any know bugs in
+<code>Interlocked­Increment</code>?
+</p></blockquote>
+<p>
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/02/10/10127054.aspx">
+Because of course when something doesn’t work,
+it’s because you are the victim of a vast conspiracy</a>.
+There is a fundamental flaw in the
+<code>Interlocked­Increment</code> function that
+only you can see.
+<i>You are not a crackpot</i>.
+</p>
+<pre>
+LONG g_lNextAvailableId = 0;</pre></p>
+<p><i>DWORD GetNextId()
+{
+  // Increment atomically
+  InterlockedIncrement(&amp;g_lNextAvailableId);</i></p>
+<p>  // Subtract 1 from the current value to get the value
+  // before the increment occurred.
+  return (DWORD)g_lNextAvailableId – 1;
+}
+
+<p>
+Recall that
+<code>Interlocked­Increment</code>
+function increments a value atomically
+and returns the incremented value.
+If you are interested in the result of the increment,
+you need to <i>use the return value directly</i>
+and not try to read the variable you incremented,
+because that variable may have been modified by another
+thread in the interim.
+</p>
+<p>
+Consider what happens when two threads call
+<code>Get­Next­Id</code>
+simultaneously (or nearly so).
+Suppose the initial value of <code>g_lNext­Available­Id</code> is 4.
+</p>
+<ul>
+<li>First thread calls
+    <code>Interlocked­Increment</code>
+    to increment from 4 to 5.
+    The return value is 5.
+<li>Second thread calls
+    <code>Interlocked­Increment</code>
+    to increment from 5 to 6.
+    The return value is 6.
+<li>First thread ignores the return value and instead
+    reads the current value of
+    <code>g_lNext­Available­Id</code>, which is 6.
+    It subtracts 1, leaving 5, and returns it.
+<li>Second thread ignores the return value and instead
+    reads the current value of
+    <code>g_lNext­Available­Id</code>, which is still 6.
+    It subtracts 1, leaving 5, and returns it.
+</li></li></li></li></ul>
+<p>
+Result:
+Both calls to
+<code>Get­Next­Id</code> return 5.
+Interpretation:
+“<code>Interlocked­Increment</code> is broken.”
+</p>
+<p>
+Actually,
+<code>Interlocked­Increment</code> is working just fine.
+What happened is that the code threw away the unique information
+that
+<code>Interlocked­Increment</code> returned
+and instead went back to the shared variable,
+even though the shared variable changed its value
+in the meantime.
+</p>
+<p>
+Since this code cares about the result of the increment,
+it needs to use the value returned
+by <code>Interlocked­Increment</code>.
+</p>
+<pre>
+DWORD GetNextId()
+{
+  // Increment atomically and subtract 1 from the
+  // incremented value to get the value before the
+  // increment occurred.
+  return (DWORD)InterlockedIncrement(&amp;g_lNextAvailableId) – 1;
+}
+</pre>
+<p>
+<b>Exercise</b>: Criticize this implementation of
+<code>IUnknown::Release</code>:
+</p>
+<pre>
+<i>STDMETHODIMP_(ULONG) CObject::Release()
+{
+ InterlockedDecrement(&amp;m_cRef);
+ if (m_cRef == 0)
+ {
+  delete this;
+  return 0;
+ }
+ return m_cRef;
+}</i>
+</pre></p>
+
+
+</body>

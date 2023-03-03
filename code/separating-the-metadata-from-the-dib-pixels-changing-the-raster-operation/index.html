@@ -1,0 +1,131 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Separating the metadata from the DIB pixels: Changing the raster operation</h1>  <!-- .entry-meta -->
+
+<p>
+For a few days now, we’ve
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/07/14/9832544.aspx">
+used the <code>SetDIBitsToDevice</code> function
+in conjunction with a precomputed <code>BITMAPINFO</code>
+to draw a DIB with an alternate color table</a>
+without modifying the <code>HBITMAP</code>.
+</p>
+<p>
+The <code>SetDIBitsToDevice</code> function operates like
+a <code>BitBlt</code> with raster operation <code>SRCCOPY</code>.
+If you want another raster operation, you can use
+<code>StretchDIBits</code>, which has a final raster operation parameter.
+Despite its name, you don’t have to stretch with <code>StretchDIBits</code>.
+Just pass a source and destination of equal size, and you’ve performed
+a NOP stretch, but you get the benefit of the raster operation.
+</p>
+<pre>
+void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+ if (g_pvBits) {
+    <font color="blue">StretchDIBits</font>(pps-&gt;hdc, 0, 0,
+                      g_bmiGray.bmiHeader.biWidth,
+                      g_bmiGray.bmiHeader.biHeight, 0, 0,
+                      <font color="blue">g_bmiGray.bmiHeader.biWidth,
+                      g_bmiGray.bmiHeader.biHeight,</font>
+                      g_pvBits,
+                     (BITMAPINFO*)&amp;g_bmiGray, DIB_RGB_COLORS,
+                      <font color="blue">NOTSRCCOPY</font>);
+ }
+}
+</pre>
+<p>
+I changed the call from <code>SetDIBitsToDevice</code>
+to <code>StretchDIBits</code>,
+setting the source and destination rectangles to the same size
+(so no actual stretching occurs),
+and specifying a raster operation of <code>NOTSRCCOPY</code>
+so the result on screen is a negative grayscale.
+</p>
+<p>
+Some people may object to performing a stretch operation
+and requesting no stretching, but that’s perfectly fine.
+At least in this case, GDI is not stupid.
+If you ask it to perform a stretch operation
+but pass parameters that don’t do any stretching, it will
+optimize this to a non-stretching operation.
+You don’t need to hand-optimize it.
+Instead of writing
+</p>
+<pre>
+if (cxSrc == cxDst &amp;&amp; cySrc == cyDst) {
+ BitBlt(hdc, xDst, yDst, cxDst, cyDst,
+        hdcSrc, xSrc, ySrc, dwRop);
+} else {
+ StretchBlt(hdc, xDst, yDst, cxDst, cyDst,
+            hdcSrc, xSrc, ySrc, cxSrc, cySrc, dwRop);
+}
+</pre>
+<p>
+… just go straight to the <code>StretchBlt</code>:
+</p>
+<pre>
+StretchBlt(hdc, xDst, yDst, cxDst, cyDst,
+           hdcSrc, xSrc, ySrc, cxSrc, cySrc, dwRop);
+</pre>
+<p>
+The <code>StretchBlt</code> function will convert the
+operation to a <code>BitBlt</code> if <code>cxSrc == cxDst</code>
+and <code>cySrc == cyDst</code>.
+You don’t have to hand-optimize it.
+The GDI folks hand-optimized it for you.
+</p>
+<p>
+(In fact, for a long time,
+the <code>SetDIBitsToDevice</code> function simply called
+<code>StretchDIBits</code>, saying that the input and
+output rectangles were the same size,
+and <code>StretchDIBits</code> detected the absence of stretching
+and used an optimized code path.
+Consequently,
+“optimizating” the code by calling
+<code>SetDIBitsToDevice</code>
+was actually a pessimization.)</p>
+<p>
+Back to <code>StretchDIBits</code>.
+So far, we’ve been drawing the entire bitmap at the upper left
+corner of the destination device context.
+The last remaining feature of <code>BitBlt</code> is
+the ability to draw a rectangular chunk of a source bitmap
+at a destination location,
+so let’s do that.
+We’ll draw the bottom right corner of the bitmap in
+the bottom right corner of the window,
+with negative colors,
+and <i>just to show we can</i>, we’ll also stretch it.
+</p>
+<pre>
+void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+ if (g_pvBits) {
+  <font color="blue">RECT rc;
+  GetClientRect(hwnd, &amp;rc);
+  int cxChunk = g_bmiGray.bmiHeader.biWidth / 2;
+  int cyChunk = g_bmiGray.bmiHeader.biHeight / 2;
+  StretchDIBits(pps-&gt;hdc, rc.right - cxChunk * 2,
+                rc.bottom - cxChunk * 2,
+                cxChunk * 2, cyChunk * 2,
+                g_bmiGray.bmiHeader.biWidth - cxChunk,
+                g_bmiGray.bmiHeader.biHeight - cyChunk,
+                cxChunk, cyChunk,
+                g_pvBits, (BITMAPINFO*)&amp;g_bmiGray,
+                DIB_RGB_COLORS, NOTSRCCOPY);</font>
+ }
+}
+</pre>
+<p>
+So far, we’ve been operating on DIB pixels that are
+held inside a DIB section.
+But there’s no requirement that the bits passed to
+<code>StretchDIBits</code> come from an actual DIB section.
+We’ll look at the total disembodiment of DIBs next time,
+as well as looking at some unexpected consequences of all our game-playing.</p>
+
+
+</body>

@@ -1,0 +1,44 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why am I getting the error message “This is only for weak ref support” when I try to create a C++/WinRT weak reference?</h1>  <!-- .entry-meta -->
+
+<p>A customer tried to obtain a weak reference from within a C++/WinRT class implementation by calling <code>get_weak()</code>. This normally works, but for some reason, the customer was getting the error</p>
+<pre style="white-space: pre-wrap;">winrt\base.h(7594,47): error C2338: This is only for weak ref support.
+winrt\base.h(7593): message : while compiling class template member function 'winrt::impl::IWeakReferenceSource *winrt::impl::root_implements&lt;D,IWidget&gt;::make_weak_ref(void) noexcept'
+        with
+        [
+            D=Widget
+        ]
+winrt\base.h(7500): message : see reference to function template instantiation 'winrt::impl::IWeakReferenceSource *winrt::impl::root_implements&lt;D,IWidget&gt;::make_weak_ref(void) noexcept' being compiled
+        with
+        [
+            D=Widget
+        ]
+winrt\base.h(7803): message : see reference to class template instantiation 'winrt::impl::root_implements&lt;D,IWidget&gt;' being compiled
+        with
+        [
+            D=Widget
+        ]
+Widget.h(15): message : see reference to class template instantiation
+</pre>
+<p>The message “This is only for weak ref support” is rather enigmatic. It sounds like an internal note from the authors of the C++/WinRT library to their future selves, telling them that they made some sort of internal error.</p>
+<p>But let’s see if we can figure out what it’s saying. This is another segment in the “Behind C++/WinRT series” (and the larger topic of decoding template metaprogramming).</p>
+<p>The error message comes from <a href="https://github.com/microsoft/cppwinrt/blob/b4015649c5c658846bcd13d842a76e16135ea207/strings/base_implements.h#L1128"> make_weak_ref</a>, which is a helper function <a href="https://github.com/microsoft/cppwinrt/blob/b4015649c5c658846bcd13d842a76e16135ea207/strings/base_implements.h#L1034"> called from get_weak</a>:</p>
+<pre>static_assert(is_weak_ref_source::value, "This is only for weak ref support.");
+</pre>
+<p>What is <code>is_<wbr/>weak_<wbr/>ref_<wbr/>source</code>? Let’s look for it:</p>
+<pre style="white-space: pre-wrap;">using is_inspectable = std::disjunction&lt;std::is_base_of&lt;Windows::Foundation::IInspectable, I&gt;...&gt;;
+using is_weak_ref_source = std::conjunction&lt;is_inspectable, std::negation&lt;std::disjunction&lt;std::is_same&lt;no_weak_ref, I&gt;...&gt;&gt;&gt;;
+</pre>
+<p>We saw in an earlier installment <a href="/code/behind-c-winrt-how-does-c-winrt-decide-which-interfaces-are-implemented" title="Behind C++/WinRT: How does C++/WinRT decide which interfaces are implemented?"> how to read <code>std::disjunction</code>, <code>std:conjunction</code>, and <code>std::negation</code></a>.</p>
+<p>First, let’s untangle <code>is_<wbr/>inspectable</code>: It checks each of the implemented interfaces <code>I</code> to see if it has <code>Windows::<wbr/>Foundation::<wbr/>IInspectable</code> as a base class, and then uses <code>std::disjunction</code> to “or” all the results together via a template parameter pack expansion. Therefore, <code>is_inspectable</code> is true if any of the implemented interfaces has <code>Windows::<wbr/>Foundation::<wbr/>IInspectable</code> as a base class, which means that at least one of the interfaces is or is derived from <code>IInspectable</code>.</p>
+<p>Next, we calculate <code>is_<wbr/>weak_<wbr/>ref_<wbr/>source</code>. The parameter pack expansion checks whether any of the implemented interfaces is the marker type <code>no_<wbr/>weak_<wbr/>ref</code>. Therefore, through the power of <i>reading code</i>, we determine that in order for a type to support weak references, it must</p>
+<ul>
+<li>Implement <code>IInspectable</code>, and</li>
+<li>Not mention <code>no_<wbr/>weak_<wbr/>ref</code>.</li>
+</ul>
+<p>Applying our newfound knowledge, we can see from the error message that the thing being implemented is <code>root_implements&lt;Widget, IWidget&gt;</code>. The sole interface is <code>IWidget</code>, and there is no mention of <code>no_<wbr/>weak_<wbr/>ref</code>, so the force of logic compels us to conclude that <code>IWidget</code> must not derive from <code>IInspectable</code>.</p>
+<p>Checking with the customer confirms that <code>IWidget</code> is a classic COM interface and C++/WinRT therefore does not generate weak reference support for <code>Widget</code>, which explains why <code>get_weak()</code> was producing a compiler error.</p>
+<p><b>Bonus chatter</b>: <a href="https://github.com/microsoft/cppwinrt/pull/1104"> C++/WinRT pull request 1104</a> removes the requirement that one of the interfaces derive from <code>IInspectable</code>. With that change (available in build 2.0.220224.4), everything supports weak references by default. To remove weak reference support, you say <code>no_<wbr/>weak_<wbr/>ref</code>.</p>
+
+
+</body>

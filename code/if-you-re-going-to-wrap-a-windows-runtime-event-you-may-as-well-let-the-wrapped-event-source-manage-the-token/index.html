@@ -1,0 +1,161 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you’re going to wrap a Windows Runtime event, you may as well let the wrapped event source manage the token</h1>  <!-- .entry-meta -->
+
+<p>Suppose that you have a Windows Runtime object with an event that is just a proxy for an event on some other object. For example, maybe we have this:</p>
+<pre>runtimeclass Widget
+{
+    event Windows.Foundation.TypedEventHandler&lt;Widget, Object&gt; Changed;
+
+    /* ... other members ... */
+}
+
+runtimeclass Dashboard
+{
+    event Windows.Foundation.TypedEventHandler&lt;Dashboard, Object&gt; Changed;
+
+    /* ... other members ... */
+}
+</pre>
+<p>Secretly, a <code>Dashboard</code> uses a <code>Widget</code> to do the real work, and the <code>Changed</code> event on the <code>Dashboard</code> is just a wrapper around the <code>Widget</code>‘s <code>Changed</code> event. The <code>Dashboard</code> registers for the <code>Widget</code>‘s <code>Changed</code> event, and the event handler turns around and raises the <code>Dashboard</code>‘s <code>Changed</code> event.</p>
+<pre>namespace winrt::Namespace::implementation
+{
+    struct Dashboard : DashboardT&lt;Dashboard&gt;
+    {
+        Namespace::Widget const m_widget;
+        event&lt;TypedEventHandler&lt;Namespace::Dashboard, IInspectable&gt; m_changed;
+
+        Dashboard()
+        {
+            m_widget.Changed({ get_weak(), &amp;Dashboard::OnChanged });
+        }
+
+        auto Changed(TypedEventHandler&lt;Namespace::Dashboard, IInspectable&gt; const&amp; handler)
+        {
+            return m_changed.add(handler);
+        }
+
+        void Changed(event_token token)
+        {
+            return m_changed.remove(token);
+        }
+
+        void OnChanged(Namespace::Widget const&amp;, IInspectable const&amp;)
+        {
+            m_event(*this, nullptr);
+        }
+    };
+}
+</pre>
+<p>The idea here is that the <code>Dashboard</code> listens on the <code>Changed</code> event of its private <code>Widget</code>, and when the <code>Widget</code> changes, it turns around and raises its own <code>Changed</code> event to anybody who is listening.</p>
+<p>One problem with this approach is that it registers a <code>Changed</code> event on the <code>Widget</code> even if there is nobody listening to the <code>Dashboard</code>‘s <code>Changed</code> event. This can be a problem if the <code>Widget</code>‘s <code>Changed</code> event is expensive to subscribe to. For example, detecting changes to a <code>Widget</code> may require the creation of a “watcher” object which monitors some system state. If nobody has subscribed to the <code>Dashboard</code>‘s <code>Changed</code> event, then there’s no need to run the <code>Widget</code> change watcher.</p>
+<p>Some people solve this problem by registering on the <code>Widget</code>‘s <code>Changed</code> event only when somebody registers for the <code>Dashboard</code>‘s <code>Changed</code> event.</p>
+<pre>namespace winrt::Namespace::implementation
+{
+    struct Dashboard : DashboardT&lt;Dashboard&gt;
+    {
+        Namespace::Widget const m_widget;
+        event&lt;TypedEventHandler&lt;Namespace::Dashboard, IInspectable&gt; m_changed;
+        <span style="color: #08f;">std::once_flag m_subscribe_once;</span>
+
+        Dashboard()
+        {
+            <span style="color: red;">// <span style="text-decoration: line-through;">m_widget.Changed({ get_weak(), &amp;Dashboard::OnChanged });</span></span>
+        }
+
+        auto Changed(TypedEventHandler&lt;Namespace::Dashboard, IInspectable&gt; const&amp; handler)
+        {
+            <span style="color: #08f;">std::call_once(m_subscribe_once, [&amp;]() {
+                m_widget.Changed({ get_weak(), &amp;Dashboard::OnChanged });
+            });</span>
+            return m_changed.add(handler);
+        }
+
+        void Changed(event_token token)
+        {
+            return m_changed.remove(token);
+        }
+
+        void OnChanged(Namespace::Widget const&amp;, IInspectable const&amp;)
+        {
+            m_event(*this, nullptr);
+        }
+    };
+}
+</pre>
+<p>This at least delays the registration until needed, but it doesn’t remove the registration when no longer needed. For that, we would have to add some more synchronization:</p>
+<pre>namespace winrt::Namespace::implementation
+{
+    struct Dashboard : DashboardT&lt;Dashboard&gt;
+    {
+        Namespace::Widget const m_widget;
+        event&lt;TypedEventHandler&lt;Namespace::Dashboard, IInspectable&gt; m_changed;
+        <span style="color: #08f;">std::mutex m_lock;
+        winrt::event_token m_token{};</span>
+
+        Dashboard()
+        {
+        }
+
+        auto Changed(TypedEventHandler&lt;Namespace::Dashboard, IInspectable&gt; const&amp; handler)
+        {
+            <span style="color: #08f;">std::lock_guard guard(m_lock);
+            if (!m_changed) {
+                m_token = m_widget.Changed({ get_weak(), &amp;Dashboard::OnChanged });
+            }</span>
+            return m_changed.add(handler);
+        }
+
+        void Changed(event_token token)
+        {
+            <span style="color: #08f;">std::lock_guard guard(m_lock);</span>
+            m_changed.remove(token);
+            <span style="color: #08f;">if (!m_changed) {
+                m_widget.Changed(std::exchange(m_token, {}));
+            }</span>
+        }
+
+        void OnChanged(Namespace::Widget const&amp;, IInspectable const&amp;)
+        {
+            m_event(*this, nullptr);
+        }
+    };
+}
+</pre>
+<p>But there’s an easier way.</p>
+<p>Just get out of the event business entirely, and let the registrations go all the way to the <code>Widget</code>. Let the event registration token be the one from the <code>Widget</code>‘s <code>Changed</code> event. All you have to do is convert the event parameters when the <code>Widget</code>‘s <code>Changed</code> event is raised.</p>
+<pre>namespace winrt::Namespace::implementation
+{
+    struct Dashboard : DashboardT&lt;Dashboard&gt;
+    {
+        Namespace::Widget const m_widget;
+        <span style="color: red;">// <span style="text-decoration: line-through;">event&lt;TypedEventHandler&lt;Namespace::Dashboard, IInspectable&gt; m_changed;</span></span>
+
+        Dashboard()
+        {
+        }
+
+        auto Changed(TypedEventHandler&lt;Namespace::Dashboard, IInspectable&gt; const&amp; handler)
+        {
+            <span style="color: #08f;">return m_changed.add([weak = get_weak(), handler](auto&amp;&amp;, auto&amp;&amp;)
+            {
+                if (auto strong = weak.get()) handler(*strong.get(), nullptr);
+            });</span>
+        }
+
+        void Changed(event_token token)
+        {
+            <span style="color: #08f;">m_widget.Changed(token);</span>
+        }
+
+        <span style="color: red;">// <span style="text-decoration: line-through;">void OnChanged(Namespace::Widget const&amp;, IInspectable const&amp;)</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">{</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">    m_event(*this, nullptr);</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">}</span></span>
+    };
+}
+</pre>
+<p>When a client wants to register a <code>Dashboard</code> <code>Changed</code> event handler, we wrap it inside a <code>Widget</code> <code>Changed</code> event handler and let the <code>Widget</code> deal with it. The wrapper captures a weak reference to the <code>Dashboard</code> to avoid a circular reference. When the wrapper is called, it recovers the original <code>Dashboard</code> from the weak reference so it can use it as the <code>sender</code> when calling the client’s original handler.</p>
+<p>This approach gives the <code>Widget</code> full insight into the clients, so it can perform whatever optimizations it likes. And it’s less work for you, too, since you’ve delegated all the event bookkeeping to the <code>Widget</code>.</p>
+
+
+</body>

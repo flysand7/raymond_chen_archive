@@ -1,0 +1,373 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Microsoft Money crashes during import of account transactions or when changing a payee of a downloaded transaction</h1>  <!-- .entry-meta -->
+
+<blockquote class="q"><p>
+<b>Update</b>:
+An official fix for this issue has been released to Windows Update,
+although I must say that I think my patch has more style than the
+official one.
+You do not need to patch your binary.
+Just keep your copy of Windows 8 up to date and you’ll be fine.
+</p></blockquote>
+<p>
+For the five remaining Microsoft Money holdouts
+(meekly raises hand),
+here’s a patch for a crashing bug during import of account transactions
+or when changing a payee of a downloaded transaction
+in
+<a href="http://www.microsoft.com/en-us/download/details.aspx?id=20738">
+Microsoft Money Sunset Deluxe</a>.
+Patch the mnyob99.dll file as follows:
+</p>
+<ul>
+<li>File offset 003FACE8: Change 85 to 8D
+<li>File offset 003FACED: Change 50 to 51
+<li>File offset 003FACF0: Change FF to 85
+<li>File offset 003FACF6: Change E8 to B9
+</li></li></li></li></ul>
+<p>
+Note that this patch is
+<b>completely unsupported</b>.
+If it makes your computer explode or transfers all your money
+to an account in the Cayman Islands,
+well, too bad for you.
+</p>
+<p>
+If you are not one of the five remaining customers of Microsoft Money,
+this is a little exercise in
+application compatibility debugging.
+Why application compatibility debugging?
+Because the problem seems to be more prevalent
+on Windows 8 machines.
+</p>
+<p>
+Note that I used no special knowledge about Microsoft Money.
+All this debugging was performed with information you also have
+access to.
+It’s not like I have access to the Microsoft Money source code.
+And I did this debugging entirely on my own.
+It was not part of any official customer support case or anything like that.
+I was just debugging a crash that I kept hitting.
+</p>
+<p>
+The crash occurs in the function <code>utlsrf08!DwStringLengthA</code>:
+</p>
+<pre>
+utlsrf08!DwStringLengthA:
+        push    ebp
+        mov     ebp,esp
+        mov     eax,dword ptr [ebp+8]
+        lea     edx,[eax+1]
+again:
+        mov     cl,byte ptr [eax]
+        inc     eax
+        test    cl,cl
+        jne     again
+        sub     eax,edx
+        pop     ebp
+        ret     4
+</pre>
+<p>
+The proximate cause is that the string pointer in <code>eax</code>
+is garbage.
+If you unwind the stack one step, you’ll see that the
+pointer came from here:
+</p>
+<pre>
+        lea     eax,[ebp-20Ch]
+        push    eax
+        call    dword ptr [__imp__GetCurrentProcessId]
+        push    eax
+        push    offset "Global\TRIE@%d!%s"
+        lea     eax,[ebp-108h]
+        push    104h
+        push    eax
+        call    mnyob99!DwStringFormatA
+        add     esp,14h
+        lea     eax,[ebp-2E4h]
+        push    eax
+        push    5Ch
+        <font color="red">push    dword ptr [ebp-2E4h]</font> ; invalid pointer
+        call    mnyob99!DwStringLengthA
+        sub     eax,7
+        push    eax
+        lea     eax,[ebp-101h]
+        push    eax
+        jmp     l2
+l1:
+        mov     eax,dword ptr [ebp-2E4h]
+        mov     byte ptr [eax],5Fh
+        lea     eax,[ebp-2E4h]
+        push    eax
+        push    5Ch
+        push    dword ptr [ebp-2E4h]
+        call    mnyob99!DwStringLengthA
+        push    eax
+        push    dword ptr [ebp-2E4h]
+l2:
+        call    mnyob99!FStringFindCharacterA
+        cmp     dword ptr [ebp-2E4h],edi
+        jne     l1
+</pre>
+<p>
+I was lucky in that all the function calls here were to imported
+functions, so I could extract the names from the imported function table.
+For example, the call to <code>DwStringFormatA</code> was originally
+</p>
+<pre>
+        call    mnyob99!CBillContextMenu::SetHwndNotifyOnGoto+0x1e56a (243fc3cc)
+</pre>
+<p>
+But the target address is an
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2006/07/26/679044.aspx">
+import stub</a>:
+</p>
+<pre>
+        jmp     dword ptr [mnyob99+0x1ec0 (24001ec0)]
+</pre>
+<p>
+And then I can walk the import table to see that this was the import
+table entry for <code>utlsrf08!DwStringFormatA</code>.
+From the function name, it’s evident that this is some sort of
+<code>sprintf</code>-like function.
+(If you disassemble it, you’ll see that it’s basically
+a wrapper around
+<code>vsnprintf</code>.)
+</p>
+<p>
+Reverse-compiling this code, we get
+</p>
+<pre>
+char name[...];
+char buffer[MAX_PATH];
+char *backslash;
+...
+DwStringFormatA(buffer, MAX_PATH, "Global\\TRIE@%d!%s",
+                GetCurrentProcessId(), name);
+// Change all backslashes (except for the first one) to underscores
+if (FStringFindCharacterA(buffer + 7, DwStringLengthA(backslash) - 7,
+                          '\\',&amp;backslash))
+{
+  do {
+    *backslash = '_'; // Change backslash to underscore
+  } while (FStringFindCharacterA(backslash, DwStringLengthA(backslash),
+                                 '\\',&amp;backslash));
+}
+</pre>
+<p>
+(Remember, all variable names are made-up since I don’t have source
+code access. I’m just working from the disassembly.)
+</p>
+<p>
+At this point, you can see the bug:
+It’s an uninitialized variable at the first call to
+<code>String­Find­CharacterA</code>.
+Whether we crash or survive is a matter of luck.
+If the uninitialized variable happens to be a pointer
+to readable data,
+then the
+<code>Dw­String­LengthA</code> will eventually
+find the null terminator,
+and since in practice the string does not contain
+any extra backslashes,
+the call to
+<code>FString­Find­CharacterA</code> fails,
+and nobody gets hurt.
+</p>
+<p>
+But it looks like their luck ran out,
+and now the uninitialized variable contains
+something that is not a valid pointer.
+</p>
+<p>
+The <code>if</code> test should have been
+</p>
+<pre>
+if (FStringFindCharacterA(buffer + 7, DwStringLengthA(buffer) - 7,
+                          '\\',&amp;backslash))
+</pre>
+<p>
+This means changing the
+</p>
+<pre>
+        push    dword ptr [ebp-2E4h]
+</pre>
+<p>
+to
+</p>
+<pre>
+        lea     eax,[ebp-101h]
+        push    eax
+</pre>
+<p>
+Unfortunately, the patch is one byte larger than the existing
+code, so we will need to get a little clever in order to get it
+to fit.
+</p>
+<p>
+One trick is to rewrite the test as
+</p>
+<pre>
+if (FStringFindCharacterA(buffer + 7, DwStringLengthA(buffer + 7),
+                          '\\',&amp;backslash))
+</pre>
+<p>
+That lets us rewrite the assembly code as
+</p>
+<pre>
+        lea     eax,[ebp-2E4h]
+        push    eax
+        push    5Ch
+        <font color="blue">lea     eax,[ebp-101h]          ; \ was "push dword ptr [ebp-2E4h]"
+        push    eax                     ; /
+        call    mnyob99!DwStringLengthA ; unchanged but code moved down one byte
+        nop                             ; \ was "sub eax,7" (3-byte instruction)
+        nop                             ; /</font>
+        push    eax
+        lea     eax,[ebp-101h]
+        push    eax
+</pre>
+<p>
+The new instructions (<code>lea</code> and <code>push</code>)
+are one byte larger than the original <code>push</code>,
+but we got rid of the three-byte <code>sub eax, 7</code>,
+so it’s a net savings of two bytes, which therefore fits.
+</p>
+<p>
+However, I’m going to crank the nerd level up another notch
+and try to come up with a patch that involves modifying
+as few bytes as possible.
+In other words,
+I’m going for <i>style points</i>.
+</p>
+<p>
+To do this, I’m going to take advantage of the fact that
+the string length is the return value of
+<code>Dw­String­FormatA</code>,
+so that lets me eliminate the call to
+<code>Dw­String­LengthA</code> altogether.
+However, this means that I have to be careful not to
+damage the value in <code>eax</code>
+before I get there.
+</p>
+<pre>
+        <font color="blue">lea     ecx,[ebp-2E4h] ; was "lea eax,[ebp-2E4h]"
+        push    ecx            ; was "push eax"</font>
+        push    5Ch
+        <font color="blue">nop                    ; \
+        nop                    ; |
+        nop                    ; |
+        nop                    ; | was "push dword ptr [ebp-2E4h]"
+        nop                    ; |
+        nop                    ; /
+        nop                    ; \
+        nop                    ; |
+        nop                    ; | was "call mnyob99!DwStringLengthA"
+        nop                    ; |
+        nop                    ; /</font>
+        sub     eax,7
+        push    eax
+        lea     eax,[ebp-101h]
+        push    eax
+</pre>
+<p>
+Patching the <code>lea eax, …</code> to be
+<code>lea ecx, ...</code> can be done with a single byte,
+and the <code>push eax</code> is a single-byte instruction
+as well, so the first two patches can be done with one byte each.
+That leaves me with 11 bytes that need to be nop’d out.
+</p>
+<p>
+The naïve way of nopping out eleven bytes is simply
+to patch in 11 <code>nop</code> instructions,
+but you can do better by taking advantage of the bytes
+that are already there.
+</p>
+<pre>
+<font color="red">ff</font>b51cfdffff    push    dword ptr [ebp-2E4h]
+<font color="blue">85</font>b51cfdffff    test    dword ptr [ebp-2E4h],esi
+<font color="red">e8</font>770a0000      call    mnyob99!DwStringLengthA
+<font color="blue">b9</font>770a0000      mov     ecx,0A77h
+</pre>
+<p>
+By patching a single byte in each of the two instructions,
+I can turn them into effective nops by making them do nothing
+interesting.
+The first one tests the uninitialized variable against some garbage bits,
+and the second one loads a unused register with a constant.
+(Since the <code>ecx</code> register is going to be trashed by the call to
+<code>FString­Find­CharacterA</code>,
+we are free to modify it all we want prior to the call.
+No code could have relied on it anyway.)
+</p>
+<p>
+That second patch is a variation of one
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/11/11/255800.aspx">
+I called out some time ago</a>,
+except that instead of patching out the call with a
+<code>mov eax, immed32</code>,
+we’re using a
+<code>mov ecx, immed32</code>,
+because the value in the <code>eax</code> register is still important.
+</p>
+<p>
+Here’s the final result:
+</p>
+<pre>
+        <font color="blue">lea     ecx,[ebp-2E4h]           ; was "lea eax,[ebp-2E4h]"
+        push    ecx                      ; was "push eax"</font>
+        push    5Ch
+        <font color="blue">test    dword ptr [ebp-2E4h],esi ; was "push dword ptr [ebp-2E4h]"
+        mov     ecx,0a77h                ; was "call mnyob99!DwStringLengthA"</font>
+        sub     eax,7
+        push    eax
+        lea     eax,[ebp-101h]
+        push    eax
+</pre>
+<p>
+<b>Bonus chatter</b>:
+When I shared this patch with my friends,
+I mentioned that this patch made me feel like
+my retired colleague
+<a href="http://hashable.org/">
+Jeff</a>,
+who had a reputation for accomplishing
+astonishing programming tasks
+in his spare time.
+You would pop into his office asking for some help,
+and he’d fire up some program you’d never seen before.
+</p>
+<p>
+“What’s that?” you’d ask.
+</p>
+<p>
+“Oh, it’s a debugger I wrote,” he’d calmly reply.
+</p>
+<p>
+Or you’d point him to a program and apologize,
+“Sorry, I only compiled it for x86.
+There isn’t an Alpha version.”
+</p>
+<p>
+“That’s okay, I’ll run it in my emulator,”
+he’d say, matter-of-factly.
+</p>
+<p>
+(And retiring from Microsoft hasn’t slowed him down.
+Here’s
+<a href="http://jsmachines.net/">
+an IBM PC Model 5150 emulator written in JavaScript</a>.)
+</p>
+<p>
+Specifically, I said,
+“I feel like Jeff, who does this sort of thing before
+his morning coffee.”
+</p>
+<p>
+Jeff corrected me.
+“If this was something I used to do before coffee,
+that probably meant I was up all night.
+Persistence &gt;= talent.”</p>
+
+
+</body>

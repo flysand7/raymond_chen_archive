@@ -1,0 +1,127 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Implementing higher-order clicks</h1>  <!-- .entry-meta -->
+
+<p><p>
+Another question people ask is “How do I do triple-click or higher?”
+Once you see
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/userinput/mouseinput/aboutmouseinput.asp">
+the algorithm for double-clicks</a>, extending it to higher
+order clicks should be fairly natural.  The first thing you probably
+should do is to remove the <code>CS_DBLCLKS</code> style from your class because
+you want to do multiple-click management manually.
+</p>
+<p>
+Next, you can simply reimplement the same algorithm that the
+window manager uses, but take it to a higher order than just two.
+Let’s do that.  Start with a clean
+<a href="/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a> and add the following:
+</p>
+<pre>
+int g_cClicks = 0;
+RECT g_rcClick;
+DWORD g_tmLastClick;</pre></p>
+<p>void OnLButtonDown(HWND hwnd, BOOL fDoubleClick,
+                   int x, int y, UINT keyFlags)
+{
+  POINT pt = { x, y };
+  DWORD tmClick = GetMessageTime();</p>
+<p>  if (!PtInRect(&amp;g_rcClick, pt) ||
+      tmClick – g_tmLastClick &gt; GetDoubleClickTime()) {
+    g_cClicks = 0;
+  }
+  g_cClicks++;</p>
+<p>  g_tmLastClick = tmClick;
+  SetRect(&amp;g_rcClick, x, y, x, y);
+  InflateRect(&amp;g_rcClick,
+              GetSystemMetrics(SM_CXDOUBLECLK) / 2,
+              GetSystemMetrics(SM_CYDOUBLECLK) / 2);</p>
+<p>  TCHAR sz[20];
+  wnsprintf(sz, 20, TEXT(“%d”), g_cClicks);
+  SetWindowText(hwnd, sz);
+}</p>
+<p>void ResetClicks()
+{
+  g_cClicks = 0;
+  SetWindowText(hwnd, TEXT(“Scratch”));
+}</p>
+<p>void OnActivate(HWND hwnd, UINT state, HWND, BOOL)
+{
+  ResetClicks();
+}</p>
+<p>void OnRButtonDown(HWND hwnd, BOOL fDoubleClick,
+                   int x, int y, UINT keyFlags)
+{
+  ResetClicks();
+}</p>
+<p>    HANDLE_MSG(hwnd, WM_LBUTTONDOWN, OnLButtonDown);
+    HANDLE_MSG(hwnd, WM_ACTIVATE, OnActivate);
+
+<p>
+[Boundary test for double-click time corrected 10:36am.]
+</p>
+<p>
+(Our scratch program doesn’t use the <code>CS_DBLCLKS</code> style,
+so we didn’t need to remove it – it wasn’t there to begin with.)
+</p>
+<p>
+The basic idea here is simple:  When a click occurs, we see
+if it is in the “double-click zone” and has occurred within
+the double-click time.  If not, then we reset the consecutive
+click count.
+</p>
+<p>
+(Note that the SM_CXDOUBLECLK and SM_CYDOUBLECLK values are the
+width of the entire rectangle, so we cut it in half when inflating
+so that the rectangle extends halfway in either direction.
+Yes, this means that a pixel is lost if the double-click width is
+odd, but Windows has been careful always to set the value to
+an even number.)
+</p>
+<p>
+Next, we record the coordinates and time of the current click
+so the next click can compare against it.
+</p>
+<p>
+Finally, we react to the click by putting the consecutive click
+number in the title bar.
+</p>
+<p>
+There are some subtleties in this code.
+First, notice that setting <code>g_cClicks</code> to zero
+forces the next click to be treated as the first
+click in a series, for regardless of whether it matches the
+other criteria, all that will happen is that the click count
+increments to 1.
+</p>
+<p>
+Next, notice that the way we test whether the clicks occurred
+within the double click time was done in a manner that is not
+sensitive to timer tick rollover.  If we had written
+<p>
+<pre>
+      <font color="red">tmClick &gt; g_tmLastClick + GetDoubleClickTime()</font>) {
+</pre>
+<p>
+then we would fail to detect multiple clicks
+ properly near the timer tick rollover.
+(Make sure you understand this.)
+</p>
+<p>
+Third, notice that we reset the click count when the
+window gains or loses activation.
+That way, if the user
+clicks, then switches away, then switches back, and then
+clicks again, that is not treated as a double-click.
+We do the same if the user clicks the right mouse button in between.
+(You may notice that few programs bother with quite this much subtlety.)
+</p>
+<p>
+Exercise:  Suppose your program isn’t interested in anything
+beyond triple-clicks.  How would you change this program in
+a manner consistent with the way the window manager stops at
+double-clicks?
+</p></p>
+
+
+</p></p></body>

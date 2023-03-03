@@ -1,0 +1,123 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How does Windows decide whether a newly-created window should use LTR or RTL layout?</h1>  <!-- .entry-meta -->
+
+<p>You can specify in a window’s extended styles whether it follows left-to-right (LTR) or right-to-left (RTL) layout. The right-to-left layout is used in languages that are written from right to left, of which the most widely used today are probably Arabic and Hebrew. You can request right-to-left layout by setting the <code>WS_<wbr/>EX_<wbr/>LAYOUTRTL</code> extended style.</p>
+<p>If you don’t specify the <code>WS_<wbr/>EX_<wbr/>LAYOUTRTL</code> extended style, the system may still apply that style automatically, based on the following rules:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th colspan="2">Scenario</th>
+<th>Rule</th>
+</tr>
+<tr>
+<td rowspan="2">Child window</td>
+<td>Parent omits <code>WS_<wbr/>EX_<wbr/>NO­INHERIT­LAYOUT</code></td>
+<td>Inherit <code>WS_<wbr/>EX_<wbr/>LAYOUTRTL</code> from parent.</td>
+</tr>
+<tr>
+<td>Parent has <code>WS_<wbr/>EX_<wbr/>NO­INHERIT­LAYOUT</code></td>
+<td>Remain LTR.</td>
+</tr>
+<tr>
+<td rowspan="2">Top-level window</td>
+<td>Owned window</td>
+<td>Remain LTR.</td>
+</tr>
+<tr>
+<td>Unowned window</td>
+<td>Follow <code>Get­Process­Default­Layout</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>In the case of a top-level unowned window, the <code>WS_<wbr/>EX_<wbr/>LAYOUTRTL</code> extended style is automatically set if the process default layout has the <code>LAYOUT_<wbr/>RTL</code> bit set.</p>
+<p><a href="/other/whether-your-application-should-display-its-content-in-rtl-should-be-based-on-the-content" title="Whether your application should display its content in RTL should be based on the content"> As I noted some time ago</a>, if a process never calls <code>Set­Process­Default­Layout</code>, then the initial process default layout is inferred by inspecting the FileDescription version property of the primary executable: <a href="http://web.archive.org/web/20090101225524/http://msdn.microsoft.com/en-us/goglobal/bb688119.aspx#EDC"> If it begins with two left-to-right marks</a> (LRMs, represented by Unicode code point U+200E), then the process default layout is set to <code>LAYOUT_<wbr/>RTL</code>.</p>
+<p>I also noted some time ago that <a href="/code/how-do-i-determine-programmatically-whether-a-particular-language-is-ltr-or-rtl" title="How do I determine programmatically whether a particular language is LTR or RTL?"> you can ask <code>Get­Locale­Info­Ex</code> for the <code>LOCALE_<wbr/>IREADING­LAYOUT</code></a> to determine whether any particular language is LTR or RTL.</p>
+<pre>// <a href="https://docs.microsoft.com/en-us/windows/win32/intl/locale-ireadinglayout">Direction values</a>:
+// 0 = left to right (e.g., English)
+// 1 = right to left (e.g., Arabic)
+// 2 = top to bottom, right to left (e.g., classical Chinese)
+// 3 = top to bottom, left to right (e.g., Mongolian)
+
+int GetLanguageReadingLayout(PCWSTR languageName)
+{
+    int direction = 0;
+    THROW_IF_WIN32_BOOL_FALSE(
+        GetLocaleInfoEx(languageName,
+                        LOCALE_IREADINGLAYOUT | LOCALE_RETURN_NUMBER,
+                        reinterpret_cast&lt;LPWSTR&gt;(&amp;direction),
+                        sizeof(direction) / sizeof(wchar_t)));
+    return direction;
+}
+
+int GetSystemDefaultLanguageReadingLayout()
+{
+    return GetLanguageReadingLayout(LOCALE_NAME_SYSTEM_DEFAULT);
+}
+
+int GetUserDefaultLanguageReadingLayout()
+{
+    return GetLanguageReadingLayout(LOCALE_NAME_USER_DEFAULT);
+}
+</pre>
+<p>You typically are interested in the primary language for the current thread, since that’s the one that most influences which language resources your program will use. You can use <code>Get­Thread­Preferred­UI­Languages</code> to get all the languages that apply to the current thread, and then pass the first one to <code>Get­Language­Reading­Layout</code>. Calling the <code>Get­Thread­Preferred­UI­Languages</code> function is a bit frustrating because the list of applicable languages can change asynchronously (if another thread calls <code>Set­Process­Preferred­UI­Languages</code> It is double annoying because the wil helper function <code>Adapt­Fixed­Size­To­Allocated­Result</code> assumes null-terminated strings and doesn’t support double-null-terminated strings, so we have to write out the loop manually.</p>
+<pre>namespace wil
+{
+    template&lt;typename string_type, size_t stackBufferLength = 40&gt;
+    HRESULT GetThreadPreferredUILanguages(DWORD flags,
+        _Out_ PULONG languageCount, string_type&amp; result)
+    {
+        wchar_t stackBuffer[stackBufferLength];
+        ULONG required = ARRAYSIZE(stackBuffer);
+        if (::GetThreadPreferredUILanguages(flags, languageCount,
+                                         stackBuffer, &amp;required))
+        {
+            result = make_unique_string_nothrow&lt;string_type&gt;
+                                             (nullptr, required);
+            RETURN_IF_NULL_ALLOC(result);
+            memcpy(result.get(), stackBuffer,
+                   required * sizeof(wchar_t));
+            return S_OK;
+        }
+        DWORD error = ::GetLastError();
+        while (error == ERROR_INSUFFICIENT_BUFFER)
+        {
+            result = make_unique_string_nothrow&lt;string_type&gt;
+                                             (nullptr, required);
+            RETURN_IF_NULL_ALLOC(result);
+            if (::GetThreadPreferredUILanguages(flags,
+                         languageCount, result.get(), &amp;required))
+            {
+                return S_OK;
+            }
+            error = ::GetLastError();
+        }
+        RETURN_WIN32(error);
+    }
+
+    template &lt;typename string_type = wil::unique_cotaskmem_string,
+              size_t stackBufferLength = 40&gt;
+    string_type GetThreadPreferredUILanguages(DWORD flags,
+        _Out_ PULONG languageCount)
+    {
+        string_type result;
+        THROW_IF_FAILED<a href="/code/the-c-preprocessor-doesn-t-understand-anything-about-c-and-certainly-not-templates">((</a>wil::GetThreadPreferredUILanguages&lt;
+            string_type, stackBufferLength&gt;
+            (flags, languageCount, result)));
+        return result;
+    }
+}
+</pre>
+<p>We can now plug this into our existing function.</p>
+<pre>int GetDefaultThreadLanguageReadingLayout()
+{
+    ULONG count;
+    return GetLanguageReadingLayout(
+        wil::GetThreadPreferredUILanguages(MUI_LANGUAGE_NAME |
+            MUI_MERGE_UI_FALLBACK, &amp;count).get());
+}
+</pre>
+<p>Sorry it’s such a pain.</p>
+<p><b>Bonus chatter</b>: All of this logic assumes that your program has been translated into RTL languages in the first place. If your program is English-only, <a href="/other/whether-your-application-should-display-its-content-in-rtl-should-be-based-on-the-content" title="Whether your application should display its content in RTL should be based on the content"> don’t display your English strings in RTL</a>. As I noted in that article, you can leave a breadcrumb in the resources to tell you which direction the resources expect strings to read.</p>
+
+
+</body>

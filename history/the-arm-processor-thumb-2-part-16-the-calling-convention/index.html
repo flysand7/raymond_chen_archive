@@ -1,0 +1,61 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ARM processor (Thumb-2), part 16: The calling convention</h1>  <!-- .entry-meta -->
+
+<p>For non-variadic functions, the <a href="https://docs.microsoft.com/en-us/cpp/build/overview-of-arm-abi-conventions?view=msvc-160#parameter-passing"> Windows calling convention for ARM</a> matches the <a href="http://infocenter.arm.com/help/topic/com.arm.doc.ihi0042c/IHI0042C_aapcs.pdf"> Procedure Call Standard for the Arm Architecture</a>, so this will largely match what you see on most other operating systems.</p>
+<p>The fine points of the calling convention are spelled out in the standard document, but here’s the short and simple version.</p>
+<p>First, parameters smaller than 32 bits are extended to 32-bit values in a manner consistent with their type: Signed types are sign-extended and unsigned types are zero-extended.</p>
+<p>Next, parameters are laid out as if inside a giant structure:</p>
+<pre>struct Parameters
+{
+#if function returns a structure larger than 64 bits
+    Ret* result;
+#endif
+#if function has a "this" pointer
+    T* this;
+#endif
+    T1 param1;
+    T2 param2;
+    T3 param3;
+    T4 param4;
+    T5 param5;
+    ... etc ...
+};
+</pre>
+<p>Padding is inserted as necessary to preserve natural alignment.</p>
+<p>The first 4 × 4 = 16 bytes of the resulting structure are loaded into registers <var>r0</var> through <var>r3</var>, and the rest are put onto the stack.</p>
+<p>For example, suppose we have this function:</p>
+<pre>void f(int8_t a, int64_t b, int16_t c);
+</pre>
+<p>The parameter <code>a</code> is sign-extended to <code>int32_t</code> and placed in <var>r0</var>.</p>
+<p>The next parameter requires 8-byte alignment, so we skip <var>r1</var> so that we can reach 8-byte alignment starting at <var>r2</var>.</p>
+<p>Parameter <code>b</code> goes into registers <var>r2</var> and <var>r3</var>.</p>
+<p>Parameter <code>c</code> goes onto the stack.</p>
+<p>On function return, register <var>r0</var> contains the integer value. If the return value is smaller than 32 bits, it is extended to a 32-bit value in a manner consistent with its type. If the return value is a 64-bit integer, then <var>r1</var> holds the upper 32 bits of the result. If the return type is a floating point variable, it is returned in <var>s0</var> or <var>d0</var>, as appropriate.</p>
+<p>Things get messier once you introduce floating point parameters.</p>
+<p>Each floating point parameter goes into the next available <var>s#</var> or <var>d#</var> register, starting with <var>s0</var> and <var>d0</var>. Remember that the <var>s#</var> and <var>d#</var> registers overlap, so if you use <var>s0</var> and then need a double-precision register, you have to move up to <var>d1</var>.</p>
+<p>On the other hand, parameters can backfill: If you need a single-precision register, you can use an odd-numbered <var>s#</var> register that had previously been skipped in order to get to an earlier double-precision parameter.</p>
+<p>Floating point registers used for passing parameters are <var>s0</var> through <var>s15</var>, and <var>d0</var> through <var>d7</var>. If you run out of floating point registers, then that parameter and all subsequent floating point parameters go onto the stack. (No backfilling after spilling.)</p>
+<pre>void f(int i1, float f1, int i2, double d1, float f2);
+</pre>
+<p>The parameter assignment for this function goes like this:</p>
+<ul>
+<li><code>i1</code> goes into <var>r0</var>.</li>
+<li><code>f1</code> goes into <var>s0</var>.</li>
+<li><code>i2</code> goes into <var>r1</var>.</li>
+<li><code>d1</code> goes into <var>d1</var>. Skip over <var>s1</var>.</li>
+<li><code>f2</code> goes into <var>s1</var>. Go <i>backward</i> to backfill <var>s1</var>.</li>
+</ul>
+<p>Integer parameters and floating point parameters are allocated independently, and floating point parameters can backfill. Together, this means that a lot of distinct function signatures end up using the same registers:</p>
+<pre>void f(int i1, float f1, int i2, double d1, float f2);
+void f(int i1, int i2, float f1, double d1, float f2);
+void f(int i1, int i2, float f1, float f2, double d1);
+void f(float f1, float f2, double d1, int i1, int i2);
+</pre>
+<p>All of these functions pass the parameters in the same registers, even though they are listed differently in the source code.</p>
+<p>There is no parameter home space on the stack. At function entry, the first stack-based parameter is stored directly at the top of the stack.</p>
+<p>If any parameters were put onto the stack, they are the responsibility of the caller to clean up. In practice, instead of cleaning the stack after every call, the caller preadjusts the stack pointer at function entry to reserve space for all outbound stack-based parameters and just reuses the space for each function call, doing the cleanup at the end of the function.</p>
+<p>Variadic functions follow a different set of register assignment rules: All floating point parameters are passed as if they were integer parameters: A single-precision floating point parameter is passed as if it were a 32-bit integer, and a double-precision floating point parameter is passed as if it were a 64-bit integer. This rule applies even to the non-variadic parameters.</p>
+<p>Next time, we’ll look at how these parameter passing rules are implemented in code.</p>
+
+
+</body>

@@ -1,0 +1,149 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I find all objects of a particular type?</h1>  <!-- .entry-meta -->
+
+<p>
+More than one customer has asked a question like this:
+</p>
+<blockquote class="q"><p>
+I’m looking for a way to search for all instances of a particular
+type at runtime.
+My goal is to invoke a particular method on each of those instances.
+Note that I did not create these object myself or have any other
+access to them.
+Is this possible?
+</p></blockquote>
+<p>
+Imagine what the world would be like if it were possible.
+</p>
+<p>
+For starters, just imagine the fun you could have if you could
+call <code>typeof(Secure­String).Get­Instances()</code>.
+Vegas road trip!
+</p>
+<p>
+More generally, it breaks the semantics of App­Domain
+boundaries,
+since grabbing all instances of a type lets you get objects from
+another App­Domain,
+which fundamentally violates the point of App­Domains.
+(Okay, you could repair this by saying that the <code>Get­Instances</code>
+method only returns objects from the current App­Domain.)
+</p>
+<p>
+This imaginary <code>Get­Instances</code> method might return
+objects which are awaiting finalization,
+which violates
+one of the fundamental assumptions of a finalizer, namely that there
+are no references to the object:
+If there were, then it wouldn’t be finalized!
+(Okay, you could repair this by saying that the <code>Get­Instances</code>
+method does not return objects which are awaiting finalization.)
+</p>
+<p>
+On top of that, you break
+<a href="http://www.codeproject.com/KB/books/monitor_csharp_lock.aspx?display=Print#SyncRootPattern">
+the syncRoot pattern</a>.
+</p>
+<pre>
+class Sample {
+ private object syncRoot = new object();
+ public void Method() {
+  lock(syncRoot) { ... };
+ }
+}
+</pre>
+<p>If it were possible to get all objects of a particular class,
+then anybody could just reach in and grab your private <code>sync­Root</code>
+and call <code>Monitor.Enter()</code> on it.
+Congratuations, the private synchronization object you created
+is now a public one that anybody can screw with,
+defeating the whole purpose of having a private syncRoot.
+You can no longer reason about your syncRoot because you are no longer
+in full control of it.
+(Yes, this can already be done with reflection, but at least when
+reflecting, you know that you’re grabbing somebody’s private field
+called <code>sync­Root</code>, so you already recognize that you’re
+doing something dubious.
+Whereas with
+<code>Get­Instances</code>,
+you don’t know what each of the returned objects is being used for.
+Heck, you don’t even know if it’s being used!
+It might just be garbage lying around waiting to be collected.)</p>
+<p>
+More generally, code is often written on the expectation that
+an object that you never give out a reference to is not accessible
+to others.
+Consider the following code fragment:
+</p>
+<pre>
+using (StreamWriter sr = new StreamWriter(fileName)) {
+ sr.WriteLine("Hello");
+}
+</pre>
+<p>
+If it were possible to get all objects of a particular class,
+you may find that your customers report that they are getting an
+<code>Object­Disposed­Exception</code>
+on the call to <code>Write­Line</code>.
+How is that possible?
+The disposal doesn’t happen until the close-brace, right?
+Is there a bug in the CLR where it’s disposing an object too soon?
+</p>
+<p>
+Nope, what happened is that some other thread did exactly what the
+customer was asking for a way to do:
+It grabbed all existing <code>Stream­Writer</code> instances and
+invoked <code>Stream­Writer.Close</code> on them.
+It did this immediately after you constructed the <code>Stream­Writer</code>
+and before you did your <code>sr.Write­Line()</code>.
+Result: When your <code>sr.Write­Line()</code> executes, it finds
+that the stream was already closed, and therefore the write fails.
+</p>
+<p>
+More generally, consider the graffiti you could inject into all output
+files by doing
+</p>
+<pre>
+foreach (StreamWriter sr in typeof(StreamWriter).GetInstances()) {
+ sr.Write("Kilroy was here!");
+}
+</pre>
+<p>
+or even crazier
+</p>
+<pre>
+foreach (StringBuilder rb in typeof(StringBuilder).GetInstances()) {
+ sb.Insert(0, "DROP TABLE users; --");
+}
+</pre>
+<p>
+Now no <code>String­Builder</code> is safe—the contents of
+any <code>String­Builder</code> can be corrupted at any time!
+</p>
+<p>
+If you could obtain all instances of a type,
+the fundamental logic behind computer programming breaks down.
+It effectively becomes impossible to reason about code
+because anything could happen to
+your objects <i>at any time</i>.
+</p>
+<p>
+If you need to be able to get all instances of a class,
+you need to add that functionality to the class itself.
+(<code>GC­Handle</code> or <code>Weak­Reference</code> will
+come in handy here.)
+Of course, if you do this, then you clearly opted into
+the “anything can happen to your object at any time outside
+your control” model and presumably your code operates accordingly.
+You made your bed; now you get to lie in it.
+</p>
+<p>
+(And I haven’t even touched on thread safety.)
+</p>
+<p>
+<b>Bonus reading</b>:
+<a href="http://blogs.msdn.com/b/brada/archive/2003/09/28/50391.aspx">
+Questionable value of SyncRoot on Collections</a>.</p>
+
+
+</body>

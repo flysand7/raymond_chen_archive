@@ -1,0 +1,97 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The SuperH-3, part 4: Basic arithmetic</h1>  <!-- .entry-meta -->
+
+<p>Okay, we’re ready to do some arithmetic. Due to the limited instruction encoding space, there isn’t room for any three-operand instructions.¹ All of the arithmetic instructions are two-operand, where the second source operand also acts as the destination.</p>
+<pre>    ADD     Rm, Rn      ; Rn += Rm    , no effect on T
+    ADD     #imm, Rn    ; Rn += imm   , no effect on T
+    ADDC    Rm, Rn      ; Rn += Rm + T, T receives carry
+    ADDV    Rm, Rn      ; Rn += Rm    , T receives signed overflow
+</pre>
+<p>The <code>ADD</code> instructions add two values and put the result in the second register. You can add two registers together, or you can add a signed 8-bit immediate to the destination register.</p>
+<p>The <code>ADDC</code> instruction treats the <var>T</var> flag as a carry flag: It is added to the sum, and it receives the carry of the result.</p>
+<p>The <code>ADDV</code> instruction treats the <var>T</var> flag as an overflow flag: It reports whether a signed overflow occurred.</p>
+<p>Okay, subtraction is going to look really similar now.</p>
+<pre>    SUB     Rm, Rn      ; Rn -= Rm    , no effect on T
+    SUB     #imm, Rn    ; Rn -= imm   , no effect on T
+    SUBC    Rm, Rn      ; Rn -= Rm + T, T receives borrow
+    SUBV    Rm, Rn      ; Rn -= Rm    , T receives signed underflow
+</pre>
+<p>Basically the same as addition, except you’re now subtracting. The SH-3 treats <var>T</var> as a borrow flag in the case of <code>SUBC</code>, whereas for <code>SUBV</code> it reports whether a signed underflow occurred.</p>
+<p>Arithmetic negation is up next.</p>
+<pre>    NEG     Rm, Rn      ; Rn = -Rm    , no effect on T
+    NEGC    Rm, Rn      ; Rn = -Rm - T, T receives borrow
+</pre>
+<p>There is no <code>NEGV</code>, but overflow occurs only if the value is <code>0x80000000</code>, so I guess you could test for that value specifically.</p>
+<p>There is a special instruction for for decrementing a register:</p>
+<pre>    DT      Rn          ; Rn = Rn - 1, T  = (Rn == 0)
+</pre>
+<p>The <i>decrement and test</i> instruction decrements a register and compares the result against zero. This is presumably for counted loops.</p>
+<p>Next come the comparison instructions.</p>
+<pre>    CMP/EQ #imm, r0     ; T = (r0 == signed 8-bit immediate)
+    CMP/EQ Rm, Rn       ; T = (Rn == Rm)
+    CMP/HS Rm, Rn       ; T = (Rn ≥ Rm), unsigned comparison
+    CMP/GE Rm, Rn       ; T = (Rn ≥ Rm),   signed comparison
+    CMP/HI Rm, Rn       ; T = (Rn &gt; Rm), unsigned comparison
+    CMP/GT Rm, Rn       ; T = (Rn &gt; Rm),   signed comparison
+    CMP/PZ Rn           ; T = (Rn ≥ 0),    signed comparison
+    CMP/PL Rn           ; T = (Rn &gt; 0),    signed comparison
+    CMP/STR Rm, Rn      ; T = 1 iff any corresponding bytes are equal
+</pre>
+<p>These instructions set the <var>T</var> flag according to a particular comparison. Note that the comparison is backward! For example, <code>CMP/GE r1, r2</code> does not check whether <var>r1</var> ≥ <var>r2</var>; rather, it checks whether <var>r2</var> ≥ <var>r1</var>. <i>This takes a lot of getting used to.</i></p>
+<p>You have the special ability to compare <var>r0</var> for equality with a signed 8-bit immediate. Otherwise, you can compare two registers against each other, or a register against zero.</p>
+<p>The special <code>CMP/STR</code> compares two registers to determine whether any of the four component bytes are equal. It’s clear from the mnemonic that the intended purpose is to search for a null terminator in a string. You set <var>Rn</var> to zero and then do a <code>CMP/STR</code> against every longword in the string until it says, “Hey, I found a zero byte!” and then you can study that longword to see where the zero byte is.</p>
+<p>The processor documentation doesn’t explain why they chose the names for the mnemonics, but I can guess.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black; border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Condition</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td><code>EQ</code></td>
+<td>equal</td>
+</tr>
+<tr>
+<td><code>HS</code></td>
+<td>high or same</td>
+</tr>
+<tr>
+<td><code>GE</code></td>
+<td>greater or equal</td>
+</tr>
+<tr>
+<td><code>HI</code></td>
+<td>high</td>
+</tr>
+<tr>
+<td><code>GT</code></td>
+<td>greater than</td>
+</tr>
+<tr>
+<td><code>PZ</code></td>
+<td>plus or zero</td>
+</tr>
+<tr>
+<td><code>PL</code></td>
+<td>plus</td>
+</tr>
+<tr>
+<td><code>STR</code></td>
+<td>string</td>
+</tr>
+</tbody>
+</table>
+<p>It took me a while to come up with a plausible explanation for <code>HS</code>.</p>
+<p><b>Exercise 1</b>: Synthesize the <code>SETT</code> and <code>CLRT</code> instructions.</p>
+<p><b>Exercise 2</b>: Perform the opposite of the <code>MOVT</code> instruction: Set the <var>T</var> register to 0 if a register is zero, or 1 if the register is nonzero.</p>
+<p>The last arithmetic instructions are the extension instructions.</p>
+<pre>    EXTS.B Rm, Rn       ; sign extend byte in Rm to Rn
+    EXTS.W Rm, Rn       ; sign extend word in Rm to Rn
+    EXTU.B Rm, Rn       ; zero extend byte in Rm to Rn
+    EXTU.W Rm, Rn       ; zero extend word in Rm to Rn
+</pre>
+<p>That’s it for the basic arithmetic instructions. We’ll start looking at the more complicated arithmetic instructions <a href="/history/the-superh-3-part-5-multiplication">next time</a>, starting with multiplication.</p>
+<p>¹ Well, okay, you can have three-operand instructions if some of them are hard-coded! But that’s not what I mean. I mean three-operand instructions where the programmer can choose all three of the operands.</p>
+
+
+</body>

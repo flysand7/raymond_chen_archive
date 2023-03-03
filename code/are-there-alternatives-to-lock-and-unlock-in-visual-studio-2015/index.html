@@ -1,0 +1,64 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Are there alternatives to _lock and _unlock in Visual Studio 2015?</h1>  <!-- .entry-meta -->
+
+<p>A customer was using the <code>_lock</code> and <code>_unlock</code> functions in the C runtime library to take internal locks in order to avoid deadlocking with a thread they were suspending. They included this demonstration program: </p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;process.h&gt;
+#include &lt;stdio.h&gt;
+
+unsigned int __stdcall ThreadFunc(void *);
+
+#define _HEAP_LOCK 4    /* lock for heap allocator routines */
+
+extern "C" void _lock(int);
+extern "C" void _unlock(int);
+
+int __cdecl main(int, char**)
+{
+  HANDLE hThread = (HANDLE)_beginthreadex(NULL, 0,
+      ThreadFunc, NULL, 0, NULL);
+
+  for (;;) {
+    printf(".");
+    _lock(_HEAP_LOCK);
+    SuspendThread(hThread);
+    _unlock(_HEAP_LOCK); 
+    void *p = malloc(8);
+    free(p);
+    ResumeThread(hThread);
+  }
+  return 0;
+}
+
+unsigned int __stdcall ThreadFunc(void *)
+{
+  for (;;) {
+    void *p = malloc(8);
+    free(p);
+  }
+}
+</pre>
+<p>This sample program starts a worker thread that continuously allocates and frees memory from the heap. The main thread is in a loop that suspends the worker thread, and then tries to allocate memory from the heap while the worker is suspended. </p>
+<p>Normally, this would be a problem if the worker thread happens to be in the middle of a heap operation, then the main thread will deadlock because it wants the heap lock, but the heap lock is owned by the worker thread, which is suspended. </p>
+<p>The program addresses the problem by explicitly taking the heap lock before suspending the thread. That way, we are sure that the thread does not hold the heap lock before we suspend it. The definition of the magic number that represents the heap lock comes from the internal <code>mtdll.h</code> header file that comes with the C runtime source code. </p>
+<p>The customer found that the version of the Visual C++ compiler that comes with Visual Studio 2015 no longer has the <code>_lock</code> and <code>_unlock</code> functions. As a result, their program doesn’t compile any more. How can they suspend the thread without deadlocking on the heap? </p>
+<p>The customer liaison pointed the customer to <a href="https://devblogs.microsoft.com/oldnewthing/">this article</a> and suggested to the customer that they use other synchronization mechanisms instead of <code>Suspend­Thread</code>. The customer responded that they are developing a simulator for their product, and they need to suspend a thread as accurately as possible, so they need to use the <code>Suspend­Thread</code> function. </p>
+<p>What they’re doing now is not going to work well long-term, because it’s taking dependencies upon the internals of the C runtime library. The C runtime library team explained, </p>
+<blockquote class="m"><p>There is no replacement for <code>_lock</code> and <code>_unlock</code>. The Universal CRT does not expose its internal locks as older CRTs did. Note that their current approach of acquiring the CRTs heap lock before suspending the thread is not sufficient to avoid deadlock. The CRT <code>malloc</code> calls the Windows <code>Heap­Alloc</code>, and the Windows heap has its own locks that it uses for synchronization. </p></blockquote>
+<p>On top of this, the documentation for <code>Suspend­Thread</code> cautions directly against this usage (emphasis mine): </p>
+<blockquote class="q"><p>This function is primarily designed for use by debuggers. <u>It is not intended to be used for thread synchronization.</u> Calling <b>Suspend­Thread</b> on a thread that owns a synchronization object, such as a mutex or critical section, can lead to a deadlock if the calling thread tries to obtain a synchronization object owned by a suspended thread. To avoid this situation, a thread within an application that is not a debugger <u>should signal the other thread to suspend itself. The target thread must be designed to watch for this signal and respond appropriately</u>. </p></blockquote>
+<p>(Further discussion <a href="https://devblogs.microsoft.com/oldnewthing/">here</a>.) </p>
+<p>We didn’t understand what the customer meant by “they are developing a simulator for their product” and how that required them to suspend a thread “as accurately as possible.” We asked for clarification in the hopes that understanding their scenario would help us come up with a solution, but we never did get a clarification. That didn’t stop us from trying to help anyway: </p>
+<p>If the customer is really insistent on suspending the thread in order to do inspection of the process state, there are a few options. </p>
+<p>One option, as noted in MSDN, is to coordinate with the thread so it is suspended at only well-defined points where it does not own any locks or resource. This is what the CLR does. </p>
+<p>Another option is to make sure that while any thread is suspended, you never take any locks or more generally try to acquire any resources. Among other things, this means preallocating memory before suspending the thread. It also means that you cannot call into external functions because you have no idea what locks those external functions may take. Suspend the thread, memcpy the results into preallocated memory, resume the thread, and then process the results. Do not call the heap or anything else¹ that may require a lock.² </p>
+<p>The best option is to do the suspension and inspection from another process. Even in that case, you need to be careful if the inspecting process requires locks that may be owned by the process being inspected, such as shared mutexes. </p>
+<p>Suspending a thread at a random point in its execution, and then trying to do anything interesting from within the same process is a bad idea and has high deadlock potential. </p>
+<p>The customer liaison thanked us for the information and explained that the customer wants to suspend the thread at arbitrary points in its execution because it is an application requirement.³ They will take our recommendations into consideration while they decide what to do next. </p>
+<p>¹ Furthermore, you would be best served to take the heap lock (<code>Heap­Lock</code>) before suspending the thread, because the Detours library will allocate memory during thread suspension. </p>
+<p>² It may be difficult to avoid allocating memory. You can at least avoid the heap lock by using <code>Virtual­Alloc</code> instead of <code>Heap­Alloc</code>. </p>
+<p>³ This sounds like a circular argument, but hey. </p>
+
+
+</body>

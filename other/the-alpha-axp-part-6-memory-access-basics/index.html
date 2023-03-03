@@ -1,0 +1,113 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Alpha AXP, part 6: Memory access, basics</h1>  <!-- .entry-meta -->
+
+<p>The Alpha AXP has only one memory addressing mode: Indexed indirect. </p>
+<pre>
+    ; load memory to register
+    LDL     Ra, disp16(Rb)  ; result is sign-extended to 64 bits
+    LDQ     Ra, disp16(Rb)
+
+    ; store register to memory
+    STL     Ra, disp16(Rb)
+    STQ     Ra, disp16(Rb)
+</pre>
+<p>In all cases, the address of the memory is <code>(int16_t)disp16 + Rb</code>.¹ As we learned when we discussed <a href="https://blogs.msdn.microsoft.com/oldnewthing/20170809-00/?p=96785">integer constants</a>, the displacement is a 16-bit signed value, so it has a reach of ±32KB. By convention, a displacement of zero can be omitted. </p>
+<p>The <code>L</code> suffix loads/stores a 32-bit value (long) and the <code>Q</code> suffix loads/stores a 64-bit value (quad). </p>
+<p>If the memory address is not suitably aligned, then an alignment fault is generated. By default, Windows NT handles the alignment fault by emulating the unaligned load for you, then resuming execution. However, this is a ridiculously huge performance penalty, so you don’t want to make it a habit. </p>
+<p>Note the absence of byte and word memory access.² You’ll have to construct those yourself. And as noted above, you’ll also construct unaligned memory access yourself if you know what’s good for you. </p>
+<p>The special <code>_U</code> versions of the load and store instructions are useful for constructing byte access, word access, and unaligned memory access. </p>
+<pre>
+    LDQ_U   Ra, disp16(Rb)
+    STQ_U   Ra, disp16(Rb)
+</pre>
+<p>These special unaligned instructions are available only for quads. They ignore the bottom 3 bits of the effective address when calculating the address to load from. For example, if the current value of the <var>t2</var> register were <code>0x1234</code>, then the instruction </p>
+<pre>
+    LDQ_U    t1, 3(t2)
+</pre>
+<p>would take the value in the <var>t2</var> register, add <code>3</code> to it, resulting in <code>0x1237</code>, and then round the value down to the nearest multiple of 8, producing <code>0x1230</code>. It would then load the 8-byte value starting at <code>0x1230</code> and put into the <var>t1</var> register. </p>
+<p>There are a set of extra computational instructions to assist in taking apart and reassembling integers from their containing quads. They are the extraction, insertion, and masking opcodes. </p>
+<p>Here goes extraction: </p>
+<pre>
+    EXTBL   Ra, Rb/#b, Rc  ; Rc =  (uint8_t)(Ra &gt;&gt; (Rb/#b * 8 % 64))
+    EXTWL   Ra, Rb/#b, Rc  ; Rc = (uint16_t)(Ra &gt;&gt; (Rb/#b * 8 % 64))
+    EXTLL   Ra, Rb/#b, Rc  ; Rc = (uint32_t)(Ra &gt;&gt; (Rb/#b * 8 % 64))
+    EXTQL   Ra, Rb/#b, Rc  ; Rc = (uint64_t)(Ra &gt;&gt; (Rb/#b * 8 % 64))
+
+    EXTWH   Ra, Rb/#b, Rc  ; Rc = (uint16_t)(Ra &lt;&lt; ((64 - Rb/#b * 8) % 64))
+    EXTLH   Ra, Rb/#b, Rc  ; Rc = (uint32_t)(Ra &lt;&lt; ((64 - Rb/#b * 8) % 64))
+    EXTQH   Ra, Rb/#b, Rc  ; Rc = (uint64_t)(Ra &lt;&lt; ((64 - Rb/#b * 8) % 64))
+</pre>
+<p>These are weird to write out in formulas, but they are easy to explain. You want to read these mnemonics as “extract byte/​word/​long/​quad low/​high”. For example, <code>EXTWL</code> is “extract word low”. </p>
+<p>To perform the extraction, you shift the first source parameter right (if extracting low) or left (if extracting high) by the number of bytes controlled by the second parameter. (More precisely, specified by the least significant 3 bits of the second parameter.) And then you extract the low-order byte/​word/​long/​quad from the result. </p>
+<p>Note that these are fully 64-bit instructions, so there is no sign extension in the <code>EXTLx</code> instructions. </p>
+<p>For example, if <var>t1</var> is <code>0x7531</code>, then </p>
+<pre>
+    EXTWH   t0, t1, t2
+</pre>
+<p> goes like this: The shift amount is 7 bytes because the least significant three bits of <var>t1</var> are <code>001</code>, and we are extracting the high part. So take the value in <var>t0</var>, shift it left 56 bits (7 bytes), and then extract the least significant 16 bits, zero-extending the result to 64 bits. </p>
+<p>The way to think of these instructions is that the extract a byte, word, long, or quad from a 128-bit value. The “low” version extracts the value from the least-significant 64 bits of the 128-bit value, and the “high” version extracts the value from the most-significant 64 bits of the 128-bit value. Both instructions position the extracted value so the two pieces can be “or”d together. </p>
+<pre>
+    high part  low part
+    --------- ---------
+    ABCD EFGH IJKL MNOP -- 16-byte value
+          ^^^ ^         -- 4 bytes extracted at this position
+        EXTLH EXTLL
+         FGH0 000I
+</pre>
+<p>Note that this is <i>not</i> how the instructions actually operate, because there are edge conditions when the shift amount is an exact multiple of 8, but it’s a nice way to help remember how the instructions work. </p>
+<p>Anyway, with the extraction instruction, we can load a single byte of memory, even if not aligned: </p>
+<pre>
+    LDQ_U  t1, (t0)
+    EXTBL  t1, t0, t1
+</pre>
+<p>To see how this works, let’s number the bytes in a 64-bit value from least significant to most significant, zero through seven. </p>
+<p>If <var>t0</var> were <code>0x9731</code>, then the <code>LDQ_U</code> loads 8 bytes of memory from <code>0x9730</code>. The least significant byte (index 0) contains the value of the byte <code>0x9730</code>, and the next-least-significant byte (index 1) contains the value of the byte <code>0x9731</code>, which is the one we want. And by an amazing non-coincidence, the <code>EXTBL</code> instruction selects the byte at index <code>0x9731 &amp; 7 == 1</code>, which is exactly the byte we want. </p>
+<p>Loading signed data is a bit more work because you have to sign-extend the result. The simple way of doing this is to add </p>
+<pre>
+    SLL     t1, #56, t1    ; shift byte all the way up to index 7
+    SRA     t1, #56, t1    ; shift it all the way back to index 0
+                           ; but with sign extension
+</pre>
+<p>However, DEC recommends this alternative four-instruction sequence: </p>
+<pre>
+    LDQ_U   t1, (t0)       ; load the entire enclosing quad
+    LDA     t2, 1(t0)      ; sneaky trick to extract at index 7
+    EXTQH   t1, t2, t1     ; shift the desired byte into index 7
+    SRA     t1, #56, t1    ; signed shift right to move to index 0
+</pre>
+<p>The basic idea here is to extract the desired byte into index 7 and then use a signed shift right to shift it into index 0 with sign extension. If we hadn’t added 1 to <var>t0</var>, then the byte we wanted would have shifted off the end of of the register (into imaginary index 8);³ adding 1 means that the <code>EXTQH</code> will shift one fewer index, so that instead of shifting into imaginary index 8, the value we want ends up in index 7. </p>
+<p>I’m guessing that DEC recommends the latter sequence because it has a slightly shorter dependency chain, but at the cost of an extra register. </p>
+<p>Of course, if you know ahead of time what the alignment of <var>t0</var> is, then you can avoid having to calculate the shift amount in <var>t2</var> and could just hard-code <code>(</code><var>t0</var> <code>+ 1) % 8</code> as the second parameter to the <code>EXTQH</code>. </p>
+<p>The standard sequence for loading an aligned word is </p>
+<pre>
+    LDQ_U   t1, (t0)    ; load the entire enclosing quad
+    EXTWL   t1, t0, t1  ; extract the appropriate word, zero-extended
+</pre>
+<p>And if you want sign extension, you use the same trick: </p>
+<pre>
+    LDQ_U   t1, (t0)    ; load the entire enclosing quad
+    LDA     t2, 2(t0)   ; sneaky trick to extract at index 6+7
+    EXTQH   t1, t2, r1  ; shift the desired bytes to index 6+7
+    SRA     t1, #48, t1 ; signed right shift to move to index 0+1
+</pre>
+<p>These sequences are designed for properly word-aligned addresses. But what if it’s not correctly-aligned? </p>
+<p>Let’s find out. Suppose that <var>t0</var> is <code>0x1357</code>. Let’s say that the word pointed to by <var>t0</var> is <code>XXYY</code>, with <code>YY</code> stored at <code>0x1357</code> and <code>XX</code> stored at <code>0x1358</code>. But we erroneously treat it as an aligned address and execute the standard aligned word load sequence: </p>
+<pre>
+    LDQ_U   t1, (t0)    ; loads the quad at 0x1350
+                        ; t1 = YY??????`????????
+    EXTWL   t1, t0, t1  ; shifts the value in t1 right by 7 bytes
+                        ;      00000000`000000YY
+                        ; and then extracts the least-significant word
+                        ; t1 = 00000000`000000YY
+</pre>
+<p>Oops, we read only the least significant byte of the value; the <code>XX</code> was not loaded at all. </p>
+<p>If you sit down and work it out, the aligned word load sequence produces the desired results for most unaligned addresses, but if the word crosses a quad boundary, the code executes without any faults but produces incorrect results. This is worse than crashing! </p>
+<p>On the Alpha AXP, it is absolutely essential that you accurately declare the fact that a pointer may point to misaligned data. If you forget, then depending on the size of the data you are accessing and the precise nature of the misalignment, you might get away with it, or you might crash, or (worst case) you will proceed with incorrect data. </p>
+<p>So far, we’ve been looking only at loading aligned bytes and words. Next time, we’ll look at unaligned accesses, as well as storing bytes and words, as well as storing unaligned longs and quads. </p>
+<p>¹ Note that the base register must be a general-purpose register. This means no PC-relative addressing, because the program counter is not a general-purpose register. This is another strike against <a href="https://devblogs.microsoft.com/oldnewthing/#comment-1306055">storing constants in the code stream</a>. </p>
+<p>² Later versions of the Alpha AXP added instructions for aligned byte and word access, but Windows NT didn’t require that you had one of those newer processors. Consequently, you were unlikely to encounter them in practice unless you had code that did processor feature detection and had separate code paths for processors with and without support for byte and word access instructions. </p>
+<p>However, the <a href="https://technet.microsoft.com/en-us/library/2008.08.windowsconfidential.aspx">proof-of-concept Alpha AXP 64-bit edition of Windows</a> did require a processor that supported the byte and word memory access instructions, so you would see those instructions if you had to debug the Alpha AXP 64-bit verison of Windows. (And by “you” I mean “me,” because that version of Windows never shipped.) </p>
+<p>³ Well, except that if <var>t0</var> had been an exact multiple of 8, then the <code>EXTQH</code> wouldn’t have shifted anything at all. But you can work it out with pencil and paper and convince yourself that the right thing happens even if <var>t0</var> is an exact multiple of 8. </p>
+
+
+</body>

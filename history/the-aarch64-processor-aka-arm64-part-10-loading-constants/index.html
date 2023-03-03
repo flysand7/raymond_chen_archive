@@ -1,0 +1,119 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The AArch64 processor (aka arm64), part 10: Loading constants</h1>  <!-- .entry-meta -->
+
+<p>Since AArch64 uses fixed-size 32-bit instructions, you have to exercise some creativity to load a 64-bit constant.</p>
+<pre>    ; move wide with zero
+    ; Rd = imm16 &lt;&lt; n
+    ; n can be 0, 16, 32, or 48
+    movz    Rd, #imm16, LSL #n
+
+    ; move wide with not
+    ; Rd = ~(imm16 &lt;&lt; n)
+    ; n can be 0, 16, 32, or 48
+    movn    Rd, #imm16, LSL #n
+
+    ; move wide with keep
+    ; Rd[n+15:n] = imm16
+    movk    Rd, #imm16, LSL #n
+</pre>
+<p>The <code>MOVZ</code> instruction loads a 16-bit unsigned value into one of the four lanes of a 64-bit destination, or one of the two lanes of a 32-bit destination. All the remaining lanes are set to zero.</p>
+<p>The <code>MOVN</code> instruction does the same thing as <code>MOVZ</code>, except the whole thing is bitwise negated. (Be careful not to confuse <code>MOVN</code> with <code>MVN</code>.)</p>
+<p>The <code>MOVK</code> instruction does the same thing as <code>MOVZ</code>, except that instead of setting the other lanes to zero, the other lanes are left unchanged.</p>
+<p>Loading a 32-bit value can be done in two instructions by using <code>MOVZ</code> to load 16 bits into half of the register, than the <code>MOVK</code> into the other half.</p>
+<pre>    movz    r0, #0x1234             ; r0 = 0x00001234
+    movk    r0, #0xABCD, LSL #16    ; r0 = 0xABCD1234
+</pre>
+<p>This technique can be extended to load a 64-bit value in four steps, but that’s getting quite unwieldy. The compiler is more likely to store the value in the code segment and use a <var>pc</var>-relative addressing mode to load it.</p>
+<pre>    ; special syntax for pc-relative loads
+    ldr     x0, =0x123456789ABCDEF0 ; load 64-bit value
+    ldr     w0, =0x12345678         ; load 32-bit value
+</pre>
+<p>As I noted in the discussion of addressing modes, the assembler and disassembler use this special equals-sign notation to represent a <var>pc</var>-relative load. It means that the value is stored in a <var>literal pool</var> in the code segment, and a <var>pc</var>-relative load is being used to fetch it. The assembler batches up all of these literals and emits them between functions. The <var>pc</var>-relative load has a reach of ±1MB, so you are unlikely to run into the problem that you had on AArch32, where the reach was only ±4KB, and you had to find a safe place to dump the literals in the middle of the function.</p>
+<p>There are quite a number of instructions that generate constants, and if you use the <code>MOV</code> pseudo-instruction, the assembler will try to find one that works.</p>
+<pre>    ; load up a constant somehow
+    mov     Rd, #imm
+</pre>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Instruction</th>
+<th>Used for</th>
+</tr>
+<tr>
+<td><code>add Rd, zr, #imm12</code></td>
+<td><code>0x00000000`00000XXX</code></td>
+</tr>
+<tr>
+<td><code>add Rd, zr, #imm12, LSL #12</code></td>
+<td><code>0x00000000`00XXX000</code></td>
+</tr>
+<tr>
+<td><code>sub Wd, wzr, #imm12</code></td>
+<td><code>0x00000000`FFFFFXXX</code></td>
+</tr>
+<tr>
+<td><code>sub Wd, wzr, #imm12, LSL #12</code></td>
+<td><code>0x00000000`FFXXXFFF</code></td>
+</tr>
+<tr>
+<td><code>sub Xd, xzr, #imm12</code></td>
+<td><code>0xFFFFFFFF`FFFFFXXX</code></td>
+</tr>
+<tr>
+<td><code>sub Xd, xzr, #imm12, LSL #12</code></td>
+<td><code>0xFFFFFFFF`FFXXXFFF</code></td>
+</tr>
+<tr>
+<td><code>movz Rd, #imm16</code></td>
+<td><code>0x00000000`0000XXXX</code></td>
+</tr>
+<tr>
+<td><code>movz Rd, #imm16, LSL #16</code></td>
+<td><code>0x00000000`XXXX0000</code></td>
+</tr>
+<tr>
+<td><code>movz Rd, #imm16, LSL #32</code></td>
+<td><code>0x0000XXXX`00000000</code></td>
+</tr>
+<tr>
+<td><code>movz Rd, #imm16, LSL #48</code></td>
+<td><code>0xXXXX0000`00000000</code></td>
+</tr>
+<tr>
+<td><code>movn Wd, #imm16</code></td>
+<td><code>0x00000000`FFFFXXXX</code></td>
+</tr>
+<tr>
+<td><code>movn Wd, #imm16, LSL #16</code></td>
+<td><code>0x00000000`XXXXFFFF</code></td>
+</tr>
+<tr>
+<td><code>movn Xd, #imm16</code></td>
+<td><code>0xFFFFFFFF`FFFFXXXX</code></td>
+</tr>
+<tr>
+<td><code>movn Xd, #imm16, LSL #16</code></td>
+<td><code>0xFFFFFFFF`XXXXFFFF</code></td>
+</tr>
+<tr>
+<td><code>movn Xd, #imm16, LSL #32</code></td>
+<td><code>0xFFFFXXXX`FFFFFFFF</code></td>
+</tr>
+<tr>
+<td><code>movn Xd, #imm16, LSL #48</code></td>
+<td><code>0xXXXXFFFF`FFFFFFFF</code></td>
+</tr>
+<tr>
+<td><code>orr Xd, xzr, #imm</code></td>
+<td>Value can be expressed as a <!-- backref: The AArch64 processor (aka arm64), part 6: Bitwise operations -->Bitwise operation constant</td>
+</tr>
+<tr>
+<td><code>orr Wd, wzr, #imm</code></td>
+<td>Value can be expressed as lower 32 bits of a <!-- backref: The AArch64 processor (aka arm64), part 6: Bitwise operations -->Bitwise operation constant</td>
+</tr>
+</tbody>
+</table>
+<p>A common type of sort-of constant is the address of a global variable. It’s a constant whose value isn’t discovered until runtime. We’ll look at those next time.</p>
+
+
+</body>

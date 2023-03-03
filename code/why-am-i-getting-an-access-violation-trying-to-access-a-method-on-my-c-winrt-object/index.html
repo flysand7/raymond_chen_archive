@@ -1,0 +1,51 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why am I getting an access violation trying to access a method on my C++/WinRT object?</h1>  <!-- .entry-meta -->
+
+<p>A customer had a C++/WinRT program that used the <code>Windows.</code><code>Devices.</code><code>PointOfService.</code><code>ReceiptPrintJob</code> object to print a receipt on a point-of-service printer. They wanted to skip five lines, so they did the natural thing:</p>
+<pre>receiptPrintJob.FeedPaperByLine(5);
+</pre>
+<p>This worked great until it didn’t.</p>
+<p>On one system, the call to <code>FeedPaperByLine()</code> crashed with a null pointer exception, even though the <code>receiptPrintJob</code> variable was non-null.</p>
+<p>Closer investigation revealed that the problem is that the failing system was running an old build of Windows 10.</p>
+<p>The <code>FeedPaperByLine</code> method was added in Windows 10 Version 1903, but the system in question was running Windows 10 Version 1809.</p>
+<p>Windows Runtime objects are represented by a pointer to their default interface. Any methods on nondefault interfaces require first obtaining that nondefault interface, and then calling the method on that other interface.</p>
+<p>The <code>FeedPaperByLine</code> method is part of the interface <code>IReceiptPrintJob2</code>, so calling it goes like this at the ABI layer:</p>
+<pre>IReceiptPrintJob2* job2;
+receiptPrintJob-&gt;QueryInterface(IID_PPV_ARGS(&amp;job2));
+HRESULT hr = job2-&gt;FeedPaperByLine(5);
+job2-&gt;Release();
+if (FAILED(hr)) throw hresult_error(hr);
+</pre>
+<p>If the object doesn’t support the <code>IReceiptPrintJob2</code> interface, then the <code>Query­Interface</code> fails, and the output pointer <code>job2</code> is set to <code>nullptr</code>. The next line then tries to use the null pointer and crashes.</p>
+<p>For performance reasons, the C++/WinRT library intentionally neglects to throw an exception when the <code>Query­Interface</code> fails, because that avoids both the code to throw the exception as well as the code to unwind from the exception. It instead relies on the crash on the next line.</p>
+<p>The C++/WinRT library considers this an acceptable trade-off because the Windows Runtime metadata says that the interface is indeed supported, so the <code>QueryInterface</code> should always succeed.¹</p>
+<p>The customer’s problem stemmed from running the program on a version of Windows 10 that was older than the version of the SDK that was used to compile the program. They must have specified their minimum OS version as including an older version of Windows 10 (perhaps by mistake), which puts them into the tricky world of “using a newer SDK but desiring to run on older versions of the operating system.” In those cases, you need to probe for features that may not be supported on older systems before trying to use them.</p>
+<p>You can do this from the Windows Runtime system by checking for the presence of a method:</p>
+<pre>if (<span style="color: blue;">ApiInformation.IsMethodPresent(
+      winrt::name_of&lt;ReceiptPrintJob&gt;(),
+      L"FeedPaperByLine")</span>) {
+  receiptPrintJob.FeedPaperByLine(5);
+} else {
+  // Print five blank lines.
+  // Not as smooth, but it works.
+  for (int i = 0; i &lt; 5; i++) {
+    receiptPrintJob.PrintLine(L"");
+  }
+}
+</pre>
+<p>Or you can do it from the C++/WinRT system by probing for the interface you want:</p>
+<pre>if (<span style="color: blue;">auto job2 = receiptPrintJob.try_as&lt;IReceiptPrintJob2&gt;(); job2</span>) {
+  job2.FeedPaperByLine(5);
+} else {
+  // Print five blank lines.
+  // Not as smooth, but it works.
+  for (int i = 0; i &lt; 5; i++) {
+    receiptPrintJob.PrintLine(L"");
+  }
+}
+</pre>
+<p>This second technique is faster, but it requires you to know which interface contains the method you are interested in.</p>
+<p>¹ It could fail under low memory conditions or if there is a server crash. But if you have low memory or a server crash, you’re probably not going to be able to recover from that anyway.</p>
+
+
+</body>

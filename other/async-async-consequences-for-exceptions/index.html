@@ -1,0 +1,44 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Async-Async: Consequences for exceptions</h1>  <!-- .entry-meta -->
+
+<p>As we’ve been learning, the feature known as Async-Async makes asynchronous operations even more asynchronous by pretending that they started before they actually did. The effect of Async-Async is transparent to properly-written applications, but if you have been breaking the rules, you may notice some changes to behavior. Today we’ll look at exceptions.</p>
+<pre>// Code in italics is wrong.
+
+Task task1 = null;
+Task task2 = null;
+try
+{
+    task1 = DoSomethingAsync(arg1);
+    task2 = DoSomethingAsync(arg2);
+}
+<i>catch (ArgumentException ex)</i>
+{
+    // One of the arguments was invalid.
+    return;
+}
+
+// Wait for the operations to complete.
+await Task.WhenAll(task1, task2);
+</pre>
+<p>This code “knows” that the invalid parameter exception is raised as part of initiating the asynchronous operation, so it catches the exception only at that point.</p>
+<p>With Async-Async, the call to <code>Do­Something­Async</code> returns a fake <code>IAsync­Operation</code> immediately, before sending the call to the server. If the server returns an error in response to the operation, it’s too late to report that error to the client as the return value of <code>Do­Something­Async</code>. Because, y’know, time machine.</p>
+<p>The exception is instead reported to the completion handler for the <code>IAsync­Operation</code>. In the above case, it means that the exception is reported when you <code>await</code> the task, rather than when you create the task.</p>
+<pre>try
+{
+    Task task1 = DoSomethingAsync(arg1);
+    Task task2 = DoSomethingAsync(arg2);
+
+    <span style="color: blue;">// Wait for the operations to complete.
+    await Task.WhenAll(task1, task2);</span>
+}
+catch (ArgumentException ex)
+{
+    // One of the arguments was invalid.
+    return;
+}
+</pre>
+<p>Again, this is not something that should affect a properly-written program, because you don’t know when the server is going to do its parameter validation. It might do parameter validation before creating the <code>IAsync­Operation</code>, or it might defer doing the parameter validation until later for performance reasons. You need to be prepared for the exception to be generated at either point.</p>
+<p>In practice, this is unlikely to be something people stumble across because <a href="/code/how-should-i-report-errors-from-my-windows-runtime-api"> Windows Runtime objects generally reserve exceptions for fatal errors</a>, so you have no need to try to catch them.</p>
+
+
+</body>

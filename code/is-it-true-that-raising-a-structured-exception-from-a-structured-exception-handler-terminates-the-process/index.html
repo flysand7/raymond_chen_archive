@@ -1,0 +1,78 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Is it true that raising a structured exception from a structured exception handler terminates the process?</h1>  <!-- .entry-meta -->
+
+<p>A customer had a vague recollection that they had read somewhere that if you raise a structured exception from a structured exception handler, the operating system would terminate the process. However, they couldn’t find any confirmation of this behavior. Was it just a dream?</p>
+<p>When you write a Windows structured exception handler (which is different from a C++ exception handler), you provide two code fragments:</p>
+<ul>
+<li>The code to decide whether to handle the exception.</li>
+<li>The code to execute if the exception is handled.</li>
+</ul>
+<p>Let’s annotate some code that handles a structured exception:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>
+<pre>__try
+{
+    Block1;
+}
+__except (FilterExpression)
+{
+    Block2;
+}
+__finally
+{
+    Block3;
+}</pre>
+</td>
+</tr>
+</tbody>
+</table>
+<p>Now, you aren’t allowed to have both an <code>__except</code> block and a <code>__finally</code> block, so the above code is technically incorrect, but I’m going to use it because it lets me talk about all the parts of the structured exception handler in a single (if impossible) example. In reality, either the <code>__except</code> block or the <code>__finally</code> block will be missing, in which case you can just ignore that part of the discussion.</p>
+<p>If a structured exception is raised in the <code>__try</code> block labeled <code>Block1</code>, then the <code>__except</code> block’s filter expression is evaluated. If the filter returns <code>EXCEPTION_<wbr/>EXECUTE_<wbr/>HANDLER</code>, then the exception is considered to have been handled, and execution resumes at the <code>__except</code> block labeled <code>Block2</code>.</p>
+<p>If a structured exception is raised in the <code>__except</code> block labeled <code>Block2</code> or in the <code>__finally</code> block labeled <code>Block3</code>, that structured exception is not considered to be in scope of this structured exception handler. The search for a handler begins at the next outer scope.</p>
+<p>There is no automatic termination if a structured exception occurs in the <code>__except</code> block <code>Block2</code> or the <code>__finally</code> block <code>Block3</code>. The search for a handler proceeds in the usual fashion, but with the understanding that the exception is not protected by the <code>__try</code> statement. The search begins with the scope that <i>contains</i> the <code>__try</code> statement.</p>
+<p>But wait, the story isn’t over yet. There’s still a place where an exception can be raised that I haven’t talked about yet. Do you see it?</p>
+<p>What if an exception is raised by the evaluation of the <code>FilterExpression</code>?</p>
+<p>The filter expression is considered to be inside the scope of the <code>__try</code>, so the exception raised by the filter expression will cause a new evaluation of the filter expresion, but this time to evaluate the recursively raised exception.</p>
+<p>That’s the part that usually causes trouble.</p>
+<p>If the evaluation of the filter expression for the first exception raises an exception, there’s a good chance that evaluation of the filter expression for the nested exception will raise the same exception, because the nested exception is probably an access violation due to some bug in the filter expression.</p>
+<p>You now run into a recursive exception death: To decide what to do about the original exception, the system evaluates the filter expression. But the filter expression has a bug, and it raises an exception. Now, the system decides what to do about the nested exception, which evaluates a new filter expression. That second filter expression encounters the same bug, so it raises a second nested exception. Each nested exception triggers a re-evaluation of the filter expression, and (on the assumption that the filter expression has a crashing bug) each re-evaluation in turn raises another nested exception.</p>
+<p>Eventually, you run out of stack, and the unhandled stack overflow exception is what terminates the process.</p>
+<p>Here’s an annotated version of the above impossible example:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: solid 1px gray; border-right: none;">
+<pre>__try
+{
+    Block1;
+}
+__except (FilterExpression)</pre>
+</td>
+<td style="border: solid 1px gray; border-left: none; margin-right: 1ex;">Under consideration</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none;">
+<pre>{
+    Block2;
+}
+__finally
+{
+    Block3;
+}</pre>
+</td>
+<td rowspan="2" style="border: solid 1px gray; border-left: none; margin-right: 1ex;">Not considered</td>
+<td rowspan="2"> </td>
+</tr>
+</tbody>
+</table>
+<p>If an exception occurs in the code marked “under consideration”, then the filter expression participates in the handling of the exception. But if an exception occurs in the code marked “not considered”, then the filter expression does not participate; execution has left the exception scope of the <code>__try</code> statement.</p>
+<p>Next time, we’ll look at the C++ version of this same question. The answer isn’t the same!</p>
+<p><b>Bonus chatter</b>: But wait, suppose we are using the <code>__try</code>/<code>__finally</code> version of this statement. If an exception is raised inside the <code>__try</code> block, and nothing in <code>Block1</code> handles the exception, then the <code>__finally</code> block will run. But what if the <code>__finally</code> block also raises an exception?</p>
+<p>The system looks for a handler for the nested exception, and if an outer handler decides to handle it, then that handler executes, and the original exception is lost. On the other hand, if no filter expression declares that it wants to handle the exception, then the unhandled exception filter is called, and that terminates the process.</p>
+<p>Either way, the original exception doesn’t get observed by any of the exceptions handlers that are in scope at the time the <code>__finally</code> block runs, so you can think of it as saying that the exception raised by the <code>__finally</code> block replaces the original exception.</p>
+
+
+</body>

@@ -1,0 +1,122 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The <code>std::invoke</code> function does more than invoke functions</h1>  <!-- .entry-meta -->
+
+<p>The <code>std::invoke</code> function in the C++ standard library is usually used to call a functor with parameters.</p>
+<pre>std::function&lt;void(int)&gt; func = ...;
+
+// same as func(42)
+std::invoke(func, 42);
+</pre>
+<p>What <code>std::invoke</code> brings to the table is that you can use it for other things beyond just functors.</p>
+<pre>struct S
+{
+    void do_something(int);
+    int v;
+};
+
+S s;
+// same as s.do_something(42)
+std::invoke(&amp;S::do_something, s, 42);
+std::invoke(&amp;S::do_something, std::ref(s), 42);
+
+S* p = &amp;s;
+// same as p-&gt;do_something(42)
+std::invoke(&amp;S::do_something, p, 42);
+</pre>
+<p>But wait, what about this?</p>
+<pre>struct S
+{
+    std::function&lt;void()&gt; do_something;
+    int v;
+};
+
+S s;
+s.do_something = []() { std::cout &lt;&lt; "hello"; };
+
+// does not print anything
+std::invoke(&amp;S::do_something, s);
+</pre>
+<p>What’s going on here?</p>
+<p>One thing that often goes overlooked is that you can also use <code>std::invoke</code> with pointers to non-static data members.</p>
+<pre>S s;
+
+// same as s.v = 42
+std::invoke(&amp;S::v, s) = 42;
+
+// same as "auto x = s.v;"
+auto x = std::invoke(&amp;S::v, s);
+</pre>
+<p>Invoking a pointer to a non-static data member is the same as dereferencing the pointer, when applied to the second argument.</p>
+<p>The statement</p>
+<pre>std::invoke(&amp;S::do_something, s);
+</pre>
+<p>is therefore equivalent to</p>
+<pre>s.do_something;
+</pre>
+<p>which, despite its name, does nothing: It accesses the member and throws it away.</p>
+<p>If you want to access the memory and then invoke it, you’ll have to follow up the <code>std::invoke</code> with the function call.</p>
+<pre>std::invoke(&amp;S::do_something, s)();
+</pre>
+<p>Or, if you really like to show off,</p>
+<pre>std::invoke(std::invoke(&amp;S::do_something, s));
+</pre>
+<p>Taken to an extreme, you get invoke-oriented programming!</p>
+<pre>// Old and busted
+this-&gt;dict.find(3)-&gt;second = "meow";
+
+// New hotness
+std::invoke(
+    static_cast&lt;std::map&lt;int, std::string&gt;::iterator
+        (std::map&lt;int, std::string&gt;::*)(int const&amp;)&gt;(
+        &amp;std::map&lt;int, std::string&gt;::find),
+        std::invoke(&amp;MyClass::dict, this), 3)-&gt;second = "meow";
+
+// Beyond hot
+std::invoke(
+    static_cast&lt;std::string&amp; (std::string::*)(char const*)&gt;
+        (&amp;std::string::operator=), 
+    std::invoke(&amp;std::pair&lt;int const, std::string&gt;::second,
+        std::invoke(
+            static_cast&lt;std::pair&lt;int const, std::string&gt;&amp; (
+                std::map&lt;int, std::string&gt;::iterator::*)() const noexcept&gt;
+                (&amp;std::map&lt;int, std::string&gt;::iterator::operator*),
+        std::invoke(
+            static_cast&lt;std::map&lt;int, std::string&gt;::iterator
+                (std::map&lt;int, std::string&gt;::*)(int const&amp;)&gt;
+                (&amp;std::map&lt;int, std::string&gt;::find),
+            std::invoke(&amp;MyClass::dict, this), 3))), "meow");
+</pre>
+<p>The above code is technically non-portable thanks to <a href="https://timsong-cpp.github.io/cppwp/member.functions">[member.functions]</a>, which says</p>
+<blockquote class="q"><p>For a non-virtual member function described in the C++ standard library, an implementation may declare a different set of member function signatures, provided that any call to the member function that would select an overload from the set of declarations described in this document behaves as if that overload were selected.</p></blockquote>
+<p>This means basically that you cannot form pointers to non-virtual member functions, because the implementation’s signature for the member function is permitted to differ from the formal definition (say, by the addition of default template arguments or parameters), as long as the behavior is the same. In practice, these extra default arguments or parameters are used for things like SFINAE.</p>
+<p>To make the code portable, we’ll have to wrap the member function pointers into program-provided versions.</p>
+<pre>namespace mfptr
+{
+    template&lt;typename Object, typename...Args&gt;
+    decltype(auto) find(Object&amp;&amp; object, Args&amp;&amp;...args) {
+        return std::forward&lt;Object&gt;(object).find(std::forward&lt;Args&gt;(args)...);
+    }
+
+    template&lt;typename Object&gt;
+    decltype(auto) dereference(Object&amp;&amp; object) {
+        return *std::forward&lt;Object&gt;(object);
+    }
+
+    template&lt;typename Object, typename Arg&gt;
+    decltype(auto) assign(Object&amp;&amp; object, Arg&amp;&amp; arg) {
+        return std::forward&lt;Object&gt;(object) = arg;
+    }
+}
+
+std::invoke(
+    &amp;mfptr::assign&lt;std::string&amp;, char const*&gt;, 
+    std::invoke(&amp;std::pair&lt;int const, std::string&gt;::second,
+        std::invoke(
+            &amp;mfptr::dereference&lt;std::map&lt;int, std::string&gt;::iterator&gt;, 
+            std::invoke(
+                &amp;mfptr::find&lt;std::map&lt;int, std::string&gt;&amp;, int&gt;,
+                std::invoke(&amp;MyClass::dict, this), 3))), "meow");
+</pre>
+
+
+</body>

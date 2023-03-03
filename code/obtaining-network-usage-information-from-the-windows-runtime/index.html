@@ -1,0 +1,98 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Obtaining network usage information from the Windows Runtime</h1>  <!-- .entry-meta -->
+
+<p>Network usage information on Windows can be obtained from classes in the <code>Windows.<wbr/>Networking.<wbr/>Connectivity</code> namespace. The <code>Network­Information</code> class is your starting point.</p>
+<p>We’ll start with C# and translate to C++/WinRT when we’re done.</p>
+<p>Prepare a C# console application to use Windows Runtime asynchronous operations as described <a href="/code/awaiting-windows-runtime-asynchronous-operations-from-c-desktop-apps" title="Awaiting Windows Runtime asynchronous operations from C# desktop apps"> last time</a>, and start typing.</p>
+<pre>using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Windows.Networking.Connectivity;
+
+class Program
+{
+    static async Task DoIt()
+    {
+        var now = DateTime.Now;
+        var states = new NetworkUsageStates
+        { Roaming = TriStates.DoNotCare, Shared = TriStates.DoNotCare };
+
+        var profiles = NetworkInformation.GetConnectionProfiles();
+        foreach (var profile in profiles)
+        {
+            var usages = await profile.GetNetworkUsageAsync(
+                now.AddDays(-1), now, DataUsageGranularity.PerDay,
+                states);
+            var usage = usages[0];
+            if (usage.ConnectionDuration &gt; TimeSpan.Zero)
+            {
+                Console.WriteLine(profile.ProfileName);
+                Console.WriteLine($"BytesReceived = {usage.BytesReceived}");
+                Console.WriteLine($"BytesSent = {usage.BytesSent}");
+                Console.WriteLine($"ConnectionDuration = {usage.ConnectionDuration}");
+                Console.WriteLine($"------------------");
+            }
+        }
+
+    }
+    static void Main()
+    {
+        DoIt().GetAwaiter().GetResult();
+    }
+}
+</pre>
+<p>All of the work happens in the creatively-named <code>DoIt</code> method. The main function just calls <code>DoIt()</code> and waits for the task to complete. If you can upgrade to C# 7.1 or better, you can take advantage of <a href="https://docs.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-7-1#async-main"> async main</a> support.</p>
+<p>Okay, so back to the <code>DoIt()</code> method.</p>
+<p>We first capture the current time into a local variable <code>now</code>. This ensures that our time queries are consistent through the loop.</p>
+<p>We also create a local <code>Network­Usage­States</code> object which says that we don’t care about distinguishing whether you were Roaming or Shared.</p>
+<p>We then ask the <code>Network­Information</code> object for all the connection profiles. For each profile, we ask for usage in the last 24 hours, aggregated by day. Given those parameters, there will be exactly one usage report.¹</p>
+<p>For any connection that was used for a nonzero amount of time, we report the various properties of that daily usage.</p>
+<p>Note that generating these reports is time-consuming, so if you already know which connections you want, you can filter on their name. If you are interested only in the connection that is currently being used for Internet access, you can use <code>Get­Internet­Connection­Profile</code> instead of enumerating through all of the connections.</p>
+<p>And here’s the C++/WinRT version.</p>
+<pre>#include &lt;winrt/Windows.Foundation.h&gt;
+#include &lt;winrt/Windows.Foundation.Collections.h&gt;
+#include &lt;winrt/Windows.Networking.Connectivity.h&gt;
+#include &lt;stdio.h&gt;
+
+using namespace std::literals::chrono_literals;
+using namespace winrt;
+using namespace winrt::Windows::Foundation;
+using namespace winrt::Windows::Networking::Connectivity;
+
+IAsyncAction DoIt()
+{
+    auto now = clock::now();
+    NetworkUsageStates states{ TriStates::DoNotCare, TriStates::DoNotCare };
+
+    auto profiles = NetworkInformation::GetConnectionProfiles();
+    for (auto profile : profiles)
+    {
+        auto usages = co_await profile.GetNetworkUsageAsync(
+            now - 24h, now, DataUsageGranularity::PerDay, states);
+        auto usage = usages.GetAt(0);
+        auto seconds = static_cast&lt;int&gt;(std::chrono::duration_cast&lt;
+            std::chrono::seconds&gt;(usage.ConnectionDuration()).count());
+        if (seconds &gt; 0)
+        {
+            printf("%ls\n", profile.ProfileName().c_str());
+            printf("BytesReceived = %I64u\n", usage.BytesReceived());
+            printf("BytesSent = %I64u\n", usage.BytesSent());
+            printf("ConnectionDuration = %d seconds\n", seconds);
+            printf("------------------\n");
+        }
+
+    }
+}
+
+int main()
+{
+    init_apartment();
+    DoIt().get();
+}
+</pre>
+<p>Next time, we’ll look at usage attribution.</p>
+<p>¹ If we had asked for multiple days, then there would be one report per day, in chronological order. Note that the definition of “day” is not “calendar day” but “24-hour period starting at the provided start time.” If the time range is not an exact multiple of the granularity, then the last report will cover only part of the granularity interval.</p>
+
+
+</body>

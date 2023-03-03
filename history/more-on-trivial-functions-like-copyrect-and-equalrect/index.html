@@ -1,0 +1,28 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">More on trivial functions like CopyRect and EqualRect</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, I discussed <a href="/history/why-are-there-trivial-functions-like-copyrect-and-equalrect" title="Why are there trivial functions like CopyRect and EqualRect?"> trivial functions like <code>CopyRect</code> and <code>EqualRect</code></a> and why they even exist at all.</p>
+<p>Piotr Siódmak wondered <a href="https://devblogs.microsoft.com/oldnewthing/20200224-00/?p=103472#comment-136252"> if you could just use <code>memcpy</code> to copy a rectangle</a>. “It’s already there and probably already used by other parts of code, so it’s 0 bytes of overhead.”</p>
+<p>One of the features of <code>CopyRect</code> and friends is that they all take far pointers to <code>RECT</code>. This means that you can use them to manipulate rectangles received from the operating system, even if your program uses <a href="https://devblogs.microsoft.com/oldnewthing/20200728-00/?p=104012" title="A look back at memory models in 16-bit MS-DOS"> the small or medium memory model</a>.</p>
+<p>The <code>memcpy</code> version of <code>CopyRect</code> would actually be <code>_fmemcpy</code> in order to support far pointers. And since it’s a C runtime function, it would follow the <code>__cdecl</code> calling convention, which is caller-clean. And you would have to pass an extra parameter to represent the size of a rectangle.</p>
+<pre><span style="color: blue;">b8 08 00        mov  ax, 8          ; sizeof(RECT)¹
+50              push ax</span>
+c4 5e f0        les  bx, [bp-10]    ; es:bx -&gt; source rect
+53              push bx
+06              push es
+c4 5e ec        les  bx, [bp-14]    ; es:bx -&gt; destination rect
+53              push bx
+06              push es
+9a xx xx xx xx  call _fmemcpy
+<span style="color: blue;">83 c4 0a        add  sp, 10         ; clean the stack</span>
+</pre>
+<p>This adds seven bytes to the code size.</p>
+<p>But it’s worse than that. You also have to <a href="https://devblogs.microsoft.com/oldnewthing/20131008-00/?p=3003" title="I wrote FAT on an airplane, for heaven's sake"> segment-tune</a> your <code>_fmemcpy</code> function: Which functions are you going to put into a single segment for code swapping purposes? Maybe copying rectangles is something your program does constantly, so you want to keep it in your “hot” segment. Or maybe it’s something you do only occasionally, in which case you would put it in one of the more rarely-used segments. It means that when you do get around to copying a rectangle, you may have to pause to load the <code>_fmemcpy</code> function off the floppy drive.</p>
+<p>And since the function is linked into your program, it means that if you are running five programs, each of them will have its own copy of <code>_fmemcpy</code>, with various other functions coming along for the ride in the same segments.</p>
+<p>Why not just use the copy that the window manager already has?</p>
+<p>The rectangle functions are in a “fixed” segment in the window manager, meaning that it is permanently loaded and cannot get swapped out. Calling it is basically free. You will never incur a segment swap by calling <code>CopyRect</code> or <code>EqualRect</code>. No need to create five private copies of a function and swap them in and out. Just use the one copy that the system already provides. That’ll help you fit your program into 256KB of memory.</p>
+<p><b>Bonus chatter</b>: The <code>Copy­Rect</code> function is also more efficient than a general-purpose <code>_fmemcpy</code> since it knows that it’s copying exactly eight bytes. The <code>_fmemcpy</code> function needs to support arbitrary-sized memory blocks, so it will spend extra time preparing for a block copy operation for maximum speed, even though that speed gain is not realized on such small copies.</p>
+<p>¹ Why not use the two-byte <code>push 8</code> instruction? Because this is 8086 code, and the two-byte “push sign-extended 8-bit immediate” instruction didn’t exist. It was first available in the 80186 processor.</p>
+
+
+</body>

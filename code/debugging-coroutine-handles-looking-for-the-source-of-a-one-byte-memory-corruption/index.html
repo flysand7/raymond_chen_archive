@@ -1,0 +1,80 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Debugging coroutine handles: Looking for the source of a one-byte memory corruption</h1>  <!-- .entry-meta -->
+
+<p>A team was chasing a one-byte use-after-free memory corruption bug. These bugs are really frustrating to chase down because the memory corruption typically doesn’t trigger an immediate crash, but rather results in a delayed crash, which means that the culprit has done the damage and run away long before the problem is detected.</p>
+<p>We join the debugging session already in progress. We have determined that the corruption is to a memory block that previously contained a coroutine frame at offset <code>0xc0</code>.</p>
+<p>The state machine of a coroutine exists in the <code>_ResumeCoro$2</code> function, so we can start there:</p>
+<pre>contoso!DoStuffLater$_ResumeCoro$2:
+    mov     r11,rsp
+    ... stack frame nonsense ...
+
+    mov     rsi,rcx                 // rsi = coroutine frame pointer
+    mov     [rsp+28h],rcx
+    movzx   eax,word ptr [rcx+8]    // eax = coroutine state
+    mov     [rsp+20h],ax
+    inc     ax                      // artificially add 1
+    cmp     ax,8
+    ja      contoso!DoStuffLater$_ResumeCoro$2+0x3e5
+    ja      00007ffc`e777a5b5       // invalid index, die (jump to int 3)
+
+    movsx   rax,ax
+    lea     rdx,[contoso!__ImageBase]
+    mov     ecx,[rdx+rax*4+1BA5E0h] // look up jump table RVA
+    add     rcx,rdx                 // convert to absolute address
+    jmp     rcx                     // jump there
+
+contoso!DoStuffLater$_ResumeCoro$2+0x3e5:
+    int     3
+</pre>
+<p>We see from the disassembly that the jump table starts at relative offset <code>0x1ba5e0</code>. We won’t dig into the jump table yet; let’s see if we can find the corruption point, which is a single-byte corruption at offset <code>0xc0</code> from the start of the coroutine frame. Maybe we’ll be lucky and the access is directly into the frame.</p>
+<pre>0:026&gt; #c0h contoso!DoStuffLater$_ResumeCoro$2
+contoso!DoStuffLater$_ResumeCoro$2+0x136:
+    mov     [rsi+0C0h],al
+</pre>
+<p>Oh my goodness, we found a single-byte write at offset <code>0xc0</code> in the coroutine frame! Let’s see who is doing it.</p>
+<pre>    mov     eax,6
+    mov     [rsi+8],ax
+
+    mov     rdx,rsi
+    mov     rcx,rbx
+    call    contoso!winrt::impl::notify_awaiter&lt;`winrt::resume_foreground'::`2'::awaitable&gt;::
+            await_suspend&lt;std::experimental::coroutine_traits&lt;winrt::fire_and_forget&gt;::promise_type&gt;
+    mov     [rsi+0C0h],al   // WRITE HAPPENS HERE
+</pre>
+<p>The first two instructions set the coroutine state to 6, which happens as part of coroutine suspension.</p>
+<p>The second group of instructions call the <code>await_<wbr/>suspend</code> for a <code>resume_foreground</code> awaiter. This is in code that is moving forward to state 6, and <a href="/code/debugging-coroutine-handles-the-microsoft-visual-c-compiler-clang-and-gcc" title="Debugging coroutine handles: The Microsoft Visual C++ compiler, clang, and gcc"> we know that</a> the Microsoft compiler records coroutine states as even numbers starting at 2 (for the initial state), and then increases by two for each suspension point. Therefore, moving to state 6 means suspending for the second time.</p>
+<pre>winrt::fire_and_forget DoStuffLater()
+{
+    co_await winrt::resume_after(100ms);
+    co_await winrt::resume_foreground(GetDispatcherQueue());
+    DoStuff();
+}
+</pre>
+<p>Okay, good, that second suspension theory lines up with the code: The second suspension is a call to <code>resume_foreground</code>, and the code showed that we were calling <code>resume_foreground</code>.</p>
+<p>And we see the bug: The code is storing the result of <code>await_suspend</code> into the coroutine frame. This is something I called out in my <a href="/code/c-coroutines-getting-started-with-awaitable-objects" title="C++ coroutines: Getting started with awaitable objects"> C++ coroutines: Getting started with awaitable objects</a> article:</p>
+<blockquote class="q"><p>Therefore, it is important that your awaiter not use its <code>this</code> pointer once it has arranged for the handle to be invoked somehow, because the <code>this</code> pointer may no longer be valid.</p></blockquote>
+<p>In this case, not only did the awaiter get destructed, the entire coroutine frame was destructed!</p>
+<p>The compiler team confirmed that this is a known code-generation bug, <a href="https://devblogs.microsoft.com/cppblog/cpp20-coroutine-improvements-in-visual-studio-2019-version-16-11/"> fixed in versions 16.11 and 17.0</a>.</p>
+<p>If you are stuck on 16.10 or older, you will have to work around the problem. From my investigation, it seems that the code generation problem occurs when you have an <code>await_suspend</code> that returns <code>bool</code>. In C++/WinRT, there are only four places where this happens:</p>
+<ul>
+<li><code>resume_foreground(Windows::System::CoreDispatcher)</code></li>
+<li><code>resume_foreground(Microsoft::System::CoreDispatcher)</code></li>
+<li><code>deferrable_event_args.wait_for_deferrals()</code></li>
+<li><code>final_suspend</code></li>
+</ul>
+<p>In the first two cases, you can work around the problem by switching to <a href="https://github.com/microsoft/wil/blob/492c01bb535daadf719d4445d6107aadf1e60812/include/wil/cppwinrt.h#L481"> the <code>wil::resume_foreground</code> function</a>, which addresses this and other design issues with the original <code>winrt::resume_foreground</code> function.</p>
+<p>If you’d rather not pull in another library, and you don’t want to upgrade your compiler, you can work around the problem by using an explicit continuation-passing model:</p>
+<pre>winrt::fire_and_forget DoStuffLater()
+{
+    co_await winrt::resume_after(100ms);
+    GetDispatcherQueue().EnqueueAsync([=]()
+    {
+        DoStuffLater();
+    });
+}
+</pre>
+<p>In the last case (<code>final_<wbr/>suspend</code>), my exploration suggests that the code generation problem does not occur in that case, so we’re okay there.</p>
+<p>But upgrade your compiler if you can.</p>
+
+
+</body>

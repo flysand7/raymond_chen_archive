@@ -1,0 +1,104 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Dragging a shell object, part 1: Getting the IDataObject</h1>  <!-- .entry-meta -->
+
+<p>The shell gives you the <a href="https://docs.microsoft.com/en-us/windows/win32/api/objidl/nn-objidl-idataobject"> <code>IDataObject</code></a>; all you have to do is drag it around. (This is the first of a five-part series.)</p>
+<p>Start with <a href="https://devblogs.microsoft.com/oldnewthing/20030723-00/?p=43073" title="The scratch program"> the scratch program</a>, and add <a href="https://devblogs.microsoft.com/oldnewthing/20040920-00/?p=37823" title="How to host an IContextMenu, part 1 - Initial foray"> the function <code>GetUIObjectOfFile</code> from an earlier article</a>. Also, change the calls to <a href="https://docs.microsoft.com/en-us/windows/win32/api/objbase/nf-objbase-coinitialize"> <code>CoInitialize</code></a> and <a href="https://docs.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-couninitialize"> <code>CoUninitialize</code></a> to <a href="https://docs.microsoft.com/en-us/windows/win32/api/ole2/nf-ole2-oleinitialize"> <code>OleInitialize</code></a> and <a href="https://docs.microsoft.com/en-us/windows/win32/api/ole2/nf-ole2-oleuninitialize"> <code>OleUninitialize</code></a>, respectively, since we’re now going to be using full-on OLE and not just COM.</p>
+<p>In order to initiate a drag/drop operation, we need a drop source:</p>
+<pre>class CDropSource : public IDropSource
+{
+public:
+  // *** IUnknown ***
+  STDMETHODIMP QueryInterface(REFIID riid, void **ppv);
+  STDMETHODIMP_(ULONG) AddRef();
+  STDMETHODIMP_(ULONG) Release();
+
+  // *** IDropSource ***
+  STDMETHODIMP QueryContinueDrag(BOOL fEscapePressed, DWORD grfKeyState);
+  STDMETHODIMP GiveFeedback(DWORD dwEffect);
+
+  CDropSource() : m_cRef(1) { }
+private:
+  ULONG m_cRef;
+};
+
+HRESULT CDropSource::QueryInterface(REFIID riid, void **ppv)
+{
+  IUnknown *punk = NULL;
+  if (riid == IID_IUnknown) {
+    punk = static_cast&lt;IUnknown*&gt;(this);
+  } else if (riid == IID_IDropSource) {
+    punk = static_cast&lt;IDropSource*&gt;(this);
+  }
+
+  *ppv = punk;
+  if (punk) {
+    punk-&gt;AddRef();
+    return S_OK;
+  } else {
+    return E_NOINTERFACE;
+  }
+}
+
+ULONG CDropSource::AddRef()
+{
+  return ++m_cRef;
+}
+
+ULONG CDropSource::Release()
+{
+  ULONG cRef = --m_cRef;
+  if (cRef == 0) delete this;
+  return cRef;
+}
+
+HRESULT CDropSource::QueryContinueDrag(
+          BOOL fEscapePressed, DWORD grfKeyState)
+{
+  if (fEscapePressed) return DRAGDROP_S_CANCEL;
+
+  // [Update: missing paren repaired, 7 Dec]
+  if (!(grfKeyState &amp; (MK_LBUTTON | MK_RBUTTON)))
+    return DRAGDROP_S_DROP;
+
+  return S_OK;
+}
+
+HRESULT CDropSource::GiveFeedback(DWORD dwEffect)
+{
+  return DRAGDROP_S_USEDEFAULTCURSORS;
+}
+</pre>
+<p>As you can see, this drop source is extraordinarily boring. Even the interesting methods are uninteresting.</p>
+<p><a href="https://docs.microsoft.com/en-us/windows/win32/api/oleidl/nf-oleidl-idropsource-querycontinuedrag"> The <code>IDropSource::QueryContinueDrag</code> method</a> is pretty much boilerplate. If the Escape key was pressed, then cancel the drag/drop operation. If the mouse buttons are released, then complete the operation. Otherwise, continue the operation.</p>
+<p><a href="https://docs.microsoft.com/en-us/windows/win32/api/oleidl/nf-oleidl-idropsource-givefeedback"> The <code>IDropSource::GiveFeedback</code> method</a> is even less interesting. It merely returns <code>DRAGDROP_S_USEDEFAULTCURSORS</code> to indicate that it wants default drag feedback.</p>
+<p>Believe it or not, we now have everything we need to drag a file.</p>
+<pre>void OnLButtonDown(HWND hwnd, BOOL fDoubleClick,
+                   int x, int y, UINT keyFlags)
+{
+  IDataObject *pdto;
+  // In a real program of course
+  // you wouldn't use a hard-coded path.
+  // [comment added 11am because apparently some
+  // people thought this wasn't self-evident.]
+  if (SUCCEEDED(GetUIObjectOfFile(hwnd,
+                    L"C:\\Windows\\clock.avi",
+		    IID_IDataObject, (void**)&amp;pdto))) {
+    IDropSource *pds = new CDropSource();
+    if (pds) {
+      DWORD dwEffect;
+      DoDragDrop(pdto, pds, DROPEFFECT_COPY | DROPEFFECT_LINK,
+                 &amp;dwEffect);
+      pds-&gt;Release();
+    }
+    pdto-&gt;Release();
+  }
+}
+
+    HANDLE_MSG(hwnd, WM_LBUTTONDOWN, OnLButtonDown);
+</pre>
+<p>To drag an object, you need two things, a data object and a drop source. We created our drop source above, and the data object comes from the shell. All that’s left to do is start the drag/drop operation by calling <a href="https://docs.microsoft.com/en-us/windows/win32/api/ole2/nf-ole2-dodragdrop"> the <code>DoDragDrop</code> function</a>.</p>
+<p>Notice that we specify that the permitted operations are <code>DROPEFFECT_COPY</code> and <code>DROPEFFECT_LINK</code>. We specifically disallow <code>DROPEFFECT_MOVE</code> because this program doesn’t present a folder-like window; the user has no expectation that the drag/drop will result in a Move operation.</p>
+<p>Next time, adding Move support, just to see how it works.</p>
+
+
+</body>

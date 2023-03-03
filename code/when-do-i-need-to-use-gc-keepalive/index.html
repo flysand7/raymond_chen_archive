@@ -1,0 +1,228 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When do I need to use GC.KeepAlive?</h1>  <!-- .entry-meta -->
+
+<p>
+Finalization is the crazy wildcard in garbage collection.
+It operates “behind the GC”,
+running after the GC has declared an object dead.
+Think about it: Finalizers run on objects that have no active references.
+How can <code>this</code> be a reference to an object that has no references?
+That’s just crazy-talk!
+</p>
+<p>
+Finalizers are a Ouija board,
+permitting dead objects to operate “from beyond the grave”
+and affect live objects.
+As a result, when finalizers are involved, there is a lot of
+creepy spooky juju going on,
+and you need to tread very carefully, or your soul will become
+cursed.
+</p>
+<p>
+Let’s step back and look at a different problem first.
+Consider this class which doesn’t do anything interesting
+but works well enough for demonstration purposes:
+</p>
+<pre>
+class Sample1 {
+ private StreamReader sr;
+ public Sample1(string file) : sr(new StreamReader(file)) { }
+ public void Close() { sr.Close(); }
+ public string NextLine() { return sr.ReadLine(); }
+}
+</pre>
+<p>
+What happens if one thread calls <code>Sample1.NextLine()</code>
+and another thread calls <code>Sample1.Close()</code>?
+If the <code>NextLine()</code> call wins the race,
+then you have a stream closed while it is in the middle of
+its <code>ReadLine</code> method.
+Probably not good.
+If the <code>Close()</code> call wins the race,
+then when the <code>NextLine()</code> call is made,
+you end up reading from a closed stream.
+Definitely not good.
+Finally, if the <code>NextLine()</code> call runs to
+completion before the <code>Close()</code>,
+then the line is successfully read before the stream
+is closed.
+</p>
+<p>
+Having this race condition is clearly an unwanted state of
+affairs since the result is unpredictable.
+</p>
+<p>
+Now let’s change the <code>Close()</code> method to a finalizer.
+</p>
+<pre>
+class Sample2 {
+ private StreamReader sr;
+ public Sample2(string file) : sr(new StreamReader(file)) { }
+ <font color="blue">~Sample2() { sr.Close(); }</font>
+ public string NextLine() { return sr.ReadLine(); }
+}
+</pre>
+<p>
+Remember that we learned that an object becomes eligible for garbage collection
+when there are no active references to it,
+and that it can happen
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/08/10/10048149.aspx">
+even while a method on the object is still active</a>.
+Consider this function:</p>
+<p><pre>
+string FirstLine(string fileName) {
+ Sample2 s = new Sample2(fileName);
+ return s.NextLine();
+}
+</pre>
+<p>
+We learned that the <code>Sample2</code> object becomes eligible
+for collection during the execution of <code>NextLine()</code>.
+Suppose that the garbage collector runs and collects the object
+while <code>NextLine</code> is still running.
+This could happen if <code>ReadLine</code> takes a long time,
+say, because the hard drive needs to spin up or there is a network
+hiccup;
+or it could happen just because it’s not your lucky day
+and the garbage collector ran at just the wrong moment.
+Since this object has a finalizer, the finalizer runs
+before the memory is discarded, and the finalizer closes the
+<code>StreamReader</code>.
+</p>
+<p>
+Boom, we just hit the race condition we considered when
+we looked at <code>Sample1</code>:
+The stream was closed while it was being read from.
+The garbage collector is a rogue thread that closes the stream
+at a bad time.
+The problem occurs because the garbage collector doesn’t know
+that the finalizer is going to <i>make changes to other objects</i>.
+</p>
+<p>
+Classically speaking,
+there are three conditions which in combination lead to this problem:
+</p>
+<ol>
+<li>Containment: An entity <code>a</code>
+    retains a reference to another entity <code>b</code>.
+</li>
+<li>Incomplete encapsulation: The entity <code>b</code>
+    is visible to an entity outside <code>a</code>.
+</li>
+<li>Propagation of destructive effect:
+    Some operation performed on entity <code>a</code>
+    has an effect on entity <code>b</code> which alters
+    its proper usage (usually by rendering it useless).
+</li>
+</ol>
+<p>
+The first condition (containment) is something you do without
+a second’s thought.
+If you look at any class, there’s a very high chance that it has,
+among its fields, a reference to another object.
+</p>
+<p>
+The second condition (incomplete encapsulation)
+is also a common pattern.
+In particular, if <code>b</code> is an object with methods,
+it will be visible to itself.
+</p>
+<p>
+The third condition (propagation of destructive effect) is the tricky one.
+If an operation on entity <code>a</code> has a damaging
+effect on entity <code>b</code>,
+the code must be careful not to damage it while it’s still being
+used.
+This is something you usually take care of explicitly,
+since you’re the one who wrote the code that calls the destructive method.
+</p>
+<p>
+Unless the destructive method is a finalizer.
+</p>
+<p>
+If the destructive method is a finalizer,
+then
+<i>you do not have complete control over when it will run</i>.
+And it is one of the fundamental laws of the universe that events
+will occur at the worst possible time.
+</p>
+<p>
+Enter <code>GC.KeepAlive()</code>.
+The purpose of <code>GC.KeepAlive()</code> is to force the garbage
+collector to treat the object as still live,
+thereby preventing it from being collected,
+and thereby preventing the finalizer from running prematurely.
+</p>
+<p>
+(Here’s the money sentence.)
+You need to use <code>GC.KeepAlive</code> when the finalizer
+for an object has a destructive effect on a contained object.
+</p>
+<p>
+The problem is that it’s not always clear which objects have
+finalizers which have destructive effect on a contained object.
+There are some cases where you can suspect this is happening
+due to the nature of the object itself.
+For example, if the object manages something external to the CLR,
+then its finalizer will probably destroy the external object.
+But there can be other cases where the need for <code>GC.KeepAlive</code>
+is not obvious.
+</p>
+<p>
+A much cleaner solution than using <code>GC.KeepAlive</code>
+is to use the <code>IDisposable</code> interface,
+formalized by the <code>using</code> keyword.
+Everybody knows that the <code>using</code> keyword ensures that the
+object being used is disposed at the end of the block.
+But it’s also the case (and it is this behavior that is important today)
+that the <code>using</code> keyword also <i>keeps the object alive
+until the end of the block</i>.
+(Why?
+Because the object needs to be alive so that we can call <code>Dispose</code>
+on it!)
+</p>
+<p>
+This is one of the reasons I don’t like finalizers.
+Since they operate underneath the GC,
+they undermine many principles of garbage collected systems.
+(See also
+<a href="http://blogs.msdn.com/clyon/archive/2006/04/25/583698.aspx">
+<i>resurrection</i></a>.)
+As we saw earlier,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/08/09/10047586.aspx">
+a correctly-written program cannot rely on side effects of a finalizer</a>,
+so in theory all finalizers could be nop’d out
+without affecting correctness.
+</p>
+<p>
+The garbage collector purist in me also doesn’t like finalizers
+because they prevent the running time of a garbage collector to be
+proportional to the amount of <i>live</i> data,
+like say in a classic two-space collector.
+(There is also a small constant associated with the amount of <i>dead</i>
+data, which means that the overall complexity is proportional to the
+amount of <i>total data</i>.)
+</p>
+<p>
+If I ruled the world, I would decree that the only thing you can do in
+a finalizer is perform some tests to ensure that all the associated
+external resources have already been explicitly released, and if not, raise
+a fatal exception:
+<code>System.Exception.Resource­Leak</code>.
+</p>
+<p>
+<b>Bonus reading</b>
+</p>
+<ul>
+<li>
+<a href="http://blogs.msdn.com/kimhamil/archive/2008/03/15/the-often-non-difference-between-close-and-dispose.aspx">
+    The often non-difference between Close and Dispose</a>.
+</li>
+<li>
+<a href="http://blogs.msdn.com/visualstudio/archive/2010/03/01/marshal-releasecomobject-considered-dangerous.aspx">
+    Marshal.ReleaseComObject considered dangerous</a>.
+</li>
+</ul></p>
+
+
+</body>

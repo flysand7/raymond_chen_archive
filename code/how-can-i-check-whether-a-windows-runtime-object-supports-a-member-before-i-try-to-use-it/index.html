@@ -1,0 +1,59 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I check whether a Windows Runtime object supports a member before I try to use it?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we saw that <a href="/code/accessing-a-member-of-a-windows-runtime-class-raises-an-invalidcastexception-throws-a-hresult-no-interface-what-does-this-mean"> an invalid cast exception can mean that you tried to use a class member that isn’t supported by the current operating system</a>. What can you do to avoid this problem?</p>
+<p>You might be running into this problem because your program is running on a version of Windows that you never intended to support. For example, your program is totally dependent upon some feature added in Windows 10 version 1903, and there’s no point trying to run it on anything earlier. You can go to your manifest and set the <code>Min­Version</code> in your <code>Target­Device­Family</code> element to the minimum version that supports the thing you need. Your application will be deployed only to systems that satisfy your manifest’s minimum requirements.</p>
+<p>You can get the minimum version from MSDN under <b>Additional features and requirements</b>:</p>
+<table cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: solid 1px #ccc;">Device family</td>
+<td style="border: solid 1px #ccc;">Windows 10, version 1803 (introduced v<u>10.0.17134.0</u>)</td>
+</tr>
+</tbody>
+</table>
+<p>In this case, the magic number to put in your manifest is 10.0.17134.0. Naturally, if you have many minimum requirements, then the one you pick for your manifest is the highest.</p>
+<pre>&lt;TargetDeviceFamily Name="Windows.Universal"
+    MinVersion="10.0.<u>17134</u>.0"
+    MaxVersionTested="10.0.18362.0" /&gt;
+</pre>
+<p>Another option is to perform a runtime check before trying to use the possibly-nonexistent member. The most direct way is to check specifically for the thing:</p>
+<pre>// C#
+if (<a href="https://docs.microsoft.com/en-us/uwp/api/Windows.Foundation.Metadata.ApiInformation">ApiInformation</a>.IsMethodPresent("MyNamespace.MyClass", "SomeMember"))
+{
+  // There is a method called SomeMember
+  myObject.SomeMember();
+}
+</pre>
+<p>If overloads were added at different times, you will need to use the check that takes an arity.</p>
+<pre>if (<a href="https://docs.microsoft.com/en-us/uwp/api/Windows.Foundation.Metadata.ApiInformation">ApiInformation</a>.IsMethodPresent("MyNamespace.MyClass", "SomeMember", 1))
+{
+  // it is okay to call the overload of the SomeMember method with 1 parameter
+  myObject.SomeMember(true);
+}
+</pre>
+<p>You can use C#’s <code>nameof</code> operator and <code>Type.FullName</code> property to avoid hard-coding strings. In C++/WinRT, you can use <code>winrt::name_of&lt;T&gt;()</code>.</p>
+<p>You can also check for the existence of properties, and even narrow your check to read-only properties or writable properties.</p>
+<p>Another option for the runtime check is to check for the presence of the corresponding contract that introduced support for it. This information is also provided in MSDN under <b>Additional features and requirements</b>:</p>
+<table cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: solid 1px #ccc;">API contract</td>
+<td style="border: solid 1px #ccc;">Windows.Foundation.UniversalApiContract (introduced v6)</td>
+</tr>
+</tbody>
+</table>
+<p>The contract name and version are what you pass to the <code>Is­Api­Contract­Present</code> method.</p>
+<pre>// C#
+if (ApiInformation.IsApiContractPresent(
+    "Windows.Foundation.UniversalApiContract", 6))
+{
+  // it is okay to use things that were introduced in
+  // Windows.Foundation.UniversalApiContract version 6.
+}
+</pre>
+<p><b>Bonus chatter</b>: What about JavaScript? In JavaScript, an attempt to read a nonexistent member succeeds but returns <code>undefined</code>. This behavior is consistent with the overall design of the JavaScript language.</p>
+<p> </p>
+
+
+</body>

@@ -1,0 +1,158 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is the historical reason for MulDiv(1, -0x80000000, -0x80000000) returning 2?</h1>  <!-- .entry-meta -->
+
+<p>
+Commenter rs asks,
+“<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/07/20/10040074.aspx#10040424">Why does Windows (historically) return 2 for
+<code>MulDiv(1, -0x80000000, -0x80000000)</code> while Wine returns zero?</a>”
+</p>
+<p>
+The <code>MulDiv</code> function multiplies the first two parameters
+and divides by the third. Therefore, the mathematically correct
+answer for
+<code>MulDiv(1, -0x80000000,
+-0x80000000)</code> is 1,
+because
+<i>a</i> ×
+<i>b</i> ÷
+<i>b</i> = <i>a</i> for all nonzero <i>b</i>.
+</p>
+<p>
+So both Windows and Wine get it wrong.
+I don’t know why Wine gets it wrong, but I dug through the
+archives to figure out what happened to Windows.
+</p>
+<p>
+First, some background.
+What’s the point of the <code>MulDiv</code> function anyway?
+</p>
+<p>
+Back in the days of 16-bit Windows,
+floating point was very expensive.
+Most people did not have math coprocessors,
+so floating point was performed via software emulation.
+And the software emulation was slow.
+First, you issued a floating point operation on the assumption
+that you had a float point coprocessor.
+If you didn’t, then a <i>coprocessor not available</i>
+exception was raised.
+This exception handler had a lot of work to do.
+</p>
+<p>
+It decoded the instruction that caused
+the exception and then emulated the operation.
+For example, if the bytes at the point of the exception were
+<code>d9 45 08</code>, the exception handler would have to
+figure out that the instruction was <code>fld dword ptr ds:[di][8]</code>.
+It then had to simulate the operation of that instruction.
+In this case, it would
+retrieve the caller’s <code>di</code> register,
+add 8 to that value,
+load four bytes from that address
+(relative to the caller’s <code>ds</code> register),
+expand them from 32-bit floating point to 80-bit floating point,
+and push them onto a pretend floating point stack.
+Then it advanced the instruction pointer three bytes and
+resumed execution.
+</p>
+<p>
+This took an instruction that with a coprocessor would take
+around 40 cycles (already slow) and ballooned its total execution
+time to a few hundred, probably thousand cycles.
+(I didn’t bother counting. Those who are offended by this
+horrific laziness on my part can apply for a refund.)
+</p>
+<p>
+It was in this sort of floating point-hostile environment that
+Windows was originally developed.
+As a result,
+Windows has historically avoided using floating point and preferred
+to use integers.
+And one of the things you often have to do with integers is
+scale them by some ratio.
+For example, a horizontal dialog unit is ¼ of the average
+character width, and a vertical dialog unit is 1/8 of the average
+character height.
+If you have a value of, say, 15 horizontal dlu, the corresponding
+number of pixels is
+15 × average character width ÷ 4.
+This multiply-then-divide operation is quite common, and that’s
+the model that the <code>MulDiv</code> function is designed to
+help out with.
+</p>
+<p>
+In particular, <code>MulDiv</code> took care of three
+things that a simple
+<i>a</i> ×
+<i>b</i> ÷
+<i>c</i> didn’t.
+(And remember, we’re in 16-bit Windows, so <i>a</i>,
+<i>b</i> and <i>c</i> are all 16-bit signed values.)
+</p>
+<ul>
+<li>The intermediate product <i>a</i> × <i>b</i> was
+    computed as a 32-bit value, thereby avoiding overflow.
+<li>The result was <i>rounded</i> to the nearest integer instead
+    of truncated toward zero
+<li>If <i>c</i> = 0 or if the result did not fit
+    in a signed 16-bit integer, it returned <i>INT_MAX</i>
+    or <i>INT_MIN</i> as appropriate.
+</li></li></li></ul>
+<p>
+The <code>MulDiv</code> function was written in assembly language,
+as was most of GDI at the time.
+Oh right, the <code>MulDiv</code> function was exported by GDI
+in 16-bit Windows.
+Why?
+Probably because they were the people who needed the function first,
+so they ended up writing it.
+</p>
+<p>
+Anyway, after I studied the assembly language for the function,
+I found the bug.
+A <code>shr</code> instruction was accidentally coded as <code>sar</code>.
+The problem manifests itself only for the denominator
+<a href="http://blogs.msdn.com/b/ericlippert/archive/2011/01/24/spot-the-defect-bad-comparisons-part-two.aspx">
+<code>−0x8000</code></a>, because that’s the only one whose
+absolute value has the high bit set.
+</p>
+<p>
+The purpose of the <code>sar</code> instruction was to divide the
+denominator by two, so it can get the appropriate rounding behavior
+when there is a remainder.
+Reverse-compiling back into C, the function goes like this:
+</p>
+<pre>
+int16 MulDiv(int16 a, int16 b, int16 c)
+{
+ int16 sign = a ^ b ^ c; // sign of result
+ // make everything positive; we will apply sign at the end
+ if (a &lt; 0) a = -a;
+ if (b &lt; 0) b = -b;
+ if (c &lt; 0) c = -c;
+ //  add half the denominator to get rounding behavior
+ uint32 prod = UInt16x16To32(a, b) + c / 2;
+ if (HIWORD(prod) &gt;= c) goto overflow;
+ int16 result = UInt32Div16To16(prod, c);
+ if (result &lt; 0) goto overflow;
+ if (sign &lt; 0) result = -result;
+ return result;
+overflow:
+ return sign &lt; 0 ? INT_MIN : INT_MAX;
+}
+</pre>
+<p>
+Given that I’ve already told you where the bug is,
+it should be pretty easy to spot in the code above.
+</p>
+<p>
+Anyway, when this assembly language function was ported
+to Win32, it was ported as, well, an assembly language function.
+And the port was so successful,
+it even preserved (probably by accident) the sign extension bug.
+</p>
+<p>
+Mind you, it’s a bug with amazing seniority.</p>
+
+
+</body>

@@ -1,0 +1,132 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a task completion source for a C++ coroutine: Producing a result</h1>  <!-- .entry-meta -->
+
+<p>We’ve been looking at <a href="/code/creating-other-types-of-synchronization-objects-that-can-be-used-with-co-await-part-3-parallel-resumption" title="Creating other types of synchronization objects that can be used with co_await, part 3: Parallel resumption"> creating different types of awaitable synchronization objects</a>. This time, we’ll create something analogous to what C# calls a <code>Task­Completion­Source</code> and what PPL calls a <code>task_<wbr/>completion_<wbr/>event</code>. For lack of a better name, I’m going to call it a <code>result_<wbr/>holder</code>.</p>
+<p>A <code>result_<wbr/>holder</code> is an object that you can put a result into, and you can <code>co_await</code> it to wait for the result to appear. Once a result has been set, it can be retrieved multiple times. You can use this sort of object for one-time initialization, or if you want to cache the results of earlier calculations.</p>
+<p>First, we need to teach our library about coroutines that return values. Up until now, the result of a <code>co_await</code> had always been <code>void</code>.</p>
+<pre>    template&lt;typename State&gt;
+    class awaitable_state
+    {
+        ...
+
+        <span style="color: blue;">void get_result() const noexcept { }
+
+        auto</span> await_resume(
+            impl::node&lt;extra_await_data&gt;&amp; node) noexcept
+        {
+            node.handle = nullptr;
+            <span style="color: blue;">return parent().get_result();</span>
+        }
+        ...
+    };
+
+    template&lt;typename State&gt;
+    class awaitable_sync_object
+    {
+        ...
+
+        struct awaiter
+        {
+            ...
+
+            <span style="color: blue;">auto</span> await_resume()
+            { <span style="color: blue;">return</span> s.await_resume(node); }
+
+            ...
+        }
+    };
+</pre>
+<p>We allow the CRTP client to implement a method <code>get_<wbr/>result</code>, and whatever that method returns is the result of the <code>co_await</code>. By default, it’s just <code>void</code>, but we’re going to override it in our <code>result_<wbr/>holder</code>.</p>
+<pre>template&lt;typename T&gt;
+struct result_holder_state :
+    async_helpers::awaitable_state&lt;result_holder_state&lt;T&gt;&gt;
+{
+    std::atomic&lt;bool&gt; ready{ false };
+
+    union optional
+    {
+        optional() {}
+        ~optional() {}
+
+        T value;
+    } result;
+
+    result_holder_state() {}
+    result_holder_state(result_holder_state const&amp;) = delete;
+    void operator=(result_holder_state const&amp;) = delete;
+
+    ~result_holder_state()
+    {
+        if (ready.load(std::memory_order_relaxed)) {
+            result.value.~T();
+        }
+    }
+</pre>
+<p>We build our own equivalent of <code>std::optional&lt;T&gt;</code> that supports querying atomically whether a value has been set. The atomic boolean <code>ready</code> becomes <code>true</code> when a value is set, and the union <code>result</code> holds the value if so. We use a union because unions do not construct or destruct their members by default. But it means that we must remember to do the construction and destruction ourselves.</p>
+<p>This is not a general-purpose atomic <code>optional</code> because it supports only one-way transitions: You can go from unset to set, but once set, it’s stuck forever. This limitation allows the discriminant (<code>ready</code>) to be atomic.</p>
+<pre>    using typename result_holder_state::extra_await_data;
+    using typename result_holder_state::node_list;
+</pre>
+<p>Since our state type is now a template type, we have to tell the compiler which identifiers are dependent names. We may as well just import them to save ourselves some typing.</p>
+<pre>    bool fast_claim(extra_await_data const&amp;) noexcept
+    {
+        return ready.load(std::memory_order_acquire);
+    }
+
+    bool claim(extra_await_data const&amp;) noexcept
+    {
+        return ready.load(std::memory_order_relaxed);
+    }
+</pre>
+<p>If someone tries to <code>co_await</code>, we let the await complete immediately if the value is already ready.</p>
+<pre>    void set_result(node_list&amp; list, T v)
+    {
+        if (!ready.load(std::memory_order_relaxed)) {
+            new (std::addressof(result.value))
+                T{ std::move&lt;T&gt;(v) };
+            ready.store(true, std::memory_order_release);
+            this-&gt;resume_all(list);
+        }
+    }
+</pre>
+<p>To set the result, we first check that we don’t have a result. If so, then we do nothing. You can set the result only once. Otherwise, we would have a race condition if one coroutine fetches the value while another is changing it.</p>
+<p>If this is the first time anyone is setting the result, then we move the value into our private storage, using the placement new constructor. We provide the storage address via <code>std::addressof</code> to protect against the possibility that <code>T</code> has an overloaded <code>operator&amp;</code>.</p>
+<p>Only after the value is definitely set into our private storage do we mark the value as <code>ready</code>, and we do it with release semantics so that the effects of the constructor are fully visible before telling everybody that it’s ready to be read.</p>
+<p>It’s also important to be aware that the constructor of <code>T</code> may throw an exception. In that case, the storage is destructed back to its uninitialized state, and the exception escapes. Another reason it’s important not to set <code>ready</code> or to add coroutines to the <code>list</code> before the value is definitely constructed.</p>
+<pre>    T get_result()
+    {
+        return result.value;
+    }
+};
+</pre>
+<p>And here’s where we override <code>get_<wbr/>result</code> so that the result of a <code>co_await</code> is the captured value.</p>
+<p>We technically need an acquire fence here to ensure that all the changes to <code>value</code> made by the <code>set_<wbr/>result</code> are visible to the current. We get away without one because we put an acquire fence in <code>await_<wbr/>ready</code>!</p>
+<pre>template&lt;typename T&gt;
+struct result_holder
+    : async_helpers::awaitable_sync_object&lt;
+        result_holder_state&lt;T&gt;&gt;
+{
+    using typename result_holder::state;
+
+    void set_result(T result) const noexcept
+    {
+        this-&gt;action_impl(&amp;state::set_result,
+            std::move(result));
+    }
+};
+</pre>
+<p>The object itself is not particularly exciting. Setting the result on the main object moves the value into the state.</p>
+<p>Now you have an object that you can put results into, and <code>co_await</code>ing it will wait until results appear.</p>
+<pre>result_holder&lt;int&gt; universe;
+
+// coroutine 1:
+auto answer = co_await universe;
+
+// coroutine 2:
+universe.set_result(42);
+</pre>
+<p>But this code is still broken.</p>
+<p>We’ll look more closely next time.</p>
+
+
+</body>

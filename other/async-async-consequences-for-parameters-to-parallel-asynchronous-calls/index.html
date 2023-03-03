@@ -1,0 +1,78 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Async-Async: Consequences for parameters to parallel asynchronous calls</h1>  <!-- .entry-meta -->
+
+<p><a href="https://devblogs.microsoft.com/oldnewthing/20190430-35/?p=102460"> Last time</a>, we learned about a feature known as Async-Async which makes asynchronous operations even more asynchronous by pretending that they started before they actually did. The introduction of Async-Async is intended to be transparent to both the client and the server, provided they were following the rules to begin with. Of course, if you weren’t following the rules, then you may notice some side effects.</p>
+<p>From the client side, it means that you cannot mutate the parameters of an asynchronous operation until the operation completes. This was never permitted to begin with, but people sometimes got away with it because they “knew” that certain parameters were consumed before the initial method returned an asynchronous operation.</p>
+<pre>// Code in italics is wrong.
+
+// Create three widgets in parallel.
+var options = new WidgetOptions();
+
+// Create a blue widget.
+options.Color = Colors.Blue;
+var task1 = Widget.CreateAsync(options);
+
+// Create another blue widget.
+var task2 = Widget.CreateAsync(options);
+
+<i>// Create a red widget.
+options.Color = Colors.Red;
+var task3 = Widget.CreateAsync(options);</i>
+
+// Wait for all the widgets to be created.
+await Task.WhenAll(task1, task2, task3);
+
+// Get the widgets.
+var widget1 = task1.Result;
+var widget2 = task2.Result;
+var widget3 = task3.Result;
+</pre>
+<p>This code “knows” that the <code>Widget.</code><code>Create­Async</code> method looks at the <code>options.Color</code> <i>before</i> it returns with an <code>IAsync­Operation</code>. It therefore “knows” that any changes to the <code>options</code> after <code>Widget.</code><code>Create­Async</code> returns will not have any effect on the widget being created, so it goes ahead and reconfigures the <code>options</code> object so it can be used for the third widget.</p>
+<p>This code does not work when Async-Async is enabled. The calls to <code>Widget.</code><code>Create­Async</code> will return immediately with fake <code>IAsync­Operation</code>s, while the real calls to <code>Widget.</code><code>Create­Async</code> are still in progress. As we saw earlier, the result of the real call to <code>Widget.</code><code>Create­Async</code> will be connected to the fake <code>IAsync­Operation</code> so that you get the result you want, but the timing has changed to improve performance. If the above code manages to change the <code>options.</code><code>Color</code> to red before one of the first two real calls to <code>Widget.</code><code>Create­Async</code> reads the options, then one or both of the first two widgets will end up red rather than blue.</p>
+<p>This is basically a case of violating one of the <a href="https://blogs.msdn.microsoft.com/oldnewthing/20060320-13/?p=31853"> basic ground rules for programming</a>: You cannot change a parameter while the function call is in progress. It’s just that for asynchronous operations, the “in progress” extends all the way through to the completion of the asynchronous operation.</p>
+<p>It’s fine to kick off multiple asynchronous operations. Just make sure they don’t interfere with each other.</p>
+<pre>// Create three widgets in parallel.
+var options = new WidgetOptions();
+
+// Create a blue widget.
+options.Color = Colors.Blue;
+var task1 = Widget.CreateAsync(options);
+
+// Create another blue widget.
+var task2 = Widget.CreateAsync(options);
+
+// Create a red widget.
+<span style="color: blue;">options = new WidgetOptions();</span>
+options.Color = Colors.Red;
+var task3 = Widget.CreateAsync(options);
+
+// Wait for all the widgets to be created.
+await Task.WhenAll(task1, task2, task3);
+
+// Get the widgets.
+var widget1 = task1.Result;
+var widget2 = task2.Result;
+var widget3 = task3.Result;
+</pre>
+<p>This time, we create a new <code>Widget­Options</code> object for the final call to <code>Widget.­Create­Async</code>. That way, each call to <code>Widget.</code><code>Create­Async</code> gets an <code>options</code> object that is stable for the duration of the call. It’s okay to share the <code>options</code> object among multiple calls (like we did for the first two blue widgets), but don’t change them while there is still an asynchronous operation that is using them.</p>
+<p>Of course, once the operation completes, then you are welcome to do whatever you like to the <code>options</code>, since the operation isn’t using them any more.</p>
+<pre>// Create three widgets in series.
+var options = new WidgetOptions();
+
+// Create a blue widget.
+options.Color = Colors.Blue;
+var widget1 = await Widget.CreateAsync(options);
+
+// Create another blue widget.
+var widget2 = await Widget.CreateAsync(options);
+
+// Create a red widget.
+options.Color = Colors.Red;
+var widget3 = await Widget.CreateAsync(options);
+</pre>
+<p>In this case, we created the widgets in series. We changed the <code>options</code> after awaiting the result of the operation, so we know that the operation is finished and it is safe to modify the <code>options</code> for a new call.</p>
+<p>Next time, we’ll look at another consequence of Async-Async.</p>
+<p> </p>
+
+
+</body>

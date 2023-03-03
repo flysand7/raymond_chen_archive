@@ -1,0 +1,211 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Excursions in composition: Sequential stream concatenation</h1>  <!-- .entry-meta -->
+
+<p>
+As we’ve seen a few times already
+(when
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/10/07/239197.aspx">
+building context menus</a> and exploring
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/01/04/346274.aspx">
+fiber-based enumeration</a>),
+composition is an important concept in object-oriented programming.
+Today, we’re going to compose two sequential streams by concatenation.
+</p>
+<p>
+There really isn’t much to it.
+The idea is to take two streams and start by reading
+from the first one.
+When that runs out, switch to reading from the second one.
+Most of this is just typing.
+(As usual, I am using plain C++;
+in real life, you can save yourselves a lot of typing by
+using a class library of your choosing.)
+</p>
+<p>
+We’ll start with a base class that does all the boring typing
+related to implementing a read-only sequential stream.
+</p>
+<pre>
+class CROSequentialStreamBase : public ISequentialStream
+{
+public:
+ // *** IUnknown ***
+ STDMETHODIMP QueryInterface(REFIID riid, void **ppv)
+ {
+  if (riid == IID_IUnknown || riid == IID_ISequentialStream) {
+    *ppv = static_cast&lt;IUnknown*&gt;(this);
+    AddRef();
+    return S_OK;
+  }
+  *ppv = NULL;
+  return E_NOINTERFACE;
+ }
+ STDMETHODIMP_(ULONG) AddRef()
+ {
+  return InterlockedIncrement(&amp;m_cRef);
+ }
+ STDMETHODIMP_(ULONG) Release()
+ {
+  LONG cRef = InterlockedDecrement(&amp;m_cRef);
+  if (cRef == 0) delete this;
+  return cRef;
+ }
+ // *** ISequentialStream ***
+ STDMETHODIMP Write(const void *pv, ULONG cb, ULONG *pcbWritten)
+ {
+  if (pcbWritten) *pcbWritten = 0;
+  return STG_E_ACCESSDENIED;
+ }
+protected:
+ CROSequentialStreamBase() : m_cRef(1) { }
+ virtual ~CROSequentialStreamBase() { }
+ LONG m_cRef;
+};
+</pre>
+<p>
+There’s nothing exciting here at all.
+In addition to the boring <code>IUnknown</code> methods,
+we also implement <code>ISequentialStream::Write</code>
+by saying, “Sorry, you can’t write to a read-only stream.”
+The <code>ISequentialStream::Read</code> method
+is left unimplemented.
+</p>
+<p>
+We can now cook up our
+<code>CConcatStream</code> class:
+</p>
+<pre>
+class CConcatStream : public CROSequentialStreamBase
+{
+public:
+ CConcatStream(ISequentialStream *pstm1,
+               ISequentialStream *pstm2);
+ // *** ISequentialStream ***
+ STDMETHODIMP Read(void *pv, ULONG cb, ULONG *pcbRead);
+protected:
+ ~CConcatStream();
+ bool m_fFirst;
+ ISequentialStream *m_pstm1;
+ ISequentialStream *m_pstm2;
+};
+CConcatStream::CConcatStream(ISequentialStream *pstm1,
+                             ISequentialStream *pstm2)
+ : m_pstm1(pstm1), m_pstm2(pstm2), m_fFirst(true)
+{
+ assert(pstm1 != pstm2);
+ m_pstm1-&gt;AddRef();
+ m_pstm2-&gt;AddRef();
+}
+CConcatStream::~CConcatStream()
+{
+ m_pstm1-&gt;Release();
+ m_pstm2-&gt;Release();
+}
+</pre>
+<p>
+Our <code>CConcatStream</code> takes two sequential streams
+and saves them in member variables
+<code>m_pstm1</code> and <code>m_pstm2</code>.
+The real work happens in
+<code>ISequentialStream::Read</code>
+method:
+</p>
+<pre>
+HRESULT CConcatStream::Read(void *pv, ULONG cb, ULONG *pcbRead)
+{
+ ULONG cbRead;
+ HRESULT hr;
+ if (m_fFirst) {
+  hr = m_pstm1-&gt;Read(pv, cb, &amp;cbRead);
+ } else {
+  hr = m_pstm2-&gt;Read(pv, cb, &amp;cbRead);
+ }
+ if ((FAILED(hr) || cbRead == 0) &amp;&amp; m_fFirst) {
+  m_fFirst = false;
+  hr = m_pstm2-&gt;Read(pv, cb, &amp;cbRead);
+ }
+ if (pcbRead) *pcbRead = cbRead;
+ return hr;
+}
+</pre>
+<p>
+If we are still reading the first stream, then read from the first
+stream.
+Otherwise, read from the second stream.
+If the first stream reaches the end, then switch to the second stream.
+(Checking whether the end of the stream has been reached is very
+annoying since <code>ISequentialStream</code>
+implementations are inconsistent in the way they report
+the condition.
+Some return <code>S_FALSE</code> on a
+partial read;
+others return <code>S_OK</code>;
+still others return an error code.
+We need to check for all of these possibilities.)
+</p>
+<p>
+And that’s all there is.
+If you give this object two sequential streams, it will compose
+those two streams and act like one giant stream that is the
+concatenation of the two.
+</p>
+<p>
+Let’s illustrate with a simple program:
+</p>
+<pre>
+#include &lt;stdio.h&gt;
+#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;shlwapi.h&gt;
+#include &lt;tchar.h&gt;
+... insert CConcatStream class here ...
+void PrintStream(ISequentialStream *pstm)
+{
+ ULONG cb;
+ BYTE buf[256];
+ while (SUCCEEDED(pstm-&gt;Read(buf, 255, &amp;cb)) &amp;&amp; cb) {
+  buf[cb] = 0;
+  printf("%s", buf);
+ }
+}
+int __cdecl _tmain(int argc, TCHAR **argv)
+{
+ if(SUCCEEDED(CoInitialize(NULL)) {
+  IStream *pstm1;
+  if (SUCCEEDED(SHCreateStreamOnFile(argv[1], STGM_READ, &amp;pstm1))) {
+   IStream *pstm2;
+   if (SUCCEEDED(SHCreateStreamOnFile(argv[2], STGM_READ, &amp;pstm2))) {
+    CConcatStream *pstm = new CConcatStream(pstm1, pstm2);
+    if (pstm) {
+     PrintStream(pstm);
+     pstm-&gt;Release();
+    }
+    pstm2-&gt;Release();
+   }
+   pstm1-&gt;Release();
+  }
+  CoUninitialize();
+ }
+ return 0;
+}
+</pre>
+<p>
+This program takes two file names on the command line and
+creates a stream for each one,
+then creates a <code>CConcatStream</code> out of them both,
+resulting in a composite stream that produces the contents of
+the first file, followed by the contents of the second file.
+When you run this program, you should see both files printed
+to the screen, one after the other.
+</p>
+<p>
+Okay, there really wasn’t much going on here,
+but we’ll use this as groundwork for next time.
+</p>
+<p>
+Exercise: What is the significance of the assertion
+in the constructor?</p>
+
+
+</body>

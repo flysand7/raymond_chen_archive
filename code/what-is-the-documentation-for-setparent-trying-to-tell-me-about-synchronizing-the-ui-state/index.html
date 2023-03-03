@@ -1,0 +1,91 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is the documentation for SetParent trying to tell me about synchronizing the UI state?</h1>  <!-- .entry-meta -->
+
+<p><a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms633541(v=vs.85).aspx">The documentation for the <code>Set­Parent</code> function</a> says </p>
+<blockquote class="q"><p>When you change the parent of a window, you should synchronize the UISTATE of both windows. For more information, see <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms646342(v=vs.85).aspx"><b>WM_CHANGE­UI­STATE</b></a> and <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms646361(v=vs.85).aspx"><b>WM_UPDATE­UI­STATE</b></a>. </p></blockquote>
+<p>What does that mean? </p>
+<p>Recall <a href="https://blogs.msdn.microsoft.com/oldnewthing/20130516-00/?p=4343">how the <code>WM_</code><code>UPDATE­UI­STATE</code> and <code>WM_</code><code>CHANGE­UI­STATE</code> messages work</a>. When keyboard indicators need to be shown or hidden, the control that initiates the change sends itself a <code>WM_</code><code>UPDATE­UI­STATE</code> message. This message propages up the window tree. When it reaches the root of the tree, the message converts to a <code>WM_</code><code>CHANGE­UI­STATE</code> message and propagates down the tree. </p>
+<p>There is an optimization here: If the desired keyboard state is already present, then message propagation stops, because there’s no point telling people to change something to what it already is. </p>
+<p>However, this optimization assumes that every window in the tree has the same state to begin with. </p>
+<p>Let’s see what happens if you violate this assumption. </p>
+<table border="0" cellpadding="0" cellspacing="0" summary="A top-level window named A, with children B and C. A and B are marked hideFocus=0 and hideAccel=0, but C is hideFocus=1 and hideAccel=1">
+<tr>
+<td style="width: 3em"> </td>
+<td style="width: 3em"> </td>
+<td style="width: 3em"> </td>
+<td style="width: 3em"> </td>
+<td style="width: 3em"> </td>
+<td style="width: 3em"> </td>
+</tr>
+<tr>
+<td colspan="2" style="width: 6em"> </td>
+<td align="center" colspan="2" style="border: solid black .75pt;height: 3em;width: 6em"> <font size="+2">A</font><br/>hideFocus=0<br/>hideAccel=0</td>
+<td colspan="2" style="width: 6em"> </td>
+</tr>
+<tr>
+<td style="width: 3em"> </td>
+<td colspan="2" style="width: 6em;border-bottom: solid black .75pt;border-right: solid black .75pt"> </td>
+<td colspan="2" style="width: 6em;border-bottom: solid black .75pt"> </td>
+<td style="width: 3em"> </td>
+</tr>
+<tr>
+<td style="width: 3em"> </td>
+<td colspan="4" style="width:12em;border-left: solid black .75pt;border-right: solid black .75pt"> </td>
+<td style="width: 3em"> </td>
+</tr>
+<tr>
+<td align="center" colspan="2" style="border: solid black .75pt;height: 3em;width: 6em"> <font size="+2">B</font><br/>hideFocus=0<br/>hideAccel=0</td>
+<td colspan="2" style="width: 6em"> </td>
+<td align="center" colspan="2" style="border: solid black .75pt;height: 3em;width: 6em"> <font size="+2">C</font><br/>hideFocus=1<br/>hideAccel=1</td>
+</tr>
+</table>
+<p>Observe that keyboard indicators are shown in A and B, but they are hidden in C. This is not a valid window configuration, but let’s run with it and see where it takes us. </p>
+<p>Suppose focus is on C and you tap the <kbd>Alt</kbd> key to show keyboard accelerators. </p>
+<p>Window C sends itself a <code>WM_</code><code>UPDATE­UI­STATE</code> to request that keyboard accelerators be turned on. This message propagates up the tree to window A. Window A then says, “You woke me up from my nap for this? Why are you asking to show accelerators? Accelerators are already visible! Stop wasting my time.” And the message processing stops. </p>
+<table border="0" cellpadding="0" cellspacing="0" summary="Same as previous, but A is sleeping and C is disappointed.">
+<tr>
+<td style="width: 3em"> </td>
+<td style="width: 3em"> </td>
+<td style="width: 3em"> </td>
+<td style="width: 3em"> </td>
+<td style="width: 3em"> </td>
+<td style="width: 3em"> </td>
+</tr>
+<tr>
+<td colspan="2" style="width: 6em"> </td>
+<td align="center" colspan="2" style="border: solid black .75pt;height: 3em;width: 6em">
+
+<p> <font size="+2">A</font><br/>hideFocus=0<br/>hideAccel=0</p></td>
+<td colspan="2" style="width: 6em"> </td>
+
+</tr>
+<tr>
+<td style="width: 3em"> </td>
+<td colspan="2" style="width: 6em;border-bottom: solid black .75pt;border-right: solid black .75pt"> </td>
+<td colspan="2" style="width: 6em;border-bottom: solid black .75pt"> </td>
+<td style="width: 3em"> </td>
+</tr>
+<tr>
+<td style="width: 3em"> </td>
+<td colspan="4" style="width:12em;border-left: solid black .75pt;border-right: solid black .75pt"> </td>
+<td style="width: 3em"> </td>
+</tr>
+<tr>
+<td align="center" colspan="2" style="border: solid black .75pt;height: 3em;width: 6em"> <font size="+2">B</font><br/>hideFocus=0<br/>hideAccel=0</td>
+<td colspan="2" style="width: 6em"> </td>
+<td align="center" colspan="2" style="border: solid black .75pt;height: 3em;width: 6em">
+
+<p> <font size="+2">C</font><br/>hideFocus=1<br/>hideAccel=1</p></td>
+</tr>
+</table>
+<p>Result: C still doesn’t get any keyboard accelerators. C is a sad window. C makes an appointment with a therapist. </p>
+<p>The remark in the documentation is trying to tell you that if you are moving windows between parents, and the new parent has a different UI state from its adopted child, then you have two problems: </p>
+<ol>
+<li>The UI state is inconsistent within the top-level window,     so your window looks weird.</li>
+<li>The UI state will not be properly updated,     so your window acts weird.</li>
+</ol>
+<p>Okay, so you get it. It’s important to get the two UI states in sync. But how do you do that? We’ll start looking into that next time. </p>
+<p><b>Bonus chatter</b>: That section of the documentation was written by someone who understands the window manager so deeply that they assume everybody else understands it to the same degree, expecting that “synchronize the UI state” is something the reader would comprehend immediately. (And as we’ll see next time, somebody who has never actually tried to synchronize the UI states of two windows, because if they had tried, they would have realized that accomplishing the task is harder than an offhand remark would suggest.) </p>
+
+
+</body>

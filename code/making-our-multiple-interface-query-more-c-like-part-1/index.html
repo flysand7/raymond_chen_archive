@@ -1,0 +1,115 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Making our multiple-interface query more C++-like, part 1</h1>  <!-- .entry-meta -->
+
+<p>The <code>MULTI_QI</code> structure we’ve been looking at is kind of awkward to use, but maybe we can improve on it with some C++ magic.</p>
+<p>But before we start, we need to decide what we want. How about making it possible to write this:</p>
+<pre>// Into new variables
+auto [widget, objectWithSite, persistFile] =
+    CreateInstanceMultiQI&lt;IWidget, IObjectWithSite, IPersistFile&gt;
+        (CLSID_Widget, nullptr, CLSCTX_LOCAL_SERVER);
+
+// Into existing variables
+wil::com_ptr&lt;IWidget&gt; widget;
+wil::com_ptr&lt;IObjectWithSite&gt; objectWithSite;
+wil::com_ptr&lt;IPersistFile&gt; persistFile;
+
+std::tie(widget, objectWithSite, persistFile) =
+    CreateInstanceMultiQI&lt;IWidget, IObjectWithSite, IPersistFile&gt;
+        (CLSID_Widget, nullptr, CLSCTX_LOCAL_SERVER);
+
+// Preloading interfaces, keeping only one for now.
+wil::com_ptr&lt;IWidget&gt; widget;
+
+std::tie(widget, std::ignore, std::ignore) =
+    CreateInstanceMultiQI&lt;IWidget, IObjectWithSite, IPersistFile&gt;
+        (CLSID_Widget, nullptr, CLSCTX_LOCAL_SERVER);
+</pre>
+<p>with the rule that any interfaces that couldn’t be obtained are returned as empty <code>com_ptr</code>s. (We’ll deal with required interfaces later.)</p>
+<p>Here’s my idea. We’ll start with pseudo code and gradually fill it in.</p>
+<pre>template&lt;typename... Interfaces&gt;
+std::tuple&lt;wil::com_ptr&lt;Interfaces&gt;...&gt;
+CreateInstanceMultiQI(
+    REFCLSID clsid, IUnknown* punkOuter,
+    DWORD clsctx)
+{
+    MULTI_QI mqi[] = {
+        { &amp;__uuidof(Interfaces), nullptr, 0 }...
+    };
+
+    THROW_IF_FAILED(
+        CoCreateInstanceEx(clsid, punkOuter, clsctx,
+                           sizeof...(Interfaces), mqi));
+
+    std::tuple&lt;wil::com_ptr&lt;Interfaces&gt;...&gt; t;
+
+    for (Index = 0; Index &lt; sizeof...(Interfaces); Index++) {
+        std::get&lt;Index&gt;(t).
+            attach(static_cast&lt;Interfaces[Index]*&gt;
+                        (mqi[Index].pItf));
+    }
+
+    return t;
+}
+</pre>
+<p>First, we build an array of <code>MULTI_QI</code> structures initialized with the interface identifiers corresponding to the requested interfaces.</p>
+<p>Next, we call <code>Co­Create­Instance­Ex</code> with that array of <code>MULTI_QI</code> structures to create the object and query multiple interfaces. If we are unable to create the object, or if the object supports none of the interfaces, then we throw the failure.</p>
+<p>Otherwise, we have something to return. Create the output tuple and attach each of the <code>MULTI_QI</code> results to the corresponding slot in the tuple. The interfaces in the <code>MULTI_QI</code> are all represented as <code>IUnknown*</code>, so we <code>static_cast</code> them to the requested interface. The <code>static_cast</code> also validates that all of the requested interfaces derive from <code>IUnknown</code>.¹</p>
+<p>Okay, now that we have this sketch, we have to turn it into real C++.</p>
+<p>First, we’ll fix the initialization of the <code>MULTI_QI</code> array.</p>
+<pre>    MULTI_QI mqi[] = {
+        MULTI_QI{ &amp;__uuidof(Interfaces), nullptr, 0 }...
+    };
+</pre>
+<p>You cannot expand a parameter pack into a series of braced initializers, so we make it an explicit aggregate construction of a <code>MULTI_QI</code>. That converts the braced initializers into an expression, and expressions support parameter pack expansion. That one was easy to fix.</p>
+<p>The harder part is the weird <code>for</code> loop that iterates over a parameter pack. For that, we need help from our old friend the index sequence. (<a href="/code/mundane-std-tuple-tricks-selecting-via-an-index-sequence">Previous series on index sequences</a>.)</p>
+<pre>template&lt;typename... Interfaces, std::size_t... Ints&gt;
+auto TupleFromMultiQi(
+    MULTI_QI* mqi, std::index_sequence&lt;Ints...&gt;)
+{
+    std::tuple&lt;com_ptr&lt;Interfaces&gt;...&gt; t;
+    ((std::get&lt;Ints&gt;(t).attach(
+        static_cast&lt;Interfaces*&gt;(mqi[Ints].pItf))), ...);
+    return t;
+}
+</pre>
+<p>There are a few interesting things going on here.</p>
+<p>First of all, this template function has <i>two</i> parameter packs. This is allowed in template functions if everything after the first template parameter pack can be deduced. In our case, the indices can be deduced from the <code>index_<wbr/>sequence</code> parameter.</p>
+<p>The second trick here is that we are expanding two parameter packs in a single expansion. If you do this, the packs must be of the same size, and they are expanded in parallel with corresponding elements.</p>
+<p>Now we can put everything together.</p>
+<pre>template&lt;typename... Interfaces, std::size_t... Ints&gt;
+auto CreateInstanceMultiQIWorker(
+    REFCLSID clsid, IUnknown* punkOuter,
+    DWORD clsctx, MULTI_QI* mqi,
+    std::index_sequence&lt;Ints...&gt;)
+{
+    THROW_IF_FAILED(
+        CoCreateInstanceEx(clsid, punkOuter, clsctx,
+                           sizeof...(Interfaces), mqi));
+
+    std::tuple&lt;com_ptr&lt;Interfaces&gt;...&gt; t;
+    ((std::get&lt;Ints&gt;(t).attach(
+        static_cast&lt;Interfaces*&gt;(mqi[Ints].pItf))), ...);
+    return t;
+}
+
+template&lt;typename... Interfaces&gt;
+std::tuple&lt;wil::com_ptr&lt;Interfaces&gt;...&gt;
+CreateInstanceMultiQI(
+    REFCLSID clsid, IUnknown* punkOuter,
+    DWORD clsctx)
+{
+    MULTI_QI mqi[] = {
+        { &amp;__uuidof(Interfaces), nullptr, 0 }...
+    };
+
+    return CreateInstanceMultiQIWorker&lt;Interfaces...&gt;
+        (clsid, punkOuter, clsctx, mqi,
+         std::index_sequence_for&lt;Interfaces...&gt;{});
+}
+</pre>
+<p>I moved the <code>Co­Create­Instance­Ex</code> into the helper function as well, to facilitate COMDAT folding: All instantiations of <code>Create­Instance­Multi­QI­Worker</code> with the same number of interfaces will expand to the same code, because the <code>static_cast</code> does nothing, and the <code>attach</code> does the same thing regardless of the type. The only thing that affects the code generation is the number of interfaces. Therefore, all the instantiations will be shared, and only one copy will go into the final binary.</p>
+<p>This version treats all interfaces as optional. The only requirement is that at least <i>one</i> of them be supported. Next time, we’ll look at the case where some interfaces are required and others are optional. For example, you might require <code>IWidget</code> support, but <code>IObjectWithSite</code> support is optional.</p>
+<p>¹ The static cast also succeeds if <code>Interface</code> is <code>void</code>. Fortunately, <code>__uuidof(void)</code> is not defined, so that problem is caught elsewhere.</p>
+
+
+</body>

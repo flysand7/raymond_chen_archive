@@ -1,0 +1,37 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What are the rules for CoMarshalInterface and CoUnmarshalInterface?</h1>  <!-- .entry-meta -->
+
+<p><!-- backref: What are the rules for CoMarshalInterThreadInterfaceInStream and CoGetInterfaceAndReleaseStream? -->Last time, we looked at the rules for <code>Co­Marshal­Inter­Thread­Interface­In­Stream</code> and <code>Co­Get­Interface­And­Release­Stream</code>, the functions you use for sharing an object with another thread in the sample case where you there is only one other thread you want to share with, and you need to share it only once. Let’s continue with the Q&amp;A. </p>
+<p><b>What if I want to unmarshal more than once?</b> </p>
+<p>In this case, you use the more general <code>Co­Marshal­Interface</code>. You can pass the <code>MSHLFLAGS_TABLE­STRONG</code> flag to indicate that you want to be able to unmarshal many times. In that case, you need to tell COM when you are finished unmarshaling so it knows when to clean up, because it cannot assume that you are finished after the first unmarshal. The pattern goes like this: </p>
+<ul>
+<li>On the originating apartment, create an empty stream. 
+<li>On the originating apartment, call <code>Co­Marshal­Interface</code> with the empty stream and the <code>MSHLFLAGS_TABLE­STRONG</code> flag. 
+<li>Transmit a <i>copy</i> of the stream     to each of the threads you want to share the object with.     (You need to use a copy so that the multiple threads don’t     all try to use the same stream and step on each other’s     stream position.     Alternatively, you could be clever and use the same stream,     but use a mutex or other synchronization object to make sure     only one thread uses the stream at a time.) 
+<li>The receiving threads rewind the stream copy to the beginning. 
+<li>The receiving threads call <code>Co­Get­Interface­And­Release­Stream</code>     to reconstitute the object from the stream and release the stream.¹ 
+<li>The receiving threads happily accesses the object. 
+<li>When the originating apartment decides that it doesn’t want     to share the object any more, it calls     <code>Co­Release­Marshal­Data</code> to tell     COM to clean up all the bookkeeping. 
+<li>The originating apartment destroys the master stream. </li></li></li></li></li></li></li></li></ul>
+<p><b>What is the relationship between <code>Co­Marshal­Inter­Thread­Interface­In­Stream</code> and <code>Co­Marshal­Interface</code>?</b> </p>
+<p>The <code>Co­Marshal­Inter­Thread­Interface­In­Stream</code> function is a helper function that does the following: </p>
+<ul>
+<li><code>Create­Stream­On­HGlobal</code>. 
+<li><code>Co­Marshal­Interface</code> with <code>MSHCTX_INPROC</code> and <code>MSHLFLAGS_NORMAL</code>. 
+<li>Rewinds the stream to the beginning. 
+<li>Returns the stream. </li></li></li></li></ul>
+<p>Similarly, <code>Co­Get­Interface­And­Release­Stream</code> is a helper function that does </p>
+<ul>
+<li><code>Co­Unmarshal­Interface</code>
+<li><code>IStream::Release</code> </li></li></ul>
+<p>Since a one-shot marshal to another thread within the same process is by far the most common case, the helper functions exist to let you get the job done with just one function call on each side. </p>
+<p><b>What if I want to marshal only once, but to another process?</b> </p>
+<p>Again, you need to use the more general <code>Co­Marshal­Interface</code> function. This time, you pass the <code>MSHCTX_LOCAL</code> flag if you intend to marshal to another process on the same computer, or the <code>MSHCTX_DIFFERENT­MACHINE</code> flag if you intend to marshal to another computer. For the marshal flags, use <code>MSHLFLAGS_NORMAL</code> to indicate that you want a one-shot marshal. The recipient can unmarshal with <code>Co­Get­Interface­And­Release­Stream</code> as before. </p>
+<p><b>What if I want to marshal to another process and unmarshal more than once?</b> </p>
+<p>This is just combining the two axes. On the marshaling side, you do the same as a one-shot cross-process marshal, except you pass the <code>MSHLFLAGS_TABLE­STRONG</code> flag to indicate that you want to be able to unmarshal many times. You then send copies of that stream to all your intended recipients, and each of them calls <code>Co­Get­Interface­And­Release­Stream</code>, just like before. </p>
+<p><b>Can you marshal a proxy? Does it get all Inception-like?</b> </p>
+<p>Go ahead and marshal a proxy. COM detects that you’re marshaling a proxy and does the Right Thing. For example, if you marshal a proxy back to the originating thread, then when you unmarshal, you get a direct pointer again! </p>
+<p>¹ If the thread wants to unmarshal from the stream than once, it could call <code>Co­Unmarshal­Interface</code> and not release the stream immediately. Then each time it wants to unmarshal from the stream, it calls <code>Co­Unmarshal­Interface</code> again, releasing the stream only when it has decided that it will not do any more unmarshaling. This seems silly because once you unmarshal the first time, you can just <code>Add­Ref</code> the pointer if you want to make another copy. I guess this is for the case where the thread wants to pass the stream off to yet another thread? Definitely a fringe case. </p>
+
+
+</body>

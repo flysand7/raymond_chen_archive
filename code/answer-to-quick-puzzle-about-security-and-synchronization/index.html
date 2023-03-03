@@ -1,0 +1,59 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Answer to quick puzzle about security and synchronization</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/06/06/425611.aspx">
+As many people quickly figured out</a>, the reason why the
+the <code>WaitForSingleObject</code> returns immediately
+is that the call is failing.
+The reason is that the second process opened the handle
+<a href="http://msdn.microsoft.com/library/en-us/dllproc/base/synchronization_object_security_and_access_rights.asp">
+with <code>EVENT_MODIFY_STATE</code> access</a>,
+which
+grants permission to call
+<a href="http://msdn.microsoft.com/library/en-us/dllproc/base/setevent.asp">
+the <code>SetEvent</code> function</a>,
+<a href="http://msdn.microsoft.com/library/en-us/dllproc/base/resetevent.asp">
+the <code>ResetEvent</code> function</a>,
+and
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/01/05/346888.aspx">
+the fatally flawed <code>PulseEvent</code> function</a>,
+but it doesn’t include
+<a href="http://msdn.microsoft.com/library/en-us/secauthz/security/standard_access_rights.asp">
+<code>SYNCHRONIZE</code> access</a>,
+which is necessary if you intend to synchronize on the object
+(<i>i.e.</i>, wait on it).
+</p>
+<p>
+The fix is for Process B to ask for
+<code>SYNCHRONIZE</code> access instead of
+<code>EVENT_MODIFY_STATE</code>.
+</p>
+<p>
+The fact that it’s happening in a second process is a red herring.
+You can put this code in the same process and it will fail/succeed
+in the same way:
+</p>
+<pre>
+HANDLE hEventA = CreateEvent(NULL, FALSE, TRUE, TEXT("MyNamedEvent"));
+HANDLE hEventB = OpenEvent(EVENT_MODIFY_STATE, FALSE, TEXT("MyNamedEvent"));
+WaitForSingleObject(hEventB, INFINITE); // fails
+</pre>
+<p>
+Indeed, the fact that the object is named is a red herring.
+It has nothing to do with named/unnamed objects.
+</p>
+<pre>
+HANDLE hEventA = CreateEvent(NULL, FALSE, TRUE, NULL);
+HANDLE hEventB;
+DuplicateHandle(GetCurrentProcess(), hEventA,
+                GetCurrentProcess(), &amp;hEventB,
+                EVENT_MODIFY_STATE, FALSE, 0);
+WaitForSingleObject(hEventB, INFINITE); // fails
+</pre>
+<p>
+In all three cases, the fix is to change
+<code>EVENT_MODIFY_STATE</code> to <code>SYNCHRONIZE</code>.</p>
+
+
+</body>

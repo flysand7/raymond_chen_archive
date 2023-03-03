@@ -1,0 +1,134 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why can't I pass a reference to a derived class to a function that takes a reference to a base class by reference?</h1>  <!-- .entry-meta -->
+
+<p>
+“Why can’t I pass a reference to a derived class
+to a function that takes a reference to a base class by reference?”
+That’s a confusing question, but it’s phrased that way because
+the simpler phrasing is wrong!
+</p>
+<p>
+Ths misleading simplified phrasing of the question is
+“Why can’t I pass a reference to a derived class to a function that
+takes a base class by reference?”
+And in fact the answer is “You can!”
+</p>
+<pre>
+class Base { }
+class Derived : Base { }
+class Program {
+  static void f(Base b) { }
+  public static void Main()
+  {
+      Derived d = new Derived();
+      f(d);
+  }
+}
+</pre>
+<p>
+Our call to <code>f</code> passes a reference to the
+derived class
+to a function that takes a reference to the base class.
+This is perfectly fine.
+</p>
+<p>
+When people ask this question, they are typically wondering
+about passing a reference to the base class <i>by reference</i>.
+There is a double indirection here.
+You are passing a reference to a variable,
+and the variable is a reference to the base class.
+And it is this double reference that causes the problem.
+</p>
+<pre>
+class Base { }
+class Derived : Base { }
+class Program {
+  static void f(<font color="blue">ref</font> Base b) { }
+  public static void Main()
+  {
+      Derived d = new Derived();
+      f(<font color="blue">ref</font> d); <font color="blue">// error</font>
+  }
+}
+</pre>
+<p>
+Adding the <code>ref</code> keyword to the parameter results
+in a compiler error:
+</p>
+<pre>
+error CS1503: Argument '1': cannot convert from 'ref Derived' to 'ref Base'
+</pre>
+<p>
+The reason this is disallowed is that it would allow you to violate
+the type system.
+Consider:
+</p>
+<pre>
+  static void f(ref Base b) { b = new Base(); }
+</pre>
+<p>
+Now things get interesting.
+Your call to <code>f(ref d)</code> passes a reference to a
+<code>Derived</code> by reference.
+When the <code>f</code> function modifies its formal parameter <code>b</code>,
+it’s actually modifying your variable <code>d</code>.
+What’s worse, it’s putting a <code>Base</code> in it!
+When <code>f</code> returns, your variable <code>d</code>,
+which is declared as being a reference to a <code>Derived</code>
+is actually a reference to the base class <code>Base</code>.
+</p>
+<p>
+At this point everything falls apart.
+Your program calls some method like <code>d.OnlyInDerived()</code>,
+and the CLR ends up executing a method on an object that doesn’t
+even support that method.
+</p>
+<p>
+You actually knew this; you just didn’t know it.
+Let’s start from the easier cases and work up.
+First, passing a reference into a function:
+</p>
+<pre>
+void f(SomeClass s);
+...
+   T t = new T();
+   f(t);
+</pre>
+<p>
+The function <code>f</code> expects to receive a reference to a
+<code>SomeClass</code>, but you’re passing a reference to a <code>T</code>.
+When is this legal?
+</p>
+<p>
+“Duh.
+<code>T</code> must be <code>SomeClass</code> or a class derived
+from <code>SomeClass</code>.”
+</p>
+<p>
+What’s good for the goose is good for the gander.
+When you pass a parameter as <code>ref</code>,
+it not only goes into the method, but it also comes out.
+(<a href="http://foldoc.org/?call-by-value-result">Not strictly true</a>
+but close enough.)
+You can think of it as a bidirectional parameter to the function call.
+Therefore, the rule “If a function expects a reference to a class,
+you must provide a reference to that class or a derived class”
+applies in both directions.
+When the parameter goes in, you must provide a reference to that
+class or a derived class.
+And when the parameter comes out,
+it also must be a reference to that class or a derived class
+(because the function is “passing the parameter” back to you, the caller).
+</p>
+<p>
+But the only time that <code>S</code> can be <code>T</code> or a subclass,
+while simultaneously having
+<code>T</code> be <code>S</code> or a subclass
+is when <code>S</code> and <code>T</code> are the same thing.
+This is just the law of antisymmetry for partially-ordered sets:
+“if <i>a</i> ≤ <i>b</i>
+and <i>b</i> ≤ <i>a</i>,
+then <i>a</i>&amp;nbsp= <i>b</i>.”</p>
+
+
+</body>

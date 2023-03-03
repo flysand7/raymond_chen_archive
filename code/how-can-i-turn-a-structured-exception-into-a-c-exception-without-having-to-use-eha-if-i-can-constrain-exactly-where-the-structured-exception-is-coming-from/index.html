@@ -1,0 +1,31 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I turn a structured exception into a C++ exception without having to use /EHa, if I can constrain exactly where the structured exception is coming from?</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/how-can-i-handle-both-structured-exceptions-and-c-exceptions-potentially-coming-from-the-same-source"> Last time</a>, we looked at how you can handle both structured exceptions and C++ exceptions coming out of a plug-in. But the <code>_set_se_translator</code> function <a href="https://msdn.microsoft.com/en-us/library/5z4bw5h5.aspx"> requires that your code be compiled with the <code>/EHa</code></a>. The customer was wondering if there was something that avoided the need for <code>/EHa</code>.</p>
+<p>One possibility is compiling parts of the program with <code>/EHa</code> and parts without. This is <a href="https://msdn.microsoft.com/en-us/library/1deeycx5.aspx"> explicitly called out as not recommended</a>. The reason is that code compiled with <code>/EHs</code> (the opposite of <code>/EHa</code>) assumes that exceptions can be raised only by <code>throw</code> statements, and <code>_set_se_translator</code> violates that rule because it allows C++ exceptions to be thrown by any Win32 exception.</p>
+<p>But all is not lost. In this case, we need the asynchronous-to-synchronous conversion only for a specific block of code. If we can make sure no asynchronous exceptions escape into code compiled with <code>/EHs</code>, we won’t violate the assumptions of <code>/EHs</code>.</p>
+<pre>HRESULT InvokeWithCustomExceptionTranslation(
+    CALLBACK_FUNCTION fn, /* other arguments */)
+{
+  __try {
+    return fn(/* other arguments */);
+  } __except (GetExceptionCode() == MSVC_EXCEPTION ?
+              EXCEPTION_CONTINUE_SEARCH : EXCEPTION_EXECUTE_HANDLER) {
+    throw win32_exception(GetExceptionCode(),
+                          get_stack_trace(GetExceptionInformation()));
+  }
+}
+
+// InvokeCallback same as before
+</pre>
+<p>If an asynchronous exception occurs during execution of the lambda, we check if it was a C++ exception. If so, then we let it go through so that the runtime can deal with it. Otherwise, we convert it to a C++ exception on the spot.</p>
+<p>It is important that there not be anything with a destructor in the <code>__try</code> block, because the asynchronous exception will bypass all destructors. Fortunately, the compiler will <a href="https://docs.microsoft.com/en-us/cpp/error-messages/compiler-errors-2/compiler-error-c2712"> yell at you</a> if you make this mistake.</p>
+<p>It is also important that this function handle all asynchronous exceptions (aside from C++ exceptions themselves), so that no asynchronous exception escapes into <code>/EHs</code> code.</p>
+<p>On the other hand, we hard-coded some secret knowledge of the compiler’s implementation, namely, that <code>MSVC_<code></code>EXCEPTION</code> is the exception code used for C++ exceptions. If you are running in an environment where the plug-in could be written in managed code, then you will turn managed exceptions into <code>win32_<code></code>exception</code>.</p>
+<p>Which brings us back to what we had before: Using the <code>_set_se_translator</code> function to switch from <code>/EHs</code> mode to <code>/EHa</code> mode temporarily.</p>
+<p>This is one of those cases where advice needs to come with a rationale: If you understand why a rule exists, you can understand when you are in a case where the rule doesn’t apply.</p>
+<p>And we are in one of those cases. The rason for the guidance against mixing <code>/EHs</code> and <code>/EHa</code> in the same program is that you don’t want asynchronous exceptions to be converted to synchronous exceptions when the calling code isn’t expecting it. By scoping the use of the <code>_set_se_translator</code> function to a single block of code, we can verify by inspection that asynchronous exceptions never escape into code that doesn’t expect it.</p>
+<p>This code needs to be carefully commented with a note that it needs to be compiled in a specific way, and giving an explanation not only why that is necessary, but also why it is safe.</p>
+
+
+</body>

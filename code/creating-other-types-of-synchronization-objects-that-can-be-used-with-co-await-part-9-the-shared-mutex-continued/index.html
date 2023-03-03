@@ -1,0 +1,68 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating other types of synchronization objects that can be used with co_await, part 9: The shared mutex (continued)</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/creating-other-types-of-synchronization-objects-that-can-be-used-with-co-await-part-8-the-shared-mutex" title="Creating other types of synchronization objects that can be used with co_await, part 8: The shared mutex"> tried to make an awaitable shared mutex</a>, but ran into some problems.</p>
+<p>The first problem was that shared locks can starve out exclusive locks. To fix that, we say that you cannot steal the lock if there is already anybody waiting. You have to go to the end of the queue. We’ll have to expose this information from the <code>awaitable_<wbr/>state</code> template type.</p>
+<pre>    template&lt;typename State&gt;
+    class awaitable_state
+    {
+    ...
+    public:
+        <span style="color: blue;">bool any_waiters() const noexcept
+        {
+            return !sentinel.empty();
+        }</span>
+    ...
+    };
+</pre>
+<p>You can check for waiters outside the lock, but the result may be stale by the time you look at it.</p>
+<pre>    bool fast_claim(extra_await_data const&amp; e) noexcept
+    {
+        <span style="color: blue;">if (any_waiters()) return false;</span>
+        if (e.exclusive) {
+            return calc_claim&lt;true&gt;(owners, exclusive_transition, 0);
+        } else {
+            return calc_claim&lt;true&gt;(owners, shared_transition);
+        }
+    }
+
+    bool claim(extra_await_data const&amp; e) noexcept
+    {
+        <span style="color: blue;">if (any_waiters()) return false;</span>
+        if (e.exclusive) {
+            return calc_claim&lt;false&gt;(owners, exclusive_transition);
+        } else {
+            return calc_claim&lt;false&gt;(owners, shared_transition);
+        }
+    }
+</pre>
+<p>We add a check to say that claims always fail if there is somebody ahead of you in the wait queue.</p>
+<p>Another problem we had was deal with races when the last shared lock is released. We fix that by temporarily marking the shared mutex as if it were exclusively owned, so that nobody can try to claim it. Since claims can come in without the lock, we need to go into a compare-exchange loop to go into this state only if we are releasing the last shared lock.</p>
+<pre>    void unlock_shared(node_list&amp; list)
+    {
+        auto current = owners.load(std::memory_order_relaxed);
+        int future;
+        do {
+            if (current == 1) future = -1;
+            else future = current - 1;
+        } while (owners.compare_exchange_weak(current, future,
+            std::memory_order_relaxed);
+        if (future == -1) {
+            resume_a_bunch(list);
+        }
+    }
+</pre>
+<p>When releasing a shared lock, we see if we are the last one. If so, then we temporarily switch to an exclusive lock (value −-1) to prevent anybody else from claiming the lock. Otherwise, we just decrement the shared lock count. Eventually, the compare-exchange will succeed, and if we ended up releasing the last shared lock, we proceed to resume a bunch of waiters.</p>
+<p>There are no changes needed to <code>resume_<wbr/>a_<wbr/>bunch</code> because we were careful not to update the <code>owners</code> until all the work is done.</p>
+<p>Well, that was annoying. But I’ll make up for it by creating a new type of synchronization object that doesn’t exist in Win32: The event where you can wait for it to become set <i>or</i> clear.</p>
+<p><b>Bonus chatter</b>: Technically, there is a data race on <code>sentinel</code> when we check whether it is empty outside the lock. One way to fix this is to make the sentinel links <code>std::atomic</code> with relaxed access. Another way is to encode additional information in the <code>owners</code>. For example, we might have</p>
+<ul>
+<li>−1: Owned exclusively.</li>
+<li><code>INT_MIN</code> + <var>n</var>: Owned shared <var>n</var> times, with an exclusive waiter.</li>
+<li>0: Not owned.</li>
+<li><var>n</var>: Owned shared <var>n</var> times with no exclusive waiter.</li>
+</ul>
+<p>The acquisition transitions are the same, with the extra wrinkle that when we add an element to the queue, we also set the sign bit in <code>owners</code>. And when releasing a shared lock, we need to mask off the sign bit before checking whether the lock has been released to zero.</p>
+
+
+</body>

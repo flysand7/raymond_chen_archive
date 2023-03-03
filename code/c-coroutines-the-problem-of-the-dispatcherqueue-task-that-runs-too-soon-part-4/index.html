@@ -1,0 +1,32 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: The problem of the DispatcherQueue task that runs too soon, part 4</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/c-coroutines-the-problem-of-the-dispatcherqueue-task-that-runs-too-soon-part-3"> Last time</a>, we made another attempt to fix a race condition in C++/WinRT’s <code>resume_<code></code>foreground(<code></code>Dispatcher­Queue)</code> function when it tries to resume execution on a dispatcher queue. We did this by having the queued task wait until <code>await_</code><code>suspend</code> was finished before allowing the coroutine to resume, and we found a nice place to put the synchronization object, namely in the awaiter, but even with that fix, we introduced additional memory barriers into the hot code path.</p>
+<p>But it turns out all this work was unnecessary. We just had to look at the problem a different way.</p>
+<p>The purpose of storing the result of <code>Try­Enqueue</code> into <code>m_queued</code> is so that <code>await_</code><code>resume</code> can report whether the lambda was queued or not. But we can infer that information another way: The fact that our lambda is running means that got got queued. Because if the lambda were not queued, then it would never have run in the first place.</p>
+<p>This allows us to simplify the awaiter by making the lambda responsible for reporting that it was queued.</p>
+<pre>    bool await_suspend(coroutine_handle&lt;&gt; handle)
+    {
+      <span style="color: red;">// <span style="text-decoration: line-through;">m_queued =</span></span>
+      <span style="color: blue;">return</span>
+        m_dispatcher.TryEnqueue([<span style="color: blue;">this,</span> handle]
+        {
+          <span style="color: blue;">m_queued = true;</span>
+          handle();
+        });
+      <span style="color: red;">// <span style="text-decoration: line-through;">return m_queued;</span></span>
+    }
+</pre>
+<p>There are two cases to consider:</p>
+<p>First, the <code>Try­Enqueue</code> could fail. In that case, <code>await_</code><code>suspend</code> returns <code>false</code>, and <code>m_queued</code> continues to have its original value (which is also <code>false</code>). The coroutine resumes immediately on the same thread, and the <code>await_</code><code>ready</code> will return <code>m_queued</code>, which is <code>false</code>. The value of <code>m_queued</code> correctly reports that the lambda was not queued.</p>
+<p>Otherwise, <code>Try­Enqueue</code> succeeded, and this is the more interesting case. Since <code>await_</code><code>suspend</code> does not access any member variables after calling <code>Try­Enqueue</code>, it doesn’t matter whether the lambda runs before or after <code>await_</code><code>suspend</code> returns.</p>
+<p>The <code>await_</code><code>suspend</code> returns <code>true</code> because the lambda was queued, and this permits the suspension of the coroutine to proceed. Nobody has updated <code>m_queued</code>, so it still has its initial value of <code>false</code>. This is an incorrect state of affairs, but that’s okay: We’ll fix it before anybody notices.</p>
+<p>When the lambda runs, it sets <code>m_queued</code> to <code>true</code>. This restores balance to the universe by bringing the <code>m_queued</code> member variable to a value consistent with what actually happened. Only after repairing <code>m_queued</code> do we invoke the <code>handle</code>. The two operations (updating <code>m_queued</code> and invoking the <code>handle</code>), so we don’t have a race condition between the setting of <code>m_queued</code> and its observation in <code>await_</code><code>ready</code>.</p>
+<p>You could say that we lazy-updated the <code>m_queued</code> member variable. It’s not safe to update it in <code>await_</code><code>suspend</code>, so we wait until the lambda. We didn’t have to pass the value of <code>true</code> explicitly to the lambda, because the lambda knows that <code>true</code> is the only value it could possibly be if the lambda is running.</p>
+<p>That wraps up our introduction to C++ coroutines. I haven’t even gotten a chance to get into promises and the other infrastructure needed to <i>create</i> coroutines.¹ So far, we’ve just been looking at the infrastructure needed to create awaitable objects. Someday, I’ll write about promises, but I’m going to take a break for a bit.</p>
+<p><b>Bonus chatter</b>: Notice how my initial instinct for fixing this problem was writing fifty-some-odd lines of code. But stopping to think let me shrink it to about half that. And then stepping back and looking at the bigger issue allowed me to fix the problem by making small changes to two lines of code.</p>
+<p>¹ This means that we will have to wait before we learn about the mysterious step 1 in the search for an awaiter.</p>
+<p> </p>
+
+
+</body>

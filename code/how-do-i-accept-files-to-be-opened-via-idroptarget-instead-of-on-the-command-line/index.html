@@ -1,0 +1,502 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I accept files to be opened via IDropTarget instead of on the command line?</h1>  <!-- .entry-meta -->
+
+<p>
+Commenter Yaron wants to know
+<a href="http://blogs.msdn.com/oldnewthing/pages/407234.aspx#1353948">
+how to use the new IDropTarget mechanism for receiving a list of files
+to open</a>.
+(Also asked by
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/03/20/8080229.aspx#8337835">Anthony Wieser</a> as a comment to an article.)
+The MSDN documentation on Verbs and File Assocations mentions that
+<a href="http://blogs.msdn.com/oldnewthing/archive/2007/02/26/1763683.aspx">
+DDE has been deprecated as a way of launching documents</a>
+and that
+<a href="http://msdn.microsoft.com/en-us/library/cc144175.aspx">
+you should use the DropTarget method instead</a>.
+But what is the DropTarget method?
+(Note that the word <i>method</i> here is in the sense of
+<i>technique</i> and not in the C++ sense of <i>function that
+belongs to a class</i>.)
+</p>
+<p>
+The documentation in MSDN tells you what to do, but it does so
+very tersely. It says to create a <code>DropTarget</code>
+key under the verb key and create a <code>Clsid</code> string
+value whose data is the string version of the CLSID for your
+drop target.
+The documentation tells you to be careful in your
+<code>IDropTarget::Drop</code>, so it stands to reason that
+<code>IDropTarget</code> is the interface that will be used.
+From context, therefore, you should expect that the shell is going to
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/07/24/8768095.aspx">
+simulate a drop</a> on your drop target.
+</p>
+<p>
+You can implement your drop target either as an in-process server
+or a local server.
+The in-process case is well-known;
+nearly all shell extensions are in-process.
+But using an in-process server for the DropTarget technique
+only solves half the problem:
+Sure, the <code>IDropTarget::Drop</code> will take place and you will
+get your <code>IDataObject</code>,
+but you still have to transfer the file list from your shell extension
+running inside the
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/09/20/231739.aspx">
+context menu host</a>
+to your application.
+May as well let COM do the heavy lifting of marshalling the data.
+(Well, okay, maybe using COM is overkill.
+You might have a lighter weight way of getting the data across,
+but since that’s out of scope for today’s exercise, I’ll leave it
+for you to figure out.)
+</p>
+<p>
+Okay, let’s roll up our sleeves and get to it!
+It turns out that nearly all the work is just creating a COM local
+server.
+If you know how to do that already, then I apologize in advance
+for the oppressive boredom about to fall upon you.
+I’ll try to remember to wake you up when something interesting
+is about to happen.
+Note also that I am not an expert on COM local servers,
+so if you find a discrepancy between what I write and information from people
+who actually know what they’re doing, go with the people who
+know what they’re doing.
+(Actually, that sentence pretty much applies in general to everything
+I write.)
+Indeed, I had never written a COM local server before now,
+so all of what you see here is the result of a crash course
+in COM local servers from reading the documentation.
+(Translation: You could’ve done this too.)
+</p>
+<p>
+Start by adding some header files and a forward reference.
+</p>
+<pre>
+#include &lt;shlobj.h&gt;
+#include &lt;shellapi.h&gt;
+#include &lt;new&gt; // for new(nothrow)
+void OpenFilesFromDataObject(IDataObject *pdto);
+</pre>
+<p>
+Next, I’m going to steal
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/05/28/8555658.aspx">
+the <code>Process­Reference</code> class</a>
+which I had created some time ago.
+It’s not the most efficient solution to the problem,
+but it works well enough, and it’s a nice preparatory step in case
+a shell extension loaded into our process needs to take a process
+reference.
+We use the process reference object to keep track of our outstanding
+objects and locks.
+</p>
+<pre>
+ProcessReference *g_ppr;
+</pre>
+<p>
+Of course our custom drop target needs a class ID:
+</p>
+<pre>
+const CLSID CLSID_Scratch = { ... };
+</pre>
+<p>
+I leave it to you to fill in the <code>CLSID</code> structure
+from the output of <code>uuidgen -s</code>.
+</p>
+<p>
+Next, our simple drop target.
+COM servers need to keep track of the number of objects that
+have been created, so we’ll piggyback off our existing process reference.
+</p>
+<pre>
+class SimpleDropTarget : public IDropTarget
+{
+public:
+ SimpleDropTarget() : m_cRef(1) { g_ppr-&gt;AddRef(); }
+ ~SimpleDropTarget() { g_ppr-&gt;Release(); }
+ // *** IUnknown ***
+ STDMETHODIMP QueryInterface(REFIID riid, void **ppv)
+ {
+  if (riid == IID_IUnknown || riid == IID_IDropTarget) {
+    *ppv = static_cast&lt;IUnknown*&gt;(this);
+    AddRef();
+    return S_OK;
+  }
+  *ppv = NULL;
+  return E_NOINTERFACE;
+ }
+ STDMETHODIMP_(ULONG) AddRef()
+ {
+  return InterlockedIncrement(&amp;m_cRef);
+ }
+ STDMETHODIMP_(ULONG) Release()
+ {
+  LONG cRef = InterlockedDecrement(&amp;m_cRef);
+  if (cRef == 0) delete this;
+  return cRef;
+ }
+</pre>
+<p>
+Next come the methods of <code>IDropTarget</code>,
+none of which are particularly interesting.
+We just say that we are going to copy the data.
+</p>
+<pre>
+ // *** IDropTarget ***
+ STDMETHODIMP DragEnter(IDataObject *pdto,
+    DWORD grfKeyState, POINTL ptl, DWORD *pdwEffect)
+ {
+  *pdwEffect &amp;= DROPEFFECT_COPY;
+  return S_OK;
+ }
+ STDMETHODIMP DragOver(DWORD grfKeyState,
+   POINTL ptl, DWORD *pdwEffect)
+ {
+  *pdwEffect &amp;= DROPEFFECT_COPY;
+  return S_OK;
+ }
+ STDMETHODIMP DragLeave()
+ {
+  return S_OK;
+ }
+ STDMETHODIMP Drop(IDataObject *pdto, DWORD grfKeyState,
+    POINTL ptl, DWORD *pdwEffect)
+ {
+  <font color="blue">OpenFilesFromDataObject(pdto);</font>
+  *pdwEffect &amp;= DROPEFFECT_COPY;
+  return S_OK;
+ }
+private:
+ LONG m_cRef;
+};
+</pre>
+<p>
+<b>People who know how COM servers work wake up</b>:
+When something is dropped on our drop target, we call
+<code>Open­Files­From­Data­Object</code>.
+That’s actually not all that interesting, but at least it’s
+nontrivial.
+<b>People who know how COM servers work can go back to sleep now</b>.
+</p>
+<p>
+The next part of the code is just setting up our class factory.
+</p>
+<pre>
+class SimpleClassFactory : public IClassFactory
+{
+public:
+ // *** IUnknown ***
+ STDMETHODIMP QueryInterface(REFIID riid, void **ppv)
+ {
+  if (riid == IID_IUnknown || riid == IID_IClassFactory) {
+    *ppv = static_cast&lt;IUnknown*&gt;(this);
+    AddRef();
+    return S_OK;
+  }
+  *ppv = NULL;
+  return E_NOINTERFACE;
+ }
+ STDMETHODIMP_(ULONG) AddRef()
+ {
+  return 2;
+ }
+ STDMETHODIMP_(ULONG) Release()
+ {
+  return 1;
+ }
+ // *** IClassFactory ***
+ STDMETHODIMP CreateInstance(IUnknown *punkOuter, REFIID riid, void **ppv)
+ {
+    *ppv = NULL;
+    if (punkOuter) return CLASS_E_NOAGGREGATION;
+    SimpleDropTarget *pdt = new(nothrow) SimpleDropTarget();
+    if (!pdt) return E_OUTOFMEMORY;
+    HRESULT hr = pdt-&gt;QueryInterface(riid, ppv);
+    pdt-&gt;Release();
+    return hr;
+ }
+ STDMETHODIMP LockServer(BOOL fLock)
+ {
+  if (!g_ppr) return E_FAIL; // server shutting down
+  if (fLock) g_ppr-&gt;AddRef(); else g_ppr-&gt;Release();
+  return S_OK;
+ }
+};
+SimpleClassFactory s_scf;
+</pre>
+<p>
+The <code>Lock­Server</code> call takes advantage of our
+process reference object by forwarding lock and unlock
+calls into the reference count of the process reference object.
+This keeps our process running until the server is unlocked.
+</p>
+<p>
+Remember that COM rules specify that the class factory itself
+does not count as an outstanding COM object, so we don’t use
+the same <code>m_punkProcess</code> trick that we did with
+our drop target.
+Instead, we just use a static object.
+</p>
+<p>
+<b>People who know how COM servers work wake up</b>:
+The COM server code is pretty much done.
+Now we’re back to user interface programming.
+</p>
+<p>
+The next part of the code is just copied from our scratch program,
+with the following changes:
+</p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+    <font color="blue">g_hwndChild = CreateWindow(
+        TEXT("listbox"), NULL, WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        0, 0, 0,0, hwnd, (HMENU)1, g_hinst, 0);</font>
+    return TRUE;
+}
+</pre>
+<p>
+The list box is not an important part of the program.
+We’ll just fill it with data to prove that we actually did something.
+</p>
+<pre>
+void OpenFilesFromDataObject(IDataObject *pdto)
+{
+ if (!g_hwndChild) { /* need to create a new main window */ }
+ FORMATETC fmte = { CF_HDROP, NULL, DVASPECT_CONTENT,
+                    -1, TYMED_HGLOBAL };
+ STGMEDIUM stgm;
+ if (SUCCEEDED(pdto-&gt;GetData(&amp;fmte, &amp;stgm))) {
+  HDROP hdrop = reinterpret_cast&lt;HDROP&gt;(stgm.hGlobal);
+  UINT cFiles = DragQueryFile(hdrop, 0xFFFFFFFF, NULL, 0);
+  for (UINT i = 0; i &lt; cFiles; i++) {
+   TCHAR szFile[MAX_PATH];
+   UINT cch = DragQueryFile(hdrop, i, szFile, MAX_PATH);
+   if (cch &gt; 0 &amp;&amp; cch &lt; MAX_PATH) {
+    ListBox_AddString(g_hwndChild, szFile);
+   }
+  }
+  ReleaseStgMedium(&amp;stgm);
+ }
+}
+</pre>
+<p>
+The <code>Open­Files­From­Data­Object</code> function does only
+enough work to prove that it actually got the list of file names.
+When we receive a data object from the simulated drop,
+we retrieve the <code>HDROP</code> and enumerate the files in it.
+For each file, we add it to the list box.
+</p>
+<p>
+There’s some code I’ve not bothered to write: Namely, if
+a request to open some files comes in after the user closed
+our main window, we need to open a new main window.
+(Exercise: How can this happen?)
+</p>
+<p>
+Another difference between this program and real life is that in
+real life, your <code>Open­Files­From­Data­Object</code>
+would do some real work.
+<i>But wait</i>,
+if your function does any actual work,
+you should just <code>AddRef</code> the data object and return,
+so that the shell can return to interacting with the user.
+If you stop to do a lot of work before returning, the shell will
+lock up because it’s waiting for your drop to complete.
+</p>
+<pre>
+// Version of OpenFilesFromDataObject that is more
+// appropriate for real life.
+void OpenFilesFromDataObject(IDataObject *pdto)
+{
+ if (!g_hwndChild) { /* need to create a new main window */ }
+ pdto-&gt;AddRef();
+ PostMessage(GetParent(g_hwndChild), WM_OPENFILES, 0,
+             reinterpret_cast&lt;LPARAM&gt;(pdto));
+}
+case WM_OPENFILES:
+ IDataObject *pdto = reinterpret_cast&lt;IDataObject*&gt;(lParam);
+ ... rest of code from the original OpenFilesFromDataObject ...
+ pdto-&gt;Release();
+ break;
+</pre>
+<p>
+In real life, you just <code>AddRef</code> the data object
+and then post a message to finish processing it later.
+The aim here is to release the shell thread as quickly as
+possible.
+When the posted message is received, we can
+extract the information from the data object at our leisure.
+<b>People who know how COM servers work can go back to sleep now</b>.
+</p>
+<p>
+Finally, we hook up our class factories to the main program:
+</p>
+<pre>
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+    MSG msg;
+    HWND hwnd;
+    g_hinst = hinst;
+    if (!InitApp()) return 0;
+    if (SUCCEEDED(CoInitialize(NULL))) {/* In case we use COM */
+        <font color="blue">HRESULT hrRegister;
+        DWORD dwRegisterCookie;
+        {
+            ProcessReference ref;
+            g_ppr = &amp;ref;
+            hrRegister = CoRegisterClassObject(CLSID_Scratch, &amp;s_scf,
+                  CLSCTX_LOCAL_SERVER, REGCLS_MULTIPLEUSE,
+                  &amp;dwRegisterCookie);</font>
+            hwnd = CreateWindow(
+                TEXT("Scratch"),                /* Class Name */
+                TEXT("Scratch"),                /* Title */
+                WS_OVERLAPPEDWINDOW,            /* Style */
+                CW_USEDEFAULT, CW_USEDEFAULT,   /* Position */
+                CW_USEDEFAULT, CW_USEDEFAULT,   /* Size */
+                NULL,                           /* Parent */
+                NULL,                           /* No menu */
+                hinst,                          /* Instance */
+                0);                             /* No special parameters */
+            <font color="blue">if (CompareStringA(LOCALE_INVARIANT, NORM_IGNORECASE,
+                 lpCmdLine, -1, "-Embedding", -1) != CSTR_EQUAL &amp;&amp;
+                CompareStringA(LOCALE_INVARIANT, NORM_IGNORECASE,
+                 lpCmdLine, -1, "/Embedding", -1) != CSTR_EQUAL) {
+                /* OpenFilesFromCommandLine(); */
+            }</font>
+            ShowWindow(hwnd, nShowCmd);
+            while (GetMessage(&amp;msg, NULL, 0, 0)) {
+                TranslateMessage(&amp;msg);
+                DispatchMessage(&amp;msg);
+            }
+            <font color="blue">g_hwndChild = NULL;
+        } // wait for process references to die
+        g_ppr = NULL;
+        if (SUCCEEDED(hrRegister)) {
+            CoRevokeClassObject(dwRegisterCookie);
+        }</font>
+        CoUninitialize();
+    }
+    return 0;
+}
+</pre>
+<p>
+After creating our process reference,
+we register our class factory by calling
+<code>Co­Register­Class­Object</code>.
+We do this even if not invoked by COM, because we want COM to
+be able to find us once we’re up and running:
+If the user runs the application manually and then double-clicks
+an associated document, we want that document to be handed to us
+rather than having COM launch another copy of the program.
+</p>
+<p>
+After creating the window, we check if the command line is
+<code>-Embedding</code> or <code>/Embedding</code>.
+This is the magic command line switch which COM gives us
+when we are being launched as a local server.
+If we don’t have that switch, then we’re being launched
+with a file name on our command line, so proceed with
+“old school” command line parsing.
+(I didn’t bother writing the
+<code>Open­Files­From­Command­Line</code>
+function since it is irrelevant to the topic.)
+</p>
+<p>
+After our message loop exits, we clear the <code>g_hwndChild</code>
+so <code>Open­Files­From­Data­Object</code>
+knows that there is no
+main window any more.
+In real life, we’d have to create a new main window and restart
+the message loop.
+</p>
+<p>
+Once all outstanding COM objects and server locks and process
+references are gone,
+we can tear down the process.
+We unregister the COM server (if we registered it)
+so that COM won’t try to ask us to open any more documents.
+(COM will instead launch a new copy of the program.)
+</p>
+<p>
+And that’s it.
+</p>
+<p>
+Oh wait, we also have to register this program so COM and the shell
+can find us.
+</p>
+<p>
+Registering the COM server is just a matter of setting the registry
+key
+</p>
+<pre>
+[HKCR\CLSID\{...}\LocalServer32]
+@="C:\\Path\\To\\scratch.exe"
+</pre>
+<p>
+You probably should also set a friendly name into
+<code>HKCR\CLSID\{...}</code> so people will have
+a clue what your server is for.</p>
+<p>
+<b>People who know how COM servers work wake up</b>:
+After we register our class with COM,
+we can register it with the shell.
+For demonstration purposes, we’ll make our command a secondary
+verb on text files.
+</p>
+<pre>
+[HKCR\txtfile\shell\scratch\DropTarget]
+"Clsid"="{...}"
+</pre>
+<p>
+Wow, all we had to do was set two registry values and boom,
+we can now accept files via drop target.
+Multiselect a whole bunch of text files,
+right-click them,
+and then select “scratch”.
+The shell sees that the verb is registered as a drop target,
+so it calls <code>Co­Create­Instance</code> on the <code>CLSID</code>
+you provided.
+COM looks up the <code>CLSID</code> in the registry and finds the
+path to your program.
+Your program runs with the <code>-Embedding</code> flag,
+registers its class factory, and awaits further instructions.
+COM asks your class factory to create a drop target,
+which it returns to the shell.
+The shell then performs the simulated drop,
+and when you get the <code>IDropTarget::Drop</code>,
+your code springs into action and extracts all the files in the
+data object.
+</p>
+<p>
+Now that we have all this working, it’s just one more tiny
+step to register your application’s drop target so that
+it is invoked
+<a href="http://msdn.microsoft.com/en-us/library/cc144150.aspx">
+when the user drops a group of files on the
+EXE itself</a>
+(or on a shortcut to the EXE):
+</p>
+<pre>
+[HKLM\Software\Microsoft\Windows\CurrentVersion\App Paths\scratch.exe]
+"DropTarget"="{...}"
+</pre>
+<p>
+With this additional registration, grab that bunch of files
+and drop it on the <code>scratch.exe</code> icon.
+Instead of passing all those files on the command line
+(and possibly overflowing the command line limit),
+the shell goes through the same procedure as it did with the
+context menu to hand the list of files to your program
+via the data object.
+</p>
+<p>
+Nearly all of the work here was just managing the COM local server.
+The parts that had to do with the shell were actually quite small.</p>
+
+
+</body>

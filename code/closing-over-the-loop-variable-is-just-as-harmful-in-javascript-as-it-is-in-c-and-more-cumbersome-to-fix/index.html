@@ -1,0 +1,267 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Closing over the loop variable is just as harmful in JavaScript as it is in C#, and more cumbersome to fix</h1>  <!-- .entry-meta -->
+
+<p>
+Prerequisite reading:
+<a href="http://blogs.msdn.com/b/ericlippert/archive/2009/11/12/closing-over-the-loop-variable-considered-harmful.aspx">
+Closing over the loop variable considered harmful</a>.
+</p>
+<p>
+JavaScript has the same problem.
+Consider:
+</p>
+<pre>
+<i>function hookupevents() {
+ for (var i = 0; i &lt; 4; i++) {
+  document.getElementById("myButton" + i)
+   .addEventListener("click",
+         function() { alert(i); });
+ }
+}</i>
+</pre>
+<p>
+The most common case where you encounter this is when you are hooking
+up event handlers in a loop, so that’s the case I used as an example.
+</p>
+<p>
+No matter which button you click, they all alert <code>4</code>,
+rather than the respective button number.
+</p>
+<p>The reason for this is given in the prerequisite reading:
+You closed over the loop variable,
+so by the time the function actually executed,
+the variable <code>i</code> had the value <code>4</code>,
+since that’s the leftover value after the loop is complete.
+</p>
+<p>
+The cumbersome part is fixing the problem.
+In C#, you can just copy the value to a scoped local
+and capture the local,
+but that doesn’t work in JavaScript:
+</p>
+<pre>
+<i>function hookupevents() {
+ for (var i = 0; i &lt; 4; i++) {
+  <font color="blue">var j = i;</font>
+  document.getElementById("myButton" + i)
+   .addEventListener("click",
+         function() { alert(<font color="blue">j</font>); });
+ }
+}</i>
+</pre>
+<p>
+Now the buttons all alert <code>3</code> instead of <code>4</code>.
+The reason is that JavaScript variables have
+<i>function</i> scope, not block scope.
+Even though you declared <code>var j</code> inside a block,
+the variable’s scope is still the entire function.
+In other words, it’s as if you had written
+</p>
+<pre>
+<i>function hookupevents() {
+ <font color="blue">var j;</font>
+ for (var i = 0; i &lt; 4; i++) {
+  <font color="blue">j = i;</font>
+  document.getElementById("myButton" + i)
+   .addEventListener("click",
+         function() { alert(j); });
+ }
+}</i>
+</pre>
+<p>
+Here’s a function which emphasizes this
+“variable declaration hoisting” behavior:
+</p>
+<pre>
+function strange() {
+ k = 42;
+ for (i = 0; i &lt; 4; i++) {
+  var k;
+  alert(k);
+ }
+}
+</pre>
+<p>
+The function alerts <code>42</code> four times
+because the variable <code>k</code> refers to the same
+variable <code>k</code> throughout the entire function,
+<i>even before it has been declared</i>.
+</p>
+<p>
+That’s right.
+JavaScript lets you use a variable before declaring it.
+</p>
+<p>
+The scope of JavaScript variables is the function,
+so if you want to create a variable in a new scope,
+you have to put it in a new function,
+since functions define scope.
+</p>
+<pre>
+function hookupevents() {
+ for (var i = 0; i &lt; 4; i++) {
+  <font color="blue">var handlerCreator = function(index) {
+   var localIndex = index;
+   return function() { alert(localIndex); };
+  };
+  var handler = handlerCreator(i);</font>
+  document.getElementById("myButton" + i)
+   .addEventListener("click", <font color="blue">handler</font>);
+ }
+}
+</pre>
+<p>
+Okay, now things get weird.
+We need to put the variable into its own function,
+so we do that by declaring a helper function
+<code>handler­Creator</code> which creates event handlers.
+Since we now have a function, we can create a new local variable
+which is distinct from the variables in the parent function.
+We’ll call that local variable <code>local­Index</code>.
+The handler creator function saves its parameter in the
+<code>local­Index</code> and then creates and returns the actual handler
+function, which uses <code>local­Index</code> rather than <code>i</code>
+so that it uses the captured value rather than the original variable.
+</p>
+<p>
+Now that each handler gets a separate copy of <code>local­Index</code>,
+you can see that each one alerts the expected value.
+</p>
+<p>
+Now, I wrote out the above code the long way for expository purposes.
+In real life, it’s shrunk down quite a bit.
+</p>
+<p>
+For example, the <code>index</code> parameter itself can be used
+instead of the <code>local­Index</code> variable,
+since parameters can be viewed as merely conveniently-initialized
+local variables.
+</p>
+<pre>
+function hookupevents() {
+ for (var i = 0; i &lt; 4; i++) {
+  var handlerCreator = function(index) {
+   return function() { alert(<font color="blue">index</font>); };
+  };
+  var handler = handlerCreator(i);
+  document.getElementById("myButton" + i)
+   .addEventListener("click", handler);
+ }
+}
+</pre>
+<p>
+And then the <code>handler­Creator</code> variable
+can be inlined:
+</p>
+<pre>
+function hookupevents() {
+ for (var i = 0; i &lt; 4; i++) {
+  var handler = <font color="blue">(function(index) {
+   return function() { alert(index); })</font>(i);
+  document.getElementById("myButton" + i)
+   .addEventListener("click", handler);
+ }
+}
+</pre>
+<p>
+And then the <code>handler</code> itself can be inlined:
+</p>
+<pre>
+function hookupevents() {
+ for (var i = 0; i &lt; 4; i++) {
+  document.getElementById("myButton" + i)
+   .addEventListener("click",
+       <font color="blue">(function(index) {
+         return function() { alert(index); })(i)</font>);
+ }
+}
+</pre>
+<p>
+The pattern
+<code>(function (x) { ... })(y)</code>
+is misleadingly called
+the <i>self-invoking function</i>.
+It’s misleading because the function doesn’t invoke itself;
+the outer code is invoking the function.
+A better name for it would be the
+<i>immediately-invoked function</i>
+since the function is invoked immediately upon definition.
+</p>
+<p>
+The next step is to change
+then the name of the helper <code>index</code> variable
+to simply <code>i</code> so that the connection
+between the outer variable and the inner variable can be made
+more obvious (and more confusing to the uninitiated):
+</p>
+<pre>
+function hookupevents() {
+ for (var i = 0; i &lt; 4; i++) {
+  document.getElementById("myButton" + i)
+   .addEventListener("click",
+       <font color="blue">(function(<font color="blue">i</font>) {
+         return function() { alert(<font color="blue">i</font>); })(i)</font>);
+ }
+}
+</pre>
+<p>
+The pattern
+<code>(function (x) { ... })(x)</code>
+is an idiom that means
+“For the enclosed block of code,
+capture <code>x</code> <i>by value</i>.”
+And since functions can have more than one parameter,
+you can extend the pattern to
+<code>(function (x, y, z) { ... })(x, y, z)</code>
+to capture multiple variables by value.
+</p>
+<p>
+It is common to move the entire loop body into the pattern,
+since you usually refer to the loop variable multiple times,
+so you may as well capture it just once and reuse the captured
+value.
+</p>
+<pre>
+function hookupevents() {
+ for (var i = 0; i &lt; 4; i++) {
+  <font color="blue">(function(i) {</font>
+   document.getElementById("myButton" + i)
+    .addEventListener("click", function() { alert(i); });
+  <font color="blue">})(i);</font>
+ }
+}
+</pre>
+<p>
+Maybe it’s a good thing that the fix is more cumbersome in JavaScript.
+The fix for C# is easier to type, but it is also rather subtle.
+The JavaScript version is quite explicit.
+</p>
+<p>
+<b>Exercise</b>:
+The pattern doesn’t work!
+</p>
+<pre>
+var o = { a: 1, b: 2 };
+document.getElementById("myButton")
+ .addEventListener("click",
+   (function(o) { alert(o.a); })(o));
+o.a = 42;
+</pre>
+<p>
+This code alerts <code>42</code> instead of <code>1</code>,
+even though I captured <code>o</code> by value.
+Explain.
+</p>
+<p>
+<b>Bonus reading</b>:
+C# and ECMAScript approach solving this problem in two different ways.
+In C# 5,
+<a href="http://www.mindscapehq.com/blog/index.php/2012/03/18/what-else-is-new-in-c-5/">
+the loop variable of a <code>foreach</code> loop
+is now considered scoped to the loop</a>.
+ECMAScript code name Harmony
+<a href="http://ariya.ofilabs.com/2013/05/es6-and-block-scope.html">
+proposes a new <code>let</code> keyword</a>.</p>
+
+
+</body>

@@ -1,0 +1,246 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A different type of dialog procedure</h1>  <!-- .entry-meta -->
+
+<p>
+In the discussion following my entry about dialog procedure return
+values, somebody suggested an alternate dialog design where
+you just call <code>DefDlgProc</code> to do default actions
+(the same way you write window procedures and <code>DefWindowProc</code>)
+rather than returning TRUE/FALSE.
+</p>
+<p>
+So let’s do that. In fact, we’re going to do it twice.
+I’ll cover one method today and cover an entirely different
+method later this week. Each method consists of a simple kernel of
+an idea; the rest is just scaffolding to make the kernel work.
+</p>
+<p>
+The first way uses a recursive call from the
+dialog procedure back into
+<code>DefDlgProc</code> to trigger the default behavior.
+This technique requires that you have a flag that lets you detect
+(and therefore break) the recursion.
+Since you typically have instance data attached to your dialog box
+anyway, it’s not too hard to add another member to it.
+</p>
+<p>
+The kernel
+is to “subvert the recursive call”. <code>DefDlgProc</code>
+calls your dialog procedure to see what you want to do.
+When you want to do the default action, just call
+<code>DefDlgProc</code> recursively. The inner <code>DefDlgProc</code>
+will call your dialog procedure to see if you want to override the
+default action. Detect this recursive call and return
+FALSE (“do the default”).
+The recursive <code>DefDlgProc</code>
+will then perform the default action and
+return its result. Now you have the result of the default action,
+and you can modify it or augment it before returning that as
+the result for
+the dialog box procedure, back to the outer <code>DefDlgProc</code>
+which returns that value back as the final message result.
+</p>
+<p>
+Here’s the flow diagram, for those who prefer pictures:
+</p>
+<pre>
+Message delivered
+-&gt; DefDlgProc
+   -&gt; your dialog procedure
+      decide what to do
+      want to do the default action
+      -&gt; DefDlgProc
+         -&gt; your dialog procedure
+            detect recursion
+         &lt;- return FALSE
+         DefDlgProc sees FALSE
+         performs default behavior
+      &lt;- returns result of default behavior
+      you do other stuff (perhaps modify
+      default behavior after it occurred)
+      set DWLP_MSGRESULT to desired result
+   &lt;- return TRUE
+   retrieve DWLP_MSGRESULT
+&lt;- return it as message result
+</pre>
+<p>
+Given this sketch, you should be able to write it up yourself.
+Here’s what I came up with.  I call it a Wndproc-Like Dialog:
+</p>
+<pre>
+class WLDialogBox
+{
+public:
+  virtual LRESULT WLDlgProc(
+            HWND hdlg, UINT uMsg,
+            WPARAM wParam, LPARAM lParam)
+  {
+    return DefDlgProcEx(hdlg, uMsg, wParam, lParam,
+                        &amp;m_fRecursing);
+  }
+  INT_PTR DoModal(HINSTANCE hinst, LPCTSTR pszTemplate,
+                  HWND hwndParent)
+  {
+    m_fRecursing = FALSE;
+    return DialogBoxParam(hinst, pszTemplate, hwndParent,
+                          s_DlgProc, (LPARAM)this);
+  }
+private:
+  static INT_PTR CALLBACK s_DlgProc(
+            HWND hdlg, UINT uMsg,
+            WPARAM wParam, LPARAM lParam)
+  {
+    if (uMsg == WM_INITDIALOG) {
+      SetWindowLongPtr(hdlg, DWLP_USER, lParam);
+    }
+    WLDialogBox *self = (WLDialogBox*)GetWindowLongPtr(
+                            hdlg, DWLP_USER);
+    if (!self) {
+      return FALSE;
+    }
+    CheckDefDlgRecursion(&amp;self-&gt;m_fRecursing);
+    return SetDlgMsgResult(hdlg, uMsg,
+              self-&gt;WLDlgProc(
+                hdlg, uMsg, wParam, lParam));
+  }
+private:
+  BOOL m_fRecursing;
+};
+</pre>
+<p>
+Let’s walk through this class.
+</p>
+<p>
+The <code>WLDlgProc</code> method is virtual because we expect
+derived classes to do custom actions in their dialog procedure
+that we invoke from our <code>s_DlgProc</code>.
+The default implementation in the base class
+uses the <code>DefDlgProcEx</code>
+macro from <code>windowsx.h</code> to do the dirty work.
+That’s right, this technique has been published by Microsoft
+since 1992. If you look at <code>DefDlgProcEx</code>, it sets the
+recursion flag to TRUE and then calls <code>DefDlgProc</code>,
+which triggers the recursive call.
+</p>
+<p>
+I could have had a separate <code>WLDefDlgProc</code> method which
+calls <code>DefDlgProcEx</code> and have <code>WLDlgProc</code> call
+<code>WLDefDlgProc</code>. (In fact, my first version did exactly that.)
+But I decided not to have a <code>WLDefDlgProc</code> to remove the
+temptation to bypass the base class’s <code>WLDefDlgProc</code>.
+Instead, if you want default handling to take place, forward the
+call to your base class’s <code>WLDefDlgProc</code>.
+</p>
+<p>
+The <code>s_DlgProc</code> method is the dialog procedure used for
+all instances of Wndproc-Like dialogs. It initializes itself in
+the <code>WM_INITDIALOG</code> message so future messages can identify
+which instance of the dialog is handling the message.
+After short-circuiting messages that arrive before the dialog box
+has initialized, it uses the <code>CheckDlgRecursion</code> macro,
+also from <code>windowsx.h</code>. This macro checks the recursion
+flag; if set, then it resets the flag and just returns FALSE immediately.
+This is what stops the recursion. Otherwise, it calls the
+<code>WLDlgProc</code> method (which has probably been overriden in
+a derived class), then sets the dialog procedure return value and
+returns.
+</p>
+<p>
+The <code>SetDlgMsgResult</code> macro also comes from
+<code>windowsx.h</code>: It stores the return value into the
+<code>DWLP_MSGRESULT</code> and returns TRUE.  Well, unless the
+message is one of the special exceptions, in which case it returns
+the value directly.  <strong>Note to 64-bit developers</strong>: There
+is a bug in this macro as currently written. The expression
+<code>(BOOL)(result)</code> should be changed to
+<code>(INT_PTR)(result)</code> so that the upper 32 bits of the return
+value is not truncated.
+</p>
+<p>
+The last method is <code>DoModal</code>, which initializes the
+recursion flag and kicks off the dialog box.
+</p>
+<p>
+Here’s a sample program that illustrates the use of this class:</p>
+<pre>
+
+class SampleWLDlg : public WLDialogBox
+{
+  LRESULT WLDlgProc(HWND hdlg, UINT uMsg,
+            WPARAM wParam, LPARAM lParam)
+  {
+    switch (uMsg) {
+    HANDLE_MSG(hdlg, WM_COMMAND, OnCommand);
+    HANDLE_MSG(hdlg, WM_SETCURSOR, OnSetCursor);
+    }
+    return __super::WLDlgProc(hdlg, uMsg, wParam, lParam);
+  };
+  void OnCommand(HWND hdlg, int id,
+                 HWND hwndCtl, UINT codeNotify)
+  {
+    switch (id) {
+    case IDCANCEL:
+      MessageBox(hdlg, TEXT("Bye"), TEXT("Title"), MB_OK);
+      EndDialog(hdlg, 1);
+      break;
+    }
+  }
+  BOOL OnSetCursor(HWND hdlg, HWND hwndCursor,
+                   UINT codeHitTest, UINT msg)
+  {
+    if (codeHitTest == HTCAPTION) {
+      SetCursor(LoadCursor(NULL, IDC_SIZEALL));
+      return TRUE;
+    }
+    return FORWARD_WM_SETCURSOR(hdlg, hwndCursor,
+                  codeHitTest, msg, __super::WLDlgProc);
+  }
+};
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+    SampleWLDlg dlg;
+    dlg.DoModal(hinst, MAKEINTRESOURCE(1), NULL);
+    return 0;
+}
+1 DIALOGEX DISCARDABLE  0, 0, 200,200
+STYLE DS_SHELLFONT | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "sample"
+FONT 8, "MS Shell Dlg"
+BEGIN
+DEFPUSHBUTTON "&amp;Bye",IDCANCEL,"Button",WS_TABSTOP,7,4,50,14
+END
+</pre>
+<p>
+To illustrate a custom return value, I override the <code>WM_SETCURSOR</code>
+message to display a custom cursor when the mouse is over the caption area.
+It’s not exciting, but it gets the point across.
+</p>
+<p>
+Observe that in two places, we invoked
+the default handler by calling <code>__super::WLDlgProc</code>.
+<code>__super</code> is a Visual C++ extension that resolves to
+the base class of your derived class. This is quite handy since it
+saves the reader the trouble of figure out “So which level in the class
+hierarchy are we forwarding this call to?”  If you wanted to forward
+a call to your grandparent class, you would use
+<code>__super::__super::WLDlgProc</code>.
+</p>
+<p>
+If your compiler doesn’t support <code>__super</code>, you can fake it
+by adding this line to the definition of <code>SampleWLDlg</code>:
+</p>
+<pre>
+  typedef WLDialogBox super;
+</pre>
+<p>
+and using <code>super::WLDlgProc</code> without the underscores.
+In fact, this is the technique I use because I was doing it
+before the VC folks added the <code>__super</code> keyword and
+now it’s just habit.
+</p>
+<p><strong>Exercise</strong>: Does the <code>m_fRecursing</code> member
+really have to be per-instance? Can it be global?</p>
+
+
+</body>

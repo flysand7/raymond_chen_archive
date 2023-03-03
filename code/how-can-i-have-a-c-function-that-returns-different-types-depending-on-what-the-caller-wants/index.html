@@ -1,0 +1,67 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I have a C++ function that returns different types depending on what the caller wants?</h1>  <!-- .entry-meta -->
+
+<p>Here’s something crazy: You have a function that has two different callers. One of them expects the function to return a widget. The other expects the function to return a doodad.</p>
+<pre>class widget;
+class doodad;
+
+class experiment
+{
+public:
+    doodad get_entity();
+    widget get_entity();
+};
+</pre>
+<p>This is not allowed in C++. The return type of a function cannot be overloaded.</p>
+<p>But <a href="https://kennykerr.ca"> Kenny Kerr</a> taught me how to fake it. What you do is return an object that doesn’t yet know whether it’s a widget or doodad.</p>
+<pre>class experiment
+{
+public:
+    auto get_entity()
+    {
+        struct result
+        {
+            operator widget()
+            {
+                return experiment-&gt;get_entity_as_widget();
+            }
+
+            operator doodad()
+            {
+                return experiment-&gt;get_entity_as_doodad();
+            }
+
+            experiment* experiment;
+        };
+        return result{ this };
+    }
+};
+</pre>
+<p>The thing that is returned is neither a widget nor a doodad, but observing it will trigger a collapse to one or the other.</p>
+<pre>widget w = exp.get_entity();
+doodad p = exp.get_entity();
+</pre>
+<p>In the first call, the <code>get_</code><code>entity()</code> returns the private <code>result</code> type, and then immediately assigns it to a variable of type <code>widget</code>. This triggers the <code>operator widget()</code> conversion operator, which calls <code>get_</code><code>entity_</code><code>as_</code><code>widget</code>.</p>
+<p>Similarly, the second call obtains the private <code>result</code> type and converts it to a <code>doodad</code>, which winds up calling <code>get_</code><code>entity_</code><code>as_</code><code>doodad</code>.</p>
+<p>The wave function collapse could be triggered by anything that accepts a conversion.</p>
+<pre>move_widget(exp.get_entity()); // will call get_entity_as_widget
+signal_doodad(exp.get_entity()); // will call get_entity_as_doodad
+</pre>
+<p>If you take the return value of <code>get_</code><code>entity</code> and save it in an <code>auto</code>, then the wave function hasn’t collapsed yet. It’s still not sure which thing it is.</p>
+<pre>auto entity = exp.get_entity();
+</pre>
+<p>The thing doesn’t become a widget or doodad until you convert it.</p>
+<pre>move_widget(entity); // calls get_entity_as_widget
+</pre>
+<p>Note that the call to <code>get_</code><code>entity_</code><code>as_</code><code>widget</code> is delayed until the conversion occurs.</p>
+<pre>auto entity = exp.get_entity();
+exp.replace_entity();
+move_widget(entity); // calls get_entity_as_widget
+</pre>
+<p>Between calling <code>get_</code><code>entity</code> and converting the result to a widget, we changed the entity in the experiment. Not until the conversion occurs does the call to <code>get_</code><code>entity_</code><code>as_</code><code>widget</code> happen, at which point it will get the new entity rather than the original one. And of course, if you destroy the experiment, then the unresolved <code>entity</code> has a dangling pointer, and the behavior is undefined.</p>
+<p>This trick works best if the caller will convert the result <i>immediately</i> to its final type (widget or doodad).</p>
+<p>Of course, you could try to fix these problems, say by taking a strong reference to the <code>experiment</code> to prevent it from being destructed prematurely. Or you could call both <code>get_</code><code>entity_</code><code>as_</code><code>widget</code> and <code>get_</code><code>entity_</code><code>as_</code><code>doodad</code> as part of the constructor, and then hand out the appropriate type during the conversion. That would fix the “delayed evaluation” problem, but at a cost of doing eager evaluation of both branches, even if only one will end up being used.</p>
+<p>In the case where Kenny used it, it was to <a href="https://github.com/microsoft/xlang/commit/e8d4b6d0549cd68559fb222ec1dee569c3fa0b9d#diff-c8f92fdacb3edc5e2de5216ac2085b32R58"> permit the <code>First</code> method to return a different iterator</a> depending on who’s asking for it. The underlying problem is the object wants to be able to produce a stream of <code>T</code> objects or <code>IInspectable</code> objects, so it implements both the <code>IIterable&lt;T&gt;::First()</code> and <code>IIterable&lt;IInspectable&gt;::First()</code> methods. The projection for those interfaces forward to the implementation’s <code>First()</code>, which forces <code>First()</code> to serve two masters. And the way he solved it was to return an ambiguous object, so that each master sees what it wants.</p>
+
+
+</body>

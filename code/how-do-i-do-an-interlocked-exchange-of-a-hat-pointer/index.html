@@ -1,0 +1,43 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I do an interlocked exchange of a hat pointer?</h1>  <!-- .entry-meta -->
+
+<p>If you work with C++/CX, then you spend a lot of time working with <a href="https://blogs.msdn.microsoft.com/vcblog/2012/09/17/ccx-part-2-of-n-types-that-wear-hats/">types that wear hats</a>. These are basically super-smart pointers. In addition to performing automatic <code>Add­Ref</code> and <code>Release</code>, they also perform automatic <code>Query­Interface</code> if you call a method that belongs to an interface other than the default one. </p>
+<p>How do you perform an atomic exchange of these things? </p>
+<p>The trick is realizing that a hat pointer is the same size as a raw pointer because it’s physically represented as a pointer to the default interface of the underlying type. Therefore, you can perform the interlocked operation on the raw pointer, provided of course that the thing you are exchanging in can legally be placed in such a pointer. </p>
+<p>Even if a hat pointer weren’t the size of a raw pointer, what’s important are that (1) it’s the size of something that can be atomically exchanged, and (2) it is self-contained, without dependencies on other memory. </p>
+<pre>
+template&lt;typename T, typename U&gt;
+T^ InterlockedExchangeRefPointer(T^* target, U value)
+{
+  static_assert(sizeof(T^) == sizeof(void*),
+    "InterlockedExchangePointer is the wrong size");
+  T^ exchange = value;
+  void** rawExchange = reinterpret_cast&lt;void**&gt;(&amp;exchange);
+  void** rawTarget = reinterpret_cast&lt;void**&gt;(target);
+  *rawExchange = static_cast&lt;IInspectable*&gt;(
+    InterlockedExchangePointer(rawTarget, *rawExchange));
+  return exchange;
+}
+</pre>
+<p>Okay, what’s going on here? </p>
+<p>First, we verify our assumption: Namely, that a hat pointer is the same size as a raw pointer, because we’re about to exchange the contents of the two things, and we need to be sure that we’re exchanging the correct number of bytes. </p>
+<p>Next, we convert the <code>value</code> to a compatible pointer. This allows you to pass anything convertible to <code>T^</code> as the second parameter, rather than having to pass something that is exactly a <code>T^</code>. If the function had bee prototyped as </p>
+<pre>
+template&lt;typename T&gt;
+T^ InterlockedExchangeRefPointer(T^* target, T^ value)
+</pre>
+<p>then you would have gotten type inference errors if you pass a second parameter that is not literally a <code>T^</code>, but which can be converted to one (for example, <code>nullptr</code>) because the compiler can’t figure out what <code>T</code> should be. </p>
+<p>Once we’ve converted the <code>value</code> into a <code>T^</code> we can proceed with the raw exchange of contents. The <code>raw­Exchange</code> variable points to the variable <code>exchange</code>, but viewing it as a raw pointer rather than a hat pointer. Similarly, the <code>raw­Target</code> variable points to the target as a raw pointer. </p>
+<p>We then ask <code>Interlocked­Exchange­Pointer</code> to do the dirty work of exchanging the values. We put the previous value of the target back into <code>exchange</code> (via the alias known as <code>raw­Exchange</code>). </p>
+<p>Putting the answer back into <code>exchange</code> lets us return the smart version of the variable back to our caller. </p>
+<p>So that’s it. This is really just a fancy way of writing </p>
+<pre>
+THING InterlockedExchangeThing(Thing* thing, Thing newThing)
+{
+ newThing = InterlockedExchangeSizeOfThing(thing, newThing);
+ return newThing;
+}
+</pre>
+
+
+</body>

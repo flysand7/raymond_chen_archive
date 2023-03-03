@@ -1,0 +1,296 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Adding COM context support to our awaiter</h1>  <!-- .entry-meta -->
+
+<p>You may want to have awaiters that apply custom resume behavior. For example, in Windows, you are likely to want your awaiter to preserve the COM thread context. For X11 programming, you may want to the awaiter to return to the render thread if the <code>co_await</code> was initiated from the render thread. Today we’ll add the ability to customize the awaiter to our coroutine promise type.</p>
+<p>The idea is that instead of registering just a coroutine handle for resumption, we register information that lets us resume the coroutine in some scenario-specific manner.</p>
+<p>There are a couple of possible designs for this.</p>
+<p>One is to register an object with a virtual <code>resume()</code> method, and we just call that <code>resume</code> method when it’s time to resume the awaiting coroutine. This has the disadvantage of introducing a virtual function call, which affects speculatability as well as adding a control flow guard check due to the use of a function pointer.</p>
+<p>Another option is to use a switch statement with one case for each type of resumption. This avoids the virtual function call, but it also means that add a new kind of awaiter requires that the base class be updated to understand it. Furthermore, it means that even if you don’t use a particular awaiter, the code for it is still compiled into the promise, because the promise doesn’t know at compile time which cases are going to end up being dead code at run time.</p>
+<p>So I split the difference: I register a function pointer and a <code>void*</code> pointer. The function pointer is called with the <code>void*</code> pointer to do whatever it needs in order to resume the awaiting coroutine. This plug-in model makes the code pay-for-play: If you never use an awaiter, its code doesn’t get compiled in. It also makes it easy to add new types of awaiters in the future. To avoid paying for the function pointer call, we also adopt the special convention that if the function pointer is <code>nullptr</code>, then the <code>void*</code> pointer is assumed to be the address of the awaiting coroutine. This lets us take a function pointer call out of the common case.</p>
+<pre>namespace async_helpers::details
+{
+    template&lt;typename T&gt;
+    struct simple_promise_base
+    {
+        <span style="color: blue;">void (*m_resumer)(void*);</span>
+        std::atomic&lt;void*&gt; m_waiting{ cold_ptr };
+        simple_promise_result_holder&lt;T&gt; m_holder;
+</pre>
+<p>We add a “resumer” function pointer to our promise. This is the function that knows how to resume a coroutine given the <code>m_waiting</code> pointer.</p>
+<pre>        void resume_waiting_coroutine(void* waiting) const
+        {
+            if (m_resumer)
+            {
+                m_resumer(waiting);
+            }
+            else
+            {
+                std::experimental::coroutine_handle&lt;&gt;::
+                    from_address(waiting).resume();
+            }
+        }
+</pre>
+<p>When it comes time to resume the waiting coroutine, we check if there is a custom resumer. If so, then we call it with the <code>waiting</code> pointer and trust it to know what to do next. Otherwise, we assume that the pointer is the address of a coroutine and just resume it.</p>
+<p>We now teach our final awaiter about this new convention for resuming the awaiting coroutine.</p>
+<pre>        auto final_suspend() noexcept
+        {
+            struct awaiter : std::experimental::suspend_always
+            {
+                simple_promise_base&amp; self;
+                void await_suspend(
+                    std::experimental::coroutine_handle&lt;&gt;)
+                    const noexcept
+                {
+                    auto waiter = self.m_waiting.exchange(completed_ptr,
+                        std::memory_order_acq_rel);
+                    if (waiting != abandoned_ptr) self.destroy();
+                    if (waiting != running_ptr)
+                        <span style="color: blue;">self.resume_waiting_coroutine(waiting);</span>
+                }
+            };
+            return awaiter{ {}, *this };
+        }
+</pre>
+<p>Instead of treating the <code>waiting</code> as a coroutine pointer, we ask <code>resume_<wbr/>waiting_<wbr/>coroutine</code> to resume it in the awaiter-requested manner.</p>
+<pre>        auto client_await_suspend(
+            <span style="color: blue;">void* waiting,
+            void (*resumer)(void*) = nullptr</span>)
+        {
+            m_resumer = resumer;
+            <span style="color: blue;">assert(reinterpret_cast&lt;uintptr_t&gt;(waiting) &gt;
+                                    reinterpret_cast&lt;uintptr_t&gt;(cold_ptr));</span>
+            return m_waiting.exchange(<span style="color: blue;">waiting</span>,
+                std::memory_order_acq_rel) == running_ptr;
+        }
+
+        auto cold_client_await_suspend(
+            <span style="color: blue;">void* waiting,
+            void (*resumer)(void*) = nullptr</span>)
+        {
+            start();
+            <span style="color: blue;">client_await_suspend(waiting, resumer);</span>
+        }
+</pre>
+<p>Suspension requires the <code>waiting</code> pointer and an optional resumer function. If there is no resumer function, then <code>waiting</code> is assumed to be a pointer to a coroutine. We assert that the <code>waiting</code> doesn’t match any of our special sentinel values, so we won’t get confused later.</p>
+<p>Now we can update our awaiters:</p>
+<pre>    template&lt;typename T&gt;
+    struct promise_awaiter
+    {
+        promise_ptr&lt;T&gt; self;
+
+        bool await_ready()
+        {
+            return self-&gt;client_await_ready();
+        }
+
+        auto await_suspend(std::experimental::coroutine_handle&lt;&gt; handle)
+        {
+            return self-&gt;client_await_suspend(<span style="color: blue;">handle.address()</span>);
+        }
+
+        T await_resume()
+        {
+            return self-&gt;client_await_resume();
+        }
+    };
+
+    template&lt;typename T&gt;
+    struct cold_promise_awaiter
+    {
+        promise_ptr&lt;T&gt; self;
+
+        bool await_ready()
+        {
+            return self-&gt;cold_client_await_ready();
+        }
+
+        auto await_suspend(std::experimental::coroutine_handle&lt;&gt; handle)
+        {
+            return self-&gt;cold_client_await_suspend(<span style="color: blue;">handle.address()</span>);
+        }
+
+        T await_resume()
+        {
+            return self-&gt;client_await_resume();
+        }
+    };
+</pre>
+<p>The awaiters pass the coroutine by address rather than handle.</p>
+<p>Now that we have the plug-in model set up, we can add a new kind of awaiter, which I’ll call a <code>com_<wbr/>promise_<wbr/>awaiter</code>. This one ensures that we resume in the same COM context.</p>
+<pre>    template&lt;typename T&gt;
+    struct com_promise_awaiter
+    {
+        com_promise_awaiter(promise_ptr&lt;T&gt;&amp;&amp; ptr)
+            : self(std::move(ptr))
+        {
+        }
+
+        promise_ptr&lt;T&gt; self;
+        std::experimental::coroutine_handle&lt;&gt; waiter;
+        wil::com_ptr&lt;IContextCallback&gt; context;
+
+        bool await_ready()
+        {
+            return self-&gt;client_await_ready();
+        }
+
+        auto await_suspend(std::experimental::coroutine_handle&lt;&gt; handle)
+        {
+            waiter = handle;
+            THROW_IF_FAILED(CoGetObjectContext(IID_PPV_ARGS(&amp;context)));
+            return self-&gt;client_await_suspend(this, resume_in_context);
+        }
+
+        T await_resume()
+        {
+            return self-&gt;client_await_resume();
+        }
+
+        static auto as_self(void* p)
+        {
+            return reinterpret_cast&lt;com_promise_awaiter*&gt;(p);
+        }
+
+        static void resume_in_context(void* parameter)
+        {
+            as_self(parameter)-&gt;resume_context();
+        }
+
+        void resume_context()
+        {
+            ComCallData data{};
+            data.pUserDefined = this;
+            auto local_context = std::move(context);
+            THROW_IF_FAILED(local_context-&gt;ContextCallback(
+                resume_apartment_callback, &amp;data,
+                IID_ICallbackWithNoReentrancyToApplicationSTA, 5, nullptr));
+        }
+
+        static HRESULT CALLBACK resume_apartment_callback(
+            ComCallData* data) noexcept
+        {
+            as_self(data-&gt;pUserDefined)-&gt;waiter();
+            return S_OK;
+        }
+    };
+</pre>
+<p>Most of this code is related to COM context management and doesn’t really illustrate the point that we have a plug-in model for awaiting.</p>
+<p>The magic happens in the <code>await_<wbr/>suspend</code> method: We remember the handle to resume in our new <code>waiter</code> member variable, and capture the current COM context in the new <code>context</code> member variable. Once that’s done, we can call <code>client_<wbr/>await_<wbr/>suspend</code>, but instead of passing the coroutine handle, we pass our own address, and also pass a custom resumer function, which we’ve called <code>resume_<wbr/>in_<wbr/>context</code>.</p>
+<p>When it’s time to resume the awaiting coroutine, the <code>resume_<wbr/>in_<wbr/>context</code> function recovers the original <code>com_<wbr/>promise_<wbr/>awaiter</code> and asks the <code>context</code> to resume execution in the captured context. The <code>resume_<wbr/>apartment_<wbr/>callback</code> runs in that captured context, and it resumes the coroutine.</p>
+<p>There is a subtlety here: The awaiting coroutine resumes once we invoke <code>waiter()</code>, and at resumption, the coroutine will destruct the <code>com_<wbr/>promise_<wbr/>awaiter</code>. If we hadn’t captured <code>context</code> into <code>local_context</code>, that would have resulted in the <code>context</code> being destroyed while its <code>Context­Callback</code> method was still running, a violation of one of the basic rules of programming, namely that function parameters are stable for the lifetime of the function call. (In this case, the function parameter is the implied <code>this</code> pointer.) Capturing it into a local variable prevents the <code>context</code> from being destructed when the <code>com_<wbr/>promise_<wbr/>awaiter</code> destructs, and instead waits until <code>Context­Callback</code> returns.</p>
+<p>The above code is an illustration, and it does technically work, but there are a number of optimizations that a real program would want to perform to avoid unwanted stack build-up or to avoid the <a href="/code/c-coroutines-the-problem-of-the-synchronous-apartment-changing-callback"> synchronous apartment-changing callback problem</a> we discussed some time ago. Patching up these problems is an important exercise, but not really within the scope of this series on coroutines.</p>
+<p>We can now hook up this new promise to a <code>com_<wbr/>aware_<wbr/>task</code>.</p>
+<pre>namespace async_helpers
+{
+    template&lt;typename T&gt;
+    struct com_aware_task : details::simple_task_base&lt;T&gt;
+    {
+        using base = details::simple_task_base&lt;T&gt;;
+        com_aware_task() = default;
+        com_aware_task(details::simple_promise&lt;T&gt;* initial)
+            : base(initial) { this-&gt;promise-&gt;start(); }
+
+        void swap(com_task&amp; other)
+        {
+            std::swap(this-&gt;promise, other.promise);
+        }
+
+        using base::operator co_await;
+
+        auto operator co_await() &amp;&amp;
+        {
+            return details::com_promise_awaiter&lt;T&gt;
+                { std::move(this-&gt;promise) };
+        }
+    };
+
+    template&lt;typename T&gt;
+    void swap(com_aware_task&lt;T&gt;&amp; left, com_aware_task&lt;T&gt;&amp; right)
+    {
+        left.swap(right);
+    }
+}
+
+template &lt;typename T, typename... Args&gt;
+struct std::experimental::coroutine_traits&lt;async_helpers::com_aware_task&lt;T&gt;, Args...&gt;
+{
+    using promise_type = async_helpers::details::simple_promise&lt;T&gt;;
+};
+</pre>
+<p>This is identical to our <code>simple_<wbr/>task</code> except that its <code>co_await</code> operator uses a <code>com_<wbr/>promise_<wbr/>awaiter</code> instead of a a <code>promise_<wbr/>awaiter</code>.</p>
+<p>Since the <code>simple_<wbr/>task</code> and <code>com_<wbr/>aware_<wbr/>task</code> differ only in their <code>co_await</code>, we can actually make them use each other’s awaiter.</p>
+<pre>namespace async_helpers::details
+{
+    template&lt;typename T&gt;
+    struct simple_task_base
+    {
+        ...
+
+        <span style="color: blue;">auto resume_same_context() &amp;&amp;
+        {
+            return com_promise_awaiter&lt;T&gt;
+                { std::move(promise) };
+        }
+
+        auto resume_any_context() &amp;&amp;
+        {
+            return promise_awaiter&lt;T&gt;
+                { std::move(promise) };
+        }</span>
+
+        ...
+    };
+}
+
+namespace async_helpers
+{
+    template&lt;typename T&gt;
+    struct simple_task : details::simple_task_base&lt;T&gt;
+    {
+        ...
+
+        auto operator co_await() &amp;&amp;
+        {
+            return std::move(*this).resume_any_context();
+        }
+    };
+
+    template&lt;typename T&gt;
+    struct com_aware_task : 
+    {
+        ...
+
+        auto operator co_await() &amp;&amp;
+        {
+            return std::move(*this).resume_same_context();
+        }
+    };
+}
+</pre>
+<p>This means that if you have a <code>simple_<wbr/>task</code> or <code>com_<wbr/>aware_<wbr/>task</code>, but you want to resume in a context different from the one that you normally get with <code>co_await</code>, you can ask explicitly for the awaiter that gives you the behavior you desire:</p>
+<pre>extern async_helpers::simple_task&lt;void&gt; Something1Async();
+
+// resumes in any context by default
+co_await Something1Async();
+
+// same as above, but more explicit
+co_await Something1Async().resume_any_context();
+
+// forces resumption in same COM context
+co_await Something1Async().resume_same_context();
+
+extern async_helpers::com_aware_task&lt;void&gt; Something2Async();
+
+// resumes in same COM context by default
+co_await Something2Async();
+
+// same as above, but more explicit
+co_await Something2Async().resume_same_context();
+
+// forces resumption in any context
+co_await Something2Async().resume_any_context();
+</pre>
+<p>We’ll look at synchronous waits next time.</p>
+
+
+</body>

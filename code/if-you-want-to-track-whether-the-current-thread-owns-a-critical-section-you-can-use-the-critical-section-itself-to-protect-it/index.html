@@ -1,0 +1,126 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you want to track whether the current thread owns a critical section, you can use the critical section itself to protect it</h1>  <!-- .entry-meta -->
+
+<p>
+You may find yourself in the situation where you want to keep
+track of the owner of a critical section.
+This is usually for debugging or diagnostic purposes.
+For example,
+a particular function may have as a prerequisite that a particular
+critical section is held,
+and you want to assert this so that you can catch the problem
+when running the debug build.
+</p>
+<p><pre>
+class CriticalSectionWithOwner
+{
+public:
+  CriticalSectionWithOwner() : m_Owner(0), m_EntryCount(0)
+  {
+    InitializeCriticalSection(&amp;m_cs);
+  }
+  ~CriticalSectionWithOwner()
+  {
+    DeleteCriticalSection(&amp;m_cs);
+  }
+  void Enter()
+  {
+    EnterCriticalSection(&amp;m_cs);
+#ifdef DEBUG
+    m_Owner = GetCurrentThreadId();
+    m_EntryCount++;
+#endif
+  }
+  void Leave()
+  {
+#ifdef DEBUG
+    if (--m_EntryCount == 0) {
+      m_Owner = 0;
+    }
+#endif
+    LeaveCriticalSection(&amp;m_cs);
+  }
+#ifdef DEBUG
+  bool IsHeldByCurrentThread()
+  {
+    return m_EntryCount &amp;&amp;
+           m_Owner == GetCurrentThreadId();
+  }
+#endif
+private:
+  CRITICAL_SECTION m_cs;
+#ifdef DEBUG
+  DWORD m_Owner;
+  int m_EntryCount;
+#endif
+};
+</pre>
+<p>
+After we successfully enter the critical section,
+we mark the current thread as the owner and increment the
+entry count.
+Before leaving the critical section, we see if this is the last exit,
+and if so, we clear the owner field.
+</p>
+<p>
+Note that we update the owner and entry count while the critical
+section is held.
+We are using the critical section to protect its own diagnostic data.
+</p>
+<p>
+The subtle part is the
+<code>Is­Held­By­Current­Thread</code> function.
+Let’s look at the cases:
+</p>
+<p>
+First, if the current thread is the owner of the critical section,
+then we know that the diagnostic data is safe to access
+because we own the critical section that protects it.
+That’s not the subtle part.
+</p>
+<p>
+The subtle part is the case where the current thread is <i>not</i>
+the owner of the critical section.
+A naïve analysis would say that the diagnostic data is off limits
+because you are trying to access it without owning the protective
+critical section.
+But what value can
+<code>m_Owner</code> have at this point?
+</p>
+<ol>
+<li>If the critical section is not held, then
+    <code>m_Owner</code> will be zero, which will be unequal to the
+    current thread ID.</li></ol></p>
+<li>If the critical section is held, then
+    <code>m_Owner</code> will be the owner of the critical section,
+    which will also be unequal to the current thread ID.
+
+<p>
+But what if the value of <code>m_Owner</code> changes while we
+are looking at it?
+Well, since we are not the owner of the critical section,
+it can only change between the two states above
+(possibly from one state 2 to another state 2).
+In other words, it can only change from one value that is not
+equal to the current thread ID
+to another value that is <i>still</i> not equal to the current
+thread ID.
+Therefore, even if we race against another thread entering or
+leaving the critical section,
+the fact that the owner of the critical section is <i>not us</i>
+doesn’t change.
+</p>
+<p>
+Note that this analysis assumes that the <code>m_Owner</code>
+is a suitably-aligned value that can be updated atomically.
+(If not, then it’s possible that a torn value will be read
+which coincidentally matches our thread ID.)
+</p>
+<p>
+Since the <code>CRITICAL_SECTION</code> itself must already
+be suitably aligned,
+placing the <code>DWORD</code> up against it will also align
+the <code>DWORD</code>.</p>
+
+
+</li></body>

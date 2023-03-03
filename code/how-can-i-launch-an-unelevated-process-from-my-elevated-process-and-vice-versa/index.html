@@ -1,0 +1,226 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I launch an unelevated process from my elevated process and vice versa?</h1>  <!-- .entry-meta -->
+
+<p>
+Going from an unelevated process to an elevated process is easy.
+You can run a process with elevation by
+<a href="http://blogs.msdn.com/b/vistacompatteam/archive/2006/09/25/771232.aspx">
+passing the <code>runas</code> verb</a>
+to <code>Shell­Execute</code> or
+<code>Shell­Execute­Ex</code>.
+</p>
+<p>
+Going the other way is trickier.
+For one thing, it’s really hard to munge your token to remove the
+elevation nature properly.
+And for another thing, even if you could do it, it’s not the right
+thing to do, because the unelevated user may be different from the
+elevated user.
+</p>
+<p>
+Let me expand on that last bit.
+</p>
+<p>
+Take a user who is not an administrator.
+When that user tries to run a program with elevation,
+the system will display a prompt that says,
+“Hey, like, since you’re not an administrator,
+I need you to type the userid and password of somebody
+who <i>is</i> an administrator.”
+When that happens, the elevated program is running not as the
+original user but as the administrative user.
+Even if the elevated program tried to remove elevation from its token,
+all it managed to do is create an unelevated token
+<i>for the administrative user</i>, not the original user.
+</p>
+<p>
+Suppose we have Alice Administrator and Bob Banal.
+Bob logs on,
+and then tries to run LitWare Dashboard,
+which requires elevation.
+The prompt comes up, and Bob calls over Alice to grant
+administrative privileges.
+Alice types her password, and boom, now LitWare Dashboard is running
+elevated <i>as Alice</i>.
+</p>
+<p>
+Now suppose LitWare Dashboard wants to launch the user’s Web browser
+to show some online content.
+Since there is no reason for the Web browser to run elevated,
+it tries to unelevate the browser in order to reduce the security
+attack surface.
+If it simply neutered its token and used that to launch the browser,
+it would be running a copy of the browser unelevated <i>as Alice</i>.
+But LitWare Dashboard presumably
+really wanted to run the browser as Bob,
+since it is Bob who is the unelevated user in this session.
+</p>
+<p>
+The solution here is to go back to Explorer and ask Explorer to
+launch the program for you.
+Since Explorer is running as the original unelevated user,
+the program (in this case, the Web browser) will run as Bob.
+This is also important in the case that the handler for the file
+you want to open runs as an in-process extension rather than as
+a separate process,
+for in that case,
+the attempt to unelevate would be pointless since no new process
+was created in the first place.
+(And if the handler for the file tries to communicate with
+an existing unelevated copy of itself, things may fail because of UIPI.)
+</p>
+<p>
+Okay, I know that Little Programs are not supposed to have motivation,
+but I couldn’t help myself.
+Enough jabber.
+Let’s write code.
+(Remember that Little Programs do little or no error checking,
+because that’s the way they roll.)
+</p>
+<pre>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;shldisp.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;exdisp.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;stdlib.h&gt;
+// <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/03/18/10403054.aspx">FindDesktopFolderView</a> incorporated by reference
+void GetDesktopAutomationObject(REFIID riid, void **ppv)
+{
+ CComPtr&lt;IShellView&gt; spsv;
+ FindDesktopFolderView(IID_PPV_ARGS(&amp;spsv));
+ CComPtr&lt;IDispatch&gt; spdispView;
+ spsv-&gt;GetItemObject(SVGIO_BACKGROUND, IID_PPV_ARGS(&amp;spdispView));
+ spdispView-&gt;QueryInterface(riid, ppv);
+}
+</pre>
+<p>
+The
+<code>
+Get­Desktop­Automation­Object</code>
+function
+locates the desktop folder view
+then asks for the dispatch object for the view.
+We then return that dispatch object in the form requested by the caller.
+This dispatch object is a <code>Shell­Folder­View</code>,
+and the C++ interface for that is
+<code>IShell­Folder­View­Dual</code>,
+so most callers are going to ask for that interface,
+but
+if you are a masochist, you can skip the dual interface and
+talk directly to <code>IDispatch</code>.
+</p>
+
+<pre>
+void ShellExecuteFromExplorer(
+    PCWSTR pszFile,
+    PCWSTR pszParameters = nullptr,
+    PCWSTR pszDirectory  = nullptr,
+    PCWSTR pszOperation  = nullptr,
+    int nShowCmd         = SW_SHOWNORMAL)
+{
+ CComPtr&lt;IShellFolderViewDual&gt; spFolderView;
+ GetDesktopAutomationObject(IID_PPV_ARGS(&amp;spFolderView));
+ CComPtr&lt;IDispatch&gt; spdispShell;
+ spFolderView-&gt;get_Application(&amp;spdispShell);
+ CComQIPtr&lt;IShellDispatch2&gt;(spdispShell)
+    -&gt;ShellExecute(CComBSTR(pszFile),
+                   CComVariant(pszParameters ? pszParameters : L""),
+                   CComVariant(pszDirectory ? pszDirectory : L""),
+                   CComVariant(pszOperation ? pszOperation : L""),
+                   CComVariant(nShowCmd));
+}
+</pre>
+<p>
+The
+<code>Shell­Execute­From­Explorer</code>
+function
+starts by getting the desktop folder automation object.
+We use the desktop not because it’s particularly meaningful
+but because we know that it’s always going to be there.
+</p>
+<p>
+As with the desktop folder view,
+the <code>Shell­Folder­View</code> object is not interesting
+to us for itself.
+It’s interesting to us because the object
+resides in the process that is hosting the desktop view
+(which is the main Explorer process).
+From the <code>Shell­Folder­View</code>, we ask for the
+<code>Application</code> property
+so that we can get to the main
+<code>Shell.Application</code> object,
+which has the <code>IShell­Dispatch</code> interface
+(and its extensions
+<code>IShell­Dispatch2</code> through
+<code>IShell­Dispatch6</code>)
+as its C++ interfaces.
+And it is the
+<code>IShell­Dispatch2::Shell­Execute</code> method
+that is what we really want.
+</p>
+<p>
+“You never loved me.
+You only wanted me in order
+to get access to my family,” sobbed the shell folder view.
+</p>
+<p>
+And we call
+<code>IShell­Dispatch2::Shell­Execute</code> with
+the appropriate parameters.
+Note that the parameters to
+<code>IShell­Dispatch2::Shell­Execute</code> are
+<i>in a different order</i> from the parameters to
+<code>Shell­Execute</code>!
+</p>
+<p>
+Okay, let’s put this inside a little program.
+</p>
+<pre>
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ if (argc &lt; 2) return 0;
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+ ShellExecuteFromExplorer(
+    argv[1],
+    argc &gt;= 3 ? argv[2] : L"",
+    argc &gt;= 4 ? argv[3] : L"",
+    argc &gt;= 5 ? argv[4] : L"",
+    argc &gt;= 6 ? _wtoi(argv[5]) : SW_SHOWNORMAL);
+ return 0;
+}
+</pre>
+<p>
+The program takes a mandatory command line argument which is
+the thing to execute, be it a program or a document or a URL.
+Optional parameters are the parameters to the thing being executed,
+the current directory to use,
+the operation to perform, and how the window should be opened.
+</p>
+<p>
+Open an elevated command prompt, and then run this program
+in various ways.
+</p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tr>
+<td><code>scratch http://www.msn.com/</code></td>
+<td>Open an unelevated Web page in the user’s default Web browser.</td>
+</tr>
+<tr>
+<td><code>scratch cmd.exe "" C:\Users "" 3</code></td>
+<td>Open an unelevated command prompt at
+        <code>C:\Users</code>, maximized.</td>
+</tr>
+<tr>
+<td><code>scratch C:\Path\To\Image.bmp "" "" edit</code></td>
+<td>Edit a bitmap in an unelevated image editor.</td>
+</tr>
+</table>
+<p>
+This program is basically the same as the
+<a href="http://msdn.microsoft.com/library/dd940355">Execute in Explorer</a>
+sample.</p>
+
+
+</body>

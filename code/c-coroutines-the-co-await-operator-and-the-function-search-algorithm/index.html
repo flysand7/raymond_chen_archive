@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: The <code>co_await</code> operator and the function search algorithm</h1>  <!-- .entry-meta -->
+
+<p>So you’re following along <a href="https://kennykerr.ca/"> Kenny Kerr’s blog</a> and you get to the part where <a href="https://kennykerr.ca/2018/03/13/cppwinrt-coroutines-thread-pool/"> he uses <code>co_await</code> on a time duration</a>:</p>
+<pre>    co_await 5s;
+</pre>
+<p>so you try it:</p>
+<pre>#include &lt;chrono&gt;
+using namespace std::chrono;
+ 
+winrt::IAsyncAction Delay10Seconds()
+{
+   co_await 10s;
+   co_return;
+}
+</pre>
+<p>and you get the error message</p>
+<blockquote class="q"><p>no callable ‘await_resume’ function found for type ‘Expression’ where Expression=std::chrono::seconds</p></blockquote>
+<p>We learned that this error message means that we ended up awaiting something that can’t be awaited. We were hoping that the <code>operator co_await</code> would convert the <code>10s</code> into an awaiter, but it didn’t work. As a result, we ended up using the <code>std::</code><code>chrono::</code><code>seconds</code> as its own awaiter, but since it doesn’t meet the requirements for an awaiter, you get an error.</p>
+<p><a href="https://devblogs.microsoft.com/oldnewthing/20191218-00/?p=103221"> As we learned last time</a>, when you <code>co_await</code> an expression, one of the steps in obtaining an awaiter is looking for a corresponding overloaded <code>operator co_await</code> that accepts the expression. This search follows the usual mechanism for overloaded operators:</p>
+<ul>
+<li>A search is conducted for an overloaded operator declared as a member of the class.</li>
+<li>A search is conducted for an overloaded operator declared as a free function.</li>
+</ul>
+<p>Now, the <code>std::</code><code>chrono::</code><code>seconds</code> doesn’t implement <code>operator co_await</code> on its own, so we must search for the overloaded operator as a free function.</p>
+<p>Tht search for a free function includes the <code>std::chrono</code> namespace, thanks to argument-dependent lookup. And it includes the namespace that is currently active, plus its parent namespaces. And it includes any names that have been imported into those namespaces.</p>
+<p>In the case of a duration, the relevant <code>operator co_await</code> is in none of those places. It’s in the <code>winrt</code> namespace.</p>
+<p>In order for it to be found, you need to be inside a namespace (or sub-namespace) of <code>winrt</code>, or you must have imported <code>winrt::operator co_await</code> into your namespace with a <code>using namespace ::winrt;</code> statement.</p>
+<p>If you operate entirely within C++/WinRT, then doing a <code>using namespace ::winrt;</code> is probably not a big deal. But if your code straddles the C++/WinRT and ABI worlds (or worse, straddles the C++/WinRT and C++/CX worlds, or heaven forfend, operates in all three worlds), then blanket-importing the <code>winrt</code> namespace is probably not a good idea.</p>
+<p>Fortunately, there’s a workaround.¹</p>
+<p>You can use <code>co_await winrt::resume_after(duration)</code> as a drop-in substitute for <code>co_await duration;</code>. This is literally what happens anyway, because the <code>operator co_await</code> definition is</p>
+<pre>namespace winrt
+{
+    inline auto operator co_await(Windows::Foundation::TimeSpan duration)
+    {
+        return resume_after(duration);
+    }
+}
+</pre>
+<p>One lesson learned from this exercise is that it may not a great idea to define a <code>co_await</code> operator outside the namespace of the object being awaited² because argument-dependent lookup won’t find the operator if somebody tries to await the object from outside its home namespace.</p>
+<p>Another lesson learned is that if you do define a <code>co_await</code> operator outside the namespace of the object being awaited, you should define a named function that does the work, and make your <code>co_await</code> operator call the named function. That way, people who are not <code>using</code> your namespace can still access the underlying functionality by using the named function.</p>
+<p>¹ Another workaround is to explicitly invoke the <code>operator co_await</code> from the <code>winrt</code> namespace.</p>
+<pre>co_await winrt::operator co_await(duration);
+</pre>
+<p>Let us not speak of this workaround again.</p>
+<p>² Corollary: It may not be a great idea to define a <code>co_await</code> operator for a language standard type.</p>
+<p> </p>
+
+
+</body>

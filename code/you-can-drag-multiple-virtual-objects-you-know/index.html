@@ -1,0 +1,144 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">You can drag multiple virtual objects, you know</h1>  <!-- .entry-meta -->
+
+<p>
+A customer wanted to know how they could find out the
+directory that the user dropped a file onto.
+As we already noted,
+<a href="http://blogs.msdn.com/oldnewthing/archive/2007/05/07/2453927.aspx">
+users can drop files onto things other than directories</a>,
+so the question itself comes with incorrect hidden assumptions.
+This is another one of those cases where you have to ask the
+customer, “What are you really trying to do?”
+They have a problem and
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/03/23/558887.aspx">
+solved half of it and are asking
+you for help with the second half</a>, the part that makes little sense.
+</p>
+<p>
+In this case, what the customer really wanted to do was
+create additional supporting files into the
+directory that the user dropped the file onto.
+To solve the real problem, all you have to do is add
+virtual objects to the data object the file being dragged.
+</p>
+<p>
+Let’s illustrate this by adding a second file to our
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/03/18/8080183.aspx">
+minimal example of dragging a virtual file</a>.
+Actually, let’s make it more interesting.
+We’re going to drag one real file plus one virtual file.
+Start by adding another file’s contents to our list of clipboard formats:
+</p>
+<pre>
+  enum {
+    DATA_FILEGROUPDESCRIPTOR,
+    <font color="blue">DATA_FILECONTENTS0,
+    DATA_FILECONTENTS1,</font>
+    DATA_NUM,
+    DATA_INVALID = -1,
+  };
+</pre>
+<p>
+Of course, we need to initialize the <code>FORMATETC</code>
+for the contents of our new virtual file.
+</p>
+<pre>
+CTinyDataObject::CTinyDataObject() : _cRef(1)
+{
+  SetFORMATETC(&amp;_rgfe[DATA_FILEGROUPDESCRIPTOR],
+               RegisterClipboardFormat(CFSTR_FILEDESCRIPTOR));
+  SetFORMATETC(&amp;_rgfe[<font color="blue">DATA_FILECONTENTS0</font>],
+               RegisterClipboardFormat(CFSTR_FILECONTENTS),
+               <font color="blue">TYMED_ISTREAM</font>, /* lindex */ 0);
+  <font color="blue">SetFORMATETC(&amp;_rgfe[DATA_FILECONTENTS1],
+               RegisterClipboardFormat(CFSTR_FILECONTENTS),
+               TYMED_HGLOBAL, /* lindex */ 1);</font>
+}
+</pre>
+<p>
+We need to add this second file to our <code>FILEGROUPDESCRIPTOR</code>.
+Doing this is trickier because the <code>FILEGROUPDESCRIPTOR</code>
+is a variable-size structure, so we have to declare our own version
+that has room for two files.
+</p>
+<pre>
+// Hard-coded for expository purposes
+// (I can't believe I had to write that.)
+#define FILETODRAG TEXT("C:\\windows\\clock.avi")
+HRESULT CreateFileGroupDescriptor(HGLOBAL *phglob)
+{
+  union {
+     FILEGROUPDESCRIPTOR fgd;
+     BYTE buffer[FIELD_OFFSET(FILEGROUPDESCRIPTOR, fgd[2])];
+  } u;
+  ZeroMemory(&amp;u, sizeof(u));
+  u.fgd.cItems = 2;
+  // item 0: the file itself
+  WIN32_FILE_ATTRIBUTE_DATA wfad;
+  if (!GetFileAttributesEx(FILETODRAG, GetFileExInfoStandard,
+                           &amp;wfad)) {
+   return E_FAIL;
+  }
+  u.fgd.fgd[0].dwFlags = FD_ATTRIBUTES | FD_CREATETIME |
+                 FD_ACCESSTIME | FD_WRITESTIME | FD_FILESIZE;
+  u.fgd.fgd[0].dwFileAttributes = wfad.dwFileAttributes;
+  u.fgd.fgd[0].ftCreationTime   = wfad.ftCreationTime;
+  u.fgd.fgd[0].ftLastAccessTime = wfad.ftLastAccessTime;
+  u.fgd.fgd[0].ftLastWriteTime  = wfad.ftLastWriteTime;
+  u.fgd.fgd[0].nFileSizeHigh    = wfad.nFileSizeHigh;
+  u.fgd.fgd[0].nFileSizeLow     = wfad.nFileSizeLow;
+  StringCchCopy(u.fgd.fgd[0].cFileName,
+                ARRAYSIZE(u.fgd.fgd[0].cFileName),
+                PathFindFileName(FILETODRAG));
+  // item 1: The virtual "tag-along" file
+  StringCchCopy(u.fgd.fgd[1].cFileName,
+                ARRAYSIZE(u.fgd.fgd[0].cFileName),
+                TEXT("TagAlong"));
+  return CreateHGlobalFromBlob(&amp;u, sizeof(u),
+                               GMEM_MOVEABLE, phglob);
+}
+</pre>
+<p>
+The ad-hoc union declares a block of memory large enough
+for a <code>FILEGROUPDESCRIPTOR</code> that holds two files.
+File zero is the file we are dragging, and as a courtesy
+(and in violation of the “doing the absolute least amount of
+work necessary” that has guided the series),
+we fill in the file attributes so that when the file is dropped
+onto Explorer, the resulting file has the right metadata.
+On the other hand, our virtual file tries to sneak by
+with as little as possible, providing only the mandatory file name.
+</p>
+<p>
+The last thing to do is hand out the <code>FILEGROUPDESCRIPTOR</code>
+and the two files when we are asked for them.
+</p>
+<pre>
+HRESULT CTinyDataObject::GetData(FORMATETC *pfe, STGMEDIUM *pmed)
+{
+  ZeroMemory(pmed, sizeof(*pmed));
+  switch (_GetDataIndex(pfe)) {
+  case DATA_FILEGROUPDESCRIPTOR:
+    pmed-&gt;tymed = TYMED_HGLOBAL;
+    <font color="blue">return CreateFileGroupDescriptor(&amp;pmed-&gt;hGlobal);
+  case DATA_FILECONTENTS0:
+    pmed-&gt;tymed = TYMED_ISTREAM;
+    return SHCreateStreamOnFile(FILETODRAG, STGM_READ,
+                                &amp;pmed-&gt;pstm);
+  case DATA_FILECONTENTS1:
+    pmed-&gt;tymed = TYMED_HGLOBAL;
+    return CreateHGlobalFromBlob("Dummy", 5, GMEM_MOVEABLE,
+                                  &amp;pmed-&gt;hGlobal);</font>
+  }
+  return DV_E_FORMATETC;
+}
+</pre>
+<p>
+There you have it, a data object that consists of a file
+(<code>FILETODRAG</code>) and a virtual file.
+When the user drops the data object into a folder,
+both files are dropped into the destination directory.</p>
+
+
+</body>

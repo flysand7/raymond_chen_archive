@@ -1,0 +1,46 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Windows 95 and Windows NT manage the TEB on x86 differently</h1>  <!-- .entry-meta -->
+
+<p>Today, a historical note of no consequence. Just a story. </p>
+<p>The Win32 x86 ABI specifies that the FS register holds a selector which is based at the current thread’s TEB. In other words, <code>fs:[n]</code> is the <var>n</var>th byte of <a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/05/17/10306078.aspx">the <code>TEB</code></a>. </p>
+<p>It so happens that the two operating systems chose to manage the FS register differently. </p>
+<p>Windows 95 gave each TEB in the system its own selector. </p>
+<p>Windows NT allocated a single selector to represent the TEB, and each time the processor changed threads, the selector base was updated to match the TEB for the new thread. With this model, every thread has the same value for FS, but the selector’s descriptor kept changing. </p>
+<p>It’s as if you had a car-rental service, and one of the features of the service is that the radio remembers your presets. The instructions for setting the radio are as follows: </p>
+<ul>
+<li>Enter the four-digit customer preferences ID printed on your receipt. 
+<li>Your radio is now set to your preferences. </li></li></ul>
+<p>There are two ways you could set up this system. </p>
+<p>Windows 95 assigns each customer a unique customer preferences ID and prints it on the receipt. When the customer enters the ID, the radio looks up the ID in a database and applies the user’s radio preferences. </p>
+<p>Windows NT prints the same preferences ID on every receipt: 1234. Before the customer picks up the car from the rental service, the service agent sets the radio to the customer’s preferences. When the customer enters the ID, the radio does nothing (aside from printing an error message if you enter anything other than 1234). </p>
+<p>Even though the Windows NT way creates more work for the service agent, it does solve an important problem: It lets your service scale to more than 10,000 customers, for once you have 10,001 customers, you  cannot assign each of them a unique four-digit ID any more. </p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tr>
+<th width="50%">Car</th>
+<th width="50%">Windows</th>
+</tr>
+<tr>
+<td>car</td>
+<td>processor</td>
+</tr>
+<tr>
+<td>customer</td>
+<td>thread</td>
+</tr>
+<tr>
+<td>radio preferences</td>
+<td>TEB</td>
+</tr>
+<tr>
+<td>customer ID</td>
+<td>selector</td>
+</tr>
+</table>
+<p>By assigning a unique selector to each TEB, Windows 95 limited itself to at most 8192 threads. (In practice, the limit was much lower because selectors were used for other things, too.) This was not an issue in practice because Windows 95 would run into other problems long before you ran into the 8192-thread limit. </p>
+<p>But Windows NT was designed to be scalable to very large workloads, and they couldn’t artificially limit themselves to a maximum of 8192 threads. </p>
+<p>The consequences of changing the meaning of the FS register at every thread switch means that some tricks that happened to work in Windows 95 didn’t work in Windows NT. For example, in Windows 95, if you captured the value of the FS register in one thread, you could use it (in violation of the ABI) on another thread in the same process and still access the originating thread’s TEB. If you tried this trick on Windows NT, you would just see your own TEB. </p>
+<p>In the analogy, it’s as if you copied the customer preferences ID from another customer’s receipt and tried to use it in your car. In a Windows NT car, you would just get your own preferences again, because every receipt has the same customer preferences ID printed on it. </p>
+<p>According to the Win32 ABI for x86, the only thing you can do with the FS register is dereference it to access your TEB. If you try to fiddle with its value or try to copy its value somewhere, you are off in unsupported territory, and the resulting behavior is undefined. </p>
+
+
+</body>

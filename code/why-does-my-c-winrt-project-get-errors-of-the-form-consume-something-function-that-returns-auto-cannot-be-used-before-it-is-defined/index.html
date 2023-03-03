@@ -1,0 +1,40 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does my C++/WinRT project get errors of the form “consume_Something: function that returns ‘auto’ cannot be used before it is defined”?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/why-does-my-c-winrt-project-get-errors-of-the-form-unresolved-external-symbol-consume-something"> investigated a mysterious error that occurs when linking a C++/WinRT project</a>, and I noted that there’s some good news and some bad news. The good news is that this error message is going away. The bad news is that it’s being replaced with a different error message that you have to learn.</p>
+<p>Let’s take another look at the code that triggers this error.</p>
+<pre>#include &lt;winrt/Windows.Gaming.Input.h&gt;
+
+void CheckGamepads()
+{
+    auto gamepads =
+        winrt::Windows::Gaming::Input::Gamepad::Gamepads();
+    for (auto&amp;&amp; gamepad : gamepads)
+    {
+        check(gamepad);
+    }
+}
+</pre>
+<p>Instead of getting a linker error, you get a compile-time error at the point you attempt to consume an interface whose header file you failed to include.</p>
+<pre style="white-space: pre-wrap;">test.cpp(7): error C3779: winrt::<wbr/>impl::<wbr/>consume_<wbr/>Windows_<wbr/>Foundation_<wbr/>Collections_<wbr/>IIterable&lt;D,<wbr/>winrt::<wbr/>Windows::<wbr/>Gaming::<wbr/>Input::<wbr/>Gamepad&gt;::<wbr/>First': a function that returns 'auto' cannot be used <!--
+-->before it is defined
+with
+[
+    D=winrt::<wbr/>:Windows::<wbr/>:Gaming::<wbr/>:Input::<wbr/>:Gamepad
+]
+note: see declaration of 'winrt::<wbr/>impl::<wbr/>consume_<wbr/>Windows_<wbr/>Foundation_<wbr/>Collections_<wbr/>IIterable&lt;D,winrt::<wbr/>Windows::<wbr/>Gaming::<wbr/>Input::<wbr/>Gamepad&gt;::<wbr/>First'
+with
+[
+    D=winrt::<wbr/>Windows::<wbr/>Gaming::<wbr/>Input::<wbr/>IVisualCollection
+]
+</pre>
+<p><b>For the impatient</b>: The problem is that you are missing the header file for the interface you are using. In this case, we are using <code>Windows.</code><code>Foundation.</code><code>Collections.</code><code>IIterable</code>, so we need to include</p>
+<pre>#include &lt;winrt/Windows.Foundation.Collections.h&gt;
+</pre>
+<p>You can <a href="https://github.com/microsoft/xlang/pull/427"> read the pull request that makes the change to detect the error at compile time</a> rather than link time.</p>
+<p>The trick is that the forward-declared methods are declared as returning <code>auto</code> with no trailing return type and no body. This means “I want the compiler to deduce the return type (but I’m not giving any clues yet).” If you try to call the method before the method has been implemented, then the compiler reports an error because it doesn’t yet have the necessary information to determine the return type.</p>
+<p>Hopefully the new error message will make it easier to figure out what went wrong. At least it gives you a file name and line number that points to the place where the unimplemented method is used, and the error mesage includes the name of the type whose definition is missing.</p>
+<p> </p>
+
+
+</body>

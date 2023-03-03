@@ -1,0 +1,157 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Notes on calculating constants in SSE registers</h1>  <!-- .entry-meta -->
+
+<p>
+There are a few ways to load constants into SSE registers.
+</p>
+<ul>
+<li>Load them from memory.
+<li>Load them from general purpose registers via
+    <code>movd</code>.
+<li>Insert selected bits from general purpose registers via
+    <code>pinsr[b|w|d|q]</code>.
+<li>Try to calculate them in clever ways.
+</li></li></li></li></ul>
+<p>
+Loading constants from memory incurs memory access penalties.
+Loading or inserting them from general purpose registers incurs
+cross-domain penalties.
+So let’s see what we can do with clever calculations.
+</p>
+<p>
+The most obvious clever calculations are the ones for setting
+a register to all zeroes or all ones.
+</p>
+<pre>
+    pxor    xmm0, xmm0 ; set all bits to zero
+    pcmpeqd xmm0, xmm0 ; set all bits to one
+</pre>
+<p>
+These two idioms are special-cased in the processor and execute
+faster than normal pxor and pcmpeqd instructions
+because the results are not dependent on the previous value
+in <code>xmm0</code>.
+</p>
+<p>
+There’s not much more you can do to construct other
+values from zero,
+but a register with all bits set does create additional
+opportunities.
+</p>
+<p>If you need a value loaded into all lanes whose bit pattern
+is either a bunch of 0’s followed by a bunch of 1’s,
+or a bunch of 1’s followed by a bunch of 0’s,
+then you can shift in zeroes.
+For example, assuming you’ve set all bits in <code>xmm0</code> to 1,
+here’s how you can load some other constants:
+</p>
+<pre>
+    pcmpeqd xmm0, xmm0 ; set all bits to one
+-then-
+    pslld  xmm0, 30    ; all 32-bit lanes contain 0xC0000000
+-or-
+    psrld  xmm0, 29    ; all 32-bit lanes contain 0x00000007
+-or-
+    psrld  xmm0, 31    ; all 32-bit lanes contain 0x00000001
+</pre>
+<p>
+Intel suggests loading 1 into all lanes with the sequence
+</p>
+<pre>
+    pxor    xmm0, xmm0 ; xmm0 = { 0, 0, 0, 0 }
+    pcmpeqd xmm1, xmm1 ; xmm1 = { -1, -1, -1, -1 }
+    psubd   xmm0, xmm1 ; xmm0 = { 1, 1, 1, 1 }
+</pre>
+<p>
+but that not only takes more instructions but also consumes two registers,
+and registers are at a premium since there are only eight of them.
+The only thing I can think of is that <code>psubd</code> might be faster
+than <code>psrld</code>.
+</p>
+<p>
+In general, to load <code>2ⁿ−1</code>
+into all lanes, you do</p>
+<p><pre>
+    pcmpeqd xmm0, xmm0 ; set all bits to one
+-then-
+    psrlw  xmm0, 16-n  ; clear top 16-n bits of all 16-bit lanes
+-or-
+    psrld  xmm0, 32-n  ; clear top 32-n bits of all 32-bit lanes
+-or-
+    psrlq  xmm0, 64-n  ; clear top 64-n bits of all 64-bit lanes
+</pre>
+<p>
+Conversely, if you want to load
+<code>~(2ⁿ−1) = -2ⁿ</code> into all lanes,
+you shift the other way.
+</p>
+<pre>
+    pcmpeqd xmm0, xmm0 ; set all bits to one
+-then-
+    psllw  xmm0, n     ; clear bottom n bits of all 16-bit lanes = 2¹⁶ - 2ⁿ
+-or-
+    pslld  xmm0, n     ; clear bottom n bits of all 32-bit lanes = 2³² - 2ⁿ
+-or-
+    psllq  xmm0, n     ; clear bottom n bits of all 64-bit lanes = 2⁶⁴ - 2ⁿ
+</pre>
+<p>
+And if the value you want has all its set bits in the middle,
+you can combine two shifts (and stick something in between the two
+shifts to ameliorate the stall):
+</p>
+<pre>
+    pcmpeqd xmm0, xmm0 ; set all bits to one
+-then-
+    psrlw  xmm0, 13    ; all lanes = 0x0007
+    psllw  xmm0, 4     ; all lanes = 0x0070
+-or-
+    psrld  xmm0, 31    ; all lanes = 0x00000001
+    pslld  xmm0, 3     ; all lanes = 0x00000008
+</pre>
+<p>
+If you want to set high or low lanes to zero,
+you can use <code>pslldq</code> and
+<code>psrldq</code>.
+</p>
+<pre>
+    pcmpeqd xmm0, xmm0 ; set all bits to one
+-then-
+    pslldq xmm0, 2     ; clear bottom word, xmm0 = { -1, -1, -1, -1, -1, -1, -1, 0 }
+-or-
+    pslldq xmm0, 4     ; clear bottom dword, xmm0 = { -1, -1, -1, 0 }
+-or-
+    pslldq xmm0, 8     ; clear bottom qword, xmm0 = { -1, 0 }
+-or-
+    psrldq xmm0, 2     ; clear top word, xmm0 = { 0, -1, -1, -1, -1, -1, -1, -1 }
+-or-
+    psrldq xmm0, 4     ; clear top dword, xmm0 = { 0, -1, -1, -1 }
+-or-
+    psrldq xmm0, 8     ; clear top qword, xmm0 = { 0, -1 }
+</pre>
+<p>
+No actual program today.
+Just some notes from my days writing SSE assembly language.
+</p>
+<p>
+<b>Bonus chatter</b>:
+There is an intrinsic for <code>pxor xmmReg, xmmReg</code>:
+<a href="http://msdn.microsoft.com/en-us/library/ys7dw0kh(v=vs.90).aspx">
+<code>_mm_setzero_si128</code></a>.
+However, there is no corresponding intrinsic for
+<code>pcmpeqd xmmReg, xmmReg</code>,
+which would presumably be called
+<code>_mm_setones_si128</code>
+or
+<code>_mm_setmone_epiNN</code>.
+In order to get all-ones, you need to get a throwaway register
+and compare it against itself.
+The cheapest throwaway register is one that is set to zero,
+since that is special-cased inside the processor.
+</p>
+<pre>
+__m128i zero = _mm_setzero_si128();
+__m128i ones = _mm_cmpeq_epi32(zero, zero);
+</pre>
+
+
+</p></body>

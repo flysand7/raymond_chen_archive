@@ -1,0 +1,31 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ARM processor (Thumb-2), part 13: Trampolines</h1>  <!-- .entry-meta -->
+
+<p>As we noted last time, <a href="/history/the-arm-processor-thumb-2-part-12-control-transfer" title="The ARM processor (Thumb-2), part 12: Control transfer"> the relative branch instructions have a limited reach</a>. In particular, the <code>bl</code> instruction, which is used for intra-module direct calls, has a reach of around ±16MB. But what happens if the call target is too far away? Or if the function is a naïvely-imported function?</p>
+<p>In the case of a faraway call target, the linker injects a trampoline, called a <i>veneer</i> in the ARM documentation.</p>
+<pre>    bl      toofar_trampoline
+...
+
+toofar_trampoline:
+    mov     r12, #lo(|toofar|+1)
+    movt    r12, #hi(|toofar|+1)
+    bx      r12             ; jump to r12
+</pre>
+<p>The <var>r12</var> register, known as the <i>intraprocedure call</i> register, is a register that the linker is permitted to use for the purpose of generating trampolines and function prologues. From the compiler’s point of view, it is super-volatile: Any branch instruction could damage the <var>r12</var> register.</p>
+<p>In practice, the compiler doesn’t use <var>r12</var> for anything at all.</p>
+<p>In the case of a naïvely-imported function, the actual call target is stored in the import address table, and the linker must generate a trampoline that jumps to the imported function:</p>
+<pre>    bl      imported_trampoline
+...
+
+imported_trampoline:
+    mov     r12, #lo(iat_imported)
+    movt    r12, #hi(iat_imported)
+    ldr     pc, [r12]
+</pre>
+<p>Here, we take advantage of the overly-uniform <var>pc</var> register: Loading a value into it acts as a jump instruction. It saves an instruction, because we don’t have to load the jump target into a register and then <code>BX</code> to it.</p>
+<p>Next time, we’ll look at a few miscellaneous instructions.</p>
+<p><b>Bonus chatter</b>: I don’t know why the linker prefers to use a <code>MOV</code> + <code>MOVT</code> instruction pair instead of a single <var>pc</var>-relative <code>LDR</code>. My guess is that it avoids memory latency.</p>
+<p><b>Bonus chatter 2</b>: You might think that trampolines can never be deployed for jumps within a function. However, that’s not true: Code motion due to profile-guided optimization can cause rarely-executed code blocks to be relocated to faraway locations in the module. The most likely case is that a relative short jump becomes long and has to be converted to a jump-to-a-jump. In rare cases, the destination could end up more than 16MB away, in which case you would need a full trampoline.</p>
+
+
+</body>

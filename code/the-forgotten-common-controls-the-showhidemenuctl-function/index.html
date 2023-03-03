@@ -1,0 +1,272 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The forgotten common controls: The ShowHideMenuCtl function</h1>  <!-- .entry-meta -->
+
+<p>
+The <code>ShowHideMenuCtl</code> function is one of those
+functions everybody tries to pretend doesn’t exist.
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/06/08/622194.aspx">
+You thought <code>MenuHelp</code> was bad</a>;
+<code>ShowHideMenuCtl</code> is even worse.
+</p>
+<p>
+The idea behind <code>ShowHideMenuCtl</code> was that you
+had a window with a menu as well as controls,
+and some of the menu items were checkable,
+indicating whether the corresponding control should be shown.
+For example, on your View menu you might have options
+named Toolbar or Status Bar.
+If the user checks Toolbar, then the toolbar is shown in the main window;
+if the user unchecks Toolbar, then the toolbar is hidden.
+</p>
+<p>
+The parameters to the <code>ShowHideMenuCtl</code> function are
+a window (the window on which you want to operate),
+a menu identifier (the menu item you wish to toggle),
+and a mysterious array of integers.
+Everything hangs on that mysterious array of integers,
+which takes the following form (expressed in pseudo-C):
+</p>
+<pre>
+struct MENUCONTROLINTS {
+ int idMenu;
+ int idControl;
+};
+struct SHOWHIDEMENUCONTROLINTS {
+ int idMainMenu;
+ HMENU hmenuMain;
+ MENUCONTROLINTS rgwMenuControl[];
+};
+</pre>
+<p>
+The <code>MENUCONTROLINTS</code> structure is easier to describe.
+It merely establishes the correspondence between a menu item and
+the control that will be shown or hidden.
+(Exercise: Why do we need two integers?
+Why can’t we just give the menu item and the control the same ID?)
+The array of <code>MENUCONTROLINTS</code> structures is terminated
+by a pair whose <code>idMenu</code> is zero.
+</p>
+<p>
+The tricky bit is the first two entries,
+<code>idMainMenu</code> and <code>hmenuMain</code>.
+The <code>hmenuMain</code> is the handle to the main menu for
+the window, and
+the <code>idMainMenu</code> is the item on the menu corresponding
+to the “Hide menu” entry on the main menu.
+(That’s why <code>hmenuMain</code> need to be passed explicitly.
+We would normally use <code>GetMenu(hwnd)</code> to get the handle
+to the main menu, but if we’ve removed it, then <code>GetMenu(hwnd)</code>
+will return <code>NULL</code>.)
+If you don’t want to have a “Hide menu” option,
+you can just put a dummy value in the <code>idMainMenu</code> slot
+that doesn’t correspond to any menu item.
+(The value <code>-1</code> is probably most convenient for this.
+Don’t use zero since it terminates the list!)
+</p>
+<p>
+When you call the <code>ShowHideMenuCtl</code> function,
+it searches for the menu item you specified and toggles the
+check mark next to that item.
+What happens next depends on what type of item was found.
+</p>
+<ul>
+<li>If the item is <code>idMainMenu</code>, then the main menu is
+attached to or removed from the window (by using the
+<code>SetMenu</code> function, of course),
+corresponding to the check box.
+<li>If the item is <code>idMenu</code>, then the corresponding
+control is shown or hidden (by using the <code>ShowWindow</code>
+function, of course),
+corresponding to the check box.
+</li></li></ul>
+<p>
+That’s all there is to it.
+The rest is up to you.
+For example, when a control is shown or hidden,
+it’s still up to your program to relayout the visible controls
+to account for the new window visibility state.
+For example, if the user shows the toolbar,
+then the other controls need to move out of the way to make room
+for the toolbar.
+The <code>ShowHideMenuCtl</code> function can’t do this for you
+since it has no idea what your window layout is.
+</p>
+<p>
+Let’s put this information into practice.
+Start with our
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make the following changes;
+</p>
+<pre>
+HMENU g_hmenuMain;
+INT rgiMenu[] = {
+    100, 0,
+    101, 200,
+    0, 0,
+};
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+    /* We'll talk about this line more later */
+    rgiMenu[1] = (INT)GetMenu(hwnd);
+    CreateWindow(TEXT("Button"), TEXT("Sample"),
+                 WS_CHILD | BS_PUSHBUTTON, 0, 0, 100, 100,
+                 hwnd, IntToPtr_(HMENU, 200), g_hinst, 0);
+    return TRUE;
+}
+void
+OnDestroy(HWND hwnd)
+{
+    if (!GetMenu(hwnd))
+        DestroyMenu(IntToPtr_(HMENU, rgiMenu[1]));
+    PostQuitMessage(0);
+}
+void OnCommand(HWND hwnd, int id, HWND hwndCtl, UINT codeNotify)
+{
+    switch (id) {
+    case 100:
+    case 101: ShowHideMenuCtl(hwnd, id, rgiMenu); break;
+    }
+}
+HANDLE_MSG(hwnd, WM_COMMAND, OnCommand);
+BOOL
+InitApp(void)
+{
+    ....
+    wc.lpszMenuName = <font color="blue">MAKEINTRESOURCE(1)</font>;
+    ....
+}
+/* add to resource file */
+1 MENU PRELOAD
+BEGIN
+    POPUP "&amp;View"
+    BEGIN
+        MENUITEM "&amp;Menu Bar", 100, CHECKED
+        MENUITEM "&amp;Button", 101
+    END
+END
+</pre>
+<p>
+Most of the changes are just setting up.
+We attach a menu to our window with two options,
+one to hide and show the menu bar,
+and one to hide and show our custom button.
+Since our window starts out with the menu bar visible
+and the button hidden, our menu template checks the
+“Menu Bar” item but not the “Button” one.
+</p>
+<p>
+The <code>OnCreate</code> function finishes setting up up the
+<code>rgiMenu</code> array
+by putting the main menu’s handle into index 1 in the
+array of integers,
+which corresponds to <code>hmenuMain</code> in our pseudo-structure.
+The <code>OnDestroy</code> function destroys the menu if it isn’t
+attached to the window,
+since
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/12/30/46594.aspx">
+menus attached to a window are destroyed automatically when the
+window is destroyed</a>.
+The magic happens in the <code>OnCommand</code> handler.
+If the user picked one of our two menu items, then we ask
+<code>ShowHideMenuCtl</code> to hide and show the button or menu.
+</p>
+<p>
+The tricky bit is setting up our <code>rgiMenu</code>.
+Let’s break down those integers.
+</p>
+<table border="1">
+<tr>
+<td>100</td>
+<td>Menu identifier for hiding and showing the menu bar</td>
+</tr>
+<tr>
+<td>0</td>
+<td>Placeholder
+        (receives main menu handle in <code>OnCreate</code> handler)</td>
+</tr>
+<tr>
+<td>101</td>
+<td>Menu identifier for hiding and showing the menu bar</td>
+</tr>
+<tr>
+<td>200</td>
+<td>Control ID for the button that is shown and hidden
+        (passed to the <code>CreateWindow</code> function)</td>
+</tr>
+<tr>
+<td>0, 0</td>
+<td>List terminator</td>
+</tr>
+</table>
+<p>
+When you run this program,
+you can use the “Button” menu option to hide and show the button,
+and you can use the “Menu Bar” menu option to hide and show the window’s
+main menu.
+Erm, no wait, you can’t use it to show
+the main menu, because the main menu is hidden!
+Naturally, if your program uses the ability to hide the main menu,
+you need to provide some alternate mechanism for bringing the
+main menu back,
+say via a hotkey or by adding an option to the System menu.
+</p>
+<p>
+Okay, now back to that line in the <code>OnCreate</code> function
+that I promised to talk about.
+If you have been paying attention, alarm bells should have gone off
+in your head at the line
+<code>rgiMenu[1] = (INT)GetMenu(hwnd);</code>
+because we are casting an <code>HMENU</code> to an integer.
+On 64-bit machines, a <code>HMENU</code> is a 64-bit value,
+but integers are only 32-bit.
+This cast truncates the handle value and consequently is not
+64-bit safe.
+Since the <code>ShowHideMenuCtl</code> function requires an
+array of integers, you’re stuck.
+You can’t shove a 64-bit menu handle into a 32-bit integer.
+The <code>ShowHideMenuCtl</code> function is fundamentally flawed;
+it is not 64-bit compatible.
+</p>
+<p>
+Fortunately, nobody uses the <code>ShowHideMenuCtl</code>
+function anyway.
+Its functionality is so simple, most programs have already
+written a function that does roughly the same thing,
+and since you have to write the layout code anyway,
+the <code>ShowHideMenuCtl</code> function doesn’t really
+save you very much effort anyway.
+Like <code>MenuHelp</code>,
+the function is entirely vestigial and isn’t something
+you should be tempted to use in any modern program.
+It’s a leftover from the days of 16-bit Windows.
+</p>
+<p>
+Why does such a confusing function exist at all?
+Well, the shell team thought they were doing you a favor
+by providing this function back in the 16-bit days.
+This was originally an internal function used by
+(I think it was) File Manager,
+but since it solved a more general problem,
+the function was exported and documented.
+In the intervening years,
+the problem it addressed has been solved in other ways,
+and the introduction of 64-bit Windows rendered the original
+solution unworkable anyway,
+but the function and the code behind it must still linger
+in the system for backwards compatibility purposes.
+</p>
+<p>
+The shell team learned its lesson.
+It no longer exports every little helper function and custom control
+for third parties to use.
+If a future version of Windows no longer needs the helper function,
+or if a redesign of Windows Explorer removes the need for that
+custom control (or worse, changes the behavior of that custom control),
+the shell would still have to carry all the code around for the
+unused function or control
+because a function, once documented, becomes a continuing support burden.</p>
+
+
+</body>

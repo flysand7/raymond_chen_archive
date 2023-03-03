@@ -1,0 +1,92 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">I wrote the original blue screen of death, sort of</h1>  <!-- .entry-meta -->
+
+<p><a href="/history/steve-ballmer-did-not-write-the-text-for-the-blue-screen-of-death"> We pick up the story</a> with Windows 95. As I noted, the blue <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Del</kbd> dialog was introduced in Windows 3.1, and in Windows 95; it was already gone. In Windows 95, hitting <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Del</kbd> called up a dialog box that looked something like this:</p>
+<table border="0" cellpadding="0" cellspacing="0" style="color: black; background-color: #d4d0c8; border-width: 2px; border-style: outset; font-size: 9pt; width: 0em; hyphens: none; font-family: MS Sans Serif, Arial, sans-serif;">
+<tbody>
+<tr style="padding: 2px; font-size: 8pt; background-color: #0a246a; font-family: Tahoma, MS Sans Serif, Arial, sans-serif;">
+<td align="right" style="padding: 4px 2px 4px 4px;"><b style="float: left; color: white;">Close Program</b> <span style="background-color: #d4d0c8; border: solid 1px white; border-bottom-color: #404040; border-right-color: #404040;"> <span style="border: solid 1px transparent; border-right-color: #808080; border-bottom-color: #808080; position: relative;"> <span style="position: relative; top: -1px; left: 1px;"><b>× </b></span> </span> </span></td>
+</tr>
+<tr style="background-color: inherit;">
+<td style="padding: 10px; padding-bottom: 0px;">
+
+
+</td>
+</tr>
+<tr style="background-color: inherit;">
+<td align="center" nowrap="nowrap" style="padding: 10px;">
+
+
+
+</td>
+</tr>
+</tbody>
+</table>
+<p>(We learned about Systray <a href="https://devblogs.microsoft.com/oldnewthing/20030910-00/?p=42583"> some time ago</a>.)</p>
+<p>Whereas Windows 3.1 responded to fatal errors by crashing out to a black screen, Windows 95 switched to showing severe errors in blue. And I’m the one who wrote it. Or at least modified it last.</p>
+<p>I was responsible for the code that displayed blue screen messages: Asking the kernel-mode video driver to switch into text mode, filling the screen with a blue background, drawing white text, waiting for the user to press a key, restoring the screen to its original contents, and reporting the user’s response back to the component that asked to display the message.¹</p>
+<p>When a device driver crashed, Windows 95 tried its best to limp along despite a catastrophic failure in a kernel-mode component. It wasn’t a blue screen of death so much as a blue screen of lameness. For those fortunate never to have seen one, it looked like this:</p>
+<table style="font-size: 80%; background-color: #0000aa; color: white; font-family: Consolas, monospace; font-weight: bold; hyphens: none;">
+<tbody>
+<tr style="background-color: inherit;">
+<td style="width: 80ex; padding: 5ex;">
+ 
+
+
+
+
+
+
+
+</td>
+</tr>
+</tbody>
+</table>
+<p>Note the optimistic message “It may be possible to continue normally.” Everybody forgets that after Windows 95 showed you a blue screen error, <i>it tried its best to ignore the error and keep running anyway</i>. I mean, sure your scanner driver crashed, so scanning doesn’t work any more, but the rest of the system seems to be okay.</p>
+<p>(Imagine if you did that today. “Press any key to ignore this kernel panic.”)</p>
+<p>Technically, what happened was that the virtual machine manager abandoned the <i>event</i> currently in progress and returned to the event dispatcher. It’s the kernel-mode equivalent to <a href="http://blog.paulbetts.org/index.php/2010/07/20/the-case-of-the-disappearing-onload-exception-user-mode-callback-exceptions-in-x64/"> swallowing exceptions in window procedures</a> and returning to the message loop. If there was no event in progress, then the current application was terminated.</p>
+<p>Sometimes the problem was global, and abandoning the current event or terminating the application did nothing to solve the problem; all that happened was that the next event or application to run encountered the same problem, and you got another blue screen message a few milliseconds later. After about a half dozen of these messages, you most likely gave up hope and hit <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Del</kbd>.</p>
+<p>Now, that’s what the message looked like originally, but that message had a problem: Since the addresses at which device drivers were loaded into the kernel were not predictable, having the raw address didn’t really tell you much. If you were someone who was told, “This senior executive got this crash message, can you figure out what happened?”, all you had to work with was a bunch of mostly useless numbers.</p>
+<p>That someone might have been me.</p>
+<p>To help with this problem, I tweaked the message to include the name of the driver, the section number, and the offset within the section.</p>
+<table style="font-size: 80%; background-color: #0000aa; color: white; font-family: Consolas, monospace; font-weight: bold; hyphens: none;">
+<tbody>
+<tr style="background-color: inherit;">
+<td style="width: 80ex; padding: 5ex;">
+ 
+
+
+
+
+
+
+
+</td>
+</tr>
+</tbody>
+</table>
+<p>Now you had the name of the driver that crashed, which might give you a clue of where the problem is, even if you knew nothing else. And somebody with access to a MAP file for the driver could now look up the address and identify which line crashed. Not great, but better than nothing, and before I made this change, nothing is what you had.</p>
+<p>So you could say that I wrote the Windows 95 blue screen of <span style="text-decoration: line-through;">death</span> lameness to make my own life easier.</p>
+<p><b>Bonus chatter</b>: Later, someone (I forget whether it was me, so let’s say it was one of my colleagues) added some more code to inspect the crashing address, and if it was inside the kernel heap manager, the message changed slightly:</p>
+<table style="font-size: 80%; background-color: #0000aa; color: white; font-family: Consolas, monospace; font-weight: bold; hyphens: none;">
+<tbody>
+<tr style="background-color: inherit;">
+<td style="width: 80ex; padding: 5ex;">
+ 
+
+
+
+
+
+
+
+</td>
+</tr>
+</tbody>
+</table>
+<p>In this case, the sentence “It may be possible to continue normally” disappeared. Because we knew that, odds are, it won’t be.</p>
+<p><b>Bonus chatter</b>: Nice job, <a href="http://beta.slashdot.org/submission/3832559/raymond-chen-authored-the-windows-31-ctrlaltdel-screen"> Slashdot</a>. You considered posting a correction, but your correction was also wrong. At least you realized your mistake.</p>
+<p>¹ Since this code ran in the kernel, it didn’t have access to keyboard layout information. It doesn’t know that if you are using the Chinese-Bopomofo keyboard layout, then the way to type “OK” is to press <kbd>C</kbd>, followed by <kbd>L</kbd>, followed by <kbd>3</kbd>. Not that it would help, because there is no IME in the kernel anyway. As much as possible, <a> the responses were mapped to language-independent keys like <kbd>Enter</kbd> and <kbd>ESC</kbd></a>.</p>
+
+
+</body>

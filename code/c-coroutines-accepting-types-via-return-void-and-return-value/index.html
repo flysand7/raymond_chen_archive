@@ -1,0 +1,76 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Accepting types via return_void and return_value</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/c-coroutines-building-a-result-holder-for-movable-types" title="C++ coroutines: Building a result holder for movable types"> built the result holder for our <code>simple_task</code> coroutine</a> and showed how to move values into the holder and move them back out.</p>
+<p>So now we’re actually going to move them in.</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_promise : simple_promise_base&lt;T&gt;
+    {
+        // ⟦implement return_value⟧ ≔
+        void return_value(T&amp;&amp; value)
+        {
+            this-&gt;set_value(std::forward&lt;T&gt;(value));
+        }
+
+        template&lt;typename Dummy = void&gt;
+        std::enable_if_t&lt;!std::is_reference_v&lt;T&gt;, Dummy&gt;
+            return_value(T const&amp; value)
+        {
+            this-&gt;set_value(value);
+        }
+    };
+</pre>
+<p>In the case where <code>T</code> is not <code>void</code>, we have a few different cases to deal with: <code>T</code> could be an lvalue reference, an rvalue reference, or a non-reference.</p>
+<p>Let’s write out the possibilities. Let <code>U</code> the result of removing all references from <code>T</code>.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td> </td>
+<th>Object</th>
+<th>Lvalue reference</th>
+<th>Rvalue reference</th>
+</tr>
+<tr>
+<td><tt>T</tt></td>
+<td><tt>U</tt></td>
+<td><tt>U&amp;</tt></td>
+<td><tt>U&amp;&amp;</tt></td>
+</tr>
+<tr>
+<td><tt>T&amp;&amp;</tt></td>
+<td><tt>U&amp;&amp;</tt></td>
+<td><tt>U&amp;</tt></td>
+<td><tt>U&amp;&amp;</tt></td>
+</tr>
+<tr>
+<td><tt>T const&amp;</tt></td>
+<td><tt>U const&amp;</tt></td>
+<td><tt>U&amp;</tt></td>
+<td><tt>U&amp;</tt></td>
+</tr>
+</tbody>
+</table>
+<p>Reference collapsing rules say that adding <code>&amp;&amp;</code> to a reference has no effect. Furthermore, references are already immutable, so adding <code>const</code> also has no effect. Therefore <code>T const&amp;</code> is the same as <code>T&amp;</code> when <code>T</code> is a reference. The reference collapsing rules say that adding a single <code>&amp;</code> converts an rvalue reference to an lvalue reference and leaves lvalue references unchanged.¹</p>
+<p>Okay, so let’s apply the above table to our situation.</p>
+<p>If <code>T</code> is not a reference, then we are in the <code>U</code> column, and we want both overloads. The first will move the value and the second will copy it.</p>
+<p>If <code>T</code> is an lvalue reference, then we are in the <code>U&amp;</code> column, so <code>T&amp;&amp;</code> and <code>T const&amp;</code> are the same thing. The two overloads conflict. We want only the first overload and we should delete the second.</p>
+<p>If <code>T</code> is an rvalue reference, then we are in the <code>U&amp;&amp;</code> column. We don’t want to accept lvalue references, because they will create an error deep inside <code>set_value</code> which will not be obvious to interpret for those unfamiliar with our implementation. Let’s just delete the second overload to convert the error message to a more understandable “cannot bind an lvalue to an rvalue reference.” (This is another example of compiler error message metaprogramming.)</p>
+<p>Putting this all together says that we want to delete the second overload if <code>T</code> is any kind of reference. So we use SFINAE to remove it.</p>
+<p>The case where <code>T</code> is <code>void</code> is much more straightforward:</p>
+<pre>    template&lt;&gt;
+    struct simple_promise&lt;void&gt; : simple_promise_base&lt;void&gt;
+    {
+        // ⟦implement return_void⟧ ≔
+        void return_void()
+        {
+            this-&gt;set_value();
+        }
+    };
+</pre>
+<p>No weird reference shenanigans. There’s only one kind of void, and we want to call <code>set_value</code> with nothing.</p>
+<p>Note that we had to put an explicit <code>this-&gt;</code> prefix on our calls to <code>set_value</code> to tell the compiler that <code>set_value</code> is a dependent name. Otherwise, two-phase lookup would interpret it as a non-dependent name and try to resolve it in the enclosing scope.</p>
+<p>Next time, we’ll look more closely at the awaiter used when the caller <code>co_await</code>s the <code>simple_task</code>.</p>
+<p>¹ The way I remember the reference collapsing rules is to rephrase it as “lvalues are sticky.” Once there’s an lvalue reference anywhere in the reference chain, the final result is an lvalue.</p>
+
+
+</body>

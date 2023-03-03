@@ -1,0 +1,149 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I make a callback function a member of my C++ class?</h1>  <!-- .entry-meta -->
+
+<p>
+Instead of a Little Program today, I’m going to answer a Little Question.
+This is a common beginner question,
+but I figure I’ll just spell it out right here for posterity.
+</p>
+<p>
+First of all, you probably noticed that you can’t do this:
+</p>
+<pre>
+<i>class CountWindows
+{
+public:
+  int CountThem();
+private:
+  BOOL CALLBACK WndEnumProc(HWND hwnd, LPARAM lParam);
+  int m_count;
+};
+BOOL CountWindows::WndEnumProc(HWND hwnd, LPARAM lParam)
+{
+   m_count++;
+   return TRUE;
+}
+int CountWindows::CountThem()
+{
+  m_count = 0;
+  EnumWindows(WndEnumProc, 0); // compiler error here
+  return m_count;
+}
+</i></pre>
+<p>
+That’s because the <code>WNDENUMPROC</code>
+is declared as a so-called <i>free function</i>,
+but member functions are not free.
+Neither are <i>function objects</i> (also known as
+<i>functors</i>)
+so you can’t use a
+<code>boost::function</code> as a window procedure either.
+The reason is that member functions and functors need to have
+a hidden <code>this</code> parameter,
+but free functions do not have a hidden <code>this</code> parameter.
+</p>
+<p>
+On the other hand, static methods are free functions.
+They can get away with it because they don’t have
+a hidden <code>this</code> parameter either.
+</p>
+<p>
+Win32 has a general principle that
+callback functions have a special parameter where you can
+pass any information you like
+(known as <i>context</i> or <i>reference data</i>),
+and that same value is passed back to your callback function
+so it knows what’s going on.
+In practice, most people will pass a pointer to a
+class or structure.
+</p>
+<p>
+In other words, the reference data parameter makes explicit
+what C++ hides (the <code>this</code> parameter).
+</p>
+<pre>
+class CountWindows
+{
+public:
+  int CountThem();
+private:
+  <font color="blue">static</font> BOOL CALLBACK <font color="blue">Static</font>WndEnumProc(HWND hwnd, LPARAM lParam);
+  int m_count;
+};
+BOOL CountWindows::<font color="blue">Static</font>WndEnumProc(HWND hwnd, LPARAM lParam)
+{
+   <font color="blue">CountWindows *pThis = reinterpret_cast&lt;CountWindows *&gt;(lParam);</font>
+   <font color="blue">pThis-&gt;</font>m_count++;
+   return TRUE;
+}
+int CountWindows::CountThem()
+{
+  m_count = 0;
+  EnumWindows(<font color="blue">Static</font>WndEnumProc, <font color="blue">reinterpret_cast&lt;LPARAM&gt;(this)</font>);
+  return m_count;
+}
+</pre>
+<p>
+What we did was pass our <code>this</code> parameter explicitly
+as the reference data to the <code>Enum­Windows</code> function,
+and then in the callback, cast the reference data back to <code>this</code>
+so that we can use it to access our member variables.
+</p>
+<p>
+If the <code>Wnd­Enum­Proc</code> is long,
+then it can get tedious typing <code>pThis-&gt;</code> in front
+of everything,
+so a common follow-up technique is to make the static member
+function a wrapper that calls a normal member function.
+</p>
+<pre>
+class CountWindows
+{
+public:
+  int CountThem();
+private:
+  static BOOL CALLBACK StaticWndEnumProc(HWND hwnd, LPARAM lParam);
+  <font color="blue">BOOL WndEnumProc(HWND hwnd);</font>
+  int m_count;
+};
+BOOL CountWindows::StaticWndEnumProc(HWND hwnd, LPARAM lParam)
+{
+   CountWindows *pThis = reinterpret_cast&lt;CountWindows* &gt;(lParam);
+   <font color="blue">return pThis-&gt;WndEnumProc(hwnd);</font>
+}
+<font color="blue">BOOL CountWindows::WndEnumProc(HWND hwnd)
+{
+    m_count++;
+    return TRUE;
+}</font>
+int CountWindows::CountThem()
+{
+  m_count = 0;
+  EnumWindows(StaticWndEnumProc, reinterpret_cast&lt;LPARAM&gt;(this));
+  return m_count;
+}
+</pre>
+<p>
+Observe that by putting all the real work inside the
+traditional member function
+<code>Count­Windows::Wnd­Enum­Proc</code>,
+we avoid having to type <code>pThis-&gt;</code> in front of
+everything.
+</p>
+<p>
+This principle of using reference data to pass context
+through a callback is very common in Windows programming.
+We’ll see a few more examples in the future,
+but I’m not going to jam all the beginner articles in a row
+because that would bore my regular readers.
+</p>
+<p>
+<b>Historical note</b>:
+The term <i>reference data</i> was used in 16-bit Windows,
+but the Windows NT folks preferred to use the term
+<i>context</i>.
+You can tell which team introduced a particular callback
+function by seeing what they call that extra parameter.</p>
+
+
+</body>

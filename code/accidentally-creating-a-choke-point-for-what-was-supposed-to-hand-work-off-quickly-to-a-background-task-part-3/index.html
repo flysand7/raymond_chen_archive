@@ -1,0 +1,98 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Accidentally creating a choke point for what was supposed to hand work off quickly to a background task, part 3</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/accidentally-creating-a-choke-point-for-what-was-supposed-to-hand-work-off-quickly-to-a-background-task-part-2">Last time</a>, we identified the reason why a function that intended to queue work to a background thread quickly ended up being a bottleneck because it waited until the task started running before returning to its caller.</p>
+<p>The reason why the function waited for the task to run was to prevent COM from being uninitialized for the process, because that would cause all of its captured interface pointers to become invalid. What we need is a way to keep COM active even though we don’t have a thread that we can use to ensure that it remains active.</p>
+<p>Fortunately, there’s a way to do it: The <a href="https://docs.microsoft.com/en-us/windows/desktop/api/combaseapi/nf-combaseapi-coincrementmtausage"><code>Co­Increment­MTA­Usage</code> function</a> lets you keep the MTA alive despite not actually having a thread dedicated to doing it.</p>
+<pre>class CCoMTAUsage
+{
+public:
+ CCoMTAUsage() { CoIncrementMTAUsage(&amp;m_cookie); }
+ ~CCoMTAUsage() { Reset(); }
+ bool Initialized() { return m_cookie; }
+ bool Reset() {
+  if (Initialized()) CoDecrementMTAUsage(m_cookie);
+  m_cookie = nullptr;
+ }
+
+ // Movable but not copyable.
+ CCoMTAUsage(const CCoMTAUsage&amp;) = delete;
+ CCoMTAUsage&amp; operator=(const CCoMTAUsage&amp;) = delete;
+ CCoMTAUsage(CCoMTAUsage&amp;&amp; other) :
+  m_cookie(other.m_cookie) { other.m_cookie = nullptr; }
+ CCoMTAUsage&amp; operator=(CCoMTAUsage&amp;&amp; other)
+  { Reset(); Swap(other); return *this; }
+
+ void Swap(CCoMTAUsage&amp; other)
+  { std::swap(m_cookie, other.m_cookie); }
+private:
+ CO_MTA_USAGE_COOKIE m_cookie = nullptr;
+};
+</pre>
+<p>This helper class provides RAII-style support for managing the MTA usage cookie, and we can use this class to keep the MTA alive while our task is waiting to run. This removes the need to keep a thread hostage for the purpose of keeping the MTA alive.</p>
+<pre>// Error checking has been elided for expository purposes.
+struct BackgroundData
+{
+ std::promise&lt;StreamResult&gt; promise;
+ <span style="color: blue;">// Put this before the COM objects so it destructs after them.
+ CCoMTAUsage m_mtaUsage;</span>
+ Microsoft::WRL::AgileRef agileStream;
+ int taskId;
+};
+
+std::atomic&lt;int&gt; next_available_id = 1;
+
+std::future&lt;StreamResult&gt; ProcessStreamInBackground(IStream* stream)
+{
+ // Create data that the background task will use.
+ auto data = std::make_unique&lt;BackgroundData&gt;();
+
+ var future = data-&gt;promise.get_future();
+
+ // Make sure this task gets a unique ID number.
+ data-&gt;id = next_available_id++;
+
+ // Marshal the stream into the background task.
+ Microsoft::WRL::AsAgile(stream, &amp;data-&gt;agileStream);
+
+ // Queue up the background task.
+ // The background task will free the data when done.
+ // <span style="color: blue;">The MTA cookie will keep the MTA alive.</span>
+ QueueUserWorkItem([](void* context) -&gt; DWORD
+ {
+  // Initialize COM for this work item.
+  CCoInitializeEx init;
+
+  // Take responsibility for freeing the data.
+  std::unique_ptr&lt;BackgroundData&gt;
+    data{ reinterpret_cast&lt;BackgroundData*&gt;(context) };
+
+  // Unmarshal the stream.
+  Microsoft::WRL::ComPtr&lt;IStream&gt; stream;
+  data-&gt;agileStream.As(&amp;stream);
+
+  <span style="color: red;"><span style="text-decoration: line-through;">// The main thread can resume now.
+  // SetEvent(data-&gt;startEvent.Get());</span></span>
+
+  // Do our processing and get a result.
+  StreamResult result = ProcessStuff(data.get());
+
+  // Complete the promise.
+  data-&gt;promise.set_value(result);
+
+  // All done.
+  return 0;
+ }, data.release(), 0);
+
+ <span style="color: red;"><span style="text-decoration: line-through;">// Wait for the stream to be unmarshaled.
+ // DWORD index;
+ // CoWaitForMultipleHandles(COWAIT_DEFAULT, INFINITE,
+ //                          1, startEvent.Get(), &amp;index);</span></span>
+
+ return future;
+}
+</pre>
+<p>We no longer need to wait for the task to start. Just queue the task and return. No waiting.</p>
+
+
+</body>

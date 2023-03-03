@@ -1,0 +1,48 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I set the initial directory of the File Open dialog to a virtual directory?</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that they had been setting the <code>lpstrInitialDir</code> member of the <code>OPENFILENAME</code> structure to <code>"::{645FF040-5081-101B-9F08-00AA002F954E}"</code> in order to have the dialog’s default directory be the Recycle Bin. (I am not making this up.) They reported that this stopped working in Windows Vista and wanted to know why, and what they can do about it. </p>
+<p>The <code>lpstrInitialDir</code> is supposed to be the name of a directory. Virtual folders are not directories. It so happened that virtual directories were accepted in Windows XP due to a bug: The file dialog uses the <code>Path­Combine</code> function¹ to combine the current directory with the <code>lpstrInitialDir</code>. The <code>Path­Combine</code> function checks whether the second parameter (<code>lpstrInitialDir</code>) is an absolute or relative path, and in Windows XP it had a bug that if the second parameter’s second character was a colon, then it assumed that the path was absolute. It did this without verifying that the first character was a letter. </p>
+<p>Windows Vista fixed this bug in the <code>Path­Combine</code> function, which means that if you passed an <code>lpstrInitialDir</code> of <code>"::{...}"</code>, the function said, “Oh, you almost fooled me there, but I’m onto you. That is not an absolute path. So I will combine it with the first parameter (the current directory).” The file dialog then says, “Let’s go to that folder!”, but it can’t (because there is no folder called <code>::{...}</code> in the current directory), so it falls back to the Documents folder. </p>
+<p>That explains why the undefined behavior changed. But what’s the supported way of setting the initial directory to a virtual directory? </p>
+<p>You use the <code>IFile­Dialog</code> interface, which gives you more control over the file open dialog than <code>OPENFILENAME</code> does. In particular, you can use the <code>IFile­Dialog::</code><code>Set­Default­Folder</code> method. </p>
+<p>Here’s a Little Program to demonstrate. Remember that Little Programs do little to no error checking. Today’s smart pointer library is (rolls dice) nothing! We’re going to use raw pointers. </p>
+<pre>
+#define STRICT
+#define STRICT_TYPED_ITEMIDS
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;knownfolders.h&gt;
+
+int WINAPI WinMain(
+    HINSTANCE hinst, HINSTANCE hinstPrev,
+    LPSTR lpCmdLine, int nShowCmd)
+{
+    <a href="https://devblogs.microsoft.com/oldnewthing/">CCoInitialize</a> init;
+
+    IFileDialog* pfd;
+    CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+        CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&amp;pfd));
+
+    IShellItem* psi;
+    SHGetKnownFolderItem(FOLDERID_RecycleBinFolder,
+        KF_FLAG_DEFAULT, nullptr, IID_PPV_ARGS(&amp;psi));
+    pfd-&gt;SetDefaultFolder(psi);
+    psi-&gt;Release();
+
+    // ... other initialization goes here ...
+
+    pfd-&gt;Show(nullptr);
+
+    // ... process the results ...
+
+    pfd-&gt;Release();
+
+    return 0;
+}
+</pre>
+<p>We create the file open dialog and set its default folder to the Recycle Bin. In a real program, there would be additional initialization of the dialog, but in this Little Program, we’ll accept all the other defaults. We then show the dialog with no owner (because our program doesn’t have a main window). Observe that the default initial directory is the Recycle Bin. </p>
+<p>¹ The <code>Path­Combine</code> function has been superseded by <a href="https://msdn.microsoft.com/library/windows/desktop/hh707085(v=vs.85).aspx">the <code>Path­Cch­Combine</code> function</a> and its friends, which support NT-style paths and extra-long paths. </p>
+
+
+</body>

@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Rough edges in the when_all coroutine, part 2: Overloaded comma operator</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/rough-edges-in-the-when-all-coroutine-part-1-empty-parameter-list" title="Rough edges in the when_all coroutine, part 1: Empty parameter list"> a problematic edge case in our <code>when_all</code> coroutine: The empty parameter list</a>.</p>
+<p>There’s another edge case that can cause trouble, and that’s the case where the comma operator itself has been overloaded.¹</p>
+<pre>struct S
+{
+  void Detonate();
+  S operator,(S right) { Detonate(); return right; }
+};
+
+struct async_s : std::experimental::suspend_never
+{
+  S await_resume() { return {}; }
+};
+
+when_all(async_s(), async_s()); // kaboom
+</pre>
+<p>We start by defining a type <code>S</code> that has a comma operator. When you comma two <code>S</code> objects together, the first one explodes.</p>
+<p>Next, we define an awaitable object <code>async_s</code>: When you <code>co_await</code>, an <code>S</code> comes out.</p>
+<p>And then we pass two of these objects to <code>when_all</code>. The expectation is that the <code>when_all</code> awaits the two objects, throws away the results, and returns.</p>
+<p>Instead, what happens is that the <code>S</code> object explodes.</p>
+<p>What went wrong is that our fold expression expanded to</p>
+<pre>IAsyncAction when_all(async_s v1, async_s v2)
+{
+  (co_await v1, co_await v2);
+  co_return;
+}
+</pre>
+<p>The intent of the comma in the fold expression was to throw away the left-hand operand, leaving the last surviving operand to be thrown away by the statement-expression. But thanks to the custom comma operator, it actually causes the left-hand operand to explode.</p>
+<p>To suppress any custom comma operators, we can cast the result of the <code>co_await</code> to <code>void</code>. Since you cannot overload the comma operator for <code>void</code>, this forces the use of the default comma operator, so we just comma-combine a bunch of <code>void</code>s, which is harmless.</p>
+<pre>template &lt;typename... T&gt;
+Windows::Foundation::IAsyncAction when_all(T... async)
+{
+    (void(co_await async), ...);
+    co_return;
+}
+</pre>
+<p><a href="https://github.com/microsoft/cppwinrt/pull/645">Here is the PR that fixes the empty parameter list and comma operator issues</a>, and a <a href="https://github.com/microsoft/cppwinrt/pull/647"> follow-up</a>.</p>
+<p><b>Bonus chatter</b>: We could also have used a right fold:</p>
+<pre>    (co_await async, ..., void());
+</pre>
+<p>which expands to</p>
+<pre>    (co_await v1, (co_await v2, void()));
+</pre>
+<p>But I think casting away the value is simpler.</p>
+<p>¹ Shame on you.</p>
+
+
+</body>

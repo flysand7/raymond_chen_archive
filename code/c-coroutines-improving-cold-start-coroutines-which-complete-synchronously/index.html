@@ -1,0 +1,64 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Improving cold-start coroutines which complete synchronously</h1>  <!-- .entry-meta -->
+
+<p>Last time, we learned that <a href="/code/c-coroutines-cold-start-coroutines" title="C++"> the naïve implementation of cold-start coroutines is susceptible to stack build-up</a>. What we want is for <code>await_<wbr/>suspend</code> to return <code>false</code> if the coroutine completed synchronously. This is tricky because that reintroduces a race condition where the coroutine runs asynchronously and completes at the same time we try to transition from synchronous to asynchronous behavior in the awaiter.</p>
+<p>For example, we could try this:</p>
+<pre>        auto final_suspend() noexcept
+        {
+            struct awaiter : std::experimental::suspend_always
+            {
+                simple_promise_base&amp; self;
+                void await_suspend(
+                    std::experimental::coroutine_handle&lt;&gt;)
+                    const noexcept
+                {
+                    <span style="color: blue;">if (self.m_waiting()) self.m_waiting();</span>
+                }
+            };
+            return awaiter{ {}, *this };
+        }
+
+        auto client_await_suspend(
+            std::experimental::coroutine_handle&lt;&gt; handle)
+        {
+            as_handle().resume();
+            <span style="color: blue;">m_waiting = handle;
+            return m_holder.is_empty();</span>
+        }
+</pre>
+<p>The idea here is that we don’t register a resumption coroutine handle immediately. Instead, we let the coroutine resume, and if it completes synchronously, its <code>final_<wbr/>suspend</code> resumes the awaiter if one exists. In the case of synchronous completion, there won’t be an awaiter yet. Back in the awaiter, we register the awaiting coroutine for resumption after the synchronous portion of the awaited-for coroutine finishes, and then we peek at whether it indeed completed synchronously. If so, then we return <code>false</code>.</p>
+<p>This algorithm doesn’t work because the coroutine may have continued asynchronously, and the asynchronous completion creates a data race against the awaiter trying to check whether the coroutine completed synchronously.</p>
+<p>We’ll have to bring back the atomic waiter.¹</p>
+<p>Return to the version where <code>m_waiting</code> was a <code>std::atomic&lt;void*&gt;</code>.</p>
+<pre>        auto final_suspend() noexcept
+        {
+            struct awaiter : std::experimental::suspend_always
+            {
+                simple_promise_base&amp; self;
+                void await_suspend(
+                    std::experimental::coroutine_handle&lt;&gt;)
+                    const noexcept
+                {
+                    auto waiter = self.m_waiting.exchange(completed_ptr,
+                        std::memory_order_acq_rel);
+                    if (waiting != abandoned_ptr) self.destroy();
+                    <span style="color: blue;">else if (waiting != running_ptr) std::experimental::
+                        coroutine_handle&lt;&gt;::from_address(waiting).resume();</span>
+                }
+            };
+            return awaiter{ {}, *this };
+        }
+
+        auto client_await_suspend(
+            std::experimental::coroutine_handle&lt;&gt; handle)
+        {
+            as_handle().resume();
+            <span style="color: blue;">return m_waiting.exchange(handle.address(),
+                std::memory_order_acq_rel) == running_ptr;</span>
+        }
+</pre>
+<p>We now have implementations for both cold-start and hot-start coroutines. Next time, we’ll unify them by using another coroutine trick.</p>
+<p>¹ “Atomic Waiter” sounds like a failed superhero from the 1950’s.</p>
+
+
+</body>

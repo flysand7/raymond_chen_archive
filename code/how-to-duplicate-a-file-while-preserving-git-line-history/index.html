@@ -1,0 +1,63 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to duplicate a file while preserving git line history</h1>  <!-- .entry-meta -->
+
+<p>Today, we’re going to duplicate a file while preserving git line history.</p>
+<p>This could be useful if you want two copies of a component, say, one where you are doing a bunch of disruptive work, and another that remains largely unchanged. The project continues to use the old, stable version, but there’s a feature flag to switch to the new, exciting one. Eventually, you’ll make the new, exciting one the default version.</p>
+<p>When you do this, you want the line history of the new version to be the same as the line history of the old version, because the new version is basically a fork of the old version.</p>
+<p>Again, let’s use the same scratch repo as we did for the last few days. You can follow the same copy/paste script, or you can take your existing scratch repo and <code>git reset --hard ready</code> to get it back into its “ready to start experimenting” state.</p>
+<p>Let’s set up a scratch repo to demonstrate. I’ve omitted the command prompts so you can copy-paste this into your shell of choice and play along at home. (The timestamps and commit hashes will naturally be different.)</p>
+<pre style="white-space: pre-wrap;">git init
+
+&gt;foods echo apple
+git add foods
+git commit --author="Alice &lt;alice&gt;" -m created
+
+&gt;&gt;foods echo orange
+git commit --author="Bob &lt;bob&gt;"    -am orange
+
+git blame foods
+
+^62ef37c (Alice 2019-09-19 07:00:00 -0700 1) apple
+335acb1b (Bob   2019-09-19 07:00:01 -0700 2) orange
+</pre>
+<p>We employ our standard trick: Create a branch where the desired new file appears to have been created via a rename of the original file. And then restore the original file.</p>
+<pre style="white-space: pre-wrap;">git checkout -b dup
+
+git mv foods foods-new
+git commit --author="Greg &lt;greg&gt;" -m "duplicate foods to foods-new"
+
+git checkout HEAD~ foods
+git commit --author="Greg &lt;greg&gt;" -m "restore foods"
+
+git checkout -
+</pre>
+<p>On this branch, we renamed <code>foods</code> to <code>foods-new</code>. When git traces the history of the <code>foods-new</code> file, it’ll see that the file was created via rename from <code>foods</code>, so git will use <code>food</code>‘s history to build the line history.</p>
+<p>And then we bring back the original <code>foods</code> file. We use the <code>git checkout HEAD~ foods</code> command to restore the file from a specific commit, namely the commit before we renamed it away.</p>
+<pre style="white-space: pre-wrap;">git merge --no-ff dup
+
+Merge made by the 'recursive' strategy.
+ foods-new | 2 ++
+ 1 file changed, 2 insertions(+)
+ create mode 100644 foods-new
+</pre>
+<p>The <code>dup</code> branch deleted the <code>foods</code> file, and then restored it. That means there was no net change to the file in the <code>dup</code> branch, and even <code>git log</code> won’t notice it by default. If you do a log of the <code>foods</code> file, the merge doesn’t even show up.</p>
+<pre style="white-space: pre-wrap;">git log --oneline foods
+
+                ← the merge doesn't appear
+335acb1 orange
+62ef37c created
+</pre>
+<p>The line histories of the two files are identical, because the <code>foods-new</code> was created at the same time an identical <code>foods</code> file disappeared, which made git consider the operation to be a rename for the purpose of history tracking.</p>
+<pre style="white-space: pre-wrap;">git blame foods
+
+^62ef37c (Alice 2019-09-19 07:00:00 -0700 1) apple
+335acb1b (Bob   2019-09-19 07:00:01 -0700 2) orange
+
+git blame foods-new
+
+^62ef37c foods (Alice 2019-09-19 07:00:00 -0700 1) apple
+335acb1b foods (Bob   2019-09-19 07:00:01 -0700 2) orange
+</pre>
+
+
+</body>

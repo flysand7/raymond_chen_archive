@@ -1,0 +1,63 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Adding a Ctrl+arrow accelerator for moving the trackbar by just one unit, part 2: Second try</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at how we could add support to the trackbar so that <kbd>Ctrl</kbd>+arrow moved the thumb by one unit, even if the line size was set to a larger value. We tried doing this by subclassing the control and adding additional keyboard handling, but this turned into a bit of a mess because of all the special cases in the trackbar to accommodate various usage patterns. </p>
+<p>What we really want to do is let the trackbar do all its keyboard processing, and step in just before it moves the thumb, so we can move it by a different amount if the <kbd>Ctrl</kbd> key is held down. </p>
+<p>Fortunately, there’s a notification for this. </p>
+<p>Unfortunately, it requires version 6 of the common controls. </p>
+<p>Fortunately, version 6 of the common controls is included in all versions of Windows still in support. </p>
+<p>Take our program from last time, but stop before we added the <code>Trackbar­Key­Proc</code>. (Delete the <code>Trackbar­Key­Proc</code> and the calls to <code>Set­Window­Subclass</code> and <code>Remove­Window­Subclass</code>.) </p>
+<p>Instead, add this code: </p>
+<pre>
+<font color="blue">#pragma comment(linker, \
+    "\"/manifestdependency:type='win32' \
+    name='Microsoft.Windows.Common-Controls' \
+    version='6.0.0.0' \
+    processorArchitecture='*' \
+    publicKeyToken='6595b64144ccf1df' \
+    language='*'\"")</font>
+</pre>
+<p>This <code>#pragma</code> is <a href="https://devblogs.microsoft.com/oldnewthing/">a quick way to enable version 6 of the common controls</a>. </p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ g_hwndChild = CreateWindow(TRACKBAR_CLASS, TEXT(""),
+    WS_CHILD | WS_VISIBLE <font color="blue">| TBS_NOTIFYBEFOREMOVE</font>,
+   0, 0, 100, 100,
+    hwnd, (HMENU)100, g_hinst, 0);
+
+  SendMessage(g_hwndChild, TBM_SETLINESIZE, 0, 5);
+  SendMessage(g_hwndChild, TBM_SETPAGESIZE, 0, 20);
+
+  return TRUE;
+}
+</pre>
+<p>The <code>TBS_</code><code>NOTIFY­BEFORE­MOVE</code> style enables the <code>TRBN_</code><code>THUMB­POS­CHANGING</code> notification, which we will take advantage of below. </p>
+<pre>
+<font color="blue">LRESULT OnNotify(HWND hwnd, int idCtl, NMHDR* pnm)
+{
+ if (pnm-&gt;hwndFrom == g_hwndChild &amp;&amp;
+     pnm-&gt;code == TRBN_THUMBPOSCHANGING &amp;&amp;
+     GetKeyState(VK_CONTROL) &lt; 0) {
+  auto ptpc = (NMTRBTHUMBPOSCHANGING*)pnm;
+  switch (ptpc-&gt;nReason) {
+  case TB_LINEUP:
+  case TB_LINEDOWN:
+    int pos = (int)SendMessage(pnm-&gt;hwndFrom, TBM_GETPOS, 0, 0);
+    pos += (ptpc-&gt;nReason == TB_LINEUP) ? -1 : +1;
+    SendMessage(pnm-&gt;hwndFrom, TBM_SETPOS, TRUE, pos);
+    return TRUE; // we moved the thumb, so the control doesn't have to
+  }
+ }
+ return 0;
+}
+    HANDLE_MSG(hwnd, WM_NOTIFY, OnNotify);</font>
+</pre>
+<p>The <code>TRBN_</code><code>THUMB­POS­CHANGING</code> notification is sent before the trackbar moves the thumb. and the <code>nReason</code> tells you why the trackbar wants to move the thumb.¹ If the <kbd>Ctrl</kbd> key is held down, and the reason is either a line-up or a line-down, then we fetch the current trackbar position, adjust it by one unit, and set that as the new trackbar position. We then return <code>TRUE</code> to tell the trackbar that it shouldn’t move the trackbar thumb (because we moved it). </p>
+<p>(Don’t forget that if this is happening in a dialog box, you need to use <code>DWLP_</code><code>MSG­RESULT</code> to make the dialog box return a nonzero value from its window procedure.) </p>
+<p>Responding to the notification leaves the trackbar to deal with recognizing the keyboard keys and taking the various trackbar configuration settings into account in order to convert them to scroll actions. We then detect the <i>change position by one line</i> action and apply our special thumb motion if the <kbd>Ctrl</kbd> key is held down, leaving the trackbar to manage the keyboard cues and other accessibility states. </p>
+<p>¹ There’s also a <code>dwPos</code> that tells you where the thumb is moving <i>to</i>, but we are more interested in where the thumb is moving <i>from</i>. </p>
+
+
+</body>

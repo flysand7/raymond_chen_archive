@@ -1,0 +1,97 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I parse a string into a FILETIME?</h1>  <!-- .entry-meta -->
+
+<p><p>
+Public Service Announcement:
+Daylight Saving Time ends in most parts of the United States this weekend.
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/11/05/10086404.aspx#10086843">
+Other parts of the world may change on a different day from the
+United States</a>.
+</p>
+<p>
+The NLS functions in Win32 provide
+<a href="http://msdn.microsoft.com/en-us/library/dd319114(v=VS.85).aspx">
+functions to convert a
+<code>SYSTEMTIME</code> into a string</a>,
+but it does not provide any functions to perform the reverse
+conversion.
+Here are few things you can try:
+</p>
+<p>
+The OLE automation
+<a href="http://msdn.microsoft.com/en-us/library/ms221395.aspx">
+<code>VarDateFromStr</code></a> conversion function converts a string into
+a <code>DATE</code>.
+From there, you can convert it to some other format.</p>
+<p><pre>
+BOOL SystemTimeFromStr(__in LPCWSTR psz, LCID lcid, __out LPSYSTEMTIME pst)
+{
+  DATE date;
+  return SUCCEEDED(VarDateFromStr(psz, lcid, 0, &amp;date)) &amp;&amp;
+         VariantTimeToSystemTime(date, pst);
+}
+BOOL FileTimeFromStr(__in LPCWSTR psz, LCID lcid, __out LPFILETIME pft)
+{
+  SYSTEMTIME st;
+  return SystemTimeFromStr(psz, lcid, &amp;st) &amp;&amp;
+         SystemTimeToFileTime(&amp;st, pft);
+}
+</pre>
+<p>
+If you have something in
+which parses CIM
+<a href="http://msdn.microsoft.com/en-us/library/aa389799(v=VS.85).aspx">
+datetime</a>
+format
+(which
+<a href="http://technet.microsoft.com/en-us/magazine/2006.07.scriptingguy.aspx">
+The Scripting Guys liken to Klingon</a>)
+you can use the
+<a href="http://msdn.microsoft.com/en-us/library/aa393687(VS.85).aspx">
+<code>SWbemDateTime</code> object</a>.
+Since this is a scripting object, using it from C++ is rather
+cumbersome.
+</p>
+<pre>
+BOOL FileTimeFromCIMDateTime(__in LPCWSTR psz, __out LPFILETIME pft)
+{
+ BOOL fSuccess = FALSE;
+ ISWbemDateTime *pDateTime;
+ HRESULT hr = CoCreateInstance(__uuidof(SWbemDateTime), 0,
+                 CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&amp;pDateTime));
+ if (SUCCEEDED(hr)) {
+  BSTR bstr = SysAllocString(psz);
+  if (bstr) {
+   hr = pDateTime-&gt;put_Value(bstr);
+   if (SUCCEEDED(hr)) {
+    BSTR bstrFT;
+    hr = pDateTime-&gt;GetFileTime(VARIANT_FALSE, &amp;bstrFT);
+    if (SUCCEEDED(hr)) {
+     __int64 i64FT = _wtoi64(bstrFT);
+     pft-&gt;dwLowDateTime = LODWORD(i64FT);
+     pft-&gt;dwHighDateTime = HIDWORD(i64FT);
+     fSuccess = TRUE;
+     SysFreeString(bstrFT);
+    }
+   }
+   SysFreeString(bstr);
+  }
+  pDateTime-&gt;Release();
+ }
+ return fSuccess;
+}
+</pre>
+<p>
+From the managed side, you have
+<a href="http://blackrabbitcoder.net/archive/2012/01/05/c.net-little-wonders-the-datetime-tryparse-and-parseexact-methods.aspx">
+<code>Date­Time.Try­Parse</code>
+and
+<code>Date­Time.Parse­Exact</code> methods</a>.
+</p>
+<p>
+I leave you to investigate the time zone and locale issues associated
+with these techniques.
+(Because I can’t be bothered.)</p>
+
+
+</p></p></body>

@@ -1,0 +1,75 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why can’t I create a “Please wait” dialog from a background thread to inform the user that the main UI thread is busy?</h1>  <!-- .entry-meta -->
+
+<p>A customer had a program which performed a long-running operation on its main UI thread. They wanted to display a “Please wait” dialog from a background thread, so they did something like this:</p>
+<pre>void OnClick(HWND mainWindow)
+{
+  PleaseWaitDialog dialog;
+  dialog.Start(mainWindow);
+  DoSomeReallyLongOperation();
+  dialog.Stop();
+}
+
+class PleaseWaitDialog
+{
+  void Start(HWND mainWindow)
+  {
+    ...
+    m_mainWindow = mainWindow;
+    CreateThread(nullptr, 0,
+      PleaseWaitThreadProc, this,
+      0, &amp;threadId);
+    ...
+  }
+
+  static DWORD CALLBACK PleaseWaitThreadProc(void* parameter)
+  {
+    auto self = reinterpret_cast&lt;PleaseWaitDialog*&gt;(parameter);
+    DialogBox(instance, MAKEINTRESOURCE(IDD_WAIT),
+              self-&gt;mainWindow, DialogProc);
+    return 0;
+  }
+
+  HWND m_mainWindow;
+};
+</pre>
+<p>The <code>Please­Wait­Dialog</code> class is incomplete, but that’s the general idea: We create a separate thread to display the dialog box, and make it modal to the main window so the user can see which window it is associated with.</p>
+<p>The problem is that this doesn’t work.</p>
+<p>When the dialog box sets the main UI window as its owner, this causes the input queues to become attached, at which point <a href="/code/attachthreadinput-is-like-taking-two-threads-and-pooling-their-money-into-a-joint-bank-account-where-both-parties-need-to-be-present-in-order-to-withdraw-any-money"> their fates become linked</a>. In particular, the dialog box cannot show itself because doing so requires it to notify the owner window that the owner has lost activation, but that owner window is not responding to messages because it’s off doing the really long operation.</p>
+<p>There are a few ways to address this.</p>
+<p>One way is to make the long-running operation pump messages occasionally:</p>
+<pre>void HandleMessages()
+{
+ MSG msg;
+ while (PeekMessage(&amp;msg, nullptr, 0, 0, PM_REMOVE)) {
+  TranslateMessage(&amp;msg):
+  DispatchMessage(&amp;msg):
+ }
+}
+
+void DoSomeReallyLongOperation()
+{
+  for (auto&amp;&amp; item : items) {
+   item.DoSomething();
+   HandleMessages(); // pump messages between each item
+  }
+}
+
+void Item::DoSomething()
+{
+ StartSomething();
+ HandleMessages(); // pump messages to remain responsive
+ ContinueSomething();
+ HandleMessages(); // pump messages to remain responsive
+ FinishSomething();
+}
+</pre>
+<p>This does require you to litter <code>Handle­Messages</code> calls throughout your long-running operation. If your operation is cancellable, then you could have the <code>Handle­Messages</code> function return whether the user clicked the <i>Cancel</i> button in the <i>Please Wait</i> dialog, and callers could abandon the operation.</p>
+<p>This improves the situation from <i>unresponsive</i> to <i>sluggishly responsive</i>, because the UI thread doesn’t respond to actions immediately; rather, it responds to them only when it remembers to check.</p>
+<p>A more serious problem with this design is that pumping messages may create reentrancy problems. For example, if a message arrives like <code>WM_</code><code>SETTINGS­CHANGE</code>, the program may start responding to the change in settings while it was in the middle of an operation, and that might confuse the operation already in progress. For example, an incoming message might trigger a change to the <code>items</code> collection, which is bad news because the <code>for</code> loop is iterating over that same collection. It might even destroy the item that the loop is actively operating on!</p>
+<p>The best way to solve the problem is to switch the roles of the two threads. The UI thread displays the progress dialog, and the background thread performs the long-running operation.</p>
+<p>Of course, due to architectural decisions made elsewhere in the program, this is often easier to say than to do.</p>
+<p> </p>
+
+
+</body>

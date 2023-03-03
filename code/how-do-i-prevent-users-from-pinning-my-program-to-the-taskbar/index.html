@@ -1,0 +1,157 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I prevent users from pinning my program to the taskbar?</h1>  <!-- .entry-meta -->
+
+<p>
+A customer wanted to prevent users from pinning their application
+to the taskbar.
+</p>
+<blockquote class="q"><p>
+I have an application that is launched as a helper by a main application.
+Users shouldn’t be launching it directly, but rather should be launching
+the main application.
+But since the helper shows up in the taskbar,
+users may be tempted to right-click on the taskbar icon and select
+“Pin to taskbar.”
+Unfortunately, this pins the helper program to the taskbar instead of
+the main application,
+and launching the helper program directly doesn’t work.
+Is there a way I can prevent users from pinning the helper program?
+</p></blockquote>
+<p>
+It so happens that there are
+<a href="http://msdn.microsoft.com/en-us/library/dd378459.aspx#exclusion_lists">
+a number of ways of marking your
+helper program as <i>Don’t pin me</i></a>.
+Given the description above, the most direct way is probably to set the
+<a href="http://msdn.microsoft.com/en-us/library/dd561983.aspx">
+<code>System.App­User­Model.Prevent­Pinning</code>
+property</a>
+on the window created by the helper program.
+</p>
+<p>
+Take our
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make the following changes:</p>
+<pre>
+<font color="blue">#include &lt;shellapi.h&gt;
+#include &lt;propsys.h&gt;
+#include &lt;propkey.h&gt;
+HRESULT MarkWindowAsUnpinnable(HWND hwnd)
+{
+ IPropertyStore *pps;
+ HRESULT hr = SHGetPropertyStoreForWindow(hwnd, IID_PPV_ARGS(&amp;pps));
+ if (SUCCEEDED(hr)) {
+  PROPVARIANT var;
+  var.vt = VT_BOOL;
+  var.boolVal = <a href="http://blogs.msdn.com/oldnewthing/archive/2004/12/22/329884.aspx">VARIANT_TRUE</a>;
+  hr = pps-&gt;SetValue(PKEY_AppUserModel_PreventPinning, var);
+  pps-&gt;Release();
+ }
+ return hr;
+}
+</font>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ <font color="blue">MarkWindowAsUnpinnable(hwnd);</font>
+ return TRUE;
+}
+</pre>
+<p>
+I set the <code>PROP­VARIANT</code> manually instead of using
+<code>Init­Prop­Variant­From­Boolean</code>
+just to emphasize that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/12/22/329884.aspx">
+the <code>boolVal</code> must be <code>VARIANT_TRUE</code> and not
+<code>TRUE</code></a>.
+In real life, I probably would have used
+<code>Init­Prop­Variant­From­Boolean</code>.
+</p>
+<p>
+Run this program and observe that “Pin this program
+to taskbar” does not appear on the menu when you
+right-click on the taskbar button.
+</p>
+<p>
+Even better would be to permit pinning,
+but set the
+<a href="http://msdn.microsoft.com/en-us/library/dd391571.aspx">
+<code>System.App­User­Model.Relaunch­Command</code></a>,
+<a href="http://msdn.microsoft.com/en-us/library/dd391572.aspx">
+<code>.Relaunch­Display­Name­Resource</code></a>
+and optionally
+<a href="http://msdn.microsoft.com/en-us/library/dd391573.aspx">
+<code>.Relaunch­Icon­Resource</code></a>
+properties
+so that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/27/10158395.aspx#10158646">
+if the user tries to pin the helper,
+it actually pins the main application</a>.
+</p>
+<p>
+Start with a new scratch program and make these changes:
+</p>
+<pre>
+<font color="blue">#include &lt;shellapi.h&gt;
+#include &lt;propsys.h&gt;
+#include &lt;propkey.h&gt;
+#include &lt;propvarutil.h&gt;
+HRESULT IPropertyStore_SetValue(IPropertyStore *pps,
+    REFPROPERTYKEY pkey, PCWSTR pszValue)
+{
+ PROPVARIANT var;
+ HRESULT hr = InitPropVariantFromString(pszValue, &amp;var);
+ if (SUCCEEDED(hr))
+ {
+  hr = pps-&gt;SetValue(pkey, var);
+  PropVariantClear(&amp;var);
+ }
+ return hr;
+}</font>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ <font color="blue">IPropertyStore *pps;
+ HRESULT hr = SHGetPropertyStoreForWindow(hwnd, IID_PPV_ARGS(&amp;pps));
+ if (SUCCEEDED(hr)) {
+  IPropertyStore_SetValue(pps,
+    PKEY_AppUserModel_ID, L"Contoso.Scratch");
+  IPropertyStore_SetValue(pps,
+    PKEY_AppUserModel_RelaunchCommand,
+    L"notepad.exe %windir%\\system.ini");
+  IPropertyStore_SetValue(pps,
+    PKEY_AppUserModel_RelaunchDisplayNameResource,
+    L"C:\\full\\path\\to\\scratch.exe,-1");
+  // optionally also set PKEY_AppUserModel_RelaunchIconResource
+  pps-&gt;Release();
+ }</font>
+ return TRUE;
+}
+// resource file
+STRINGTABLE BEGIN
+ 1 "Open system.ini"
+END
+</pre>
+<p>
+I’m pulling a fast one here and pretending that Notepad is my
+main application.
+Obviously you’d use your actual main application.
+(I’m also hard-coding the path to my scratch program.)
+</p>
+<p>
+When you run this program, right-click on the taskbar button.
+Observe that the option to run a new copy of the program is called
+<i>Open system.ini</i> and if you pick it
+(or use the middle-mouse-button shortcut),
+Notepad runs.
+If you pin the program, the pinned icon runs Notepad.
+</p>
+<p>
+Even if you don’t need to redirect the pinned item to another program,
+you can use this second technique to
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/27/10158395.aspx#10158652">
+pass a custom command line for the pinned icon</a>.</p>
+
+
+</body>

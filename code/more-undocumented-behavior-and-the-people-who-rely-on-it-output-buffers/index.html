@@ -1,0 +1,89 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">More undocumented behavior and the people who rely on it: Output buffers</h1>  <!-- .entry-meta -->
+
+<p><p>
+For functions that return data,
+the contents of the output buffer if the function fails are typically
+left unspecified.
+If the function fails, callers should assume nothing about the contents.
+</p>
+<p>
+But that doesn’t stop them from assuming it anyway.
+</p>
+<p>
+I was reminded of this topic after reading
+<a href="http://blogs.msdn.com/michkap/archive/2005/03/06/386194.aspx">
+Michael Kaplan’s story of one customer who wanted the output buffer
+contents to be defined even on failure</a>.
+The reason the buffer is left untouched is because many
+programs assume that the buffer is unchanged on failure,
+even though there is no documentation supporting this behavior.
+</p>
+<p>
+Here’s one example of code I’ve seen (reconstructed) that relies
+on the output buffer being left unchanged:
+</p>
+<pre>
+<i>HKEY hk = hkFallback;
+RegOpenKeyEx(…, &amp;hk);
+RegQueryValue(hk, …);
+if (hk != hkFallback) RegCloseKey(hk);
+</i></pre>
+<p>
+This code fragment starts out with a fallback key then tries
+to open a “better” key,
+assuming that if the open fails,
+the contents of the <code>hk</code> variable will be left unchanged
+and therefore will continue to have the original fallback value.
+This behavior is not guaranteed by the specification for
+<a href="http://msdn.microsoft.com/library/en-us/sysinfo/base/regopenkeyex.asp">
+the <code>RegOpenKeyEx</code> function</a>, but that doesn’t stop people
+from relying on it anyway.
+</p>
+<p>
+Here’s another example
+<a href="http://cvs.sourceforge.net/viewcvs.py/cdexos/cdexos/Registry.cpp?rev=1.3">
+from actual shipping code</a>.
+Observe that the <code>CRegistry::Restore</code> method is documented
+as “If the specified key does not exist, the value of ‘Value’ is unchanged.”
+(Let’s ignore for now that the documentation uses registry
+terminology incorrectly; the parameter specified is a value name,
+not a key name.)
+If you look at what the code actually does,
+it loads the buffer with the original value of “Value”,
+then calls
+<a href="http://msdn.microsoft.com/library/en-us/sysinfo/base/regqueryvalueex.asp">
+the <code>RegQueryValueEx</code> function</a> twice
+and ignores the return value both times!
+The real work happens in the <code>CRegistry::RestoreDWORD</code>
+function.
+At the first call, observe that it initializes
+the <code>type</code> variable, then calls
+the <code>RegQueryValueEx</code> function and assumes that
+it does not modify the
+<code>&amp;type</code> parameter on failure.
+Next, it calls
+the <code>RegQueryValueEx</code> function a second time,
+this time assuming that the output buffer
+<code>&amp;Value</code> remains unchanged in the event of failure,
+because that’s what <code>CRegistry::Restore</code> expects.
+</p>
+<p>
+I don’t mean to pick on that code sample.
+It was merely a convenient example
+of the sorts of abuses that Win32 needs to sustain
+on a regular basis for the sake of compatibility.
+Because, after all, people buy computers in order to
+run programs on them.
+</p>
+<p>
+One significant exception to the “output buffers are undefined on failure”
+rule is output buffers returned by COM interface methods.
+COM rules are that output buffers are always initialized, even on failure.
+This is necessary to ensure that the marshaller doesn’t crash.
+For example, the last parameter to the IUnknown::QueryInterface method
+must be set to NULL on failure.
+</p></p>
+
+
+</body>

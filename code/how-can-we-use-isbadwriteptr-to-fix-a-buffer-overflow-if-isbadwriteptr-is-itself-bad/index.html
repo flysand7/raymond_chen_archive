@@ -1,0 +1,58 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can we use IsBadWritePtr to fix a buffer overflow, if IsBadWritePtr is itself bad?</h1>  <!-- .entry-meta -->
+
+<p>A customer asked for assistance in investigating an access violation caused by a buffer overflow. They figured that they could probe whether the buffer is large enough to receive the data by using <code>Is­Bad­Write­Ptr</code>, but then they saw that <a href="https://blogs.msdn.microsoft.com/oldnewthing/20060927-07/?p=29563"><code>Is­Bad­Xxx­Ptr</code> should really be called <code>Crash­Program­Randomly</code></a>. They were wondering what alternatives existed to <code>Is­Bad­Xxx­Ptr</code>. </p>
+<p>The alternative to <code>Is­Bad­Xxx­Ptr</code> is <i>not passing bad pointers in the first place</i>. </p>
+<p>If you are getting an access violation from a buffer overflow, the fix for the problem is not to try to detect the overflow as it happens. the fix is to stop the overflow <i>before</i> it happens. </p>
+<p>The customer shared their code and the stack trace at which the access violation occurred: </p>
+<pre>
+msvcrt!memcpy+0xb4
+contoso!CBuffer::CopyFromRange+0x92
+contoso!CBuffer::ReadAt+0x861
+contoso!CLockBytes::ReadAt+0xfd
+contoso!CStream::Read+0xe3
+contoso!CData::ParseFile+0x606
+</pre>
+<p>The buffer overflow occurred because the <code>memcpy</code> was writing past the end of the buffer passed to <code>CStream::Read</code>. The thing to do is not try to detect the maximum writable buffer size, but to stop passing invalid buffer sizes. </p>
+<p>Because there’s probably writable memory after the buffer that is not part of the buffer. If the invalid buffer size were only slightly larger than the buffer (rather than ridiculously larger than the buffer), you wouldn’t have gotten an access violation, but you still had a buffer overflow. </p>
+<p>The offending <code>Read</code> call came from here: </p>
+<pre>
+<i>// Code in italics is wrong
+    uint32_t numBlocks;
+    uint32_t actualBytesRead;
+
+    // First, read the number of blocks.
+    HRESULT hr = stream.Read(&amp;numBlocks, sizeof(uint32_t), &amp;actualBytesRead);
+    if (FAILED(hr) || actualBytesRead != sizeof(uint32_t)) {
+        goto Reject;
+    }
+
+    // Next, read the size of each block.
+    uint32_t blockSize;
+    hr = stream.Read(&amp;blockSize, sizeof(uint32_t), &amp;actualBytesRead);
+    if (FAILED(hr) || actualBytesRead != sizeof(uint32_t)) {
+        goto Reject;
+    }
+
+    // Now read the blocks.
+    DWORD i;
+    for (i = 0; i &lt; numBlocks; i++)
+    {
+        // Read each block.
+        BLOCK block = { 0 };
+        hr = stream.Read(&amp;block, blockSize, &amp;actualBytesRead);</i>
+        //               ^^^^^^^^^^^^^^^^^ invalid buffer here
+        if (FAILED(hr) || actualBytesRead != sizeof(uint32_t)) {
+            goto Reject;
+        }
+</pre>
+<p>The stack trace implicates the highlighted line of code. </p>
+<p>So how do we prevent the invalid buffer from being passed to the <code>Read</code> method? </p>
+<p>From code inspection, we see that we read <code>blockSize</code> bytes into a <code>BLOCK</code> structure, but we didn’t take any steps to ensure that <code>blockSize</code> is no larger than at <code>BLOCK</code>. In other words, we have a buffer of size <code>sizeof(BLOCK)</code>, and we ask to read <code>blockSize</code> bytes into it, so it is our responsibility to ensure that <code>blockSize &lt;= sizeof(BLOCK)</code>. </p>
+<p>However, no such buffer size validation was present. </p>
+<p>How to fix this depends on how you want to deal with unexpected block sizes. </p>
+<p>If your intent is to allow large block sizes and just ignore the fields that are “from the future”, then you would read <code>min(blockSize, sizeof(block))</code> bytes, and then <code>Seek</code> over the extra bytes (if any). </p>
+<p>If your intent is to reject large block sizes, then go ahead and reject them. </p>
+
+
+</body>

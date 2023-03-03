@@ -1,0 +1,128 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Applying a filter to the contents of an Explorer Browser</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s Little Program hosts an Explorer Browser but filters
+the contents to remove DLL files.
+You can, of course, substitute your own filter.
+(For example, maybe you want to show only files that changed
+since the last time the user ran your program,
+or you might want a view of My Computer but filtered to show
+only removable drives.)
+</p>
+<p>
+Remember that Little Programs do little to no error checking,
+and they don’t necessarily demonstrate the best programming style.
+They’re just quick demonstrations.
+Today’s smart pointer library is… (rolls dice) … WRL!
+</p>
+<p>
+Start with
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/03/25/10145644.aspx">
+our minimal explorer browser program</a>
+and make these changes.
+</p>
+<pre>
+<font color="blue">#include &lt;shlwapi.h&gt; // PathFindExtensionW
+#include &lt;wrl\client.h&gt;
+#include &lt;wrl\implements.h&gt;
+using namespace Microsoft::WRL;
+class FolderFilterNoDLLs :
+    public RuntimeClass&lt;RuntimeClassFlags&lt;ClassicCom&gt;,
+                        IFolderFilter&gt;
+{
+ // *** IFolderFilter ***
+ IFACEMETHODIMP GetEnumFlags(IShellFolder *psf,
+    PCIDLIST_ABSOLUTE pidlFolder, HWND *phwnd,
+    DWORD *pgrfFlags) { return S_OK; }
+ IFACEMETHODIMP ShouldShow(IShellFolder *psf,
+    PCIDLIST_ABSOLUTE pidlFolder,
+    PCUITEMID_CHILD pidlItem)
+ {
+  BOOL fShow = TRUE;
+  ComPtr&lt;IShellItem&gt; spsi;
+  HRESULT hr = SHCreateItemWithParent(pidlFolder, psf, pidlItem,
+                                      IID_PPV_ARGS(&amp;spsi));
+  if (SUCCEEDED(hr)) {
+   SFGAOF sfgaof;
+   hr = spsi-&gt;GetAttributes(SFGAO_FILESYSTEM | SFGAO_FOLDER,
+                            &amp;sfgaof);
+   if (SUCCEEDED(hr) &amp;&amp; sfgaof == SFGAO_FILESYSTEM) {
+    LPWSTR pszName;
+    hr = spsi-&gt;GetDisplayName(SIGDN_PARENTRELATIVEPARSING,
+                                 &amp;pszName);
+    if (SUCCEEDED(hr))
+    {
+     fShow = CompareStringOrdinal(
+                 PathFindExtensionW(pszName), -1,
+                 L".dll", -1, TRUE) != CSTR_EQUAL;
+     CoTaskMemFree(pszName);
+    }
+   }
+  }
+  if (SUCCEEDED(hr)) hr = fShow ? S_OK : S_FALSE;
+  return hr;
+ }
+};</font>
+</pre>
+<p>
+The real work happens in the
+<code>Should­Show</code> method.
+</p>
+<ul>
+<li>Create an <code>IShellItem</code> because it’s more convenient.
+<li>Query the <code>SFGAO_FILE­SYSTEM</code> and
+    <code>SFGAO_FOLDER</code> attributes.
+<li>If the attributes say “Yes, it’s a file system object,
+    and no, it’s not a folder”…
+<ul>
+<li>Get the display name.
+<li>If the display name ends in <code>.dll</code>,
+        then hide the item.
+    </li></li></ul>
+</li></li></li></ul>
+<p>
+All that’s left is to plug this into the Explorer Browser.
+</p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+    BOOL fSuccess = FALSE;
+    RECT rc;
+    PIDLIST_ABSOLUTE pidl = NULL;
+    <font color="blue">ComPtr&lt;IFolderFilter&gt; spff;
+    ComPtr&lt;IFolderFilterSite&gt; spffs;</font>
+    if (SUCCEEDED(CoCreateInstance(CLSID_ExplorerBrowser, NULL,
+                         CLSCTX_INPROC, IID_PPV_ARGS(&amp;g_peb))) &amp;&amp;
+        GetClientRect(hwnd, &amp;rc) &amp;&amp;
+        SUCCEEDED(g_peb-&gt;Initialize(hwnd, &amp;rc, NULL)) &amp;&amp;
+        SUCCEEDED(g_peb-&gt;SetOptions(EBO_NAVIGATEONCE)) &amp;&amp;
+        <font color="blue">SUCCEEDED(MakeAndInitialize&lt;FolderFilterNoDLLs&gt;(&amp;spff)) &amp;&amp;
+        SUCCEEDED(g_peb-&gt;QueryInterface(IID_PPV_ARGS(&amp;spffs))) &amp;&amp;
+        SUCCEEDED(spffs-&gt;SetFilter(spff.Get())) &amp;&amp;</font>
+        SUCCEEDED(SHParseDisplayName(
+                         L"C:\\Program Files\\Internet Explorer",
+                                        NULL, &amp;pidl, 0, NULL)) &amp;&amp;
+        SUCCEEDED(g_peb-&gt;BrowseToIDList(pidl, SBSP_ABSOLUTE))) {
+        fSuccess = TRUE;
+    }
+    ILFree(pidl);
+    return fSuccess;
+}
+</pre>
+<p>
+We apply the filter to the
+<code>IExplorerBrowser</code>
+by querying for <code>IFolder­Filter­Site</code>
+and using
+<code>IFolder­Filter­Site::Set­Filter</code>
+to attach our “no DLLs” filter.
+</p>
+<p><b>
+Bonus reading</b>:
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/10/14/10456386.aspx">
+Filtering the folders that appear in the Browse for Folder dialog</a>.</p>
+
+
+</body>

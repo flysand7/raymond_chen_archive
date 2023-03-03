@@ -1,0 +1,165 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why is there a RestoreLastError function that does the same thing as SetLastError?</h1>  <!-- .entry-meta -->
+
+<p>
+Matt Pietrek noticed that
+<a href="http://msdn.microsoft.com/en-us/magazine/cc300448.aspx">
+<code>Set­Last­Error</code> and
+<code>Restore­Last­Error</code> do exactly the same thing
+and wondered why there’s a separate function for it</a>.
+</p>
+<p>
+It’s to assist in debugging and diagnostics.
+</p>
+<p>
+Say you’re debugging a problem and
+when you call <code>Get­Last­Error</code> you get
+<code>ERROR_ACCESS_DENIED</code>.
+It would really help a lot if you could figure out
+who set the error code to <code>ERROR_ACCESS_DENIED</code>.
+If you set a breakpoint on <code>Set­Last­Error</code>,
+you find that people call
+<code>Set­Last­Error</code> for two different
+reasons:
+</p>
+<ol>
+<li>To report an error.
+</li>
+<li>To restore the error code to what it was before they did something
+    that might change the last error code.
+</li>
+</ol>
+<p>
+That second one needs a little explanation.
+You might have a logging function that goes like this:
+</p>
+<pre>
+<i>// Remember, code in italics is wrong
+void LogSomething(blah blah)
+{
+ DWORD dwError = GetLastError();
+ ... do logging stuff ...
+ SetLastError(dwError);
+}
+// or if you prefer RAII
+class PreserveLastError
+{
+public:
+    PreserveLastError() : m_dwLastError(GetLastError()) {}
+    ~PreserveLastError() { SetLastError(m_dwLastError); }
+private:
+    DWORD m_dwLastError;
+};</i>
+void LogSomething(blah blah)
+{
+ PreserveLastError preserve;
+ ... do logging stuff ...
+}
+</pre>
+<p>
+It’s important that functions which perform logging,
+assertion checking, and other diagnostic operations
+are nonintrusive.
+You don’t want a bug to go away when you turn on logging
+because the logging code somehow perturbed the system.
+Therefore, your logging function saves the value of
+<code>Get­Last­Error()</code> and sets that back as the error
+code when it’s done, so that any errors that took place
+during logging do not escape and inadvertently
+affect the rest of the program.
+</p>
+<p>
+Now let’s go back to the code that’s trying to figure out
+who set the error code to <code>ERROR_ACCESS_DENIED</code>.
+You set up your debugging diagnostic tool and tell it to
+record everybody who calls
+<code>Set­Last­Error()</code>
+and pay particular attention to everybody who sets
+the error to <code>ERROR_ACCESS_DENIED</code>.
+You then run your scenario,
+your program encounters the failure you’re trying to debug,
+and you ask the diagnostic tool,
+“Tell me who set the error code to
+<code>ERROR_ACCESS_DENIED</code>.”
+The diagnostic tool says,
+“Ah, I have that in my history.
+The function that set the error code to
+<code>ERROR_ACCESS_DENIED</code> is…
+<code>Log­Something</code>!”
+</p>
+<p>
+Of course, <code>Log­Something</code> wasn’t really the originator of the
+<code>ERROR_ACCESS_DENIED</code>;
+it was just restoring things to how it found them.
+The real <code>ERROR_ACCESS_DENIED</code> came from somebody else,
+and the log function was just being careful not to disturb it.
+</p>
+<pre>
+...
+  if (!FunctionX()) {
+    LogSomething("Function X failed");
+  } else {
+    LogSomething("Function X succeeded");
+   FunctionY(); // also does some logging
+  }
+  FunctionZ(); // also does some logging
+  Assert(EverythingOkay()); // assertion fires
+  // GetLastError() returns ERROR_ACCESS_DENIED
+...
+</pre>
+<p>
+All those calls to logging functions in between
+called <code>Get­Last­Error()</code> and got
+<code>ERROR_ACCESS_DENIED</code>
+back,
+then when the logging was complete, they called
+<code>Set­Last­Error(ERROR_ACCESS_DENIED)</code>
+to put things back.
+Your diagnostic error-tracing tool gleefully points the finger
+at your logging function:
+“Look! Look! This guy set the error code to
+<code>ERROR_ACCESS_DENIED</code>!”
+</p>
+<p>
+Enter <code>Restore­Last­Error</code>.
+This function does the same thing as <code>Set­Last­Error</code>,
+but its use is a message to diagnostic tools that
+“Sure, you may see me set an error code,
+but <i>it wasn’t my idea</i>.
+I’m just trying to put things back the way I found them.
+<i>Keep looking backwards in your history</i>.”
+</p>
+<p>
+(The message also works forward in time:
+If you want to catch <code>ERROR_ACCESS_DENIED</code> in the act,
+you might set a breakpoint on <code>Set­Last­Error</code>,
+and then get frustrated that the breakpoint keeps getting hit by
+your logging function.
+Switching the logging function to <code>Restore­Last­Error</code>
+keeps the breakpoint on
+<code>Set­Last­Error</code> from firing spuriously.)
+</p>
+<p>
+The corrected version of the <code>Log­Something</code>
+function is therefore something like this:
+</p>
+<pre>
+void LogSomething(blah blah)
+{
+ DWORD dwError = GetLastError();
+ ... do logging stuff ...
+ <font color="blue">Restore</font>LastError(dwError);
+}
+// or if you prefer RAII
+class PreserveLastError
+{
+public:
+    PreserveLastError() : m_dwLastError(GetLastError()) {}
+    ~PreserveLastError() { <font color="blue">Restore</font>LastError(m_dwLastError); }
+private:
+    DWORD m_dwLastError;
+};
+</pre>
+
+
+</body>

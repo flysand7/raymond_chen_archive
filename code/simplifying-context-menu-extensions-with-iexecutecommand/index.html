@@ -1,0 +1,398 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Simplifying context menu extensions with IExecuteCommand</h1>  <!-- .entry-meta -->
+
+<p>
+The <code>IExecuteCommand</code> interface is a simpler form of
+context menu extension which takes care of the annoying parts of
+<code>IContextMenu</code> so you can focus on your area of expertise,
+namely, doing the actual thing the user selected,
+and leave the shell to doing the grunt work of managing the UI part.
+</p>
+<p>
+I’ve never needed a scratch shell extension before, so I guess
+it’s time to create one.
+This part is completely boring, and those of you who have written
+COM inproc servers can skip over it.
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;new&gt;
+LONG g_cObjs;
+void DllAddRef() { InterlockedIncrement(&amp;g_cObjs); }
+void DllRelease() { InterlockedDecrement(&amp;g_cObjs); }
+// guts of shell extension go in here eventually
+class CFactory : public IClassFactory
+{
+public:
+ // *** IUnknown ***
+ STDMETHODIMP QueryInterface(REFIID riid, void **ppv);
+ STDMETHODIMP_(ULONG) AddRef() { return 2; }
+ STDMETHODIMP_(ULONG) Release() { return 1; }
+ // *** IClassFactory ***
+ STDMETHODIMP CreateInstance(IUnknown *punkOuter,
+                             REFIID riid, void **ppv);
+ STDMETHODIMP LockServer(BOOL fLock);
+};
+CFactory c_Factory;
+STDMETHODIMP CFactory::QueryInterface(REFIID riid, void **ppv)
+{
+ IUnknown *punk = NULL;
+ if (riid == IID_IUnknown || riid == IID_IClassFactory) {
+  punk = static_cast&lt;IClassFactory*&gt;(this);
+ }
+ *ppv = punk;
+ if (punk) {
+  punk-&gt;AddRef();
+  return S_OK;
+ } else {
+  return E_NOINTERFACE;
+ }
+}
+STDMETHODIMP CFactory::CreateInstance(
+ IUnknown *punkOuter, REFIID riid, void **ppv)
+{
+ *ppv = NULL;
+ if (punkOuter) return CLASS_E_NOAGGREGATION;
+ CShellExtension *pse = new(std::nothrow) CShellExtension();
+ if (!pse) return E_OUTOFMEMORY;
+ HRESULT hr = pse-&gt;QueryInterface(riid, ppv);
+ pse-&gt;Release();
+ return hr;
+}
+STDMETHODIMP CFactory::LockServer(BOOL fLock)
+{
+ if (fLock) DllAddRef();
+ else       DllRelease();
+ return S_OK;
+}
+STDAPI DllGetClassObject(REFCLSID rclsid,
+                         REFIID riid, void **ppv)
+{
+ if (rclsid == CLSID_ShellExtension) {
+  return c_Factory.QueryInterface(riid, ppv);
+ }
+ *ppv = NULL;
+ return CLASS_E_CLASSNOTAVAILABLE;
+}
+STDAPI DllCanUnloadNow()
+{
+ return g_cObjs ? S_OK : S_FALSE;
+}
+</pre>
+<p>
+I’m assuming that the above code is all old hat.
+Consider it a prerequisite.
+</p>
+<p>
+Okay, now the good stuff.
+</p>
+<p>
+The <code>IExecuteCommand</code> interface is used when you
+create a static registration for a shell verb but
+<a href="http://msdn.microsoft.com/en-us/library/bb762475.aspx">
+specify <code>DelegateExecute</code> in the command</a>.
+Our sample shell extension will be active on text files,
+and all it’ll do is print the file names to the debugger.
+</p>
+<p>
+Since we’re a COM server, we need to register our CLSID.
+This should also be very familiar to you.
+</p>
+<pre>
+[HKEY_CLASSES_ROOT\CLSID\{<font color="blue">guid</font>}\InProcServer32]
+@="<font color="blue">C:\path\to\scratch.dll</font>"
+"ThreadingModel"="Apartment"
+</pre>
+<p>
+Here’s where we register our object as a verb for text files,
+specifying that it should be invoked via <code>DelegateExecute</code>:
+</p>
+<pre>
+[HKEY_CLASSES_ROOT\txtfile\shell\printnamestodebugger]
+@="Print names to debugger"
+[HKEY_CLASSES_ROOT\txtfile\shell\printnamestodebugger\command]
+"DelegateExecute"="{<font color="blue">guid</font>}"
+</pre>
+<p>
+That was the easy part. Now to roll up our sleeves and write
+the shell extension.
+</p>
+<pre>
+#include &lt;shobjidl.h&gt;
+CLSID CLSID_ShellExtension = { <font color="blue">...guid...</font> };
+class CShellExtension
+ : public IExecuteCommand
+ , public IInitializeCommand
+ , public IObjectWithSelection
+{
+public:
+ CShellExtension();
+ // *** IUnknown ***
+ STDMETHODIMP QueryInterface(REFIID riid, void **ppv);
+ STDMETHODIMP_(ULONG) AddRef();
+ STDMETHODIMP_(ULONG) Release();
+ // *** IInitializeCommand ***
+ STDMETHODIMP Initialize(PCWSTR pszCommandName, IPropertyBag *ppb);
+ // *** IObjectWithSelection ***
+ STDMETHODIMP SetSelection(IShellItemArray *psia);
+ STDMETHODIMP GetSelection(REFIID riid, void **ppv);
+ // *** IExecuteCommand ***
+ STDMETHODIMP SetKeyState(DWORD grfKeyState) { return S_OK; }
+ STDMETHODIMP SetParameters(LPCWSTR pszParameters) { return S_OK; }
+ STDMETHODIMP SetPosition(POINT pt) { return S_OK; }
+ STDMETHODIMP SetShowWindow(int nShow) { return S_OK; }
+ STDMETHODIMP SetNoShowUI(BOOL fNoShowUI) { return S_OK; }
+ STDMETHODIMP SetDirectory(LPCWSTR pszDirectory) { return S_OK; }
+ STDMETHODIMP Execute();
+private:
+ ~CShellExtension();
+private:
+ LONG m_cRef;
+ IShellItemArray *m_psia;
+};
+CShellExtension::CShellExtension()
+ : m_cRef(1), m_psia(NULL)
+{
+ DllAddRef();
+}
+CShellExtension::~CShellExtension()
+{
+ if (m_psia) m_psia-&gt;Release();
+ DllRelease();
+}
+</pre>
+<p>
+I’ve written this all out longhand; I’m trusting that you’re
+using some sort of framework (like, say, ATL) which avoids all
+this tedium, but since different people may choose different frameworks,
+I won’t choose a framework here.
+Instead, we just have the boring <code>IUnknown</code> methods.
+</p>
+<pre>
+STDMETHODIMP CShellExtension::QueryInterface(
+ REFIID riid, void **ppv)
+{
+ IUnknown *punk = NULL;
+ if (riid == IID_IUnknown || riid == IID_IExecuteCommand) {
+  punk = static_cast&lt;IExecuteCommand*&gt;(this);
+ } else if (riid == IID_IInitializeCommand) {
+  punk = static_cast&lt;IInitializeCommand*&gt;(this);
+ } else if (riid == IID_IObjectWithSelection) {
+  punk = static_cast&lt;IObjectWithSelection*&gt;(this);
+ }
+ *ppv = punk;
+ if (punk) {
+  punk-&gt;AddRef();
+  return S_OK;
+ } else {
+  return E_NOINTERFACE;
+ }
+}
+STDMETHODIMP_(ULONG) CShellExtension::AddRef()
+{
+ return ++m_cRef;
+}
+STDMETHODIMP_(ULONG) CShellExtension::Release()
+{
+ ULONG cRef = --m_cRef;
+ if (cRef == 0) delete this;
+ return cRef;
+}
+</pre>
+<p>
+Whew.
+Up until now, it’s just been boring typing that you have to do
+for any shell extension.
+Finally we can start doing something interesting.
+Windows 7 will initialize your shell extension with information
+about the command being executed.
+For this particular shell extension, we’ll just print the command
+name to the debugger to prove that something happened.
+(In real life, you might use the same <code>CShellExtension</code>
+to handle multiple commands, and this lets you determine which
+command you’re being asked to execute.)
+</p>
+<pre>
+STDMETHODIMP CShellExtension::Initialize(
+ PCWSTR pszCommandName,
+ IPropertyBag *ppb)
+{
+ OutputDebugStringW(L"Command: ");
+ OutputDebugStringW(pszCommandName);
+ OutputDebugStringW(L"\r\n");
+ return S_OK;
+}
+</pre>
+<p>
+The shell will give you the items on which to execute in the form
+of an <code>IShellItemArray</code>:
+</p>
+<pre>
+STDMETHODIMP CShellExtension::SetSelection(IShellItemArray *psia)
+{
+ if (psia) <a href="http://blogs.msdn.com/oldnewthing/archive/2004/04/06/108395.aspx">psia-&gt;AddRef()</a>;
+ if (m_psia) m_psia-&gt;Release();
+ m_psia = psia;
+ return S_OK;
+}
+STDMETHODIMP CShellExtension::GetSelection(
+ REFIID riid, void **ppv)
+{
+ if (m_psia) return m_psia-&gt;QueryInterface(riid, ppv);
+ *ppv = NULL;
+ return E_NOINTERFACE;
+}
+</pre>
+<p>
+The shell will then call a bunch of <code>IExecuteCommand::SetThis</code>
+and
+<code>IExecuteCommand::SetThat</code> methods to inform you of the
+environment in which you have been asked to execute.
+We just ignored them all for simplicity, but in practice,
+you may want to pay attention to some of them, particularly
+<code>IExecuteCommand::SetPosition</code>,
+<code>IExecuteCommand::SetShowWindow</code>, and
+<code>IExecuteCommand::SetNoShowUI</code>.
+</p>
+<p>
+After all the <code>IExecuteCommand::SetXxx</code> methods have been called,
+it’s show time:
+</p>
+<pre>
+STDMETHODIMP CShellExtension::Execute()
+{
+ HRESULT hr;
+ if (m_psia) {
+  IEnumShellItems *pesi;
+  if (SUCCEEDED(hr = m_psia-&gt;EnumItems(&amp;pesi))) {
+   IShellItem *psi;
+   while (pesi-&gt;Next(1, &amp;psi, NULL) == S_OK) {
+    LPWSTR pszName;
+    if (SUCCEEDED(psi-&gt;GetDisplayName(SIGDN_FILESYSPATH,
+                                      &amp;pszName))) {
+     OutputDebugStringW(L"File: ");
+     OutputDebugStringW(pszName);
+     OutputDebugStringW(L"\r\n");
+     CoTaskMemFree(pszName);
+    }
+    psi-&gt;Release();
+   }
+   pesi-&gt;Release();
+   hr = S_OK;
+  }
+ } else {
+  hr = E_UNEXPECTED;
+ }
+ return hr;
+}
+</pre>
+<p>
+All we do is enumerate the contents of the <code>IShellItemArray</code>
+and print their file names (if they have one).
+Instead of <code>IEnumShellItems</code>, you can use
+<code>IShellItemArray::GetCount</code> and
+<code>IShellItemArray::GetItemAt</code>.
+Or, if you are porting an existing context menu that uses
+<code>IDataObject</code>,
+you can call <code>IShellItemArray::BindToHandler(BHID_DataObject)</code>
+to turn your <code>IShellItemArray</code> into an <code>IDataObject</code>.
+</p>
+<p>
+Install this shell extension, right-click on a text file (or
+a bunch of text files), and select
+<i>Print names to debugger</i>.
+If all goes well, the debugger will report
+<code>Command: printnamestodebugger</code>
+followed by paths of the files you selected.
+</p>
+<p>
+But wait, there’s more.
+The <code>IPropertyBag</code> passed to
+<code>IInitializeCommand::Initialize</code>
+contains additional configuration options taken from the
+registry.
+You can use this to customize the behavior of the shell extension further.
+<a href="http://msdn.microsoft.com/en-us/library/dd378347.aspx">
+Put the bonus information under the command key</a>
+like this:
+</p>
+<pre>
+[HKEY_CLASSES_ROOT\txtfile\shell\printnamestodebugger]
+"extra"="Special"
+</pre>
+<pre>
+STDMETHODIMP CShellExtension::Initialize(
+ PCWSTR pszCommandName,
+ IPropertyBag *ppb)
+{
+ OutputDebugStringW(L"Command: ");
+ OutputDebugStringW(pszCommandName);
+ OutputDebugStringW(L"\r\n");
+ <font color="blue">if (ppb) {
+  VARIANT vt;
+  VariantInit(&amp;vt);
+  if (SUCCEEDED(ppb-&gt;Read(L"extra", &amp;vt, NULL))) {
+   if (SUCCEEDED(VariantChangeType(&amp;vt, &amp;vt, 0, VT_BSTR))) {
+    OutputDebugStringW(L"extra: ");
+    OutputDebugStringW(vt.bstrVal);
+    OutputDebugStringW(L"\r\n");
+   }
+   VariantClear(&amp;vt);
+  }
+ }</font>
+ return S_OK;
+}
+</pre>
+<p>
+This updated version of <code>CShellExtension</code> looks for
+that registry value <code>extra</code> we set above
+and if found prints its value to the debugger.
+</p>
+<p>
+Okay, so it looks like a lot of typing, but most of that was
+typing you have to do for any shell extension.
+The part that is specific to <code>IExecuteCommand</code> is not
+that bad,
+and it certainly avoids having to mess with
+<code>IContextMenu::QueryContextMenu</code>
+and the fifty bajillion variations on
+<code>IContextMenu::InvokeCommand</code>.
+Furthermore,
+the shell doesn’t even load your <code>IExecuteCommand</code> handler
+until the user selects your command,
+so switching to a static registration also gives the system a bit of a
+performance boost.
+</p>
+<p>
+<b>Bonus tip</b>:
+You can combine the <code>IExecuteCommand</code> technique with
+<a href="http://msdn.microsoft.com/en-us/library/cc144171.aspx#dynamic_behavior">
+<i>Getting Dynamic Behavior for Static Verbs by Using Advanced Query Syntax</i>
+</a>
+and
+<a href="http://msdn.microsoft.com/en-us/library/cc144171.aspx#attributes_items">
+<i>Using Item Attributes</i></a>
+to specify the conditions under which you want your verb to appear
+without having to write a single line of C++ code.
+<a href="http://msdn.microsoft.com/en-us/library/dd758091.aspx">
+Choosing a Static or Dynamic Shortcut Menu Method</a>
+provides additional guidance on choosing among the various methods
+for registering verbs.
+</p>
+<p>
+One nice thing about <code>IExecuteCommand</code> is that it supports
+out-of-proc activation (i.e., local server rather than in-proc server).
+This means that it supports cross-bitness shell extensions:
+If you don’t have the time to port your 32-bit shell extension to 64-bit,
+you can register it as an out-of-proc <code>IExecuteCommand</code>.
+When running on 64-bit Windows,
+the 64-bit Explorer will launch your 32-bit server to handle the command.
+Conversely, if your <code>IExecuteCommand</code> is a 64-bit local server,
+a 32-bit application can still invoke it.
+</p>
+<p>
+(We’ll see more about local server shell extensions in a few months.
+This was just foreshadowing.)</p>
+
+
+</body>

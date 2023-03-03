@@ -1,0 +1,25 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to avoid accessing freed memory when canceling a thread pool callback</h1>  <!-- .entry-meta -->
+
+<p>The Windows thread pool is convenient, but one tricky part is how to remove items from the thread pool. </p>
+<p>This discussion applies to all the thread pool objects, but I’ll use thread pool timers for concreteness. You start by calling <code>Create­Threadpool­Timer</code> to establish the callback function and its context. Next, you call <code>Set­Threadpool­Timer</code> to configure the timer: When the timer becomes due and its optional periodicity. </p>
+<p>At this point, the timer is live. It will queue a callback (or callbacks, if periodic) to the thread pool according to the schedule you specified. </p>
+<p>At some future point, you decide that you are finished with the timer. The timer may have elapsed by this point, or maybe you’re cleaning up the timer before it elapsed. </p>
+<p>Now you have a few options. </p>
+<p>The simplest way is just to call <code>Close­Threadpool­Timer</code>. If the callback is not running, then this frees the timer immediately. Otherwise, it waits for the callback to complete before freeing the timer. </p>
+<p>This “either/or” behavior makes <code>Close­Threadpool­Timer</code> basically useless for any callback with nontrivial context data, because you don’t know when it’s safe to free the context data. If you free it as soon as <code>Close­Threadpool­Timer</code> returns, then you might free it out from under an active callback. </p>
+<p>That would be bad. </p>
+<p>If you make the callback itself responsible for freeing the context data, you have the new problem of not knowing whether the callback is running, so the thread trying to close the timer doesn’t know whether it should free the data or not. You can’t have the callback set a flag saying, “Hey, I’ve started!” because there’s still a race condition where the thread trying to close the timer checks the flag just before the callback manages to set it. You might try to fix this by making the context pointer be a pointer to a control block that in turn contains the data pointer, and having the callback and the main thread perform an atomic exchange on the data pointer, but you merely replaced the problem with an identical one: How do you know when it’s safe to free the control block? </p>
+<p>Fortunately, <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms682040(v=vs.85).aspx">the documentation suggests an alternative</a>: </p>
+<ul>
+<li>Call <code>Set­Threadpool­Timer</code> to reconfigure the timer so it never comes due. This prevents new callbacks from occurring. </li>
+<li>Call <code>Wait­For­Threadpool­Timer­Callbacks</code> to wait for any outstanding callbacks to complete. </li>
+<li>Call <code>Close­Threadpool­Timer</code>. </li>
+<li>Free the context data. </li>
+</ul>
+<p>When <code>Wait­For­Threadpool­Timer­Callbacks</code> returns, you know that there are no active callbacks, and your prior call to <code>Set­Threadpool­Timer</code> makes sure that no new callbacks are scheduled. This means that you can call <code>Close­Threadpool­Timer</code>, and it will always be in the “callback is not running” case, so you can free the context data as soon as <code>Close­Threadpool­Timer</code> returns. </p>
+<p>Great, we solved the context data lifetime problem, but we introduced a new problem: Deadlock. </p>
+<p>Oh, look at the time. We’ll continue this discussion next time. </p>
+
+
+</body>

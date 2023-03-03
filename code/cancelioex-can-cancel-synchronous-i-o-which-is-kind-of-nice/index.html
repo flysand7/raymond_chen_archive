@@ -1,0 +1,52 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">CancelIoEx can cancel synchronous I/O, which is kind of nice</h1>  <!-- .entry-meta -->
+
+<p>The <code>Cancel­Io­Ex</code> function can be used to cancel synchronous I/O. </p>
+<p>This is handy if you have a program that processes a file in large chunks and you want to give it a Cancel button. Without <code>Cancel­Io­Ex</code>, you would either have to accept that the program won’t respond to the Cancel button until the large I/O is complete, or you would have to change your program so it processed the file in small chunks, which is less efficient. </p>
+<p>But with <code>Cancel­Io­Ex</code>, you can do your large chunk processing and still let the user cancel it immediately. </p>
+<pre>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+
+#define FILESIZE (200*1024*1024)
+
+DWORD CALLBACK ThreadProc(void* h)
+{
+ void* buffer = VirtualAlloc(0, FILESIZE, MEM_COMMIT, PAGE_READWRITE);
+ DWORD actual;
+ auto result = ReadFile(h, buffer, FILESIZE, &amp;actual, 0);
+ auto lastError = GetLastError();
+ printf("ReadFile -&gt; %d, GetLastError = %d\n", result, lastError);
+ return 0;
+}
+
+int __cdecl main(int, char**)
+{
+ auto h = CreateFile("D:\\setup.exe", GENERIC_READ, 0, 0,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL |
+                    FILE_FLAG_NO_BUFFERING, 0);
+  DWORD id;
+  auto thread = CreateThread(0, 0, ThreadProc, h, 0, &amp;id);
+  Sleep(1000);
+  CancelIoEx(h, nullptr);
+  WaitForSingleObject(thread, INFINITE);
+  return 0;
+}
+</pre>
+<p>This program reads 200<a href="https://blogs.msdn.microsoft.com/oldnewthing/20090611-00/?p=17933">MB</a> of data from a file that I hard-coded, which on my machine happens to be on a CD-ROM. One thread reads the beginning portion of the file into memory, and the other thread calls <code>Cancel­Io­Ex</code> to cancel the large I/O operation. </p>
+<pre>
+ReadFile -&gt; 0, GetLastError = 995
+</pre>
+<p>Error 995 is </p>
+<pre>
+C:\&gt; <a href="https://blogs.msdn.microsoft.com/oldnewthing/20170919-00/?p=97046">NET HELPMSG</a> 995
+
+The I/O operation has been aborted because of either
+a thread exit or an application request.
+</pre>
+<p>which corresponds to <code>ERROR_</code><code>OPERATION_</code><code>ABORTED</code>, just like the documentation says. </p>
+<p><b>Related reading</b>: <a href="https://blogs.msdn.microsoft.com/oldnewthing/20150323-00/?p=44413">CancelIoEx can cancel I/O on console input, which is kind of nice</a>. </p>
+
+
+</body>

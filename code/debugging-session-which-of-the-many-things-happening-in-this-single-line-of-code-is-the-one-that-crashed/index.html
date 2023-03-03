@@ -1,0 +1,89 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Debugging session: Which of the many things happening in this single line of code is the one that crashed?</h1>  <!-- .entry-meta -->
+
+<p>A crash report came in, and the offending line of code was the following: </p>
+<pre>
+void CDeloreanSettings::UpdateFluxModulation(bool sendNotification)
+{
+    ComPtr&lt;IFluxModulator&gt; spModulator;
+    // Crash on the next line
+    if (SUCCEEDED(m_spFluxCapacitor-&gt;GetFluxModulator(&amp;spModulator)))
+    {
+        ...
+    }
+}
+</pre>
+<p>Someone made the initial diagnosis that </p>
+<blockquote class="q"><p>The call is to <code>Release­And­Get­Address­Of()</code> on a <code>ComPtr</code> object which is declared right above (which should be initialized to <code>nullptr</code>). Am I missing something? </p></blockquote>
+<p>Let’s look at the disassembly. First, with no annotations. See if you can figure it out yourself. </p>
+<pre>
+CDeloreanSettings::UpdateFluxModulation:
+mov     qword ptr [rsp+10h],rbx
+mov     qword ptr [rsp+18h],rsi
+mov     qword ptr [rsp+20h],rdi
+push    rbp
+push    r14
+push    r15
+mov     rbp,rsp
+sub     rsp,50h
+mov     rax,qword ptr [__security_cookie]
+xor     rax,rsp
+mov     qword ptr [rbp-8],rax
+mov     rdi,qword ptr [rcx+18h]
+mov     r14,rcx
+lea     rcx,[rbp-10h]
+xor     esi,esi
+mov     r15b,dl
+and     qword ptr [rbp-10h],rsi
+call    Microsoft::WRL::ComPtr&lt;IUnrelatedInterface&gt;::InternalRelease
+mov     rax,qword ptr [rdi] &lt;&lt; crash here
+mov     rbx,qword ptr [rax+38h]
+mov     rcx,rbx
+call    qword ptr [__guard_check_icall_fptr]
+lea     rdx,[rbp-10h]
+mov     rcx,rdi
+call    rbx
+</pre>
+<p>Okay, here’s the version with my annotations: </p>
+<pre>
+CDeloreanSettings::UpdateFluxModulation:
+; Prologue: <a href="https://devblogs.microsoft.com/oldnewthing/">Save nonvolatile registers</a> and build the stack frame.
+mov     qword ptr [rsp+10h],rbx
+mov     qword ptr [rsp+18h],rsi
+mov     qword ptr [rsp+20h],rdi
+push    rbp
+push    r14
+push    r15
+mov     rbp,rsp
+sub     rsp,50h
+mov     rax,qword ptr [__security_cookie]
+xor     rax,rsp
+mov     qword ptr [rbp-8],rax
+
+mov     rdi,qword ptr [rcx+18h] ; rdi = m_spFluxCapacitor
+mov     r14,rcx                 ; save "this"
+lea     rcx,[rbp-10h]           ; prepare spModulator.ReleaseAndGetAddressOf
+xor     esi,esi
+mov     r15b,dl                 ; save "sendNotification"
+and     qword ptr [rbp-10h],rsi ; construct spModulator
+; ReleaseAndGetAddressOf was inlined. Here's the Release part:
+call    Microsoft::WRL::ComPtr&lt;<a href="https://devblogs.microsoft.com/oldnewthing/">IUnrelatedInterface</a>&gt;::InternalRelease
+
+; prepare m_spFluxCapacitor-&gt;...
+; Crash here loading vtable from m_spFluxCapacitor
+mov     rax,qword ptr [rdi] &lt;&lt; crash here
+mov     rbx,qword ptr [rax+38h] ; load address of GetFluxModulator
+mov     rcx,rbx                 ; parameter to <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/mt637065(v=vs.85).aspx">CFG</a> check
+call    qword ptr [__guard_check_icall_fptr] ; check the function pointer
+
+; Here's the GetAddressOf part of ReleaseAndGetAddressOf:
+lea     rdx,[rbp-10h] ; spModulator.GetAddressOf
+mov     rcx,rdi                 ; "this" for GetFluxModulator
+call    rbx                     ; _spFluxCapacitor-&gt;GetFluxModulator()
+</pre>
+<p>The compiler inlined <code>Release­And­Get­Address­Of</code>, and it interleaved various unrelated operations. In the second block of code, you can see it interleave the construction of the <code>Com­Ptr</code> with the call to <code>Internal­Release</code>. In the third block, you can see it peform the control flow guard test before performing the <code>Get­Addresss­Of</code>. </p>
+<p>The conclusion, therefore, is not that the crash occurred in the <code>Release­And­Get­Address­Of</code> The <code>Release­And­Get­Address­Of</code> just finished releasing and is waiting for its turn to do the <code>Get­Addresss­Of</code>. Rather, the crash occurred because <code>m_spFlux­Capacitor</code> is null, and we crashes trying to read the vtable from a null pointer. </p>
+<p>Further investigation of the issue revealed that <code>Update­Flux­Modulation</code> is called from an event handler that was registered to be called whenever the modulation changed. Inspection of memory showed that the event registration token was zero, indicating that the event has already been unregistered. The issue is that there was a modulation change in flight when the event handler was unregistered, so the <code>CDelorean­Settings</code> received its change notification after it had unregistered. The fix is to have the handler check whether it still has a <code>m_spFlux­Capacitor</code>, and if not, then ignore the notification, on the assumption that it was a stray notification that was late to arrive. </p>
+
+
+</body>

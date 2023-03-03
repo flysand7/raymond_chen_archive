@@ -1,0 +1,135 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When something gets added to a queue, it takes time for it to come out the front of the queue</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to know why the input they were simulating with <code>Send­Input</code> is not being reported by <code>Get­Async­Key­State</code>. Isn’t that supposed to reflect the instantaneous keyboard state? I just pushed the key down (or at least simulated it), but when I ask if the key is down, I’m told “Nope.” What’s the deal?</p>
+<pre>INPUT input = { 0 };
+input.type = INPUT_KEYBOARD;
+input.ki.wVk = 'A';
+input.ki.wScan = 'A';
+input.ki.dwFlags = 0; // key down
+SendInput(1, &amp;input, sizeof(INPUT));
+
+assert(GetAsyncKeyState('A') &lt; 0);
+</pre>
+<p>The <code>Send­Input</code> call simulates pressing the <kbd>A</kbd> key, and the code immediately checks whether the key is down.</p>
+<p>But sometimes the assertion fires. How can that be?</p>
+<p>Because you’re asking the question before the window manager has fully processed the input. Here’s a little diagram.</p>
+
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td align="center" style="background-color: #ccfdcc; width: 5em; padding: 1ex;">Mouse</td>
+<td> </td>
+<td align="center" style="background-color: #ccfdcc; width: 5em; padding: 1ex;">Keyboard</td>
+<td> </td>
+<td align="center" style="background-color: #ccfdcc; width: 5em; padding: 1ex;">Hardware</td>
+</tr>
+<tr>
+<td style="width: 5em;"> </td>
+<td align="center">↘︎</td>
+<td align="center">↓</td>
+<td align="center">↙︎</td>
+<td style="width: 5em;"> </td>
+</tr>
+<tr>
+<td align="center" style="background-color: #ccfdcc; width: 5em; padding: 1ex;">SendInput</td>
+<td align="center">→</td>
+<td align="center" rowspan="2" style="background-color: #ccfdcc; width: 5em; padding: 1ex;">Hardware<br/>
+Input<br/>
+Queue</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td colspan="4" style="height: 4em;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td align="center">↷</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td align="center" style="background-color: #ccfdcc; width: 5em; padding: 1ex;">Dequeue</td>
+<td> </td>
+<td style="position: relative; width: 5em;" valign="middle">
+
+</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td align="center">↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td align="center" style="background-color: #ccfdcc; width: 5em; padding: 1ex;">Low<br/>
+Level<br/>
+Hooks</td>
+<td> </td>
+<td style="position: relative; width: 5em;" valign="middle">
+
+</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td align="center">↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td align="center" style="background-color: #ccfdcc; width: 5em; padding: 1ex;">Update<br/>
+Input<br/>
+State</td>
+<td> </td>
+<td style="position: relative; width: 5em;">
+
+</td>
+</tr>
+<tr>
+<td> </td>
+<td align="center">↙︎</td>
+<td align="center">↓</td>
+<td align="center">↘︎</td>
+<td> </td>
+</tr>
+<tr>
+<td align="center" style="background-color: #ccfdcc; width: 5em; padding: 1ex;">App 1</td>
+<td> </td>
+<td align="center" style="background-color: #ccfdcc; width: 5em; padding: 1ex;">App 2</td>
+<td> </td>
+<td align="center" style="background-color: #ccfdcc; width: 5em; padding: 1ex;">App 3</td>
+</tr>
+</tbody>
+</table>
+<p>When you call <code>Send­Input</code>, you’re putting input packets into the system hardware input queue. (Note: Not the official term. That’s just what I’m calling it today.) This is the same input queue that the hardware device driver stack uses when physical devices report events.</p>
+<p>The message goes into the hardware input queue, where the Raw Input Thread picks them up. The Raw Input Thread runs at high priority, so it’s probably going to pick it up really quickly, but on a multi-core machine, your code can keep running while the second core runs the Raw Input Thread. And the Raw Input thread has some stuff it needs to do once it dequeues the event. If there are low-level input hooks, it has to call each of those hooks to see if any of them want to reject the input. (And those hooks can take who-knows-how-long to decide.) Only after all the low-level hooks sign off on the input is the Raw Input Thread allowed to modify the input state and cause <code>Get­Async­Key­State</code> to report that the key is down.</p>
+<p>And if you manage to look before all this happens, your code will see that the key isn’t down yet.</p>
+<p>It’s like dropping a letter in the mailbox and then calling somebody to say, “Did you get my letter yet?” Okay, the Raw Input Thread is faster than the Postal Service, but you still have to give it a chance to get the message, query each of the low-level input hooks, decide who the message should be delivered to, and put it in their message queue.</p>
+<p>
+<script>
+window.addEventListener("load", function() {
+  var fullFF = getComputedStyle(document.body).fontFamily;
+  var simpleFF = fullFF.replace(/ Emoji/g, "");
+  // break up "style" to prevent wordpress from injecting random junk
+  document.getElementById("p20140213_head").innerHTML =
+`<s` + `tyle>
+body { font-family: ${simpleFF}; }
+.emoji { font-family: ${fullFF}; }
+.entry-content th { padding: 1px; } /* stylesheet workaround */
+.entry-content td { padding: 1px; } /* stylesheet workaround */
+</s` + `tyle>`;
+});
+</script></p>
+
+
+</body>

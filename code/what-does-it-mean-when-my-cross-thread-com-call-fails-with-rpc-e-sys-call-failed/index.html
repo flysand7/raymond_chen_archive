@@ -1,0 +1,17 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What does it mean when my cross-thread COM call fails with <code>RPC_<wbr/>E_<wbr/>SYS_<wbr/>CALL_<wbr/>FAILED</code>?</h1>  <!-- .entry-meta -->
+
+<p>COM generates the error <code>RPC_<wbr>E_<wbr>SYS_<wbr>CALL_<wbr>FAILED</wbr></wbr></wbr></wbr></code> under a few circumstances.</p>
+<p>The first category is “a system call failed because something got corrupted”. These code paths are used if the calling thread is an MTA.</p>
+<ul>
+<li><code>Wait­For­Single­Object</code> failed.</li>
+<li><code>Duplicate­Handle</code> failed.</li>
+</ul>
+<p>If these calls fail, it means that the handle is invalid. The reason might be that COM’s internal bookkeeping is corrupted. Or it could be that the handle was once valid but no longer is: Maybe somebody else in the process closed COM’s handle by mistake, perhaps due to a handle double-close bug or an uninitialized variable. Or maybe the handle was closed by an outside force, perhaps the result of an inadvised attempt to <a href="http://technet.microsoft.com/en-us/magazine/2009.04.windowsconfidential.aspx"> force-close a handle</a>.</p>
+<p>Generally, if something is corrupted, things are already in a bad state, and you may as well just fail fast rather than try to muddle through and possibly corrupt things even worse.</p>
+<p>Another category is “a system call failed because we couldn’t contact the recipient.” If the destination thread is a single-threaded apartment, the request to do work is performed by posting a message to the thread, but if the thread has stopped processing messages, it’s possible that the thread’s posted message queue is full and won’t accept any new messages. In that case, the failed system call is <code>Post­Message</code>.</p>
+<p>To diagnose this problem in the case of a single-threaded apartment, check the thread that is the destination of the cross-thread COM call and ensure that it is pumping messages. It’s possible that it got stuck on a mutex or blocked on a <code>Wait­For­Single­Object</code> that is not completing. That would prevent the thread from pumping messages, and if it stays in that state for a long time, its inbound message queue can fill up, preventing new work from being posted, and resulting in the <code>RPC_<wbr/>E_<wbr/>SYS_<wbr/>CALL_<wbr/>FAILED</code> error.</p>
+<p>Just some things to look for when you’re trying to diagnose a <code>RPC_<wbr/>E_<wbr/>SYS_<wbr/>CALL_<wbr/>FAILED</code> failure.</p>
+
+
+</body>

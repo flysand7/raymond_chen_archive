@@ -1,0 +1,260 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Ready… cancel… wait for it! (part 1)</h1>  <!-- .entry-meta -->
+
+<p>
+One of the cardinal rules of the <code>OVERLAPPED</code>
+structure is <i>the <code>OVERLAPPED</code> structure
+must remain valid until the I/O completes</i>.
+The reason is that the <code>OVERLAPPED</code> structure
+is
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/12/17/10106259.aspx">
+manipulated by address rather than by value</a>.
+</p>
+<p>
+The word <i>complete</i> here has a specific technical meaning.
+It doesn’t mean “must remain valid until you are no longer interested
+in the result of the I/O.”
+It means that the structure must remain valid until
+the I/O subsystem has signaled that the I/O operation
+is finally over, that there is nothing left to do,
+it has passed on:
+You have an ex-I/O operation.
+</p>
+<p>
+Note that
+an I/O operation can complete successfully, or it can
+complete unsuccessfully.
+Completion is not the same as success.
+</p>
+<p>
+A common mistake when performing overlapped I/O
+is issuing a cancel and immediately freeing the <code>OVERLAPPED</code>
+structure.
+For example:
+</p>
+<pre>
+<i>// this code is wrong
+ HANDLE h = ...; // handle to file opened as FILE_FLAG_OVERLAPPED
+ OVERLAPPED o;
+ BYTE buffer[1024];
+ InitializeOverlapped(&amp;o); // creates the event etc
+ if (ReadFile(h, buffer, sizeof(buffer), NULL, &amp;o) ||
+     GetLastError() == ERROR_IO_PENDING) {
+  if (WaitForSingleObject(o.hEvent, 1000) != WAIT_OBJECT_0) {
+   // took longer than 1 second - cancel it and give up
+   CancelIo(h);
+   return WAIT_TIMEOUT;
+  }
+  ... use the results ...
+ }
+ ...</i>
+</pre>
+<p>
+The bug here is that after calling <code>Cancel­Io</code>,
+the function returns without waiting for the <code>Read­File</code>
+to complete.
+Returning from the function
+implicitly frees the automatic variable <code>o</code>.
+When the <code>Read­File</code> finally completes, the I/O system
+is now writing to stack memory that has been freed and is probably
+being reused by another function.
+The result is impossible to debug:
+First of all, it’s a race condition between your code and the I/O
+subsystem, and breaking into the debugger <i>doesn’t stop the
+I/O subsystem</i>.
+If you step through the code, you don’t see the corruption,
+because the I/O completes <i>while you’re broken into the debugger</i>.
+</p>
+<p>
+Here’s what happens when the program is run outside the debugger:
+</p>
+<table border="0">
+<tbody>
+<tr>
+<td>ReadFile</td>
+<td>→</td>
+<td>I/O begins</td>
+</tr>
+<tr>
+<td>WaitForSingleObject</td>
+<td></td>
+<td>I/O still in progress</td>
+</tr>
+<tr>
+<td>WaitForSingleObject times out</td>
+</tr>
+<tr>
+<td>CancelIo</td>
+<td>→</td>
+<td>I/O cancellation submitted to device driver</td>
+</tr>
+<tr>
+<td>return</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td>Device driver was busy reading from the hard drive<br/>
+        Device driver receives the cancellation<br/>
+        Device driver abandons the rest of the read operation<br/>
+        Device driver reports that I/O has been canceled<br/>
+        I/O subsystem writes <code>STATUS_CANCELED</code>
+        to <code>OVERLAPPED</code> structure<br/>
+        I/O subsystem queues the completion function (if applicable)<br/>
+        I/O subsystem signals the completion event (if applicable)<br/>
+        I/O operation is now complete</td>
+</tr>
+</tbody>
+</table>
+<p>
+When the I/O subsystem receives word from the device driver
+that the cancellation has completed,
+it performs the usual operations when an I/O operation completes:
+It updates the <code>OVERLAPPED</code> structure with the results
+of the I/O operation, and notifies whoever wanted to be notified
+that the I/O is finished.
+</p>
+<p>
+Notice that when it updates the <code>OVERLAPPED</code> structure,
+it’s updating memory that has already been freed back to the stack,
+which means that it’s corrupting the stack of whatever function
+happens to be running right now.
+(It’s even worse if you happened to catch it while it was in the
+process of updating the <code>buffer</code>!)
+Since the precise timing of I/O is unpredictable,
+the program crashes with memory corruption that keeps changing
+each time it happens.
+</p>
+<p>
+If you try to debug the program, you get this:
+</p>
+<table border="0">
+<tbody>
+<tr>
+<td>ReadFile</td>
+<td>→</td>
+<td>I/O begins</td>
+</tr>
+<tr>
+<td>WaitForSingleObject</td>
+<td></td>
+<td>I/O still in progress</td>
+</tr>
+<tr>
+<td>WaitForSingleObject times out</td>
+</tr>
+<tr>
+<td>Breakpoint hit on <code>Cancel­Io</code> statement<br/>
+        Stops in debugger</td>
+</tr>
+<tr>
+<td>Hit F10 to step over the CancelIo call</td>
+<td>→</td>
+<td>I/O cancellation submitted to device driver</td>
+</tr>
+<tr>
+<td>Breakpoint hit on <code>return</code> statement<br/>
+        Stops in debugger</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td>Device driver was busy reading from the hard drive<br/>
+        Device driver receives the cancellation<br/>
+        Device driver abandons the rest of the read operation<br/>
+        Device driver reports that I/O has been canceled<br/>
+        I/O subsystem writes <code>STATUS_CANCELED</code>
+        to <code>OVERLAPPED</code> structure<br/>
+        I/O subsystem queues the completion function (if applicable)<br/>
+        I/O subsystem signals the completion event (if applicable)<br/>
+        I/O operation is now complete</td>
+</tr>
+<tr>
+<td>Look at the <code>OVERLAPPED</code> structure in the debugger<br/>
+        It says <code>STATUS_CANCELED</code></td>
+</tr>
+<tr>
+<td>Hit F5 to resume execution<br/>
+        No memory corruption</td>
+</tr>
+</tbody>
+</table>
+<p>
+Breaking into the debugger changed the timing of the I/O operation
+relative to program execution.
+Now, the I/O completes before the function returns,
+and consequently there is no memory corruption.
+You look at the <code>OVERLAPPED</code> structure and say,
+“See? Immediately on return from the <code>Cancel­Io</code> function,
+the <code>OVERLAPPED</code> structure has been updated with the result,
+and the <code>buffer</code> contents are not being written to.
+It’s safe to free them both now.
+Therefore, this can’t be the source of my memory corruption bug.”
+</p>
+<p>
+Except, of course, that it is.
+</p>
+<p>
+This is even more crazily insidious because the <code>OVERLAPPED</code>
+structure and the <code>buffer</code> are
+updated by the I/O subsystem, which means that it happens
+<i>from kernel mode</i>.
+This means that
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/05/09/8475735.aspx">
+write breakpoints set by your debugger won’t fire</a>.
+Even if you manage to narrow down the corruption to
+“it happens somewhere in this function”,
+your breakpoints will never see it as it happens.
+You’re going to see that the value was good,
+then a little while later, the value was bad,
+and yet your write breakpoint never fired.
+You’re then going to declare that the world has gone mad
+and seriously consider a different line of work.
+</p>
+<p>
+To fix this race condition,
+you have to delay freeing the <code>OVERLAPPED</code> structure
+and the associated <code>buffer</code>
+until the I/O is complete and anything else that’s using them
+has also given up their claim to it.
+</p>
+<pre>
+   // took longer than 1 second - cancel it and give up
+   CancelIo(h);
+   <font color="blue">WaitForSingleObject(o.hEvent, INFINITE); // added
+   // Alternatively: GetOverlappedResult(h, &amp;o, TRUE);</font>
+   return WAIT_TIMEOUT;
+</pre>
+<p>
+The <code>Wait­For­Single­Object</code> after the
+<code>Cancel­Io</code>
+waits for the I/O to complete
+before finally returning (and implicitly freeing the <code>OVERLAPPED</code>
+structure and the <code>buffer</code> on the stack).
+Better would be to use
+<code>GetOverlapped­Result</code>
+with <code>bWait = TRUE</code>,
+because that also handles the case where the <code>hEvent</code>
+member of the <code>OVERLAPPED</code> structure is <code>NULL</code>.
+</p>
+<p>
+<b>Exercise</b>:
+If you retrieve the completion status
+after canceling the I/O
+(either by looking at the <code>OVERLAPPED</code> structure
+directly or by using <code>GetOverlapped­Result</code>)
+there’s a chance that the overlapped result
+will be something other than <code>STATUS_CANCELED</code>
+(or <code>ERROR_CANCELLED</code> if you prefer Win32 error codes).
+Explain.
+</p>
+<p>
+<b>Exercise</b>:
+If this example had used <code>Read­File­Ex</code>,
+the proposed fix would be incomplete.
+Explain and provide a fix.
+Answer to come next time, and then we’ll look at another
+version of this same principle.</p>
+
+
+</body>

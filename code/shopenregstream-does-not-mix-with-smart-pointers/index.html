@@ -1,0 +1,45 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;"><code>SHOpenRegStream</code> does not mix with smart pointers</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, I noted that <a href="https://blogs.msdn.microsoft.com/oldnewthing/20151023-00/?p=91291"><code>Co­Get­Interface­And­Release­Stream</code> does not mix with smart pointers</a> because it performs an <code>IUnknown::</code><code>Release</code> of its interface parameter, which messes up all the bookkeeping because smart pointers expect that <i>they</i> are the ones which will perform the <code>Release</code>. </p>
+<p>The other half of the problem is functions like <code>SH­Open­Reg­Stream</code> and <code>SH­Open­Reg­Stream2</code> which return a COM pointer directly, rather than putting it into an output parameter. When you put them into a smart pointer, the default behavior of the smart pointer is to create a new reference, so it will call <code>AddRef</code> upon assignment or construction, and call <code>Release</code> upon replacement or destruction. </p>
+<pre>
+// Code in italics is wrong
+
+Microsoft::WRL::ComPtr&lt;IStream&gt; stream;
+<i>stream = SHOpenRegStream(...);</i>
+
+Microsoft::WRL::ComPtr&lt;IStream&gt; <i>stream(SHOpenRegStream(...));</i>
+
+ATL::CComPtr&lt;IStream&gt; stream;
+<i>stream = SHOpenRegStream(...);</i>
+
+ATL::CComPtr&lt;IStream&gt; <i>stream(SHOpenRegStream(...));</i>
+
+_com_ptr_t&lt;IStream&gt; stream;
+<i>stream = SHOpenRegStream(...);</i>
+
+_com_ptr_t&lt;IStream&gt; <i>stream(SHOpenRegStream(...));</i>
+</pre>
+<p>All of these operations will take the raw pointer returned by <code>SH­Open­Reg­Stream</code>, save it in the smart pointer, and increment the reference count. When the smart pointer is destructed, the reference count will be decremented. </p>
+<p>But the object started with a reference count of 1. After storing it in the smart pointer, the reference count is 2, even though there is only one object tracking it. When that object (in this case, the smart pointer) releases its reference, there is still one reference remaining, which nobody is tracking. </p>
+<p>You have a memory leak. </p>
+<p>The solution is to use the <code>Attach</code> method to say, “Here is an object that I would like you to adopt responsibility for.” The smart pointer will take the object but will <i>not</i> increment the reference count, because you told it, “I want you to take responsibility for the reference count that I am giving you.” </p>
+<pre>
+Microsoft::WRL::ComPtr&lt;IStream&gt; stream;
+<font color="blue">stream.Attach(SHOpenRegStream(...));</font>
+
+ATL::CComPtr&lt;IStream&gt; stream;
+<font color="blue">stream.Attach(SHOpenRegStream(...));</font>
+
+_com_ptr_t&lt;IStream&gt; stream;
+<font color="blue">stream.Attach(SHOpenRegStream(...));</font>
+
+_com_ptr_t&lt;IStream&gt; stream(SHOpenRegStream(...), <font color="blue">false</font>);
+</pre>
+<p>The <code>_com_ptr_t</code> class has a bonus constructor that takes a boolean parameter that indicates whether the smart pointer should perform an <code>AddRef</code> on the pointer. In the case where you want to adopt an existing reference, you pass <code>false</code>. </p>
+<p>This problem is basically the flip side of the <code>Co­Get­Interface­And­Release­Stream</code> problem. Whereas that one results in an over-release, this results in an under-release. </p>
+<p>And the root cause of both of them is that they use a calling pattern that doesn’t conform to COM recommendations. </p>
+
+
+</body>

@@ -1,0 +1,37 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How ownership of the Windows clipboard is tracked in Win32</h1>  <!-- .entry-meta -->
+
+<p>In Win32, there is the concept of a clipboard <i>owner</i>. How does that work?</p>
+<p>The intended rule is that the clipboard owner is the window that created the data that is currently on the clipboard.</p>
+<p>The intended usage pattern for putting data on the clipboard is</p>
+<ul>
+<li>Call <code>Open­Clipboard(hwnd)</code> passing the window that you want to become the new clipboard owner. (For the purpose of discussion, let’s say that the <i>clipboard opener</i> is the window handle that was passed to the <code>Open­Clipboard</code> function.)</li>
+<li>Call <code>Empty­Clipboard()</code> to wipe out the previous contents.</li>
+<li>Call <code>Set­Clipboard­Data()</code> once for each piece of data you want to put onto the clipboard.</li>
+<li>Call <code>Close­Clipboard()</code> to indicate that you are done setting the clipboard data.</li>
+<li>Congratulations, you are now the clipboard owner.</li>
+</ul>
+<p>The clipboard owner receives a <code>WM_<wbr/>RENDER­FORMAT</code> message when somebody requests data from the clipboard that had been set as delay-rendered. It also receives a <code>WM_<wbr/>RENDER­ALL­FORMATS</code> message as part of the window destruction sequence if it is still the owner of the clipboard at the time it is destroyed. Delay-rendering lets you defer the creation of complicated clipboard data until the point it is requested. And if nobody ever requests it, then you saved yourself a lot of work.</p>
+<p><b>Bonus reading</b>: <a href="/code/what-is-the-proper-handling-of-wm-renderformat-and-wm-renderallformats" title="What is the proper handling of WM_RENDERFORMAT and WM_RENDERALLFORMATS?"> What is the proper handling of <code>WM_<wbr/>RENDER­FORMAT</code> and <code>WM_<wbr/>RENDER­ALL­FORMATS</code></a>?</p>
+<p>The clipboard owner also receives a <code>WM_<wbr/>DESTROY­CLIPBOARD</code> message when the clipboard contents are subsequently emptied. This tells the clipboard owner that it can free any memory that it had been using to produce the delay-rendered data.</p>
+<p>The intended usage pattern for reading data from the clipboard is</p>
+<ul>
+<li>Call <code>Open­Clipboard(hwnd)</code> passing the window that is reading the clipboard.</li>
+<li>Call <code>Get­Clipboard­Data()</code> to retrieve data from the clipboard.</li>
+<li>Call <code>Close­Clipboard()</code> to indicate that you are done reading the clipboard data.</li>
+</ul>
+<p>If everybody follows the rules, then it all works out.</p>
+<p>Spoiler alert: Not everybody follows the rules.</p>
+<p>Some programs open the clipboard with the intent of <i>adding</i> data to the clipboard, rather than replacing it with new data. Those programs call <code>Open­Clipboard</code>, followed immediately by <code>Set­Clipboard­Data</code> without an intervening <code>Empty­Clipboard</code>.</p>
+<p>There was historically no enforcement that the caller of <code>Set­Clipboard­Data</code> is the clipboard owner. Back in the days of 16-bit Windows, the system assumed that applications were honest and played by the rules for the common good. (And for compatibility, these shenanigans need to continue to work, even though the world has become a more dangerous place.)</p>
+<p>This “bonus clipboard data” scenario creates a bit of a problem, since there is only one clipboard owner (which you can interrogate by calling <code>Get­Clipboard­Owner()</code>), but there are now <i>two</i> windows who collaborated to put data onto the clipboard. Who is the owner?</p>
+<p>Ownership of the clipboard changes as follows:</p>
+<ul>
+<li>When <code>Empty­Clipboard()</code> is called, the current clipboard opener becomes the clipboard owner.</li>
+<li>When the clipboard owner is destroyed, the clipboard owner resets to null.</li>
+</ul>
+<p>Therefore, the clipboard owner can be summarized as “the window that most recently called <code>Empty­Clipboard</code>, if it still exists.”</p>
+<p><b>Bonus chatter</b>: There is also special handling of the case where somebody passes <code>NULL</code> to <code>Open­Clipboard</code>, indicating that “nobody” is opening the clipboard.</p>
+
+
+</body>

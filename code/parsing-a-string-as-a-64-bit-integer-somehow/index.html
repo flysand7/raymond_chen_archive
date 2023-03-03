@@ -1,0 +1,77 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Parsing a string as a 64-bit integer, somehow</h1>  <!-- .entry-meta -->
+
+<p>Today’s Little Program takes a string and tries to parse it as a 64-bit integer in formats that a programmer would likely encounter. </p>
+<p>Here’s a first stab: </p>
+<pre>
+using System;
+using System.Globalization;
+
+class Program
+{
+ static long ParseLongSomehow(string s)
+ {
+  if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) {
+   return long.Parse(s.Substring(2), NumberStyles.HexNumber);
+  } else {
+   return long.Parse(s);
+  }
+ }
+
+ public static void Main(string[] args)
+ {
+  long value = ParseLongSomehow(args[0]);
+  Console.WriteLine(value);
+  Console.WriteLine("0x{0:X}", value);
+ }
+}
+</pre>
+<p>If the string begins with <code>0x</code>, then we treat the rest of the argument as a hex value; otherwise, we treat it as a decimal value. </p>
+<p>Unfortunately, this doesn’t work if the input is <code>9223372036854775808</code>, which is the value of <code>1 &lt;&lt; 63</code>, a value that is representable as a 64-bit unsigned value but not a 64-bit signed value. </p>
+<p>Our problem statement was pretty vague, so let’s <a href="http://blogs.msdn.com/b/ericlippert/archive/2009/11/19/always-write-a-spec-part-one.aspx">write a functional specification</a>. It helps to know what problem you’re solving before you start to solve it. Otherwise, you’re just flailing around writing code <a href="http://ericlippert.com/2014/03/05/how-to-debug-small-programs/">before you have a plan</a>. When I tried to solve this problem, I flailed around a bit until I realized that I didn’t have a spec. </p>
+<p>What formats would a programmer be likely to encounter as the string representation of a 64-bit integer? </p>
+<ul>
+<li><code>0x1234</code>: 64-bit number in hex format,     case-insensitive.     The value can range from 0 to <code>UInt64.MaxValue</code>. 
+<li><code>12345</code>: 64-bit unsigned number in decimal format.     The value can range from 0 to <code>UInt64.MaxValue</code>. 
+<li><code>-12345</code>: 64-bit signed number in decimal format.     The value can range from <code>Int64.MinValue</code>     to <code>Int64.MaxValue</code>. 
+<li>Other formats may be permitted, but you need to support at     least the above. </li></li></li></li></ul>
+<p>Writing down exactly what I was doing and what I wasn’t doing was the part that solved my flailing. I had been worrying about things like <code>-0x12345</code> and <code>-9223372036854775809</code> and <code>9999999999999999999</code>, even though those numbers would not be something a programmer would be likely to encounter. </p>
+<p>From the specification we can develop our algorithm. </p>
+<ul>
+<li>If the string begins with <code>0x</code>, then     parse what’s left as an unsigned 64-bit hexadecimal number. 
+<li>If the string begins with a minus sign, then parse     it as a 64-bit signed number in decimal format. 
+<li>If the string does not begin with a minus sign, then parse     it as a 64-bit unsigned number in decimal format. </li></li></li></ul>
+<p>And that is pretty easy to implement. </p>
+<pre>
+ static long ParseLongSomehow(string s)
+ {
+  if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) {
+   return long.Parse(s.Substring(2), NumberStyles.HexNumber);
+  } else if (s[0] == '-') {
+   return long.Parse(s);
+  } else {
+   return (long)ulong.Parse(s);
+  }
+ }
+</pre>
+<p>Note that we are a little sloppy with our treatment of whitespace. We accept leading and trailing spaces on decimal values, and allow trailing spaces on hex values (and even allow spaces between the <code>0x</code> and the first hex digit). That’s okay, because the spec allows us to accept formats beyond the ones listed. </p>
+<p>Now, for bonus points, let’s revise the functional specification a little bit, specifically by adding another case: </p>
+<ul>
+<li><code>0x12`3456789A</code>: 64-bit number in hex format,     case-insensitive, with backtick separating the upper 32 bits     from the lower 32 bits. </li></ul>
+<p>This is the format used by the Windows debugger engine. </p>
+<pre>
+ static long ParseLongSomehow(string s)
+ {
+  if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) {
+   return long.Parse(s.Substring(2)<font color="blue">.Replace("`", "")</font>, NumberStyles.HexNumber);
+  } else if (s[0] == '-') {
+   return long.Parse(s);
+  } else {
+   return (long)ulong.Parse(s);
+  }
+ }
+</pre>
+<p>We’ll leave it here for now. Next time, we’ll start putting some blocks together. </p>
+
+
+</body>

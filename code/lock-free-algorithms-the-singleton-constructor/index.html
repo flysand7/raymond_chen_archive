@@ -1,0 +1,234 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Lock-free algorithms: The singleton constructor</h1>  <!-- .entry-meta -->
+
+<p>
+The first half may be familiar to many (most?) readers,
+but there’s an interesting exercise at the bottom.
+</p>
+<p>
+A very useful pattern for the Interlocked* functions is
+lock-free lazy initialization via
+<code>Interlocked­Compare­Exchange­Pointer­Release</code>.
+Yes, that’s a really long function name, but it turns out
+every part of it important.
+</p>
+<pre>
+Widget *g_pwidCached;
+Widget *GetSingletonWidget()
+{
+ Widget *pwid = g_pwidCached;
+ if (!pwid) {
+  pwid = new(nothrow) Widget();
+  if (pwid) {
+   Widget *pwidOld = reinterpret_cast&lt;Widget*&gt;
+       (InterlockedCompareExchangePointerRelease(
+          &amp;reinterpret_cast&lt;PVOID&amp;&gt;(g_pwidCached),
+          pwid, NULL));
+   if (pwidOld) {
+    delete pwid; // lost the race - destroy the redundant copy
+    pwid = pwidOld; // use the old one
+   }
+  }
+ }
+ return pwid;
+}
+</pre>
+<p>
+This is a double-check lock, but without the locking.
+Instead of taking lock when doing the initial construction,
+we just let it be a free-for-all over who gets to create the
+object.
+If five threads all reach this code at the same time,
+sure, let’s create five objects.
+After everybody creates what they think is the winning object,
+they called
+<code>Interlocked­Compare­Exchange­Pointer­Release</code>
+to attempt to update the global pointer.
+</p>
+<p>
+The parts of the name of the
+<code>Interlocked­Compare­Exchange­Pointer­Release</code>
+function
+work like this:
+</p>
+<ul>
+<li><code>Interlocked</code>: The operation is atomic.
+    This is important to avoid two threads successfully updating
+    the value of <code>g_pwidCached</code>.
+</li>
+<li><code>Compare</code>: The value in <code>g_pwidCached</code>
+    is compared against <code>NULL</code>.
+</li>
+<li><code>Exchange</code>:
+    If the values are equal, then
+    <code>g_pwidCached</code> is set to <code>pwid</code>.
+    This, combined with the comparison, ensures that only one
+    thread gets to set the value of <code>g_pwidCached</code>.
+</li>
+<li><code>Pointer</code>:
+    The operations are on pointer-sized data.
+</li>
+<li><code>Release</code>:
+    The operation takes place with
+    <a href="http://blogs.msdn.com/oldnewthing/archive/2008/10/03/8969397.aspx">
+    release semantics</a>.
+    This is important to ensure that the <code>pwid</code> we created
+    is fully-constructed before we publish its pointer to other
+    processors.
+</li>
+</ul>
+<p>
+This technique is suitable when it’s okay to let multiple threads
+try to create the singleton (and have all the losers destroy
+their copy).
+If creating the singleton is expensive or has unwanted
+side-effects, then you don’t want to use the free-for-all algorithm.
+</p>
+<p>
+Bonus reading:
+</p>
+<ul>
+<li>
+<a href="http://msdn.microsoft.com/en-us/library/aa363808.aspx">
+    One-Time Initialization</a>
+    helper functions save you from having to write all this code
+    yourself.
+    They deal with all the synchronization and memory barrier
+    issues, and support both the one-person-gets-to-initialize
+    and the free-for-all-initialization models.
+</li>
+<li>
+<a href="http://www.bluebytesoftware.com/blog/2007/06/09/ALazyInitializationPrimitiveForNET.aspx">
+    A lazy initialization primitive for .NET</a>
+    provides a C# version of the same.
+</li>
+</ul>
+<p>
+Okay, now here’s the interesting exercise.
+This is an actual problem I helped out with,
+although details have been changed for expository purposes.
+</p>
+<blockquote class="q">
+<p>
+We have a data structure which manages a bunch of singleton objects,
+let’s say that they are instances of a structure
+called <code>ITEMCONTROLLER</code> and they are keyed by a 32-bit ID.
+We’re looking for design suggestions on making it thread-safe.
+The existing code goes like this (pseudocode):
+</p>
+<pre>
+struct ITEMCONTROLLER;
+struct SINGLETONINFO {
+ DWORD dwId;
+ ITEMCONTROLLER *(*pfnCreateController)();
+};
+class SingletonManager {
+public:
+ // rgsi is an array that describes how to create the objects.
+ // It's a static array, with csi in the range 20 to 50.
+ SingletonManager(const SINGLETONINFO *rgsi, UINT csi)
+               : m_rgsi(rgsi), m_csi(csi),
+                 m_rgcs(NULL), m_ccs(0), m_ccsAlloc(0) { }
+ ~SingletonManager() { ... }
+ ITEMCONTROLLER *Lookup(DWORD dwId);
+private:
+ struct CREATEDSINGLETON {
+  DWORD dwId;
+  ITEMCONTROLLER *pic;
+ };
+private:
+ const SINGLETONINFO *m_rgsi;
+ int m_csi;
+ // Array that describes objects we've created
+ CREATEDSINGLETON *m_rgcs;
+ int m_ccs;
+};
+ITEMCONTROLLER *SingletonManager::Lookup(DWORD dwId)
+{
+ int i;
+ // See if we already created one
+ for (i = 0; i &lt; m_ccs; i++) {
+  if (m_rgcs[i].dwId == dwId)
+   return m_rgcs[i].pic;
+ }
+ // Not yet created - time to create one
+ ITEMCONTROLLER *pic;
+ for (i = 0; i &lt; m_rgsi; i++) {
+  if (m_rgsi[i].dwId == dwId) {
+   pic = m_rgsi[i].pfnCreateController();
+   break;
+  }
+ }
+ if (pic == NULL) return;
+ ... if m_rgcs == NULL then allocate it and update m_ccsAlloc
+ ... else realloc it bigger and update m_ccsAlloc
+ // append to our array so we can find it next time
+ m_rgcs[m_ccs].dwId = dwId;
+ m_rgcs[m_ccs].pic  = pic;
+ m_ccs++;
+ return pic;
+}
+</pre>
+<p>
+In words, the <code>SingletonManager</code> takes an array
+of <code>SINGLETONINFO</code> structures, each of which
+contains an ID and a function to call to create the object
+with that ID.
+To look up an entry, we first check if we already created one;
+if so, then we just return the existing one.
+Otherwise, we create the object (using <code>pfnCreateController</code>)
+and add it to our array of created objects.
+</p>
+<p>
+Our initial inclination is to put a critical section around
+the entire <code>Lookup</code> function, but maybe there’s
+something more clever we can do here.
+Maybe a
+<a href="http://msdn.microsoft.com/en-us/library/aa904937.aspx">
+slim reader-writer lock</a>?
+</p>
+</blockquote>
+<p>
+<b>Bonus chatter</b>:
+Although it’s the case on Windows that
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/10/03/8969397.aspx">
+the plain versions of the interlocked functions impose both acquire
+and release semantics</a>,
+other platforms may not follow Windows’ lead.
+In particular,
+on the XBOX360 platform, the plain versions of the interlocked
+functions impose <u>neither</u> acquire nor release semantics.
+I don’t know what the rules are for Windows CE.
+</p>
+<p>
+<b>Erratum</b>:
+I once knew but subsequently forgot that the
+singleton pattern described in this article
+(with the <code>InterlockedCompareExchangePointer</code>)
+is
+<a href="http://www.cs.umd.edu/~pugh/java/memoryModel/AlphaReordering.html">
+not safe on some CPU architectures</a>.
+An additional <code>MemoryBarrier()</code> needs to be inserted
+after the fetch of the single pointer to ensure that indirections
+through it will retrieve the new values and not any cached old values:
+</p>
+<pre>
+Widget *GetSingletonWidget()
+{
+ Widget *pwid = g_pwidCached;
+ if (!pwid) {
+  ...
+ } <font color="blue">else {
+  // Ensure that dereferences of pwid access new values and not old
+  // cached values.
+  MemoryBarrier();</font>
+ }
+ return pwid;
+}
+</pre>
+<p>
+The discussion of lock-free algorithms continues
+(with probably more errors!) next time.</p>
+
+
+</body>

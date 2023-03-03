@@ -1,0 +1,59 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The MIPS R4000, part 3: Multiplication, division, and the temperamental HI and LO registers</h1>  <!-- .entry-meta -->
+
+<p>The MIPS R4000 can perform multiplication and division in hardware, but it does so in an unusual way, and this is where the temperamental <var>HI</var> and <var>LO</var> registers enter the picture.</p>
+<p>The <var>HI</var> and <var>LO</var> registers are 32-bit registers which hold or accumulate the results of a multiplication or addition. You cannot operate on them directly. They are set by a suitable arithmetic operation, and by special instructions for moving values in and out.</p>
+<p>The multiplication instructions treat <var>HI</var> and <var>LO</var> as a logical 64-bit register, where the high-order 32 bits are in the <var>HI</var> register and the low-order 32 bits are in the <var>LO</var> register.</p>
+<pre>    MUL     rd, rs, rt      ; rd = rs * rt, corrupts HI and LO
+    MULT    rs, rt          ; HI:LO = rs * rt (signed)
+    MULTU   rs, rt          ; HI:LO = rs * rt (unsigned)
+</pre>
+<p>The simplest version is <code>MUL</code> which multiples two 32-bit registers and stores a 32-bit result into a general-purpose register. As a side effect, it corrupts the <var>HI</var> and <var>LO</var> registers. (This is the only multiplication or division operation that puts the result in a general-purpose register instead of into <var>HI</var> and <var>LO</var>.)</p>
+<p>The <code>MULT</code> instruction multiplies two signed 32-bit values to form a 64-bit result, which it stores in <var>HI</var> and <var>LO</var>.</p>
+<p>The <code>MULTU</code> instruction does the same thing, but treats the factors as unsigned.</p>
+<p>The next group of multiplication instructions performs accumulation.</p>
+<pre>    MADD    rs, rt          ; HI:LO += rs * rt (signed)
+    MADDU   rs, rt          ; HI:LO += rs * rt (unsigned)
+    MSUB    rs, rt          ; HI:LO -= rs * rt (signed)
+    MSUBU   rs, rt          ; HI:LO -= rs * rt (unsigned)
+</pre>
+<p>After performing the appropriate multiplication operation, the 64-bit result is added to or subtracted from the value currently in the <var>HI</var> and <var>LO</var> registers.</p>
+<p>Note that the <code>U</code> suffix applies to the signed-ness of the multiplication, not to whether the operation traps on signed overflow during addition or subtraction. None of the multiplication instructions trap.</p>
+<p>The operation runs faster if you put the smaller factor in <var>rt</var>, so if you know (or suspect) that one of the values is smaller than the other, you can try to arrange for the smaller number to be in <var>rt</var>.</p>
+<p>You might think that the division operations take a 64-bit value in <var>HI</var> and <var>LO</var> and divide it by a 32-bit register. But you’d be wrong. They divide a 32-bit value by another 32-bit value and store the quotient and remainder in in <var>HI</var> and <var>LO</var>.</p>
+<pre>    DIV     rd, rs, rt      ; LO = rs / rt, HI = rs % rt (signed)
+    DIVU    rd, rs, rt      ; LO = rs / rt, HI = rs % rt (unsigned)
+</pre>
+<p>None of the division operations trap, not even for overflow or divide-by-zero. If you divide by zero or incur division overflow, the results in <var>HI</var> and <var>LO</var> are garbage. If you care about overflow or division by zero, you need to check for it explicitly.</p>
+<p>Okay, that’s great. We’ve done some calculations and put the results into <var>HI</var> and <var>LO</var>. But how do we get the answer out? (And how do you put the initial values in, if you are using <code>MADD</code> or <code>MSUB</code>?)</p>
+<pre>    MFHI    rd              ; rd = HI "move from HI"
+    MFLO    rd              ; rd = LO "move from LO"
+    MTHI    rs              ; HI = rs "move to HI"
+    MTLO    rs              ; LO = rs "move to LO"
+</pre>
+<p>The multiplication and division operations take some time to execute,¹ and if you try to read the results too soon, you will stall until the results are available. Therefore, it’s best to distract yourself with some other operations while waiting for the multiplication or division operation to do its thing. (For example, you might check if you need to raise a runtime exception because you just asked the processor to divide by zero.)</p>
+<p>The temperamental part of the <var>HI</var> and <var>LO</var> registers is in how you read the values out.</p>
+<p>Tricky rule number one: Once you perform a <code>MTHI</code> or <code>MTLO</code> instruction, <i>both</i> of the previous values in <var>HI</var> and <var>LO</var> are lost. That means you can’t do this:</p>
+<pre>    MULT    r1, r2          ; HI:LO = r1 * r2 (signed)
+    ... stuff that doesn't involve HI or LO ...
+    MTHI    r3              ; HI = r3
+    ... stuff that doesn't involve HI or LO ...
+    MFLO    r4              ; r4 = GARBAGE
+</pre>
+<p>You might naïvely think that the <code>MTHI</code> replaces the value in the <var>HI</var> register and leaves the <var>LO</var> register alone, but since this is the first write to either of the <var>HI</var> or <var>LO</var> registers since the last multiplication or division operation, <i>both</i> registers are lost, and your attempt to fetch the value of <var>LO</var> will return garbage.</p>
+<p>Note that this applies only to the first write to <var>HI</var> or <var>LO</var>. The second write behaves as you would expect. For example, if you perform <code>MTHI</code> followed by <code>MTLO</code>, the <code>MTHI</code> will set <var>HI</var> and corrupt <var>LO</var>, but the <code>MTLO</code> will set <var>LO</var> and leave <var>HI</var> alone.</p>
+<p>Tricky rule number two: If you try to read a value from <var>HI</var> or <var>LO</var>, you must wait two instructions before performing any operation that writes to <var>HI</var> or <var>LO</var>.² Otherwise, the reads will produce garbage. The instruction that writes to <var>HI</var> or <var>LO</var> could be a multiplication or division operation, or it could be <code>MTHI</code> or <code>MTLO</code>.</p>
+<p>Tricky rule number two means that the following sequence is invalid:</p>
+<pre>    DIV     r1, r2          ; LO = r1 / r2, HI = r1 % r2 (signed)
+    ... stuff that doesn't involve HI or LO ...
+    MFHI    r3              ; r3 = <span style="text-decoration: line-through;">r1 % r2</span> GARBAGE
+    MULT    r4, r5          ; HI:LO = r4 * r5 (signed)
+</pre>
+<p>Since the <code>MULT</code> comes too soon after the <code>MFHI</code>, the <code>MFHI</code> will put garbage into <var>r3</var>. You need to stick two instructions between the <code>MFHI</code> and the <code>MULT</code> in order to avoid this.</p>
+<p>(Tricky rule number two was removed in the R8000. On the R8000, if you perform a multiplication or division or <code>MTxx</code> too soon after a <code>MFxx</code>, the processor will stall until the danger window has passed.)</p>
+<p>Okay, next time we’ll look at constants.</p>
+<p>¹ Wikipedia says that <a href="https://en.wikipedia.org/wiki/R4000#Integer_execution">latency of 32-bit multiplication was 10 cycles, and latency of 32-bit division was a whopping 69 cycles</a>.</p>
+<p>² Commenter <a href="http://os161.eecs.harvard.edu">David Holland</a> explains that this weird rule is due to a pipeline hazard: The multiply or divide operation is not recalled if an exception occurs while the operation is in flight. If the <code>MFLO</code> and a subsequent multiply are both in flight and an interrupt occurs, the multiply will complete by the time the exception handler gets around to saving the <var>HI</var> and <var>LO</var> registers. When execution resumes at the <code>MFLO</code>, it will read the low result of the <i>following</i> multiplication, rather than the preceding one. That’s why you have to wait two cycles: You have to make sure that the <code>MFLO</code> has cleared the pipeline before initiating any new operations that may write to <var>HI</var> and <var>LO</var>.</p>
+
+
+</body>

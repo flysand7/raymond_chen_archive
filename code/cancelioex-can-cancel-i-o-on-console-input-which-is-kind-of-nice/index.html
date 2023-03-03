@@ -1,0 +1,43 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">CancelIoEx can cancel I/O on console input, which is kind of nice</h1>  <!-- .entry-meta -->
+
+<p>Today’s Little Program asks you to type something, but gives you only two seconds to do it. This is not interesting in and of itself, but it shows you how to cancel console I/O. There is no motivation for this exercise because Little Programs come with little to no motivation. </p>
+<p>Okay, fine, here’s the motivation. </p>
+<blockquote class="q"><p>We have a GUI application that has a debug console. When the user exits the application, we cannot shut down cleanly because the debug console is stuck on a read from <code>stdin</code>. We want to unstick the thread gently. We don’t want to use <code>Generate­Console­Ctrl­Event</code> with <code>CTRL_C_EVENT</code> because that will send the event to all processes using the same console, but we don’t want other processes to be affected. </p></blockquote>
+<p>Okay, now our Little Program. </p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt; // horrors! mixing C and C++!
+
+DWORD CALLBACK ThreadProc(void *)
+{
+ Sleep(2000);
+ CancelIoEx(GetStdHandle(STD_INPUT_HANDLE), nullptr);
+ return 0;
+}
+
+int __cdecl wmain(int, wchar_t **)
+{
+ DWORD scratch;
+ HANDLE h = CreateThread(nullptr, 0, ThreadProc,
+                         nullptr, 0, &amp;scratch);
+ if (h) {
+  printf("type something\n");
+  char buffer[80];
+  if (fgets(buffer, 80, stdin) != nullptr) {
+   printf("you typed %s", buffer);
+  } else if (feof(stdin)) {
+   printf("end-of-file reached\n");
+  } else if (ferror(stdin)) {
+   printf("error occurred\n");
+  }
+ }
+ return 0;
+}
+</pre>
+<p>If you type something within two seconds, it is reported back to you, but if you take too long, then the <code>Cancel­Io­Ex</code> cancels the console read, and you get an error back. </p>
+<p>If you want to continue, you’ll have to <code>clearerr(stdin)</code>, but if you just want to unstick the code that is performing the read (so that you can get the program to exit cleanly), then leaving <code>stdin</code> in an error state is probably better. </p>
+<p>(If you had used <code>Read­File</code> instead of <code>fgets</code>, the read would have failed with error code <code>ERROR_OPERATION_ABORTED</code>, as documented by <code>Cancel­Io­Ex</code>.) </p>
+
+
+</body>

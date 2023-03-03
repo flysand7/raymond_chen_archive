@@ -1,0 +1,268 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On awaiting a task with a timeout in C++/WinRT</h1>  <!-- .entry-meta -->
+
+<p>Last time, we studied <a href="/code/on-awaiting-a-task-with-a-timeout-in-c" title="On awaiting a task with a timeout in C#"> ways of awaiting a task with a timeout in C#</a>. Now we’ll apply what we learned to C++/WinRT.</p>
+<p>C++/WinRT already has a <code>when_any</code> function which completes as soon as any of the provided coroutines completes, so we can follow a similar pattern. An added wrinkle is that <code>winrt::<wbr/>resume_after</code> does not return an <code>IAsyncAction</code> so we’ll have to adapt it. This isn’t too much an extra wrinkle, since we ended up having to adapt <code>Task.Delay</code> in C# anyway, so it’s work that gets done sooner or later. It’s just that in C++/WinRT, it’s done sooner.</p>
+<pre>co_await winrt::when_any(
+    DoSomethingAsync(),
+    [] -&gt; IAsyncAction { co_await winrt::resume_after(1s); });
+</pre>
+<p>The C++/WinRT <code>when_<wbr/>any</code> doesn’t tell you who the winner was. It just completes with the result of the task that completed first. This means that we don’t know whether the <code>when_<wbr/>any</code> finished due to normal completion or timeout.</p>
+<p>We could infer which one completed first by having the timeout set a flag.</p>
+<pre>auto timed_out = make_shared(false);
+
+co_await winrt::when_any(
+    DoSomethingAsync(),
+    [](auto flag) -&gt; IAsyncAction
+        { co_await winrt::resume_after(1s); *flag = true; }(timed_out));
+if (timed_out) { ... }
+</pre>
+<p>For <code>IAsync­Operation</code>, we need our timer to return some fallback value:</p>
+<pre>template&lt;
+    typename Async,
+    typename Result = decltype(std::declval&lt;Async&gt;().GetResults()),
+    typename std::enable_if_t&lt;std::is_same_v&lt;Result, void&gt;, int&gt; = 0&gt;
+Async delayed_async_result(
+    TimeSpan delay)
+{
+    co_await winrt::resume_after(delay);
+}
+
+template&lt;
+    typename Async,
+    typename Result = decltype(std::declval&lt;Async&gt;().GetResults()),
+    typename std::enable_if_t&lt;!std::is_same_v&lt;Result, void&gt;, int&gt; = 0&gt;
+Async delayed_async_result(
+    TimeSpan delay,
+    Result fallback = winrt_empty_value&lt;Result&gt;())
+{
+    co_await winrt::resume_after(delay);
+    co_return fallback;
+}
+</pre>
+<p>The <code>delayed_<wbr/>async_<wbr/>result</code> is cumbersome for multiple reasons.</p>
+<p>First, there’s the need to identify the result of the <code>Async</code> so we can generate a default fallback value if necessary. To do that, we infer it from the value returned by <code>GetResults()</code>. This covers <code>IAsync­Action</code>, <code>IAsync­Action­With­Progress</code>, <code>IAsync­Operation</code>, and <code>IAsync­Operation­With­Progress</code>.</p>
+<p>If that result is <code>void</code>, then we need to remove the extra <code>Result</code> parameter.</p>
+<p>If that result is not <code>void</code>, we need to come up with the default fallback value. This is tricky for the case of Windows Runtime classes, but we dealt with that a little while ago when we wrote the <code>winrt_<wbr/>empty_<wbr/>value</code> function.</p>
+<p>Or maybe we want to raise a timeout exception if the operation times out:</p>
+<pre>template&lt;typename Async&gt;
+Async delayed_timeout_exception(TimeSpan delay)
+{
+    co_await winrt::resume_after(delay);
+    throw winrt::hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+}
+</pre>
+<p>We can use these in conjunction with <code>when_any</code> to await a Windows Runtime asynchronous activity with a timeout.</p>
+<p>It could be an <code>IAsync­Action</code> or <code>IAsync­Action­With­Progress</code>, in which case the <code>co_await</code> simple returns early.</p>
+<pre>auto somethingTask = DoSomethingAsync();
+co_await winrt::when_any(
+    somethingTask,
+    delayed_async_result&lt;decltype(somethingTask)&gt;(1s));
+</pre>
+<p>Or it could be an <code>IAsync­Operation</code> or <code>IAsync­Operation­With­Progress</code>, in which case the <code>co_await</code> produces the result or the fallback value:</p>
+<pre>auto somethingTask = GetSomethingAsync();
+auto result = co_await winrt::when_any(
+    somethingTask,
+    delayed_async_result&lt;decltype(somethingTask)&gt;(1s));
+</pre>
+<p>Or you can ask for an exception to be raised if the operation takes too long:</p>
+<pre>auto somethingTask = GetSomethingAsync();
+auto result = co_await winrt::when_any(
+    somethingTask,
+    delayed_timeout_exception&lt;decltype(somethingTask)&gt;(1s));
+</pre>
+<p>Having to pass a delayed result or delayed exception with a matching type as the thing you’re waiting for calls for a helper function to save you the typing:</p>
+<pre>template&lt;
+    typename Async,
+    typename Result = decltype(std::declval&lt;Async&gt;().GetResults()),
+    typename std::enable_if_t&lt;std::is_same_v&lt;Result, void&gt;, int&gt; = 0&gt;
+Async when_complete_or_timeout(Async async, TimeSpan delay)
+{
+    return co_await winrt::when_any(async,
+        delayed_async_result&lt;Async&gt;(delay));
+}
+
+template&lt;
+    typename Async,
+    typename Result = decltype(std::declval&lt;Async&gt;().GetResults()),
+    typename std::enable_if_t&lt;!std::is_same_v&lt;Result, void&gt;, int&gt; = 0&gt;
+Async when_complete_or_timeout(
+    Async async,
+    TimeSpan delay,
+    Result fallback = winrt_empty_value&lt;Result&gt;())
+{
+    return co_await winrt::when_any(async,
+        delayed_async_result&lt;Async&gt;(delay, fallback));
+}
+
+template&lt;typename Async&gt;
+Async when_complete_or_timeout_exception(
+    Async async,
+    TimeSpan delay)
+{
+    return co_await winrt::when_any(async,
+        delayed_timeout_exception&lt;Async&gt;(delay));
+}
+</pre>
+<p>In the discussion of the C# version of these helpers, I noted that if the operation times out, it nevertheless continues to run. Windows Runtime asynchronous activities support the <code>Cancel()</code> method, so you can tell them to abandon whatever they were doing. We can add that feature to our helper function, so that all the incomplete activities are cancelled.</p>
+<p>Note that we had been leaving our <code>delayed_...</code> tasks uncancelled, so the timers nevertheless continue to run and either complete with nobody listening, or raise an exception that nobody is listening to. If you’re doing a lot of timeouts, these extra threadpool timers will eventually drain, but you may not want them to accumulate in the first place.</p>
+<p>So let’s cancel everything before we finish.</p>
+<pre>template&lt;
+    typename Async,
+    typename Result = decltype(std::declval&lt;Async&gt;().GetResults()),
+    typename std::enable_if_t&lt;std::is_same_v&lt;Result, void&gt;, int&gt; = 0&gt;
+Async delayed_async_result(
+    TimeSpan delay)
+{
+    (co_await winrt::get_cancellation_token()).enable_propagation();
+    co_await winrt::resume_after(delay);
+}
+
+template&lt;
+    typename Async,
+    typename Result = decltype(std::declval&lt;Async&gt;().GetResults()),
+    typename std::enable_if_t&lt;!std::is_same_v&lt;Result, void&gt;, int&gt; = 0&gt;
+Async delayed_async_result(
+    TimeSpan delay,
+    Result fallback = winrt_empty_value&lt;Result&gt;())
+{
+    (co_await winrt::get_cancellation_token()).enable_propagation();
+    co_await winrt::resume_after(delay);
+    co_return fallback;
+}
+
+template&lt;typename Async&gt;
+Async delayed_timeout_exception(TimeSpan delay)
+{
+    (co_await winrt::get_cancellation_token()).enable_propagation();
+    co_await winrt::resume_after(delay);
+    throw winrt::hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+}
+</pre>
+<p>To prevent timers from lingering, we enable cancellation propagation in our delayed result/exception coroutines. That way, when they are cancelled, they cancel the timer immediately rather than leaving the timer running, only for it to have nothing to do when it expires.</p>
+<pre>template&lt;
+    typename Async,
+    typename Result = decltype(std::declval&lt;Async&gt;().GetResults()),
+    typename std::enable_if_t&lt;std::is_same_v&lt;Result, void&gt;, int&gt; = 0&gt;
+Async when_complete_or_timeout(Async async, TimeSpan delay)
+{
+    auto timeout = delayed_async_result&lt;Async&gt;(delay);
+
+    auto cancel_async = wil::scope_exit([&amp;] { async.Cancel(); });
+    auto cancel_timeout = wil::scope_exit([&amp;] { timeout.Cancel(); });
+
+    return co_await winrt::when_any(async, timeout);
+}
+
+template&lt;
+    typename Async,
+    typename Result = decltype(std::declval&lt;Async&gt;().GetResults()),
+    typename std::enable_if_t&lt;!std::is_same_v&lt;Result, void&gt;, int&gt; = 0&gt;
+Async when_complete_or_timeout(
+    Async async,
+    TimeSpan delay,
+    Result fallback = winrt_empty_value&lt;Result&gt;())
+{
+    auto timeout = delayed_async_result&lt;Async&gt;(delay, fallback);
+
+    auto cancel_async = wil::scope_exit([&amp;] { async.Cancel(); });
+    auto cancel_timeout = wil::scope_exit([&amp;] { timeout.Cancel(); });
+
+    return co_await winrt::when_any(async, timeout);
+}
+
+template&lt;typename Async&gt;
+Async when_complete_or_timeout_exception(
+    Async async,
+    TimeSpan delay)
+{
+    auto timeout = delayed_timeout_exception&lt;Async&gt;(delay);
+
+    auto cancel_async = wil::scope_exit([&amp;] { async.Cancel(); });
+    auto cancel_timeout = wil::scope_exit([&amp;] { timeout.Cancel(); });
+
+    return co_await winrt::when_any(async, timeout);
+}
+</pre>
+<p>After accepting the <code>Async</code> and creating our matching timeout, we use an RAII type to ensure that both are cancelled when the coroutine completes, even if it completes with an exception. Cancelling an already-completed Windows Runtime asynchronous activity has no effect, so we don’t have to keep track of which activity completed and which is being abandoned. We just cancel them all and let somebody else figure it out.</p>
+<p>There’s a lot of repetition in the version up above, so let’s try to shorten it up a bit.</p>
+<pre>template&lt;typename First, typename...Rest&gt;
+First when_any_cancel_others(First first, Rest...rest)
+{
+    auto cleanup = std::make_tuple(
+        wil::scope_exit([&amp;] { first.Cancel(); }),
+        wil::scope_exit([&amp;] { rest.Cancel(); })...);
+
+    return co_await winrt::when_any(first, rest...);
+}
+
+template&lt;
+    typename Async,
+    typename Result = decltype(std::declval&lt;Async&gt;().GetResults()),
+    typename std::enable_if_t&lt;std::is_same_v&lt;Result, void&gt;, int&gt; = 0&gt;
+Async when_complete_or_timeout(Async async, TimeSpan delay)
+{
+    return when_any_cancel_others(async,
+        [](TimeSpan delay) -&gt; Async {
+            (co_await winrt::get_cancellation_token()).enable_propagation();
+            co_await winrt::resume_after(delay);
+        }(delay));
+}
+
+template&lt;
+    typename Async,
+    typename Result = decltype(std::declval&lt;Async&gt;().GetResults()),
+    typename std::enable_if_t&lt;!std::is_same_v&lt;Result, void&gt;, int&gt; = 0&gt;
+Async when_complete_or_timeout(
+    Async async,
+    TimeSpan delay,
+    Result fallback = winrt_empty_value&lt;Result&gt;())
+{
+    return when_any_cancel_others(async,
+        [](TimeSpan delay, Result fallback) -&gt; Async {
+            (co_await winrt::get_cancellation_token()).enable_propagation();
+            co_await winrt::resume_after(delay);
+            co_return fallback;
+        }(delay, std::move(fallback)));
+}
+
+template&lt;typename Async&gt;
+Async when_complete_or_timeout_exception(
+    Async async,
+    TimeSpan delay)
+{
+    return when_any_cancel_others(async,
+        [](TimeSpan delay) -&gt; Async {
+            (co_await winrt::get_cancellation_token()).enable_propagation();
+            co_await winrt::resume_after(delay);
+            throw winrt::hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+        }(delay));
+}
+</pre>
+<p><b>Exercise</b>: Why can’t we simplify <code>when_<wbr/>any_<wbr/>cancel_<wbr/>others</code> to this?</p>
+<pre>template&lt;typename...Args&gt;
+auto when_any_cancel_others(Args...args)
+{
+    auto cleanup = std::make_tuple(
+        wil::scope_exit([&amp;] { args.Cancel(); })...);
+
+    return winrt::when_any(args...);
+}
+</pre>
+<p><b>Exercise 2</b>: Why not use perfect forwarding to avoid the extra <code>AddRef</code> and <code>Release</code>?</p>
+<pre>template&lt;typename First, typename...Rest&gt;
+std::decay_t&lt;First&gt;
+when_any_cancel_others(First&amp;&amp; first, Rest&amp;...rest)
+{
+    auto cleanup = std::make_tuple(
+        wil::scope_exit([&amp;] { first.Cancel(); }),
+        wil::scope_exit([&amp;] { rest.Cancel(); })...);
+
+    return co_await winrt::when_any(
+        std::forward&lt;First&gt;(first),
+        std::forward&lt;Rest&gt;(rest)...);
+}
+</pre>
+
+
+</body>

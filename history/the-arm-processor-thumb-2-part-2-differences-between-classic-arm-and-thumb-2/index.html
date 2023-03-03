@@ -1,0 +1,52 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ARM processor (Thumb-2), part 2: Differences between classic ARM and Thumb-2</h1>  <!-- .entry-meta -->
+
+<p><a href="/history/the-arm-processor-thumb-2-part-1-introduction"> As I noted in the introduction</a>, classic ARM encodes instructions as as 32-bit values which must reside on a word boundary. However, Windows uses the ARM processor exclusively in a mode known as Thumb-2, which uses a variable-sized encoding format: Instructions can be 16-bit or 32-bit, with the goal of providing more compact 16-bit encodings for the most common instructions.</p>
+<p>ARM computations are typically three-register, with an output register and two input registers. Let consider the <code>ADCS</code> instruction, which is “add with carry and set flags”. If you use the fully-general form, it will cost you a 32-bit instruction.</p>
+<pre>    ; 32-bit instruction
+    adcs    r0, r1, r2      ; r0 = r1 + r2 + carry, set flags
+</pre>
+<p>But if you make the output register equal to the first input register, <i>and</i> if all the registers are in the range <var>r0</var> through <var>r7</var>, then a compact 16-bit encoding often becomes available.</p>
+<pre>    ; 16-bit instruction
+    adcs    r0, r0, r2      ; r0 = r0 + r2 + cary, set flags
+</pre>
+<p>The registers <var>r0</var> through <var>r7</var> are known as <i>low registers</i>, and the ones from <var>r8</var> through <var>r15</var> are called <i>high registers</i>. So we can say that a compact 16-bit encoding for <code>ADCS</code> becomes available if you can reduce the instruction to <i>two low registers</i>.</p>
+<p>Even reducing to two low registers may not be enough. For example, the <code>ADC</code> instruction (add with carry, but without setting flags) has no 16-bit encoding. It will always require a 32-bit instruction. This means that code generation may end up picking the <code>ADCS</code> instruction instead of <code>ADC</code> even though you might naïvely think it’s being wasteful: Why are you asking the CPU to set flags that you aren’t interested in? Reason: Because it reduce code size.</p>
+<p>The Thumb-2 instruction encodings are rather messy in order to squeeze as many useful instructions into the 16-bit space. For example, the <code>ADD</code> instruction has a 16-bit encoding for the three-register version, provided all of the registers are low. The precise conditions under which an instruction supports a 16-bit encoding vary wildly from instruction to instruction. The designers sacrificed decoding simplicity for code density.</p>
+<p>Remember, the focus of this series is knowing enough to read compiler-generated assembly, not to be able to write your own from scratch. The point of this discussion is not to teach you about which instructions have 16-bit encodings, but rather to point out that you may see something unusual in the code generation due to the desire to avoid 32-bit instructions if a 16-bit alternative is available.</p>
+<p>In order to free up instruction encoding space, operations on the <var>sp</var> and <var>pc</var> registers are more limited. For example, you can add to and subtract from the <var>sp</var> register, but you can’t, say, rotate the <var>sp</var> register left by 5. Since the stack pointer is architectural in Thumb-2, there isn’t a common real-world scenario where you would need to do weird arithmetic on the stack pointer. Similarly, most arithmetic operations on the <var>pc</var> register are prohibited. The encodings that correspond to all of these prohibited operations have either been re-used to encode other instructions, or remain reserved for future use.</p>
+<p>Another significant place where Thumb-2 differs from classic ARM is in conditional execution. In classic ARM, nearly every instruction can be made conditional: Appending a condition code to the mnemonic makes the instruction execute only if the condition is satisfied. (We’ll learn more about condition codes later.) One of the condition codes is called <code>AL</code> (always), and internally, an unconditional instruction is just a conditional instruction with the <code>AL</code> condition code. There are 16 condition codes, which means that four bits of every classic ARM instruction is devoted to the condition.</p>
+<p>Thumb-2 can’t afford to give up four bits in its instruction encoding for conditional execution, so it externalized the condition with the if-then instruction (<code>IT</code>) which acts like a conditional prefix to the next instruction:</p>
+<pre>;   classic ARM
+
+    addge   r0, r1, r2  ; r0 = r1 + r2 if ge condition is set
+
+;   Thumb-2
+
+    it ge               ; next instruction executes if ge
+    addge   r0, r1, r2  ; r0 = r1 + r2
+</pre>
+<p>In the instruction stream, the instruction after the <code>IT</code> is just a plain <code>ADD</code> instruction, but the assembler requires you to write <code>ADDGE</code> as a double-check. Conversely, the assembler checks that your conditional instruction is preceded by a matching <code>IT</code>.</p>
+<p>At run time, if the condition in the <code>IT</code> instruction is not met, then the next instruction is ignored.</p>
+<p>The if-then instruction can conditionalize up to four instructions. You specify how many instructions you want to conditionalize by adding up to three <code>T</code> or <code>E</code> suffixes to the opcode, indicating whether that instruction should be executed if the condition is true or false. (The <code>E</code> stands for <i>else</i>.)</p>
+<pre>;   Thumb-2
+
+    ite ge              ; if-then-else
+    strge   r0, [r2]    ; store r0 to [r2] if ge
+    strlt   r1, [r2]    ; store r1 to [r2] if not ge
+
+;   classic ARM equivalent
+
+    strge   r0, [r2]    ; store r0 to [r2] if ge
+    strlt   r1, [r2]    ; store r1 to [r2] if lt
+</pre>
+<p>There are constraints on what you can do inside an if-then block: You cannot transfer into the middle of an if-then block,¹ and only the last instruction in the block can be a control transfer or an instruction that modifies flags.</p>
+<p>The Windows ABI imposes further restrictions on the use of the <code>IT</code> instruction. Even though the processor lets you conditionalize up to four instructions, Windows allows you to conditionalize only one instruction, and it must be one of a limited set of 16-bit instructions.² You can <a href="https://docs.microsoft.com/en-us/cpp/build/overview-of-arm-abi-conventions?view=msvc-160"> read the details</a> if that’s the sort of thing that turns you on.</p>
+<p>Next time, we’ll look at the addressing modes.</p>
+<p>¹ Why does the processor care if you jump into the middle of an <code>IT</code> sequence? It’s not like it looks backward in the instruction stream to see if an <code>IT</code> instruction came ahead of the instruction you jumped to. And who knows, maybe some data that came before the instruction just <i>happens</i> to look like an <code>IT</code> instruction if disassembled as code. What’s the reason for this rule, and how does it work?</p>
+<p>My guess is that this rule is to simplify instruction caching. With this rule, it means that the processor can cache the decoded instruction, along with its conditions. If you could jump into an <code>IT</code> block, then the processor would have to re-decode the condition because the condition would be different depending on whether execution fell through the preceding <code>IT</code> instruction or whether execution jumped directly to the controlled statement.</p>
+<p>Therefore, the rule is not so much that jumping into the middle of an <code>IT</code> block is prohibited, but rather that an instruction must always be executed in the same <code>IT</code> context: either always controlled by an encompassing <code>IT</code> instruction or never controlled by it.</p>
+<p>² It’s not like the processor notices that you broke the rule. What actually happens is that the instructions beyond the first controlled instruction may find themselves executed incorrectly if a hardware interrupt occurs while the CPU is in the middle of the <code>IT</code> block.</p>
+
+
+</body>

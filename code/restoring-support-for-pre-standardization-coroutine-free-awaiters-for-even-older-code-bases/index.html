@@ -1,0 +1,51 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Restoring support for pre-standardization coroutine free awaiters for even older code bases</h1>  <!-- .entry-meta -->
+
+<p>A customer had a large code base that was originally written in C++/CX, and they have been gradually converting it to C++/WinRT. They managed to get most of it converted, but the XAML binding is a major obstacle because you have to do it all at once, and they have a lot of XAML.</p>
+<p>They found that with the upgrade to version 2.0.200729.8 of C++/WinRT, they lost the ability to <code>co_await</code> an <code>IAsyncAction^</code>. What they discovered is that <a href="/code/why-did-i-lose-the-ability-to-co-await-a-std-future-and-concurrency-task"> C++/WinRT dropped support for pre-standardization coroutine free awaiters</a>. They tried the modernizer from the article, but couldn’t get it to work.</p>
+<p>Okay, the first mistake is mine. I inadvertently relied upon a C++20 feature in the <code>make_<wbr/>cpp20_<wbr/>await_<wbr/>adapter</code> function:</p>
+<pre>    template&lt;typename Awaitable&gt;
+    auto make_cpp20_await_adapter(Awaitable&amp; awaitable)
+    {
+        return cpp20_await_adapter&lt;Awaitable&gt;(awaitable);
+    }
+</pre>
+<p>This takes advantage of the treatment of a parenthesized list as an aggregate initializer if a class lacks a constructor. To get this code to work on C++17, we’ll have to use the braced constructor instead.</p>
+<pre>    template&lt;typename Awaitable&gt;
+    auto make_cpp20_await_adapter(Awaitable&amp; awaitable)
+    {
+        return cpp20_await_adapter&lt;Awaitable&gt;<span style="color: blue;">{</span> awaitable <span style="color: blue;">}</span>;
+    }
+</pre>
+<p>I’ve retroactively updated the article to incorporate this fix.</p>
+<p>The last piece of the puzzle is realizing that some old versions of <code>pplawait.h</code> use free awaiters and therefore require modernization. (Version 14.16.27023 uses free awaiters, but version 14.29.30133 uses standard awaiters. I don’t know exactly when the change happened.)</p>
+<p>If you can’t upgrade to a newer version of <code>pplawait.h</code>, you can add modernizers:</p>
+<pre>namespace Windows::Foundation
+{
+    auto operator co_await(IAsyncAction^ x)
+    {
+        return ::modernizer::make_cpp20_await_adapter(x);
+    }
+
+    template&lt;typename T&gt;
+    auto operator co_await(IAsyncOperation&lt;T&gt;^ x)
+    {
+        return ::modernizer::make_cpp20_await_adapter(x);
+    }
+
+    template&lt;typename P&gt;
+    auto operator co_await(IAsyncActionWithProgress&lt;P&gt;^ x)
+    {
+        return ::modernizer::make_cpp20_await_adapter(x);
+    }
+
+    template&lt;typename T, typename P&gt;
+    auto operator co_await(IAsyncOperationWithProgress&lt;T, P&gt;^ x)
+    {
+        return ::modernizer::make_cpp20_await_adapter(x);
+    }
+}
+</pre>
+
+
+</body>

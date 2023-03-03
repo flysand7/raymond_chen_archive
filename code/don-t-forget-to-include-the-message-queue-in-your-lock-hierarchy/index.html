@@ -1,0 +1,90 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Don't forget to include the message queue in your lock hierarchy</h1>  <!-- .entry-meta -->
+
+<p>
+In addition to the loader lock,
+the message queue is another resource that people often
+forget to incorporate into their lock hierarchy.
+If your code runs on a UI thread, then it implicitly owns
+the message queue whenever it is running,
+because messages cannot be dispatched to a thread until
+it calls a message-retrieval function
+such as <code>Get­Message</code> or
+<code>Peek­Message</code>.
+In other words, whenever a thread is not checking for a message,
+it cannot receive a message.
+</p>
+<p>
+For example, consider the following code:
+</p>
+<pre>
+EnterCriticalSection(&amp;g_cs);
+for (int i = 0; i &lt; 10; i++) {
+  SendMessage(hwndLB, LB_ADDSTRING, 0, (LPARAM)strings[i]);
+}
+LeaveCriticalSection(&amp;g_cs);
+</pre>
+<p>
+If <code>hwndLB</code> belongs to another thread,
+then you have a potential deadlock,
+because that thread might be waiting for your critical section.
+</p>
+<pre>
+case WM_DOESNTMATTERWHAT:
+    EnterCriticalSection(&amp;g_cs);
+    ... doesn't matter what goes here ...
+    LeaveCriticalSection(&amp;g_cs);
+    break;
+</pre>
+<p>
+If you happen to try to send the message while that other
+thread is waiting for the critical section,
+you will deadlock because you are waiting for that thread
+to finish whatever it’s doing so it can process the message
+you sent to it,
+but that thread is waiting for
+the critical section which you own.
+</p>
+<p>
+Even if you promise that
+<code>hwndLB</code> belongs to your thread,
+the possibility of subclassing or window hooks
+means that you do not have full control over
+what happens when you try to send that message.
+A <code>WH_CALL­WND­PROC</code>
+window hook may decide to communicate with
+another thread (for example, to log the message).
+Boom, what you thought was a simple message sent
+to a window on your thread turned into a cross-thread
+message.
+</p>
+<p>
+There are many actions that generate message traffic
+that may not be obvious at first glance because
+they don’t involve explicitly sending a message.
+Invoking a COM method from an STA thread on an object
+which belongs to another apartment
+requires the call to be marshaled to the thread that hosts
+the object.
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/02/21/10131989.aspx">
+Tinkering with a window’s scroll bars</a>
+can result in
+the <code>WS_HSCROLL</code>
+or <code>WS_VSCROLL</code> style being added or removed,
+which in turn generates
+<code>WM_STYLE­CHANGING</code> and
+<code>WM_STYLE­CHANGED</code> messages.
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/08/21/54675.aspx">
+Obtaining the text from a window
+belonging to another thread in your process</a>
+results in synchronous message traffic.
+</p>
+<p>
+A good rule of thumb is basically to avoid anything that
+involves windows belonging to other threads while holding
+a critical section or other resource.
+And even windows which belong to your thread are suspect
+(due to hooks and subclassing).</p>
+
+
+</body>

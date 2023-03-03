@@ -1,0 +1,181 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What’s with this MSH_MOUSEWHEEL message?</h1>  <!-- .entry-meta -->
+
+<p><p>
+The hardware folks had this mouse wheel thing they were making,
+and they needed a way to get applications to support the mouse.
+Now, one way of doing this was to say,
+“Well, we’ll start selling this wheel mouse,
+but no applications can use it until the next version of Windows
+is released, one that supports the wheel.”
+Of course, that would have meant waiting until Windows NT 4
+came out, and who know when that would be.
+Plus it meant that people would have to upgrade Windows
+in order to take advantage of their fancy new mouse.
+As you can imagine, they weren’t too pleased with the
+“wait a few years” plan.
+</p>
+<p>
+In the interim, they proposed a stopgap mechanism for applications
+to respond to the mouse wheel.
+Enter the <code>zmouse.h</code> header file and its
+<code>MSH_MOUSEWHEEL</code> registered message.
+When you installed the wheel mouse driver,
+it listened for wheel events from the hardware and posted
+this new message when the mouse wheel turned,
+and applications could just respond to either
+the <code>WM_MOUSEWHEEL</code> message
+(if running on a version of Windows that supported the message)
+or the <code>MSH_MOUSEWHEEL</code> message
+(if running on an older version of Windows that didn’t).
+Unfortunately, the two messages behave differently,
+so it’s not a simple matter of writing
+</p>
+<pre>
+if (uMsg == WM_MOUSEWHEEL || uMsg == g_msgWheel) {
+ … do wheel stuff …
+}
+</pre>
+<p>
+(These next few paragraphs summarize what is
+<a href="http://msdn2.microsoft.com/en-us/library/ms645617.aspx">
+already spelled out in MSDN</a>;
+you can skip them if you already know how the messages work.)
+</p>
+<p>
+First, let’s look at <code>WM_MOUSEWHEEL</code>.
+This message is delivered to the window that has focus
+(in the <code>SetFocus</code> sense).
+If the window procedure doesn’t handle the message
+and just passes it through to the <code>DefWindowProc</code> function,
+then the <code>DefWindowProc</code> function forward the message
+to the window’s parent.
+In this way, the <code>WM_MOUSEWHEEL</code> message
+automatically “bubbles outward” from the focus window
+up the parent chain until somebody finally handles the
+message (or it goes all the way to the top without being handled at all).
+</p>
+<p>
+On the other hand, the <code>MSH_MOUSEWHEEL</code> message
+works from the outside in.
+It is delivered to the foreground window
+(in the <code>SetForegroundWindow</code> sense).
+If the window procedure doesn’t want to handle the message,
+it can forward the message to child windows of its choice,
+until one of them returns <code>TRUE</code> to indicate that
+the message was handled, or until no further candidates exist.
+</p>
+<p>
+I’ll summarize these differences in a table,
+since people seem to like tables so much.
+</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border: 0pt;border-collapse: collapse">
+<tr><th></th>
+<th>WM_MOUSEWHEEL</th>
+<th>MSH_MOUSEWHEEL</th></tr>
+<tr><td>Propagation direction</td>
+<td>Inside-out</td>
+<td>Outside-in</td></tr>
+<tr><td>Propagation mechanism</td>
+<td>DefWindowProc</td>
+<td>SendMessage</td></tr>
+<tr><td>Handling</td>
+<td>Automatic</td>
+<td>Manual: Application checks return value<br/>
+    from child to determine what to do next</td></tr>
+<tr><td>Return value if processed</td>
+<td>Zero</td>
+<td>TRUE</td></tr>
+<tr><td>Return value if not processed</td>
+<td>DefWindowProc</td>
+<td>FALSE</td></tr>
+</table>
+<p>
+Notice that <code>WM_MOUSEWHEEL</code> is much simpler,
+and the inside-out propagation mechanism retains the spirit of
+other messages such
+as <code>WM_CONTEXTMENU</code>
+and <code>WM_SETCURSOR</code>.
+Why can’t <code>MSH_MOUSEWHEEL</code>
+do it the same way?
+</p>
+<p>
+Well, first of all, <code>MSH_MOUSEWHEEL</code> doesn’t have
+the luxury of being able to modify the <code>DefWindowProc</code>
+function.
+After all, that’s the whole point of introducing the message
+in the first place,
+because we’re trying to add wheel support to an older operating
+system that predated mouse wheels.
+Put in other words,
+if we could modify <code>DefWindowProc</code> to handle the
+<code>MSH_MOUSEWHEEL</code> message, then we wouldn’t have
+needed the <code>MSH_MOUSEWHEEL</code> message to begin with;
+we would’ve just modified <code>DefWindowProc</code> to handle
+the <code>WM_MOUSEWHEEL</code> message.
+</p>
+<p>
+The argument in the previous paragraph is a frustratingly common one.
+Given a problem X and a workaround Y,
+somebody will ask,
+“Why didn’t you use method Z?”
+If you look at method Z, though,
+you’ll see that it suffers from the exact same problem X.
+</p>
+<p>
+Here’s a real-world example of the “confused workaround”:
+</p>
+<p>
+“Since the I-90 bridge is closed, I can’t take the 550 bus to get
+from Bellevue to Safeco Field.
+Instead, I’m going to take the 230 to Redmond, and then change
+to the 545.”
+</p>
+<p>
+<i>— Well, that’s silly. Why not take the 245 to Eastgate,
+and then change to the 554?
+It’s a lot faster.</i>
+</p>
+<p>
+“Um, the 554 uses the I-90 bridge, too.”
+</p>
+<p>
+Okay, so you can’t change <code>DefWindowProc</code>,
+but why not at least propagate the <code>MSH_MOUSEWHEEL</code>
+from the inside out instead of from the outside in?
+</p>
+<p>
+Starting with the focus window assumes you can even find out
+what the focus window is,
+but if you had paid attention to the
+<a href="https://channel9.msdn.com/Showpost.aspx?postid=116704">
+<i>Five Things Every Win32 Programmer Should Know</i></a>,
+you would have known that each thread
+has its own focus window.
+(Not nitpickily true, but true enough.)
+Consequently, when
+the helper program that injects <code>MSH_MOUSEWHEEL</code> messages
+calls <code>GetFocus</code>, it just gets its own focus window,
+not the focus window of the thread that controls the foreground window.
+(Remember, we’re talking 1996, long before the
+<code>GetGUIThreadInfo</code> function was invented.
+History buffs can find out more from
+<a href="http://www.codinghorror.com/blog/archives/000865.html">
+Meet The Inventor of the Mouse Wheel</a>.)
+Since inside-out was off the table,
+that pretty much forced outside-in.
+</p>
+<p>
+Now that you know how mouse wheel messages work, you can explain the
+behavior this customer is seeing:
+</p>
+<blockquote class="q">
+I’m seeing the <code>WM_MOUSEWHEEL</code> message being delivered
+to the wrong child window.
+I have a parent window with two children.
+Even though I move the mouse pointer over child 1,
+the <code>WM_MOUSEWHEEL</code> goes to child 2.
+</blockquote></p>
+
+
+</body>

@@ -1,0 +1,110 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The C++ implicit assignment operator is a non-ref-qualified member, even if the base class’s assignment has a ref-qualifier</h1>  <!-- .entry-meta -->
+
+<p>Consider the following C++ class:</p>
+<pre>struct Base
+{
+    Base&amp; operator=(Base const&amp;) &amp; = default;
+
+    void BaseMethod();
+};
+</pre>
+<p>This defines a class for which you can assign to an lvalue reference, but not to an rvalue reference.</p>
+<pre>extern Base GetBase();
+
+Base b;
+b = GetBase(); // allowed
+GetBase() = b; // not allowed
+</pre>
+<p>Assigning to an rvalue is not generally useful, since the object has no name, and consequently it is difficult to do anything with the assigned-to object afterward.¹</p>
+<p>Great, we got rid of assignment to a temporary, which we’ve seen <a href="/code/c-winrt-gotcha-setting-properties-incorrectly"> has been a source of confusion</a>.</p>
+<p>Now consider this:</p>
+<pre>struct Derived : Base
+{
+};
+
+Derived d;
+Derived() = d; // is this allowed?
+</pre>
+<p>We created a derived class and inherited the assignment operator from it. Do you expect the inherited assignment operator to block rvalues?</p>
+<p>You probably guessed that the answer is <i>no</i>, seeing as I gave it away in the title.</p>
+<p>The reason is that I lied when I said that the assignment operator was inherited. It was not inherited. It was <i>implicitly declared</i>.</p>
+<p>The rules for implicit declaration of the copy assignment operator are spelled out in <a href="https://timsong-cpp.github.io/cppwp/class.copy.assign"> <b>[class.copy.assign]</b></a>, paragraphs 2 and 4. The short version is that a class is eligible for an implicitly-declared copy assignment operator if its base classes and non-static members all have a copy assignment operator. (Analogous rules apply for the implicitly-declared move assignment operator.)</p>
+<p>The catch is that the implicitly-declared copy assignment and move assignment operators are declared as an <i>unqualified</i> assignment operator, regardless of the reference-qualifications of the base classes and members. In our example, we get</p>
+<pre>struct Derived : Base
+{
+    // compiler autogenerates these
+    Derived&amp; operator=(Derived const&amp;) = default;
+    //                                ^ no &amp;
+};
+</pre>
+<p>The lack of a ref-qualification means that this assignment operator applies equally to lvalues and rvalues.</p>
+<p>Our attempt to block rvalue assignment fails to propagate to derived classes!</p>
+<p>In order to repair this, each derived class must redeclare its assignment operator as lvalue-only.</p>
+<pre>struct Derived : Base
+{
+    <span style="color: blue;">Derived&amp; operator=(Derived const&amp;) &amp; = default;</span>
+};
+</pre>
+<p>Oh, we’ve only started our journey down the rabbit-hole.</p>
+<p>At least for now, explicitly declaring a copy assignment operator does not cause the implicitly-declared copy/move constructors to disappear, but the behavior is noted as deprecated in the C++ language specification, with the note that a future version of the language may indeed delete them.</p>
+<pre>Derived d;
+Derived d2{ d }; // on borrowed time
+</pre>
+<p>To make sure you don’t run into trouble in the future, you’ll want to declare them explicitly.</p>
+<pre>struct Derived : Base
+{
+    <span style="color: blue;">Derived(Derived const&amp;) = default;</span>
+    <span style="color: blue;">Derived(Derived&amp;&amp;) = default;</span>
+    Derived&amp; operator=(Derived const&amp;) &amp; = default;
+};
+</pre>
+<p>Great, we’ve restored the copy and move constructors.</p>
+<p>But explicitly declaring any constructors causes us to lose the implicitly-declared default constructor.</p>
+<pre>Derived d; // doesn't work any more
+</pre>
+<p>We’ll have to bring that back too.</p>
+<pre>struct Derived : Base
+{
+    <span style="color: blue;">Derived() = default;</span>
+    Derived(Derived const&amp;) = default;
+    Derived(Derived&amp;&amp;) = default;
+    Derived&amp; operator=(Derived const&amp;) &amp; = default;
+};
+</pre>
+<p>The same exercise applies if we also want to block the move assignment operator to rvalues, but it’s more urgent because an explicit declaration of a move assignment operator does delete both the copy and move constructors even in C++20.</p>
+<pre>struct Base
+{
+    Base&amp; operator=(Base const&amp;) &amp; = default;
+    <span style="color: blue;">Base&amp; operator=(Base&amp;&amp;) &amp; = default;</span>
+
+    void BaseMethod();
+};
+
+struct Derived : Base
+{
+    Derived() = default;
+    Derived(Derived const&amp;) = default;
+    Derived(Derived&amp;&amp;) = default;
+    Derived&amp; operator=(Derived const&amp;) &amp; = default;
+    <span style="color: blue;">Derived&amp; operator=(Derived&amp;&amp;) &amp; = default;</span>
+};
+</pre>
+<p>Phew, that was annoying.</p>
+<p>¹ I mean, I guess you could do this:</p>
+<pre>Base b;
+
+Something(GetBase() = b);
+(GetBase() = b).BaseMethod();
+</pre>
+<p>but it seems pointless to go to the effort of asking <code>Get­Base</code> to create you a <code>Base</code> object, only to overwrite it with your own. You may as well just create your own temporary.</p>
+<pre>Something(Base(b));
+Base(b).BaseMethod();
+</pre>
+<p>Or, if you didn’t even mean to create a temporary, just use the original value:</p>
+<pre>Something(b);
+b.BaseMethod();
+</pre>
+
+
+</body>

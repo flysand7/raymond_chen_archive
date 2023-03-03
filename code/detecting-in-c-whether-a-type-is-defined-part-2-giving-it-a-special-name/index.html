@@ -1,0 +1,137 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Detecting in C++ whether a type is defined, part 2: Giving it a special name</h1>  <!-- .entry-meta -->
+
+<p><b>Warning to those who got here via a search engine</b>: Don’t use this version. Keep reading to the end of the series.</p>
+<p><a href="http://devblogs.microsoft.com/oldnewthing/20190708-00/?p=102664"> Last time</a>, we detected whether a type was defined by setting up the unqualified name search order so that the name search would find the type if it were defined, or a fallback type if not. One problem with that technique was that the search had to be done from the specially-constructed namespace.</p>
+<p>So let’s fix that, and build on the result.</p>
+<pre>// awesome.h
+namespace awesome
+{
+  // might or might not contain
+  struct special { ... };
+}
+
+// your code
+namespace detect::impl
+{
+  struct not_implemented {};
+  using special = not_implemented;
+}
+
+namespace awesome::detect
+{
+  using namespace ::detect::impl;
+  <span style="color: blue;">using special_maybe = special;</span>
+}
+</pre>
+<p>This time, I introduce a new type <code>special_</code><code>maybe</code>. I did it inside the <code>awesome</code><code>::detect</code> namespace, so the name <code>special</code> on the right hand side undergoes unqualified name lookup, like we described last time, and it will pick either the defined type <code>::awesome</code><code>::special</code> or the fallback type <code>::detect</code><code>::impl</code><code>::special</code>. You can then use some new helpers:</p>
+<pre>namespace detect
+{
+  template&lt;typename T&gt;
+  constexpr bool is_defined_v =
+    !std::is_same_v&lt;T, impl::not_implemented&gt;;
+}
+
+void foo()
+{
+ if constexpr (detect::is_defined_v
+                &lt;awesome::detect::special_maybe&gt;) {
+   // do something now that we know "special" exists.
+ }
+}
+</pre>
+<p>This looks like it would work great, but it doesn’t. Because inside the “do something now that we know <code>special</code> exists”, you probably want to use <code>special</code>. But you can’t, because <code>special</code> might not exist!</p>
+<p>While it’s true that <code>if constexpr</code> tells the compiler to discard the not-taken branch, the code in the not-taken branch must still be valid. If <code>special</code> is not defined, then the body of the <code>if constexpr</code> will contain references to the nonexistent entity <code>special</code>, so it will not compile. You could try using <code>special_maybe</code>, but that’s just a dummy type, and it won’t have the methods you want to call.</p>
+<p>So we have to play a trick: Use the type without saying the type!</p>
+<pre>template&lt;typename T, typename TLambda&gt;
+void <a href="https://www.youtube.com/watch?v=fWNaR-rxAic">call_me_maybe</a>(TLambda&amp;&amp; lambda)
+{
+  if constexpr (is_defined_v&lt;T&gt;) {
+    lambda(static_cast&lt;T*&gt;(nullptr));
+  }
+}
+</pre>
+<p>This helper function doesn’t look all that useful. I mean, if the type exists, then we call the lambda. That just puts us back where we started, doesn’t it? I mean, the lambda will need to use the type, which it can’t do if the type doesn’t exist.</p>
+<p>Not quite. Because it lets us do this:</p>
+<pre>void foo(Source const&amp; source)
+{
+  call_me_maybe&lt;awesome::detect::special_maybe&gt;(
+    [&amp;](auto* p)
+    {
+      using T = std::decay_t&lt;decltype(*p)&gt;;
+      T::static_method();
+      auto s = source.try_get&lt;T&gt;();
+      if (s) s-&gt;something();
+    });
+}
+</pre>
+<p>What’s going on?</p>
+<p>The way C++ lambdas work is that a lambda becomes an anonymous type with an <code>operator()</code> method. For your typical lambda, the <code>operator()</code> is a const-qualified method whose prototype matches that of the lambda:</p>
+<pre>auto lambda1 = [](int v) -&gt; void { ... };
+
+// becomes
+
+struct anonymous1
+{
+ auto operator()(int v) -&gt; void const { ... };
+};
+auto lambda1 = anonymous1();
+</pre>
+<p>However, if the parameter list uses <code>auto</code>, then the <code>operator()</code> itself becomes a template function:</p>
+<pre>auto lambda2 = [](auto v) -&gt; void { ... };
+
+// becomes
+
+struct anonymous2
+{
+ template&lt;typename T&gt;
+ auto operator()(T v) -&gt; void const { ... };
+};
+auto lambda2 = anonymous2();
+</pre>
+<p>Next, we take advantage of the fact that in a template function, entities that are dependent upon the template parameter are not resolved until the template is instantiated. In this case, the template function is the <code>operator()</code> of the lambda.</p>
+<p>This means that our lambda body can do things that depend on the type of <code>p</code>, and the compiler can’t validate that those things are meaningful until the template is instantiated, because it isn’t until that time that the templated <code>operator()</code> is instantiated and the compiler knows what type it needs to use.</p>
+<p>In other words, we use the incoming parameter <i>merely for its type information</i>. We extract the type of the pointed-to object and call it <code>T</code>. Then whenever we would normally say <code>special</code>, we just say <code>T</code>.¹</p>
+<p>And then we realize that we don’t have to call it <code>T</code>. We can call it… <code>special</code>!</p>
+<pre>void foo(Source const&amp; source)
+{
+  call_me_maybe&lt;awesome::detect::special_maybe&gt;(
+    [&amp;](auto* p)
+    {
+      using <span style="color: blue;">special</span> = std::decay_t&lt;decltype(*p)&gt;;
+      special::static_method();
+      auto s = source.try_get&lt;special&gt;();
+      if (s) s-&gt;something();
+    });
+}
+</pre>
+<p>With this little change, the code inside the lambda looks pretty much like the code you would have written all along, with the bonus feature that it’s legal code even if <code>special</code> doesn’t exist!</p>
+<p>We’re getting closer. Next time, we’ll get rid of all this <code>maybe</code> nonsense.</p>
+<p>¹ C++20 makes this a little easier by letting us get the type directly, rather than having to extract it from the parameter.</p>
+<pre>void foo(Source const&amp; source)
+{
+  call_me_maybe&lt;awesome::detect::special_maybe&gt;(
+    [&amp;]<span style="color: blue;">&lt;typename T&gt;(T*)</span>
+    {
+      T::static_method();
+      auto s = source.try_get&lt;T&gt;();
+      if (s) s-&gt;something();
+    });
+}
+</pre>
+<p>Or, using the second trick:</p>
+<pre>void foo(Source const&amp; source)
+{
+  call_me_maybe&lt;awesome::detect::special_maybe&gt;(
+    [&amp;]<span style="color: blue;">&lt;typename special&gt;(special*)</span>
+    {
+      special::static_method();
+      auto s = source.try_get&lt;special&gt;();
+      if (s) s-&gt;something();
+    });
+}
+</pre>
+<p> </p>
+
+
+</body>

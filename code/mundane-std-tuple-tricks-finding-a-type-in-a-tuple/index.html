@@ -1,0 +1,88 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Mundane std::tuple tricks: Finding a type in a tuple</h1>  <!-- .entry-meta -->
+
+<p>Given a tuple, you can extract the type of the <var>N</var>th element in the tuple with the help of <code>std::tuple_element_t&lt;N, Tuple&gt;</code>:</p>
+<pre>// example = char
+using example = std::tuple_element_t&lt;1,
+                  std::tuple&lt;int, char, float&gt;&gt;;
+</pre>
+<p>The index is zero-based, so element 0 is <code>int</code>, element 1 is <code>char</code>, and element 2 is <code>float</code>.</p>
+<p>What about going in reverse? Given a tuple, find the index of a specific type.</p>
+<pre>template&lt;typename T, typename Tuple&gt;
+struct tuple_element_index_helper;
+</pre>
+<p>We start by writing a <code>tuple_</code><code>element_</code><code>index_</code><code>helper</code> which does the heavy lifting. It sets <code>value</code> equal to the index of the first element whose type matches, or equal to the number of elements (<i>i.e.</i>, one greater than the maximum legal element index) if the type was not found.</p>
+<pre>template&lt;typename T&gt;
+struct tuple_element_index_helper&lt;T, std::tuple&lt;&gt;&gt;
+{
+  static constexpr std::size_t value = 0;
+};
+</pre>
+<p>This is the base case. The type is not found in the empty tuple, so we set the <code>value</code> to zero.</p>
+<pre>template&lt;typename T, typename... Rest&gt;
+struct tuple_element_index_helper&lt;T, std::tuple&lt;T, Rest...&gt;&gt;
+{
+  static constexpr std::size_t value = 0;
+  using RestTuple = std::tuple&lt;Rest...&gt;;
+  static_assert(
+    tuple_element_index_helper&lt;T, RestTuple&gt;::value == 
+    std::tuple_size_v&lt;RestTuple&gt;,
+    "type appears more than once in tuple");
+};
+</pre>
+<p>This is the success case. The type is the first element in the tuple. Therefore, the <code>value</code> is zero (index zero). We also validate that the type is not present in the remaining types of the tuple. If the <code>value</code> for <code>std::tuple&lt;Rest...&gt;</code> is not equal to the size of the tuple, then that means that the type was found among the remaining types, so we raise a compile-time assertion failure.</p>
+<pre>template&lt;typename T, typename First, typename... Rest&gt;
+struct tuple_element_index_helper&lt;T, std::tuple&lt;First, Rest...&gt;&gt;
+{
+  using RestTuple = std::tuple&lt;Rest...&gt;;
+  static constexpr std::size_t value = 1 +
+       tuple_element_index_helper&lt;T, RestTuple&gt;::value;
+};
+</pre>
+<p>And then we have the failure case. If the type does not match the first element in the tuple, then we search for the type in the remaining elements and add one to account for the fact that we removed the first type.</p>
+<pre>template&lt;typename T, typename Tuple&gt;
+struct tuple_element_index
+{
+  static constexpr std::size_t value =
+    tuple_element_index_helper&lt;T, Tuple&gt;::value;
+  static_assert(value &lt; std::tuple_size_v&lt;Tuple&gt;,
+                "type does not appear in tuple");
+};
+</pre>
+<p>Now that the helper is written, we can write the real template class. It asks the helper to do the work and validates that the resulting <code>value</code> is less than the size of the tuple, meaning that the type was found. If not, then we complain with a compile-time assertion.</p>
+<pre>template&lt;typename T, typename Tuple&gt;
+inline constexpr std::size_t tuple_element_index_v
+ = tuple_element_index&lt;T, Tuple&gt;::value;
+</pre>
+<p>Finally, we create an alias type to reduce future typing.</p>
+<p>Let’s take it out for a spin.</p>
+<pre>// index = 1
+constexpr std::size_t index =
+    tuple_element_index_v&lt;int, std::tuple&lt;char, int, float&gt;&gt;;
+
+// error: type does not appear in tuple
+constexpr std::size_t index =
+    tuple_element_index_v&lt;double, std::tuple&lt;char, int, float&gt;&gt;;
+
+// error: type appears more than once in tuple
+constexpr std::size_t index =
+    tuple_element_index_v&lt;int, std::tuple&lt;char, int, int&gt;&gt;;
+</pre>
+<p>All of these mundane tuple tricks will come in handy soon.</p>
+<p><b>Bonus chatter</b>: You might be tempted to try something like this:</p>
+<pre>template&lt;typename T, typename Tuple&gt;
+constexpr int tuple_element_index_helper()
+{
+  for (int i = 0; i &lt; std::tuple_size_v&lt;Tuple&gt;; i++) {
+    if constexpr (std::is_same_v&lt;
+        T, std::tuple_element_t&lt;i, Tuple&gt;&gt;) {
+      return i;
+    }
+  }
+  return std::tuple_size_v&lt;Tuple&gt;;
+}
+</pre>
+<p>Unfortunately, it doesn’t work because a variable <code>i</code> is not valid as a template non-type parameter, not even in a <code>constexpr</code> context.</p>
+
+
+</body>

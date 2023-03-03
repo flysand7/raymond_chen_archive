@@ -1,0 +1,132 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On resolving the type vs member conflict in C++: The Color Color problem</h1>  <!-- .entry-meta -->
+
+<p>In C++, there are ambiguities when a member function has the same name as a type. Consider: </p>
+<pre>
+// Some header file from a UI library you are using
+
+namespace Windows::UI::Xaml
+{
+  enum class Visibility { Collapsed, Visible };
+
+  struct Style { /* ... */ };
+
+  namespace Controls
+  {
+    struct UIElement
+    {
+    public:
+      /* ... */
+
+      // returns current visibility
+      Windows::UI::Xaml::Visibility Visibility();
+
+      // change visibility
+      void Visibility(Windows::UI::Xaml::Visibility value);
+
+      // returns current style
+      Windows::UI::Xaml::Style Style();
+
+      // change style
+      void Style(Windows::UI::Xaml::Style value);
+    };
+  }
+}
+</pre>
+<p>Your project has a custom element, say like this: </p>
+<pre>
+namespace MyProject
+{
+  class CustomElement : public Windows::UI::Xaml::Controls::UIElement
+  {
+    void OnThemeChanged();
+  };
+}
+</pre>
+<p>And now you are implementing the <code>On­Theme­Changed</code> method. </p>
+<pre>
+using namespace Windows::UI::Xaml;
+
+void MyProject::CustomElement::OnThemeChanged()
+{
+  // Find out what style to use.
+  Style style = GetStyleFromCurrentTheme();
+
+  // Set it as our style.
+  Style(style);
+}
+</pre>
+<p>This code doesn’t compile. The word <code>Style</code> can mean multiple things: </p>
+<ul>
+<li>It could refer to the class <code>Windows::</code><code>UI::</code><code>Xaml::</code><code>Style</code>. </li>
+<li>It could refer to the method <code>MyProject::</code><code>Custom­Element::</code><code>Style()</code>. </li>
+</ul>
+<p>C++ <a href="https://en.cppreference.com/w/cpp/language/unqualified_lookup#Member_function_definition">unqualified name lookup in member functions</a> searches the class before searching in namespaces, so it finds the method <code>Custom­Element::</code><code>Style()</code>. <a href="https://en.cppreference.com/w/cpp/language/sfinae">SFINAE</a> does not apply, so if the name inside the class doesn’t make sense, the compiler doesn’t keep looking for a better match; it simply reports an error.  Depending on how you used the name <code>Style</code>, the error message will vary, but whatever it is, it is usually incomprehensible. </p>
+<p><pre>
+error: expected ';' before 'style'
+error: statement cannot resolve address of overloaded function
+
+error: cannot determine which instance of overloaded function
+'MyProject::CustomElement::Style' is intended
+error: expected a ";"
+
+error: syntax error: missing ';' before identifier 'style'
+error: non-standard syntax; use '&amp;' to create a pointer to member
+</pre>
+<p>These error messages make sense once you realize that the compiler resolved <code>Style</code> to the member function. It’s a case of an error message written with compiler-colored glasses. To be fair, the compiler doesn’t realize that it’s wearing glasses. It’s simply following the rules for unqualified name resolution and reporting the problems with the name you chose by mistake. </p>
+<p>The only compiler I found that generates a helpful error is clang, which goes the extra mile and realizes that the name the language rules require it to choose may not have been the name you intended. </p>
+<pre>
+error: must use 'struct' tag to refer to type 'Style' in this scope
+note: struct 'Style' is hidden by a non-type declaration of 'Style' here
+      Windows::UI::Xaml::Style Style();
+</pre>
+<p>The clang compiler even provides a suggestion as to how you can force the name to be resolved the way you intended. </p>
+<pre>
+void MyProject::CustomElement::OnThemeChanged()
+{
+  // Find out what style to use.
+  <font color="blue">struct</font> Style style = GetStyleFromCurrentTheme();
+
+  // Set it as our style.
+  Style(style);
+}
+</pre>
+<p>Alternatively, you can use the scope resolution operator to force the name to be looked up in the global scope: </p>
+<pre>
+void MyProject::CustomElement::OnThemeChanged()
+{
+  // Find out what style to use.
+  <font color="blue">::</font>Style style = GetStyleFromCurrentTheme();
+
+  // Set it as our style.
+  Style(style);
+}
+</pre>
+<p>The global lookup will work because you did a <code>using namespace Windows:</code><code>:UI::</code><code>Xaml;</code> to import the names from that namespace into the global namespace. After all, that’s what led you to believe that writing simply <code>Style</code> was good enough in the first place. </p>
+<p>This problem also exists with the <code>Visibility</code> enumeration: </p>
+<pre>
+void MyProject::CustomElement::OnThemeChanged()
+{
+  // See if we should be visible in the current theme.
+  Visibility visibility = IsVisibleInCurrentTheme();
+  //^^^^^^^^ compiler error here
+
+  // Set it as our new visibility.
+  Visibility(visibility);
+}
+</pre>
+<p>The solution is the same. You need to quailfy the name in a way that prevents the compiler from considering the member function. You could say <code>enum Visibility</code>, or you could say <code>::Visibility</code>. </p>
+<p>Note, however, that there is no problem here: </p>
+<pre>
+void MyProject::CustomElement::OnThemeChanged()
+{
+  // Always hide on theme change.
+  Visibility(Visibility::Collapsed);
+  //         ^^^^^^^^^^ no ambiguity here
+}
+</pre>
+<p>There is no ambiguity in this case because of a special rule for unqualified name lookup that <a href="https://en.cppreference.com/w/cpp/language/unqualified_lookup">excludes functions, variables, and enumeration fields if the name is followed by a <code>::</code></a>. </p>
+<p>The case of a member with the same name as a type is called the <a href="http://web.archive.org/web/20190119001817/https://blogs.msdn.microsoft.com/ericlippert/2009/07/06/color-color/">Color Color problem</a>, and the C# language “<a href="https://softwareengineering.stackexchange.com/a/212772">was specifically designed to permit” it</a>. Unfortunately, the C++ language struggles with it. </p>
+
+
+</p></body>

@@ -1,0 +1,46 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I prevent a Windows Runtime WebView from loading any content beyond the initial request?</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to navigate a XAML WebView control to a site and load only the HTML. No external script. No images. No CSS. Just the raw HTML returned from a single web request.</p>
+<p>You can do this by handling the <code>Web­Resource­Requested</code> event. Let’s take <a href="https://github.com/microsoft/Windows-universal-samples/blob/08d7459c552fe1065d3fe195b3fe2a5d7ec3b567/Samples/XamlWebView/"> the WebView sample</a> and make these changes.</p>
+<pre>    public <a href="https://github.com/microsoft/Windows-universal-samples/blob/08d7459c552fe1065d3fe195b3fe2a5d7ec3b567/Samples/XamlWebView/cs/Scenario1_NavToUrl.xaml.cs#L22">Scenario1_NavToUrl</a>()
+    {
+        this.InitializeComponent();
+        <span style="color: blue;">WebViewControl.WebResourceRequested += OnResourceRequested;</span>
+    }
+
+    <span style="color: blue;">Uri allowedUri = null;
+
+    void OnResourceRequested(WebView sender,
+             WebViewWebResourceRequestedEventArgs e)
+    {
+        if (e.Request.RequestUri != allowedUri)
+        {
+            e.Response = new Windows.Web.Http.HttpResponseMessage(
+                             Windows.Web.Http.HttpStatusCode.NotFound);
+        }
+    }</span>
+
+    private void NavigateWebview(string url)
+    {
+        try
+        {
+            Uri targetUri = new Uri(url);
+            <span style="color: blue;">allowedUri = targetUri; // remember where we're going</span>
+            WebViewControl.Navigate(targetUri);
+        }
+        catch (UriFormatException ex)
+        {
+            // Bad address
+            AppendLog($"Address is invalid, try again. Error: {ex.Message}.");
+        }
+    }
+</pre>
+<p>When we navigate the WebView control, we remember the target URI in the <code>allowedUri</code> member variable. When the WebView is about to download some content, it raises the <code>WebResourceRequested</code> event to let the app know what is about to happen and give the opportunity to handle the request explicitly.</p>
+<p>In our case, we see whether the URI matches the <code>allowedUri</code>. If not, then we create a custom response that consists of error 404 (<i>Not found</i>). Maybe that’s not the best error code, but I’ll let you pick the error you want.</p>
+<p>Run the sample program and enter a URL like <code>https://visualstudio.microsoft.com/</code>. The main HTML content loads, but all the other content is blocked.</p>
+<p>On the other hand, if you use a URL like <code>http://www.microsoft.com</code>, then nothing loads at all, because <code>http://www.microsoft.com</code> is a redirect to <code>https://www.microsoft.com</code>, and since that doesn’t match the <code>allowedUri</code>, we block it.</p>
+<p>Maybe that’s what you want. But if you want to allow redirects, you’ll have to follow the redirections and allow them, too. We’ll do that next time.</p>
+
+
+</body>

@@ -1,0 +1,79 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Scrollbars part 12: Applying WM_NCCALCSIZE to our scrollbar sample</h1>  <!-- .entry-meta -->
+
+<p>
+        Now that we have learned about the intricacies of the <code>WM_NCCALCSIZE</code> message,
+        we can use it to get rid of the flicker in our resizing code. We just take the trick
+        we used above and apply it to the scroll program.
+    </p>
+<p>
+        First, we need to get rid of the bad flickery resize, so return the <i>OnWindowPosChanging</i> function
+        to the version before we tried doing metaphor work:
+    </p>
+<pre>BOOL OnWindowPosChanging(HWND hwnd, LPWINDOWPOS pwp)
+{
+    if (!(pwp-&gt;flags &amp; SWP_NOSIZE)) {
+        RECT rc = { 0, 0, pwp-&gt;cx, pwp-&gt;cy };
+        AdjustSizeRectangle(hwnd, WMSZ_BOTTOM, &amp;rc);
+        pwp-&gt;cy = rc.bottom;
+    }
+    return 0;
+}
+</pre>
+<p>
+        Instead, our work will happen in the <code>WM_NCCALCSIZE</code> handler.
+    </p>
+<pre>UINT OnNcCalcSize(HWND hwnd, BOOL fCalcValidRects,
+                  NCCALCSIZE_PARAMS *pcsp)
+{
+    UINT uRc = (UINT)FORWARD_WM_NCCALCSIZE(hwnd,
+                        fCalcValidRects, pcsp, DefWindowProc);
+    if (fCalcValidRects) {
+        //  Give names to these things
+        RECT *prcClientNew = &amp;pcsp-&gt;rgrc[0];
+        RECT *prcValidDst  = &amp;pcsp-&gt;rgrc[1];
+        RECT *prcValidSrc  = &amp;pcsp-&gt;rgrc[2];
+        int dpos;
+        int pos;
+        // Did we drag the top edge enough to scroll?
+        if (prcClientNew-&gt;bottom == prcValidSrc-&gt;bottom &amp;&amp;
+            g_cyLine &amp;&amp;
+            (dpos = (prcClientNew-&gt;top - prcValidSrc-&gt;top)
+                                            / g_cyLine) != 0 &amp;&amp;
+            (pos = ClampScrollPos(g_yOrigin + dpos)) != g_yOrigin) {
+            *prcValidDst = *prcClientNew;
+            ScrollTo(hwnd, pos, FALSE);
+            prcValidDst-&gt;top -= dpos * g_cyLine;
+            uRc = WVR_VALIDRECTS;
+        }
+    }
+    return uRc;
+}
+    /* Add to WndProc */
+    HANDLE_MSG(hwnd, WM_NCCALCSIZE, OnNcCalcSize);
+</pre>
+<p>
+        This uses a new helper function which we extracted from the <i>ScrollTo</i> function.
+        (If I had planned this better, this would have been factored out when we first wrote <i>ScrollTo</i>.)
+    </p>
+<pre>int ClampScrollPos(int pos)
+{
+    /*
+     *  Keep the value in the range 0 .. (g_cItems - g_cyPage).
+     */
+    pos = max(pos, 0);
+    pos = min(pos, g_cItems - g_cyPage);
+    return pos;
+}
+</pre>
+<p>
+        I am not entirely happy with this code, however. It is my personal opinion that the <code>WM_NCCALCSIZE</code> handler
+        should be stateless. Notice that this one modifies state (by calling <i>ScrollTo</i>).
+        If I had more time (sorry, I’m rushed now – you’ll learn why soon), I would have put
+        the state modification into the <code>WM_WINDOWPOSCHANGING</code> message. So I will
+        leave that as another exercise.
+    </p>
+<p> <b>Exercise</b>: Keep the <code>WM_NCCALCSIZE</code> message stateless.</p>
+
+
+</body>

@@ -1,0 +1,228 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Ready… cancel… wait for it! (part 3)</h1>  <!-- .entry-meta -->
+
+<p>
+A customer reported that their application was crashing in RPC,
+and they submitted a sample program which illustrated the same
+crash as their program.
+Their sample program was actually based on the
+AsyncRPC sample client program, which was nice, because it
+provided a mutually-known starting point.
+They made quite a few changes to the program, but this is
+the important one:
+</p>
+<pre>
+// old code:
+// status = RpcAsyncCancelCall(&amp;Async, FALSE);
+// new code:
+ status = RpcAsyncCancelCall(&amp;Async, TRUE);
+</pre>
+<p>
+(It was actually more complicated than this,
+but this is the short version.)
+</p>
+<p>
+The program was crashing for the same reason that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/02/02/10123392.aspx">
+Wednesday’s I/O cancellation program was crashing</a>:
+The program issued an asynchronous cancel and didn’t
+wait for the cancel to complete.
+In this case, the crash occurred when the RPC call
+finally completed and RPC went about cleaning up the call
+based on the information in the now-freed
+<code>RPC_ASYNC_STATE</code> structure.
+</p>
+<p>
+The error was probably caused by the not-very-helpful
+name for that last parameter to <code>Rpc­Async­Cancel­Call</code>:
+<code>fAbort­Call</code>,
+and the accompanying documentation which says,
+“In an abortive cancel (<i>fAbort­Call</i> is TRUE),
+the <b>Rpc­Async­Cancel­Call</b> function sends a cancel
+notification to the server and client side and the
+asynchronous call is canceled immediately,
+not waiting for a response from the server.”
+Compare this to a nonabortive cancel,
+where “the <b>Rpc­Async­Cancel­Call</b> function notifies
+the server of the cancel and the client waits for the
+server to complete the call.”
+</p>
+<p>
+Obviously,
+it’s faster if you don’t wait for the server to respond, right?
+Let’s pass <code>TRUE</code>, so that the function cancels the
+asynchronous call immediately without waiting for the server.
+Wow, look at how fast our program runs now!
+</p>
+<p>
+Unfortunately,
+the documentation doesn’t make it sufficiently clear
+that when you issue a cancellation, you still have to
+wait for the operation to complete before you can clean up
+all the resources associated with that operation.
+Another way of looking at that last parameter is to think
+of it as <code>fAsync</code>.
+If you pass <code>fAsync = TRUE</code>,
+then the
+<code>Rpc­Async­Cancel­Call</code>
+function issues the cancellation
+and returns before the operation completes.
+If you pass <code>fAsync = FALSE</code>,
+then the
+<code>Rpc­Async­Cancel­Call</code>
+function issues the cancellation
+and waits for the operation to complete before returning.
+</p>
+<p>
+If you switch from a synchronous cancel to an asynchronous cancel,
+then you become responsible for keeping the
+<code>RPC_ASYNC_STATE</code>
+valid until the cancellation completes.
+In this case, the customer was using the
+<code>Rpc­Notification­Type­Event</code> notification type,
+which means that they need to wait for the
+<code>Async.u.hEvent</code> to become signaled before they
+can free the <code>RPC_ASYNC_STATE</code>.
+</p>
+<p>
+The customer confirmed the fix and closed the support case.
+Another problem solved.
+</p>
+<p>
+Three months later, the customer reopened the case,
+reporting that after they released a new version of their
+program with the aforementioned fix,
+they were nevertheless getting
+<a href="https://winqual.microsoft.com/">WinQual</a>
+crashes which looked exactly like the ones that they were
+having before they applied the fix.
+It appears that the fix wasn’t working.
+</p>
+<p>
+Upon closer investigation, it turns out that the customer
+originally did apply the fix as recommended:
+They added a
+<code>Wait­For­Single­Object(Async.u.hEvent, INFINITE)</code>
+call before destroying the <code>Async</code> object
+to ensure that the cancellation was complete.
+However, they became frustrated that sometimes the cancellation
+would take a long time to complete, so they changed it to
+</p>
+<pre>
+WaitForSingleObject(Async.u.hEvent, 5000); // wait up to 5 seconds
+</pre>
+<p>
+The customer explained,
+“After the wait fails due to timeout,
+we just proceed as normal and call
+<code>Rpc­Async­Complete­Call</code> and free the the
+<code>RPC_ASYNC_STATE</code>. Is that wrong?”
+</p>
+<p>
+Um, yeah.
+Changing the
+<code>Wait­For­Single­Object</code>
+from an infinite wait
+to one with a timeout means that
+you just reintroduced the bug that the
+<code>Wait­For­Single­Object</code>
+was originally supposed to fix!
+If the cancellation takes more than 5 seconds,
+then your code will continue and free the
+<code>RPC_ASYNC_STATE</code>,
+just like it did when you didn’t wait at all.
+</p>
+<p>
+“How long can I wait before assuming that the event will simply
+never get signaled?”
+</p>
+<p>
+There is no such duration after which you can safely abandon the operation.
+Even if the event doesn’t get signaled for 30 minutes
+(say because the computer is thrashing its guts out),
+it may get signaled at 30 minutes and 1 second.
+</p>
+<p>
+“But we don’t want our program to get stuck waiting for the server.”
+</p>
+<p>
+Great.
+It’s fine to have your program continues running after
+issuing the cancellation, even if the RPC call hasn’t completed.
+Just don’t free the <code>RPC_ASYNC_STATE</code>
+until the call is complete.
+and if you set things up so that your completion event takes the
+form of a callback,
+<a href="http://social.msdn.microsoft.com/Forums/en-CA/windowssdk/thread/d4ca3eb0-cbc0-4cbe-9626-7d80043969d8">
+you can just make the callback free the
+<code>RPC__ASYNC_STATE</code></a>.
+Then you don’t have to keep track of the asynchronous call any more;
+the system will merely call you when it’s finished, and then you
+can free the state structure.
+</p>
+<p>
+<b>Bonus RPC chatter</b>:
+(For the purpose of this discussion, I’ll use the term
+<i>RPC operation</i> instead of <i>RPC call</i> so we don’t have
+confusion between function calls and RPC calls.)
+A colleague explained the lifetime of an RPC operation as follows:
+</p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tbody>
+<tr>
+<td nowrap="" rowspan="3">Submit phase</td>
+<td>You call into the MIDL-generated stub.</td>
+<td rowspan="3">You cannot call
+    <code>Rpc­Async­Cancel­Call</code>
+    during the submit phase.</td>
+</tr>
+<tr>
+<td>The stub does magic RPC stuff.</td>
+</tr>
+<tr>
+<td>The stub returns control back to the caller.</td>
+</tr>
+<tr>
+<td nowrap="">Pending phase</td>
+<td>RPC is waiting for the response to the operation.
+    The operation remains in this phase until
+    the operation completes or is cancelled.
+</td>
+<td>You can call
+    <code>Rpc­Async­Cancel­Call</code> to cancel the
+    RPC operation and accelerate the transition to the Notified phase.
+</td>
+</tr>
+<tr>
+<td nowrap="">Notified phase</td>
+<td>RPC informs the application of the result of the operation
+    in a manner described by the <code>Notification­Type</code>
+    and <code>RPC_ASYNC_NOTIFICATION_INFO</code> members of
+    the <code>RPC_ASYNC_STATE</code> structure.
+</td>
+<td>You can call
+    <code>Rpc­Async­Cancel­Call</code> but it will have no effect
+    since the operation is already complete.
+</td>
+</tr>
+<tr>
+<td nowrap="">Completion phase</td>
+<td>The application calls
+    the <code>Rpc­Async­Complete­Call</code> function to clean up
+    the resources used to track the RPC operation.
+    You exit the completion phase when
+    <code>Rpc­Async­Complete­Call</code>
+    returns something other than
+    <code>RPC_S_ASYNC_CALL_PENDING.
+</code></td>
+<td>You cannot call <code>Rpc­Async­Cancel­Call</code> after
+    <code>Rpc­Async­Complete­Call</code>
+    indicates that the operation
+    is complete, since that is the call that says “I’m all done!”
+</td>
+</tr>
+</tbody>
+</table>
+
+
+</body>

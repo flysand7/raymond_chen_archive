@@ -1,0 +1,167 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Recognizing different types of exception objects that Windows platform libraries can throw</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/inside-the-microsoft-stl-the-std-exception-ptr" title="Inside the Microsoft STL: The std::exception_ptr"> Last time</a>, we saw how to dig the exception object out of a <code>std::exception_ptr</code>. But what kind of exception objects might there be?</p>
+<p>For C++/CX code, you are probably going to get a <code>Platform::Exception^</code>.</p>
+<pre>0:007&gt; ?? p
+class std::exception_ptr
+   +0x000 _Data1           : 0x08a5885c Void
+   +0x004 _Data2           : 0x08a58850 Void
+</pre>
+<p>We learned that the <code>_Data1</code> points to an <code>EXCEPTION_RECORD</code>¹</p>
+<pre>0:007&gt; .exr 0x08a5885c
+ExceptionAddress: 00000000
+   ExceptionCode: e06d7363 (C++ EH exception)
+  ExceptionFlags: 00000001
+NumberParameters: 3
+   Parameter[0]: 19930520
+   Parameter[1]: 08a61330
+   Parameter[2]: b371fc08
+  pExceptionObject: 08a61330
+  _s_ThrowInfo    : b371fc08
+</pre>
+<p>And we noted that <code>Parameter[1]</code> is the object that was thrown.</p>
+<pre>0:007&gt; dps 08a61330
+08a61330  08a5b088
+08a61334  fdfdfdfd
+08a61338  ...
+</pre>
+<p>A hat pointer <code>^</code> is just a COM pointer in disguise, so let’s dump the pointer to see what’s there.</p>
+<pre>0:007&gt; dps 08a5b088 l5
+08a5b088  793d0640 vccorlib140d_app!Platform::Exception::`vftable'
+08a5b08c  793d065c vccorlib140d_app!Platform::Exception::`vftable'
+08a5b090  793d0680 vccorlib140d_app!Platform::Exception::`vftable'
+08a5b094  793d06ac vccorlib140d_app!Platform::Exception::`vftable'
+08a5b098  00e5c694
+</pre>
+<p>The vtable tells us that we have a <code>Platform::Exception</code>, which, to be fair, isn’t particularly surprising.</p>
+<pre>0:007&gt; dt  vccorlib140d_app!Platform::Exception 08a5b088
+   +0x000 __VFN_table : 0x793d0640
+   +0x004 __VFN_table : 0x793d065c
+   +0x008 __VFN_table : 0x793d0680
+   +0x00c __VFN_table : 0x793d06ac
+   +0x010 __description    : 0x00e5c694 Void
+   +0x014 __restrictedErrorString : 0x00e5da54 Void
+   +0x018 __restrictedErrorReference : (null)
+   +0x01c __capabilitySid  : (null)
+   +0x020 __hresult        : 0n-2147483635
+   +0x024 __restrictedInfo : 0x08a3843c Void
+   +0x028 __throwInfo      : 0x793c6c24 Void
+   +0x02c __size           : 0x20
+   +0x030 __prepare        : Platform::IntPtr
+   +0x034 __abi_reference_count : __abi_FTMWeakRefData
+   +0x03c __abi_disposed   : 0
+</pre>
+<p>Okay, now we have something. The <code>__hresult</code> is <code>0n-2147483635</code>, which is the debugger’s strange way of saying <code>0x8000000D</code> which is <code>E_ILLEGAL_STATE_CHANGE</code>.</p>
+<p>If you’re writing in C++/WinRT, then the thing that is thrown will probably be a <code>winrt::hresult_error</code>.</p>
+<p>Go through the same exercise as before, but this time when we dump the thrown object we get</p>
+<pre>0:007&gt; dps 0942b8e0
+0942b8e0  00000000
+0942b8e4  aabbccdd
+0942b8e8  80004002
+0942b8ec  09439b5c
+0942b8f0  fdfdfdfd
+</pre>
+<p>The <a href="https://github.com/microsoft/cppwinrt/blob/b26b1adbaab108e01c6d6f8d7db1e7d0b7c04729/strings/base_error.h#L320"> structure of an <code>hresult_error</code></a> is currently</p>
+<pre>    bstr_handle m_debug_reference;
+    uint32_t m_debug_magic{ 0xAABBCCDD };
+    hresult m_code;
+    com_ptr&lt;IRestrictedErrorInfo&gt; m_info;
+</pre>
+<p>We can match those up to the dump above. The <code>m_debug_reference</code> is <code>nullptr</code>, the <code>m_debug_magic</code> is the expected value of <code>0xxAABBCCDD</code> (which is good, because it acts as confirmation that what we have really is an <code>hresult_error</code>), the <code>m_code</code> is <code>0x80004002</code>, which is <code>E_NOINTERFACE</code>, and the <code>m_info</code> is <code>0x09439b5c</code>, whatever that is.</p>
+<p>If you use <a href="https://github.com/Microsoft/wil"> WIL</a>, then you may have a <code>wil::ResultException</code>, which looks like this in memory:</p>
+<pre>struct ResultException : std::exception
+{
+    FailureType type; // 0 means FailureType::Exception
+    HRESULT hr;
+    long failureId;
+    PCWSTR pszMessage;
+    DWORD threadId;
+    PCSTR pszCode;
+    PCSTR pszFunction;
+    PCSTR pszFile;
+    uint32_t uLineNumber;
+    ... more stuff ...
+};
+</pre>
+<pre>0:000&gt; dps 000001e8a083edb0
+000001e8`a083edb0  00007ff7`e2200298 Win32!wil::ResultException::`vftable'
+000001e8`a083edb8  00000000`00000000 // std::exception
+000001e8`a083edc0  00000000`00000000 // std::exception
+000001e8`a083edc8  8007139f`00000000 // hr / type (0 = Exception)
+000001e8`a083edd0  cccccccc`00000042 // padding / failureId
+000001e8`a083edd8  00000000`00000000 // pszMessage
+000001e8`a083ede0  cccccccc`00001de4 // padding / threadId
+000001e8`a083ede8  000001e8`a0833a14 // pszCode
+000001e8`a083edf0  000001e8`a0833a26 // pszFunction
+000001e8`a083edf8  000001e8`a0833a2f // pszFile
+000001e8`a083ee00  00000001`0000001e // cFailureCount / uLineNumber
+</pre>
+<p>From this, we can extract that the <code>HRESULT</code> was <code>0x8007139f</code> which is <code>E_NOT_VALID_STATE</code>, there is no custom message (<code>pszMessage</code> is null), and we have pointers to various strings plus a line number.</p>
+<pre>0:000&gt; $ pszCode is the expression that failed
+0:000&gt; da 000001e8`a0833a14
+000001e8`a0833a14  "TrySomething(a, b, c)"
+
+0:000&gt; $ pszFunction is the function that threw
+0:000&gt; da 000001e8`a0833a26
+000001e8`a0833a26  "Foo::Bar"
+
+0:000&gt; $ pszFile is the file name
+0:000&gt; da 000001e8`a0833a2f
+000001e8`a0833a2f  "C:\\Test\\Bar.cpp"
+</pre>
+<p>So we see that this exception was the result of a</p>
+<pre>THROW_IF_FAILED(TrySomething(a, b, c));
+</pre>
+<p>that can be found in the function <code>Foo::Bar</code> at line 30 (<code>0x001e</code>) of the file <code>C:\Test\Bar.cpp</code>. It was the <code>0x42</code>‘th error encountered by the program.</p>
+<p>If you have symbols, you can ask the debugger to print this all nice and pretty for you.</p>
+<pre>0:000&gt; ?? ((Contoso!wil::ResultException*)0x000001e8a083edb0)
+class wil::ResultException * 0x000001e8`a083edb0
+   +0x000 __VFN_table : 0x00007ff7`c9de0308
+   +0x008 _Data            : __std_exception_data
+   +0x018 m_failure        : wil::StoredFailureInfo
+   +0x0b8 m_what           : wil::details::shared_buffer
+
+0:000&gt; ?? ((Contoso!wil::ResultException*)0x000001e8a083edb0)-&gt;m_failure
+class wil::StoredFailureInfo
+   +0x000 m_failureInfo    : wil::FailureInfo
+   +0x090 m_spStrings      : wil::details::shared_buffer
+
+0:000&gt; ?? ((Contoso!wil::ResultException*)0x000001e8a083edb0)-&gt;m_failure.m_failureInfo
+truct wil::FailureInfo
+   +0x000 type             : 0 ( Exception )
+   +0x004 hr               : 8007139f
+   +0x008 failureId        : 0n66
+   +0x010 pszMessage       : (null)
+   +0x018 threadId         : 0x1de4
+   +0x020 pszCode          : 0x000001e8`a0833a14  "TrySomething(a, b, c)"
+   +0x028 pszFunction      : 0x000001e8`a0833a26  "Foo::Bar"
+   +0x030 pszFile          : 0x000001e8`a0833a2f  "C:\Test\Bar.cpp"
+   +0x038 uLineNumber      : 0x1e
+   +0x03c cFailureCount    : 0n1
+   +0x040 pszCallContext   : (null)
+   +0x048 callContextOriginating : wil::CallContextInfo
+   +0x060 callContextCurrent : wil::CallContextInfo
+   +0x078 pszModule        : 0x000001e8`a0833a38  "Test.exe"
+   +0x080 returnAddress    : 0x00007ff7`c9dcf993 Void
+   +0x088 callerReturnAddress : 0x00007ff7`c9dd7b65 Void
+</pre>
+<p>You can see the other stuff in the <code>FailureInfo</code> structure, like the module name, and a few return addresses.</p>
+<p>Of course, the exception could have come from something else, in which case you’ll have to do your own decoding.</p>
+<pre>0:000&gt; dps 0x00000090`5172f8a0 l4
+00000090`5172f8a0  00007ffb`22408b98 std::time_put&lt;...&gt;::`vftable'+0x7b8
+00000090`5172f8a8  0000026b`841b4b10
+00000090`5172f8b0  00000000`00000001
+</pre>
+<p>This looks like somebody threw a <code>std::time_put</code>, but you’re just being faked out by COMDAT folding. You can dig into the exception type data to see what it is, or you can just guess at pointers, in the hope that one of them will give you a clue.</p>
+<p>Fortunately, many exceptions derive from <code>std::exception</code>, and in MSVC, the <code>std::exception</code> has a string pointer.</p>
+<pre>0:000&gt; da 0000026b`841b4b10
+0000026b`841b4b10  "invalid vector&lt;T&gt; subscript"
+</pre>
+<p>Aha, so this perticular guy was an invalid subscript exception from <code>std::vector</code>, also known as <code>std::out_of_range</code>.</p>
+<p>Those are the four commonly-thrown exceptions I was planning to cover today. They are the ones that come from the libraries commonly used in Windows client code.²</p>
+<p>¹ Note that this is an implementation detail that may change at any time. This information is provided for debugging purposes. The fields have opaque names to discourage people from relying on said implementation details. But we’re debugging here, so we can deal with the possibility that the fields no longer mean what we think they mean. Debugging is an exercise in optimism.</p>
+<p>² I left out MFC’s <code>CException</code>. Sorry, MFC developers.</p>
+
+
+</body>

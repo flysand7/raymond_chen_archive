@@ -1,0 +1,211 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ARM processor (Thumb-2), part 14: Manipulating flags</h1>  <!-- .entry-meta -->
+
+<p>There are two instructions for accessing the flags register directly.</p>
+<pre>    ; move register from special register
+    mrs     Rd, apsr        ; Rd = APSR
+
+    ; move special register from register
+    msr     apsr, Rd        ; APSR = Rd
+</pre>
+<p>These instructions are for accessing special registers, but the only special register available to user mode is <code>APSR</code>, so that’s all you’re going to see, if you even see this at all.</p>
+<p>The format of the Application Program Status Register (APSR) is as follows:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="A 32-bit bitfield with N in bit 31, Z in bit 30, C in bit 29, V in bit 28, Q in bit 27, and GE in bits 16 through 19. The other bits are unlabeled.">
+<tbody>
+<tr style="font-size: 75%;">
+<td>3<br/>
+1</td>
+<td>3<br/>
+0</td>
+<td>2<br/>
+9</td>
+<td>2<br/>
+8</td>
+<td>2<br/>
+7</td>
+<td>2<br/>
+6</td>
+<td>2<br/>
+5</td>
+<td>2<br/>
+4</td>
+<td>2<br/>
+3</td>
+<td>2<br/>
+2</td>
+<td>2<br/>
+1</td>
+<td>2<br/>
+0</td>
+<td>1<br/>
+9</td>
+<td>1<br/>
+8</td>
+<td>1<br/>
+7</td>
+<td>1<br/>
+6</td>
+<td>1<br/>
+5</td>
+<td>1<br/>
+4</td>
+<td>1<br/>
+3</td>
+<td>1<br/>
+2</td>
+<td>1<br/>
+1</td>
+<td>1<br/>
+0</td>
+<td>
+9</td>
+<td>
+8</td>
+<td>
+7</td>
+<td>
+6</td>
+<td>
+5</td>
+<td>
+4</td>
+<td>
+3</td>
+<td>
+2</td>
+<td>
+1</td>
+<td>
+0</td>
+</tr>
+<tr>
+<td>N</td>
+<td>Z</td>
+<td>C</td>
+<td>V</td>
+<td>Q</td>
+<td bgcolor="#c0c0c0" colspan="7"> </td>
+<td colspan="4">GE[3:0]</td>
+<td bgcolor="#c0c0c0" colspan="16"> </td>
+</tr>
+</tbody>
+</table>
+<p>the N, Z, C, and V flags are updated by arithmetic operations. The GE flags are updated by SIMD operations. The Q flag is different: It is set when a saturating arithmetic operation overflows, and the only way to clear it is to issue an <code>MSR</code> instruction.</p>
+<p>In user mode, the unlabeled bits of the APSR read as zero, and any attempts to modify them are ignored.</p>
+<p>The odd placement of the four main numeric flags dates back to the first revision of the ARM processor.</p>
+<p>The original ARM processor supported only 26-bit addresses, for a total address space of 64MB, and all instructions had to begin on a four-byte boundary. The unused bits of the <var>pc</var> register <a href="http://www.peter-cockerell.net/aalp/html/ch-2.html"> were repurposed to hold the flags</a>!</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;" title="A 32-bit bitfield with N, Z, C, and V in the upper four bits, and bits 2 through 25 containing the program counter. The other bits are unlabeled.">
+<tbody>
+<tr style="font-size: 75%;">
+<td>3<br/>
+1</td>
+<td>3<br/>
+0</td>
+<td>2<br/>
+9</td>
+<td>2<br/>
+8</td>
+<td>2<br/>
+7</td>
+<td>2<br/>
+6</td>
+<td>2<br/>
+5</td>
+<td>2<br/>
+4</td>
+<td>2<br/>
+3</td>
+<td>2<br/>
+2</td>
+<td>2<br/>
+1</td>
+<td>2<br/>
+0</td>
+<td>1<br/>
+9</td>
+<td>1<br/>
+8</td>
+<td>1<br/>
+7</td>
+<td>1<br/>
+6</td>
+<td>1<br/>
+5</td>
+<td>1<br/>
+4</td>
+<td>1<br/>
+3</td>
+<td>1<br/>
+2</td>
+<td>1<br/>
+1</td>
+<td>1<br/>
+0</td>
+<td>
+9</td>
+<td>
+8</td>
+<td>
+7</td>
+<td>
+6</td>
+<td>
+5</td>
+<td>
+4</td>
+<td>
+3</td>
+<td>
+2</td>
+<td>
+1</td>
+<td>
+0</td>
+</tr>
+<tr>
+<td>N</td>
+<td>Z</td>
+<td>C</td>
+<td>V</td>
+<td bgcolor="#c0c0c0" colspan="2"> </td>
+<td colspan="24">program counter</td>
+<td bgcolor="#c0c0c0" colspan="2"> </td>
+</tr>
+</tbody>
+</table>
+<p>The unlabeled bits are used only in kernel mode: In user mode, they read as zero and writes are ignored. The <code>Q</code> and <code>GE</code> flags had not been invented yet, so the only user-mode flags are N, Z, C, and V.</p>
+<p>You can think of the flag bits as stowaways hiding inside the unused bits of the program counter register. If used as the first source parameter in a binary operation, all the extraneous non-program-counter bits were masked off, allowing you to perform <var>pc</var>-relative addressing and <var>pc</var>-based arithmetic.¹ In other contexts, however, the full 32-bit value of <var>pc</var> is used, flags and all.</p>
+<p>When support expanded to a full 32-bit address space in ARM 3(?), those flag bits had to move to the APSR register, but to faciliate porting, their bit positions were preserved.</p>
+<p>There are no dedicated instructions for manipulating specific flags. If you want to, say, set the carry flag and leave all other flags unchanged, you’ll have to copy the ASPR to a general-purpose register, set the carry bit, and then set it back.</p>
+<p>If you don’t mind corrupting the other flags, then you can use some tricks to coerce a particular flag to a specific state.</p>
+<pre>    ; compare a number with itself
+    cmp     r0, r0      ; sets N = 0, Z = 1, C = 1, V = 0
+</pre>
+<p>Comparing a number sets flags according to the result of the subtraction, which produces zero. Therefore, the flags are set for nonnegative, zero, carry set (no underflow), and no overflow.</p>
+<p>To clear carry, you can add zero:</p>
+<pre>    adds    r0, r0, #0
+</pre>
+<p>Adding zero will never cause unsigned overflow, so this leaves carry clear.</p>
+<p>Alternatively, if you don’t want to create a false write dependency on <var>r0</var>, you could use</p>
+<pre>    ; add 0 and set flags, but discard result
+    cmn     r0, #0
+</pre>
+<p>This takes advantage of <a href="https://devblogs.microsoft.com/oldnewthing/20210607-00/?p=105288" title="The ARM processor (Thumb-2), part 6: The lie hiding inside the CMN instruction"> the lie hiding inside the <code>CMN</code> instruction</a> that causes <code>CMN Rd, #0</code> to clear carry when it really should have set it.</p>
+<p>If you want to force a nonnegative, zero result without affecting carry or overflow, you can use the otherwise-neglected <code>TEQ</code> instruction:</p>
+<pre>    ; test a number for equivalence with itself
+    teq     r0, r0      ; sets N = 0, Z = 1, C and V unchanged
+</pre>
+<p>To force a nonzero result, you can compare the stack pointer against an odd number, since Thumb-2 does not permit the stack pointer to be odd.</p>
+<pre>    cmp     sp, #1      ; force nonzero result
+</pre>
+<p>You can’t use <var>pc</var> for this trick because Thumb-2 does not allow the <var>pc</var> register to be used by a <code>CMP</code> instruction.</p>
+<p>I couldn’t think of a single-instruction way to force the negative or overflow bit to be set without modifying any integer registers. Maybe you can come up with something.²</p>
+<p>Okay, so the second half of this article was mostly just code golf. Next time, we’ll return to reality by looking at a few miscellaneous instructions.</p>
+<p>¹ This explains <a href="https://devblogs.microsoft.com/oldnewthing/20210608-00/?p=105290#comment-138049"> the comment from Neil Rashbrook</a> that you could use <code>TEQ</code> to copy the sign bit from a register into the <var>N</var> flag:</p>
+<pre>    teq     pc, Rn      ; set flags according to (pc &amp; 0x03FFFFFC) ^ Rn
+</pre>
+<p>Masking out the flag bits from the left-hand side (<var>pc</var>) means that the high bit is always clear. Exclusive-or with zero has no effect, so the tested value has the same high bit as <var>Rn</var>, which then becomes the <var>N</var> flag. This trick stopped working in ARM3, when the flags moved to a separate special register.</p>
+<p>² I considered taking advantage of the fact that in Thumb-2 mode, the bottom bit of <var>pc</var> is always set, but the bit shifting and bit extraction instructions disallow <var>pc</var> as a source (or destination).</p>
+
+
+</body>

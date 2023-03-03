@@ -1,0 +1,42 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On enabling NX and ASLR for a module after the fact</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to enable NX (also known as Data Execution Prevention, or DEP) and ASLR for some executables and DLLs. There are two ways of doing this: </p>
+<ul>
+<li>Enable the options at link time by passing the     linker command line options     <code>/NX­COMPAT</code> and     <code>/DYNAMIC­BASE</code>,     and for good measure     <code>/HIGH­ENTROPYVA</code>. </li>
+<li>    Build the modules the usual way,     and then use the <code>EDITBIN</code>     program with those same command line options     to enable the features on the files in question. </li>
+</ul>
+<p>For reasons the customer didn’t provide (but which I can guess),¹ there are a handful of files that they cannot relink, so they are forced to use the <code>EDITBIN</code> approach for those files. </p>
+<p>What the customer found was that both the linker and the <code>EDITBIN</code> approaches seemed to be fine with <code>/NX­COMPAT</code>. But the story was different with the <code>/DYNAMIC­BASE</code> flag. </p>
+<p>Specifically, the linker approach was creating a larger file due to a new <code>.reloc</code> section. The file produced by the <code>EDITBIN</code> approach didn’t have a <code>.reloc</code> section, and dumping the header reports <b>Relocations stripped</b>. Furthermore, when running <code>EDITBIN</code>, it generated the ominous warning message, “Warning LNK4259: ‘/DYNAMIC­BASE’ is not compatible with ‘/FIXED’; image may not run.” It appears that linking with the <code>/DYNAMIC­BASE</code> flag implicitly sets <code>/FIXED:NO</code>, but the <code>EDITBIN</code> command doesn’t apply the same behavior, and it doesn’t support the <code>/FIXED:NO</code> command line option. </p>
+<p>The customer had the following questions: </p>
+<ul>
+<li>Are the linker approach and the the <code>EDITBIN</code> approach for enabling <code>/NX­COMPAT</code> equivalent? </li>
+</ul>
+<p>Yes, enabling NX via the linker <code>/NX­COMPAT</code> flag is equivalent to enabling it with <code>EDITBIN</code>. In both cases, they set the <code>IMAGE_</code><code>DLL­CHARACTERISTICS_</code><code>NX_</code><code>COMPAT</code> bit in the <code>IMAGE_</code><code>OPTIONAL_</code><code>HEADER</code>‘s <code>Dll­Characteristics</code>. </p>
+<ul>
+<li>Are the linker approach and the the <code>EDITBIN</code> approach for enabling <code>/DYNAMIC­BASE</code> equivalent? </li>
+</ul>
+<p>The answer depends on what color glasses you’re wearing. If you’re wearing <a href="https://blogs.msdn.microsoft.com/oldnewthing/20110512-00/?p=10683">kernel-colored glasses</a>, then yes, the two approaches are the same because both set the <code>IMAGE_</code><code>DLL­CHARACTERISTICS_</code><code>DYNAMIC_</code><code>BASE</code> bit in the <code>IMAGE_</code><code>OPTIONAL_</code><code>HEADER</code>‘s <code>Dll­Characteristics</code>. But in reality, they are not the same, because of the behavior noted above with respect to relocations. If you ask the linker for <code>/DYNAMIC­BASE</code>, it will default to <code>/FIXED:NO</code> because <code>/DYNAMIC­BASE</code> means “My base address can be moved around”, which is the opposite of <code>/FIXED</code>, which means “My base address cannot change.” </p>
+<p>If you say <code>/FIXED</code>, then the linker does not generate “relocations”, which are the bits of information that describe what adjustments need to be made to your DLL in order to make it happy at its new location. Trying to turn on <code>/DYNAMIC­BASE</code> with <code>EDITBIN</code> on a binary that is <code>/FIXED</code> doesn’t work because <code>EDITBIN</code> doesn’t know how to regenerate the <code>.reloc</code> section. </p>
+<p>If you want to enable <code>/DYNAMIC­BASE</code>, then you cannot link with <code>/FIXED</code>. </p>
+<ul>
+<li>Are there any adverse consequences of mixing ASLR-enabled DLLs and non-ASLR-enabled DLLs in the same process? </li>
+</ul>
+<p>There are no consequences beyond those already stated on the tin. The ASLR-enabled binaries will be subject to ASLR, and the non-ASLR-enabled binaries will not. You can mix and match freely within a process. Just be aware that the non-ASLR-enabled binaries will not be randomly relocated, which means that those binaries will not benefit from the security protections provided by ASLR. </p>
+<ul>
+<li>Are there any adverse consequences of mixing NX-enabled DLLs and non-NX-enabled DLLs in the same process? </li>
+</ul>
+<p>The NX setting is process-wide, and the process takes its NX state from the <code>/NX­ENABLED</code> state of the executable, <a href="https://blogs.msdn.microsoft.com/oldnewthing/20110824-00/?p=9823">not from any DLLs</a>. It’s yet another one of the module flags that <a href="https://blogs.msdn.microsoft.com/oldnewthing/20140502-00/?p=1093">are meaningless for DLLs</a>. So mix it up in the DLLs all you want. Nobody will care, because the flag is ignored for DLLs anyway. </p>
+<ul>
+<li>Are there any adverse consequences of mixing EXEs and DLLs which use different approaches for enabling NX and/or ASLR? For example, is there an unexpected interaction between an EXE which enabled ASLR with <code>EDITBIN</code> and a DLL that enabled ASLR with a linker switch? How can I tell whether an EXE or DLL has had its NX or ASLR bit set via the linker as opposed to the <code>EDITBIN</code> program? </li>
+</ul>
+<p>There is no way to tell how the NX or ASLR attributes were enabled. Using the linker or <code>EDITBIN</code> both lead to the same binary. There’s nothing that records who set the bit. As a result, it doesn’t matter how you enabled NX and ASLR. The system behaves the same regardless of how you enabled them. </p>
+<p><b>Bonus chatter</b>: There is <a href="https://msdn.microsoft.com/en-us/library/bb430720.aspx">some text on MSDN</a> (which got copied into <a href="https://technet.microsoft.com/en-us/library/security/dn848375.aspx">a glossary on TechNet</a>) which says </p>
+<blockquote class="q"><p>For a component to support ASLR, all components that it loads must also support ASLR. For example, if A.exe consumes B.dll and C.dll, all three must support ASLR. </p></blockquote>
+<p>Nobody is quite sure how that text got into the documentation, since it’s not true. One of the original authors of that article surmises that perhaps what they were trying to say was “In order for a process to take full advantage of ASLR, the executable and all DLLs must support ASLR,” but somehow the message got garbled during editing. </p>
+<p>Given what we already know about <a href="https://devblogs.microsoft.com/oldnewthing/">how the loader shares pages in the face of ASLR</a>, having a DLL be subject to ASLR in some processes but not others would create extra work for the loader, because it now has to be able to keep up to two copies of every DLL in memory: A randomly-located version for ASLR, and a non-relocated version for non-ASLR. It’s extra work for no real benefit, so I can understand why they don’t do it. </p>
+<p>¹ I can think of a few reasons why the customer cannot relink all of the files. One possibility is that they don’t have the source code any more. Another is that they have the source code, but they don’t have the build tools any more. (For example, it may be built with a very old compiler that doesn’t work any more.) Or they have the source code, and they have the tools, but they simply don’t want to take the risk that relinking the file might result in an unexpected change to the program. (For example, if it was linked with an older version of the linker, and they have since upgraded to a newer version.) </p>
+
+
+</body>

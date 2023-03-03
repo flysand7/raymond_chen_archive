@@ -1,0 +1,117 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why do we even need to define a red zone? Can’t I just use my stack for anything?</h1>  <!-- .entry-meta -->
+
+<p>On Windows, the stack grows downward from high addresses to low. This is sometimes architecturally defined, and sometimes it is merely convention. The value pointed-to by the stack pointer register is the value at the top of the stack, and values deeper on the stack reside at higher addresses. But what’s up with the data at addresses <i>less than</i> the stack pointer? </p>
+<table border="0" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<td></td>
+<td align="center">⋮</td>
+<td></td>
+</tr>
+<tr>
+<td valign="bottom">top of stack</td>
+<td align="center" style="border: solid 1px black" valign="bottom">        valid stack data<br/>        valid stack data<br/>        valid stack data     </td>
+<td style="border-bottom: dotted 1px black" valign="bottom"> <span style="width: 1.5em">←</span>stack pointer     </td>
+</tr>
+<tr>
+<td></td>
+<td align="center" style="border: solid 1px black" valign="bottom">        below the stack<br/>        below the stack<br/>        below the stack     </td>
+<td style="padding-left: 1.5em">        land of mystery     </td>
+</tr>
+<tr>
+<td></td>
+<td align="center">⋮</td>
+<td></td>
+</tr>
+</table>
+<p> The platform conventions for some but not all architectures define a <i>red zone</i>, which is a region of the stack below the stack pointer that is still valid for applications to use. </p>
+<table border="0" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<td></td>
+<td align="center">⋮</td>
+<td></td>
+</tr>
+<tr>
+<td valign="bottom">top of stack</td>
+<td align="center" style="border: solid 1px black" valign="bottom">        valid stack data<br/>        valid stack data<br/>        valid stack data     </td>
+<td style="border-bottom: dotted 1px black" valign="bottom"> <span style="width: 1.5em">←</span>stack pointer     </td>
+</tr>
+<tr>
+<td></td>
+<td align="center" style="border: solid 1px black" valign="bottom">        still valid<br/>        still valid     </td>
+<td style="border-bottom: dotted 1px black;padding-left: 1.5em">        red zone     </td>
+</tr>
+<tr>
+<td></td>
+<td align="center" style="border: solid 1px black" valign="bottom">        here<br/>        be<br/>        dragons     </td>
+<td style="padding-left: 1.5em">        off limits     </td>
+</tr>
+<tr>
+<td></td>
+<td align="center">⋮</td>
+<td></td>
+</tr>
+</table>
+<p>For Windows, the size of the red zone varies by architecture, and is often zero. </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Architecture</th>
+<th>Red zone size</th>
+</tr>
+<tr>
+<td>x86</td>
+<td align="right">0 bytes</td>
+</tr>
+<tr>
+<td>x64</td>
+<td align="right">0 bytes</td>
+</tr>
+<tr>
+<td>Itanium</td>
+<td align="right">16 bytes*</td>
+</tr>
+<tr>
+<td>Alpha AXP</td>
+<td align="right">0 bytes</td>
+</tr>
+<tr>
+<td>MIPS32</td>
+<td align="right">0 bytes</td>
+</tr>
+<tr>
+<td>PowerPC</td>
+<td align="right">232 bytes</td>
+</tr>
+<tr>
+<td>ARM32</td>
+<td align="right">8 bytes</td>
+</tr>
+<tr>
+<td>ARM64</td>
+<td align="right">16 bytes</td>
+</tr>
+</table>
+<p>* The Itanium is unusual in that the red zone is placed <a href="https://devblogs.microsoft.com/oldnewthing/"><i>above</i> the stack pointer</a>, rather than below it. </p>
+<p>In the case of the PowerPC, the red zone is <a href="https://devblogs.microsoft.com/oldnewthing/">a side effect of the calling convention</a>. </p>
+<p>Any memory below the stack beyond the red zone is considered volatile and may be modified by the operating system at any time. </p>
+<p>But seriously, why does the operating system even care what I do with my stack? I mean, it’s <i>my</i> stack! The operating system doesn’t tell me what to do with memory I allocate via <code>Virtual­Alloc</code>. What makes the stack any different from any other memory? </p>
+<p><a href="https://devblogs.microsoft.com/oldnewthing/#comment-135993">Consider the following sequence on x86</a>: </p>
+<pre>
+    MOV     [esp-4], eax       ; save eax below the stack pointer
+    MOV     ecx, [esp-4]       ; read it into ecx
+    CMP     ecx, eax           ; are they the same?
+    JNZ     panic              ; N: something crazy happened¹
+</pre>
+<p>Can the jump be taken? </p>
+<p>Since there is no red zone on x86, the memory at negative offsets relative to the stack pointer may be overwritten at any time. Therefore, the above sequence is permitted to jump to <code>panic</code>. </p>
+<p>A debugger may use the memory beyond the red zone as a convenient place to store some data. For example, if you use <a href="https://devblogs.microsoft.com/oldnewthing/">the <code>.call</code> command</a>, the debugger will perform the nested call on the same stack, and likely use some of that stack space to preserve registers so that they can be restored after the <code>.call</code>ed function returns. Any data stored beyond the red zone will therefore be destroyed. </p>
+<p>Even during normal operation, it’s possible for the operating system to overwrite data beyond the red zone at any time. Here’s one scenario where it can happen: </p>
+<p>Suppose your thread gets pre-empted immediately after you store the data beyond the red zone. While your thread is waiting for a chance to resume execution, the memory manager pages out the code. Eventually, your thread resumes execution, and the memory manager tries to page it back in. Oh no, there’s an I/O error during the page-in! The operating system pushes an exception frame onto the stack for the <code>STATUS_</code><code>IN_</code><code>PAGE_</code><code>ERROR</code>, clobbering the data you had been hiding beyond the red zone. </p>
+<p>The operating system then dispatches the exception. It goes to a vectored exception handler, which some other part of your program had installed specifically to handle this possibility, because your program might be run directly off a CD-ROM or unreliable network. The program displays a prompt to ask the user to reinsert the CD-ROM and offers an opportunity to retry. If the user says to retry, then the vectored exception handler returns <code>EXCEPTION_</code><code>CONTINUE_</code><code>EXECUTION</code>, and the operating system will restart the failed instruction. </p>
+<p>This time, the restart succeeds because the CD-ROM is present and the code can be paged back in. The next instruction runs, the one that loads the beyond-the-red-zone value into the <var>ecx</var> register, but it doesn’t load the value stored by the previous instruction because the <code>STATUS_</code><code>IN_</code><code>PAGE_</code><code>ERROR</code> exception overwrote it. The comparison fails, and we jump to the label <code>panic</code>. </p>
+<p>If you want to store data on the stack, push it properly: Decrement the stack pointer first, and then store the value onto the valid portion of the stack. Don’t hide it beyond the red zone. That memory is volatile and may vanish out from under you. </p>
+<p>¹ The coding convention for assembly language² says that comments for jump instructions should describe the result if the jump is taken. In the example above, the <code>CMP</code> instruction asks the question, “Are they the same?”, and the <code>JNZ</code> instruction jumps if they are not equal. The comment therefore begins with “N:” indicating that the jump is taken if the answer to the previous question is <i>No</i>, and the rest of the comment describe what it means when the jump is taken. </p>
+<p>² Yes, we have a coding convention for assembly language. </p>
+
+
+</body>

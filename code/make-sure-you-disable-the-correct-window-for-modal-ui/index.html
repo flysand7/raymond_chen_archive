@@ -1,0 +1,125 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Make sure you disable the correct window for modal UI</h1>  <!-- .entry-meta -->
+
+<p>
+Some time ago,
+I was asked to look at two independent problems with people trying
+to do modal UI manually.
+Well, actually, when the issues were presented to me,
+they weren’t described in quite that way.
+They were more along the lines of,
+“Something strange is happening in our UI. Can you help?”
+Only in the discussion of the scenarios did it become
+apparent that it was improper management of modal UI that
+was the cause.
+</p>
+<p>
+We already saw
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/02/27/81155.aspx">
+one subtlety of managing modal UI manually</a>,
+namely that you have to enable and disable the windows in the correct
+order.
+That wasn’t the root of the problems I was looking at,
+but enabling and disabling windows did play a major role.
+</p>
+<p>
+When we
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/04/01/404531.aspx">
+took a look at the dialog loop</a>,
+the first steps involved manipulating the <code>hwndParent</code>
+parameter to ensure that we enable and disable the correct window
+at the correct time.
+</p>
+<pre>
+ if (hwndParent == GetDesktopWindow())
+  hwndParent = NULL;
+ if (hwndParent)
+  hwndParent = GetAncestor(hwndParent, GA_ROOT);
+ HWND hdlg = CreateDialogIndirectParam(hinst,
+               lpTemplate, hwndParent, lpDlgProc,
+               lParam);
+ BOOL fWasEnabled = EnableWindow(hwndParent, FALSE);
+</pre>
+<p>
+In both cases, the first two “if” statements were missing.
+We already saw
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/02/24/79212.aspx">
+the danger of disabling the desktop window</a>,
+which is what the first “if” statement protects against.
+But the specific problem with modal UI was being caused by
+the missing second “if” statement.
+</p>
+<p>
+Both of the problems boiled down to somebody passing a child
+window as the <code>hwndParent</code> and the code doing
+manual modal UI failing to convert this window to a top-level window.
+As a result, when they did the <code>EnableWindow(hwndParent, FALSE)</code>,
+they disabled a child window,
+leaving the top-level window enabled.
+</p>
+<p>
+The two problems had the same root cause but manifested themselves
+differently.
+The first problem led to strange behavior because
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/02/23/378866.aspx">
+the user could still interact
+with the top-level window since it was still enabled</a>.
+Sure, a portion of the window was disabled (the portion
+controlled by the child window passed as <code>hwndParent</code>),
+but the caption buttons still worked, as did many of the other
+controls on the window.
+</p>
+<p>
+In the second case,
+disabling the wrong window created a different problem:
+When the modal UI was complete,
+the window manager activated the top-level window that was the
+owner of the modal window since that window was never disabled.
+This caused the top-level window to receive a <code>WM_ACTIVATE</code>
+message,
+which it handled by putting focus on the control that had focus
+when the top-level window was deactivated.
+Unfortunately, that window was the window that was passed
+as the <code>hwndParent</code>,
+which was <i>disabled by mistake</i>.
+The attempt to restore focus failed,
+and when the manual modal UI finally finished up and enabled
+the child window, it was too late.
+You wound up with focus nowhere and a dead keyboard.
+This second problem was
+reported as simply “<code>SetFocus</code> is not working.”
+Only after peeling back a few layers (and application of some
+psychic powers) did the root cause emerge.
+</p>
+<p>
+Now, even though this was a subtle problem,
+you already knew all the pieces that went into it since I had
+covered them earlier.
+And as for those psychic powers that I used?
+It’s really not that magic.
+In this case of psychic debugging, I worked backwards.
+In response to the report that
+<code>SetFocus</code> was not working,
+the next set of questions was to determine why.
+Is it a valid window handle?
+Does the window belong to your thread?
+Is it enabled?
+</p>
+<p>
+Aha, the window isn’t enabled.
+That’s when the customer also mentioned that they were doing
+this inside a <code>WM_ACTIVATE</code> handler.
+If you’re gaining activation, who were you gaining it from?
+Oh, a modal dialog, you say?
+One that you’re managing manually?
+Once I discovered that they were trying to manage modal UI manually,
+I suspected that they were disabling the wrong window,
+since that fit all the symptoms and it’s something that people tend
+to get wrong.
+</p>
+<p>
+Most of what looks like psychic debugging is really just
+knowing what people tend to get wrong.</p>
+
+
+</body>

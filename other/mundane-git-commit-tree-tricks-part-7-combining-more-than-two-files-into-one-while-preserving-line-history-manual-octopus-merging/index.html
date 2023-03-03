@@ -1,0 +1,91 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Mundane git commit-tree tricks, Part 7: Combining more than two files into one while preserving line history, manual octopus merging</h1>  <!-- .entry-meta -->
+
+<p><a href="/other/mundane-git-tricks-combining-two-files-into-one-while-preserving-line-history"> Last time</a>, we saw how to combine two files to form a third file, while preserving line history. But what if you need to combine more than two files? For example, maybe you want to take a whole bunch of <code>csv</code> files and merge them into one big file, but still track the origin of each line.</p>
+<p>Let’s set up a scratch repo to try it out.</p>
+<pre>git init
+
+&gt;fruits echo apple
+&gt;&gt;fruits echo grape
+&gt;&gt;fruits echo orange
+git add fruits
+git commit --author="Alice &lt;alice&gt;" -m "create fruits"
+
+&gt;veggies echo celery
+&gt;&gt;veggies echo lettuce
+&gt;&gt;veggies echo peas
+git add veggies
+git commit --author="Bob &lt;bob&gt;" -m "create veggies"
+
+&gt;dairy echo cheese
+&gt;&gt;dairy echo eggs
+&gt;&gt;dairy echo milk
+git add dairy
+git commit --author="Carol &lt;carol&gt;" -m "create dairy"
+
+git tag ready
+</pre>
+<p>We can use the trick from last time to merge two files, and extend it to three files by performing an octopus merge.</p>
+<pre>git checkout -b d2f
+git mv dairy food
+git commit -m "dairy to food"
+git checkout -
+
+git checkout -b f2f
+git mv fruits food
+git commit -m "fruits to food"
+git checkout -
+
+git checkout -b v2f
+git mv veggies food
+git commit -m "veggies to food"
+git checkout -
+
+git merge d2f f2f v2f
+</pre>
+<p>Except that it doesn’t work. In fact, it explodes quite spectacularly.</p>
+<pre>Fast-forwarding to: d2f
+Trying simple merge with f2f
+Simple merge did not work, trying automatic merge.
+Added food in both, but differently.
+fatal: unable to read blob object e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+error: Could not stat : No such file or directory
+ERROR: content conflict in food
+fatal: merge program failed
+Automated merge did not work.
+<b>Should not be doing an octopus.</b>
+Merge with strategy octopus failed.
+</pre>
+<p>I like that second-to-last line that scolds you for attempting this sort of thing in the first place.</p>
+<p>Let’s clean up the work that merge had left in progress. You normally would do this with a <code>git merge --abort</code>, but octopus merges are not abortable because they don’t record enough information to permit an abort. (This is arguably a bug in git, but it’s merely an annoyance, and not something normal people are going to encounter.)</p>
+<pre>git reset --hard
+</pre>
+<p>The problem is that octopus merges work only if there are no conflicts. We’re going to have to build our own octopus merge.</p>
+<pre>cat dairy fruits veggies | sort &gt;food
+git rm dairy fruits veggies
+git add food
+git write-tree
+</pre>
+<p>The <code>git write-tree</code> creates a tree from the index. It’s the tree that a <code>git commit</code> would create, but we don’t want to do a normal commit. This is the tree we want to commit, but we need to set custom parents, so we’ll ask <code>git write-tree</code> for the tree that <i>would be committed</i>, so we can build our custom commit.</p>
+<pre style="white-space: pre-wrap;">git commit-tree 〈tree-hash〉 -p HEAD -p d2f -p f2f -p v2f -m "combine dairy, fruits, and veggies"
+</pre>
+<p>The <code>commit-tree</code> will print another hash. This is the hash of the manually-constructed octopus merge.</p>
+<pre>git merge --ff-only 〈commit-hash〉
+</pre>
+<p>I like to use <code>--ff-only</code> to make sure that I really am just moving forward.</p>
+<pre>git blame food
+
+^7c5ae53 fruits  (Alice 2019-05-15 07:00:00 -0700 1) apple
+03c4572c veggies (Bob   2019-05-15 07:00:01 -0700 2) celery
+65430aff dairy   (Carol 2019-05-15 07:00:02 -0700 3) cheese
+65430aff dairy   (Carol 2019-05-15 07:00:02 -0700 4) eggs
+^7c5ae53 fruits  (Alice 2019-05-15 07:00:00 -0700 5) grape
+03c4572c veggies (Bob   2019-05-15 07:00:01 -0700 6) lettuce
+65430aff dairy   (Carol 2019-05-15 07:00:02 -0700 7) milk
+^7c5ae53 fruits  (Alice 2019-05-15 07:00:00 -0700 8) orange
+03c4572c veggies (Bob   2019-05-15 07:00:01 -0700 9) peas
+</pre>
+<p>There are other ways we could have produced the same result. For example, we could have performed a series of two-files-into-one merges, but this way gives us a single commit on the trunk that captures the “combine multiple files into one”.</p>
+
+
+</body>

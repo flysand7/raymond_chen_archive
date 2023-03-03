@@ -1,0 +1,70 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The stream pointer position in IDataObject::GetData and IDataObject::GetDataHere is significant</h1>  <!-- .entry-meta -->
+
+<p>
+An oft-overlooked detail of the
+<code>IData­Object::Get­Data</code> and
+<code>IData­Object::Get­Data­Here</code> methods
+is the position of the stream pointer when the result is a stream.
+These rules are
+<a href="http://msdn.microsoft.com/library/ms687266">
+buried in the documentation</a>,
+so I’m going to call them out louder.
+</p>
+<p>
+Let’s look at
+<code>IData­Object::Get­Data</code> first.
+</p>
+<p>
+If
+<code>IData­Object::Get­Data</code>
+returns a stream,
+then the stream pointer must be positioned at the
+<i>end</i> of the stream before the stream is returned.
+In other words, the last thing you do before returning
+the stream is seek it to the end.
+The contents of the data object are assumed to extend from the
+start of the stream to the stream’s position as returned by
+<code>IData­Object::Get­Data</code>.
+(And no, I don’t know why this rule exists.)
+</p>
+<p>
+I messed this up in
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/03/19/8080215.aspx">
+my demonstration of how to drag a stream</a>.
+Let’s fix it.
+</p>
+<pre>
+  case DATA_FILECONTENTS:
+    pmed-&gt;tymed = TYMED_ISTREAM;
+    pmed-&gt;pstm = SHOpenRegStream(HKEY_LOCAL_MACHINE,
+       TEXT("Hardware\\Description\\System\\CentralProcessor\\0"),
+       TEXT("~MHz"), STGM_READ);
+    <font color="blue">if (pmed-&gt;pstm) {
+      LARGE_INTEGER liZero = { 0, 0 };
+      pmed-&gt;pstm-&gt;Seek(liZero, STREAM_SEEK_END, NULL);
+    }</font>
+    return pmed-&gt;pstm ? S_OK : E_FAIL;
+  }
+</pre>
+<p>
+But what if you don’t know the stream size?
+For example, what if the stream is coming from a live download?
+What if the stream doesn’t support seeking?
+What if the stream is infinite?
+In those cases, you don’t really have a choice.
+You just leave the stream pointer at the beginning and hope for the best.
+(Fortunately, at least in the case of virtual file content,
+the shell is okay with people who leave the stream pointer at the start
+of the stream.
+Probably for reasons like this.)
+</p>
+<p>
+There is a similar detail with
+<code>IData­Object::Get­Data­Here</code>:
+If you are asked to produce the data into an existing stream,
+you should write the data starting at the stream’s current position
+and leave the stream pointer at the end of the data you just wrote.</p>
+
+
+</body>

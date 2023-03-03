@@ -1,0 +1,125 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I monitor changes to the reference count of a C++/WinRT object?</h1>  <!-- .entry-meta -->
+
+<p>Say you’re debugging your C++/WinRT object and you want to keep an eye on its reference count, perhaps because you’re tracking down a memory leak. How can you do that?</p>
+<p>For concreteness, let’s say we’ve got these objects.</p>
+<pre>// A local object without a projection
+struct Faucet : winrt::implements&lt;Faucet, IFaucet&gt;
+{
+    bool is_dripping = false;
+
+    Faucet()
+    {
+        ... construct the faucet ...
+    }
+
+    ... other methods ...
+};
+
+// A projected class
+namespace winrt::Fixtures::implementation
+{
+    struct Lamp : LampT&lt;Lamp&gt;
+    {
+        bool is_on = false;
+
+        Lamp()
+        {
+            ... construct the lamp ...
+        }
+
+        ... other methods ...
+    };
+}
+</pre>
+<p>If you are the caller of <code>make_self</code>, you can inspect that result to find the reference count.</p>
+<pre>auto faucet = winrt::make_self&lt;Faucet&gt;();
+auto lamp = winrt::make_self&lt;implementation::Lamp&gt;();
+</pre>
+<p>For our purposes, <code>make_self</code> is convenient because it gives you a pointer to the implementation class, which makes it easy to extract the reference count. You can see it in the debugger:</p>
+<table border="1" cellpadding="3" cellspacing="=0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>Name</td>
+<td>Value</td>
+</tr>
+<tr>
+<td>◢ faucet</td>
+<td>0x00d4bab8 {…}</td>
+</tr>
+<tr>
+<td> ◢ [winrt::impl::heap_implements&lt;Faucet&gt;]</td>
+<td>{…}</td>
+</tr>
+<tr>
+<td>  ◢ Faucet</td>
+<td>{…}</td>
+</tr>
+<tr>
+<td>    ◢ winrt::implements&lt;Faucet, IFaucet&gt;</td>
+<td>{…}</td>
+</tr>
+<tr>
+<td>    ▶ winrt::impl::producers_base&lt;Faucet, std::tuple&lt;IFaucet&gt; &gt;</td>
+<td>{…}</td>
+</tr>
+<tr>
+<td>    ◢ winrt::impl::root_implements&lt;Faucet, std::tuple&lt;IFaucet&gt; &gt;</td>
+<td>{m_references=0x00000001 }</td>
+</tr>
+<tr>
+<td>       winrt::impl::root_implements_composing_outer&lt;0&gt;</td>
+<td>{…}</td>
+</tr>
+<tr>
+<td>       winrt::impl::root_implements_composable_inner&lt;Faucet, 0&gt;</td>
+<td>{…}</td>
+</tr>
+<tr>
+<td>       winrt::impl::module_lock_updater&lt;1&gt;</td>
+<td>{…}</td>
+</tr>
+<tr>
+<td>       __vfptr</td>
+<td>0x004b4464 {…}</td>
+</tr>
+<tr style="background-color: #ffd1dc;">
+<td>       m_references</td>
+<td>0x00000001 ←</td>
+</tr>
+<tr>
+<td> ▶ IUnknown</td>
+<td>{…}</td>
+</tr>
+<tr>
+<td> ▶ [Raw View]</td>
+<td>{m_ptr=0x00d4bab8 {…} }</td>
+</tr>
+</tbody>
+</table>
+<p>You get a similar view for <code>lamp</code>.</p>
+<p>From here, you can right-click the <code>m_references</code> and say <i>Break When Value Changes</i>.</p>
+<p>If you are more of a roll-up-your-sleeves kind of person, you can extract the address of that reference count variable from the Immediate window:</p>
+<table border="1" cellpadding="3" cellspacing="=0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td><code>&amp;faucet.m_ptr-&gt;m_references<br/>
+        0x00d4babc 0x00000001</code></td>
+</tr>
+</tbody>
+</table>
+<p>And then you can create a data breakpoint that triggers when the reference count changes.</p>
+<p>If you’re not so lucky and the object was created via projection or <code>make</code>, then what comes out is an interface pointer, not a pointer to the concrete object. So how do you get a pointer to the concrete object?</p>
+<p>My trick is to set a breakpoint on the constructor. In the constructor, you have the <code>this</code> pointer, and you can follow the same cookbook above to get to the <code>m_references</code>.</p>
+<p>If you’re really unlucky, the constructor was optimized out. You can ask the compiler not to optimize out the constructor by marking it as <code>noinline</code>.</p>
+<pre>    // or __attribute__((noinline)) if that's what your compiler prefers
+    <span style="color: blue;">__declspec(noinline)</span> Faucet()
+    {
+        ... construct the faucet ...
+    }
+</pre>
+<p>The last wrinkle is that you may see a write to <code>m_references</code> that comes from <code>make_<wbr/>weak_<wbr/>ref</code> instead of the usual <code>AddRef</code> and <code>Release</code>. C++/WinRT uses <a href="/code/how-wrl-squeezes-a-weak-reference-and-a-reference-count-into-a-single-integer" title="How WRL squeezes a weak reference and a reference count into a single integer"> the same trick that WRL uses to squeeze a weak reference and a reference count into a single integer</a>: If no weak reference has been created, then the <code>m_references</code> is the actual reference count. But once a weak reference is created, then <code>m_references</code> becomes a pointer to the weak reference, and the reference count moves into the weak reference.</p>
+<p>When that happens, you want to double-click the call stack entry for <code>make_<wbr/>weak_<wbr/>ref</code>, expand the <code>weak_ref</code> variable, find the <code>m_strong</code> and do another <i>Break When Value Changes</i>. (The corresponding immediate expression is <code>&amp;weak_ref.<wbr/>m_ptr-&gt;<wbr/>m_strong</code>.)</p>
+
+
+</body>

@@ -1,0 +1,141 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating an awaitable lock for WinJS and JavaScript Promises</h1>  <!-- .entry-meta -->
+
+<p><a href="https://blogs.msdn.microsoft.com/oldnewthing/20180802-00/?p=99395">Last time</a>, we created an awaitable lock for C++ PPL tasks. Let’s do the same thing for WinJS Promises (because I needed one of those too). </p>
+<pre>
+var AwaitableLock = WinJS.Class.define(function AwaitableLock() {
+  this._locked = false;
+  this._p = null;
+  this._c = null;
+}, {
+  waitAsync: function waitAsync() {
+    if (!this._locked) {
+      // Lock is available. Acquire it.
+      this._locked = true;
+      return WinJS.Promise.wrap();
+    }
+
+    // Lock is not available.
+    var self = this;
+    if (!this._p) {
+      // Create a promise that completes when the lock is released.
+      this._p = new WinJS.Promise(function (c) { self._c = c; });
+    }
+
+    // Return a promise that waits for the lock to be released
+    // and then retries the wait.
+    return this._p.then(function () { return self.waitAsync(); });
+  },
+
+  release: function release() {
+    this._locked = false;
+    var c = this._c;
+    this._p = null;
+    this._c = null;
+
+    // Complete any promise that was waiting for release.
+    c &amp;&amp; c();
+  }
+});
+</pre>
+<p>Since JavaScript is single-threaded, we don’t have to worry about concurrency, so we don’t need a mutex to guard our state variables. If the lock is available, then acquire it and return a completed promise. </p>
+<p>Otherwise, we have to create a promise. The <code>WinJS.Promise</code> constructor takes a function which in turn receives a few parameters, although we use only <code>c</code> here. The <code>c</code> parameter is itself a function that our code can call to complete the promise. All we do is save that callback in the <code>_c</code> property so that we can complete the promise later. To avoid having to remember multiple completion callbacks, we create this promise once and cache it in the <code>_p</code> property. </p>
+<p>We then chain a continuation on that newly-created promise that restarts the <code>waitAsync</code>, and return the resulting promise. </p>
+<p>When the lock is released, we clear the saved completion and promise (thereby resetting the lock object to its unlocked state), and if there is a completion function, we call it. This completes the promise we created in <code>waitAsync</code>, which means that each of them will race to <code>waitAsync</code> and retry the acquisition. </p>
+<p>There is a subtlety here: We reset the lock object completely before calling the completion. The completion is going to attempt to re-acquire the lock object, and we don’t want the reentrant call to see a lock object in an inconsistent state. To avoid that, we capture the completion callback into a local <code>c</code>, and then after the lock object has been reset, we call the callback if necessary. </p>
+<p>We can use ES6 function arrow notation to simplify this code, but if we’re going to do that, we may as well go all the way and use ES6 native promises. </p>
+<pre>
+var AwaitableLock = WinJS.Class.define(function AwaitableLock() {
+  this._locked = false;
+  this._p = null;
+  this._c = null;
+}, {
+  <font color="blue">waitAsync()</font> {
+    if (!this._locked) {
+      // Lock is available. Acquire it.
+      this._locked = true;
+      return <font color="blue">Promise.resolve()</font>;
+    }
+
+    // Lock is not available.
+    if (!this._p) {
+      // Create a promise that completes when the lock is released.
+      this._p = new <font color="blue">Promise</font>(<font color="blue">c =&gt; this._c = c</font>);
+    }
+
+    return this._p.then(<font color="blue">() =&gt; this.waitAsync()</font>);
+  },
+
+  <font color="blue">release()</font> {
+    this._locked = false;
+    var c = this._c;
+    this._p = null;
+    this._c = null;
+
+    // Complete any promise that was waiting for release.
+    c &amp;&amp; c();
+  }
+});
+</pre>
+<p>The ES6 Promise method for creating an already-completed promise is called <code>resolve</code>, as opposed to <code>wrap</code>, which is what <code>WinJS.Promise</code> calls it. The Promise constructor is the same, so we didn’t have to make any changes there aside from arrowizing the functions. Arrowizing is convenient because it preserves <code>this</code> inside the lambda, which saves us the trouble of having to create a separate <code>self</code> variable. </p>
+<p>And since we’re abandoning WinJS, we may as well go all the way and define the class using ES6’s native class declaration syntax. </p>
+<pre>
+<font color="blue">class AwaitableLock {</font>
+  <font color="blue">constructor()</font> {
+    this._locked = false;
+    this._p = null;
+    this._c = null;
+  }
+
+  <font color="blue">waitAsync()</font> {
+    if (!this._locked) {
+      // Lock is available. Acquire it.
+      this._locked = true;
+      return Promise.resolve();
+    }
+
+    // Lock is not available.
+    if (!this._p) {
+      // Create a promise that completes when the lock is released.
+      this._p = new Promise(c =&gt; this._c = c);
+    }
+
+    return this._p.then(() =&gt; this.waitAsync());
+  }
+
+  <font color="blue">release()</font> {
+    this._locked = false;
+    var c = this._c;
+    this._p = null;
+    this._c = null;
+
+    // Complete any promise that was waiting for release.
+    c &amp;&amp; c();
+  }
+}
+</pre>
+<p><b>Exercise</b>: Why couldn’t we arrowize the constructor? </p>
+<p><b>Exercise 2</b>: Why did we set the member variables dynamically in the constructor instead of defining them statically on the prototype? </p>
+<p><b>Exercise 3</b>: Why couldn’t I have precalculated the <code>.then</code> of the promise? </p>
+<pre>
+<i>// Code in italics is wrong - but why?
+AwaitableLock.prototype.waitAsync = function waitAsync() {
+  if (!this._locked) {
+    // Lock is available. Acquire it.
+    this._locked = true;
+    return Promise.resolve();
+  }
+
+  // Lock is not available.
+  if (!this._p) {
+    // Create a promise that completes when the lock is released
+    // and then retries the wait.
+    this._p = new Promise(c =&gt; this._c = c)<font color="blue">.then(() =&gt; this.waitAsync())</font>;
+  }
+
+  return <font color="blue">this._p</font>;
+}</i>
+</pre>
+
+
+</body>

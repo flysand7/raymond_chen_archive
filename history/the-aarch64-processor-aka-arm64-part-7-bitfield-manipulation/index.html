@@ -1,0 +1,435 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The AArch64 processor (aka arm64), part 7: Bitfield manipulation</h1>  <!-- .entry-meta -->
+
+<p>Recall that the PowerPC had <a href="/history/the-powerpc-600-series-part-5-rotates-and-shifts"> the magical <code>rlwinm</code> instruction which was the Swiss army knife of bit operations</a>. Well, AArch64 has its own all-purpose instruction, known as <code>UBFM</code>, which stands for <i>unsigned bitfield move</i>.</p>
+<pre>    ; unsigned bitfield move
+    ;
+    ; if immr ≤ imms:
+    ;   take bits immr through imms and rotate right by immr
+    ;
+    ; if immr &gt; imms:
+    ;   take imms+1 low bits and rotate right by immr
+
+    ubfm    Rd/zr, Rn/zr, #immr, #imms
+</pre>
+<p>This instruction hurts my brain. Although the description of the instruction appears to be two unrelated cases, they are handled by the same complex formula internally. It’s just that the formula produces different results depending on which case you’re in. The complex formula is the same one that is used to <!-- backref: The AArch64 processor (aka arm64), part 6: Bitwise operations --> generate immediates for logical operations, so I’ll give the processor designers credit for the clever way they reduced transistor count.</p>
+<p>Fortunately, you never see this instruction in the wild. The two cases are split into separate pseudo-instructions, which re-express the <var>immr</var> and <var>imms</var> values in a more intuitive way.</p>
+<pre>    ; unsigned bitfield extract
+    ; (used when immr ≤ imms)
+    ; extract w bits starting at position lsb
+    ubfx    Rd/zr, Rn/zr, #lsb, #w
+</pre>
+<p>The <code>UBFX</code> instruction handles the case of <code>UBFM</code> where <var>immr</var> ≤ <var>imms</var> and reinterprets it as a bitfield extraction:</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td colspan="2">w</td>
+<td>lsb</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; width: 10em;"> </td>
+<td style="border: solid 1px gray; border-right: none; width: 4em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-left: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; width: 4em;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="1">
+<table border="0" cellpadding="0" cellspacing="0" style="width: 100%;">
+<tbody>
+<tr>
+<td align="left">⇘</td>
+<td align="center">⇘</td>
+<td align="center">⇘</td>
+<td align="right">⇘</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none; text-align: right; width: 10em;">zero-fill</td>
+<td style="border: 1px gray; border-style: solid none; width: 4em;"> </td>
+<td style="border: solid 1px gray; border-right: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-left: none; width: 4em; background-color: #ddd;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2">w</td>
+</tr>
+</tbody>
+</table>
+<p>Since <var>immr</var> ≤ <var>imms</var>, the right-rotation by <var>immr</var> is the same as a right-shift by <var>immr</var>.</p>
+<p>And then we have the other case, where <var>immr</var> &gt; <var>imms</var>:</p>
+<pre>    ; unsigned bitfield insert into zeroes
+    ; (used when immr &gt; imms)
+    ; extract low-order w bits and shift left by lsb
+    ubfiz   Rd/zr, Rn/zr, #lsb, #w
+</pre>
+<p>The <code>UBFIZ</code> instruction reinterprets the <code>UBFM</code> as a bitfield insertion, and reinterprets the right-rotation as a left-shift. This reinterpretation is valid because <var>immr</var> &gt; <var>imms</var>, so we are always rotating more bits than we extracted.</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2">w</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none; text-align: right; width: 10em;"> </td>
+<td style="border: 1px gray; border-style: solid none; width: 4em;"> </td>
+<td style="border: solid 1px gray; border-right: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-left: none; width: 4em; background-color: #ddd;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="1">
+<table border="0" cellpadding="0" cellspacing="0" style="width: 100%;">
+<tbody>
+<tr>
+<td align="left">⇙</td>
+<td align="center">⇙</td>
+<td align="center">⇙</td>
+<td align="right">⇙</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; width: 10em;">zero-fill</td>
+<td style="border: solid 1px gray; border-right: none; width: 4em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-left: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; width: 4em;">zero-fill</td>
+</tr>
+<tr>
+<td> </td>
+<td colspan="2">w</td>
+<td>lsb</td>
+</tr>
+</tbody>
+</table>
+<p>There is also a signed version of this instruction:</p>
+<pre>    ; signed bitfield move
+    ;
+    ; if immr ≤ imms:
+    ;   take bits immr through imms and rotate right by immr
+    ;   sign-fill upper bits
+    ;
+    ; if immr &gt; imms:
+    ;   take imms+1 low bits and rotate right by immr
+    ;   sign-fill upper bits
+
+    sbfm    Rd/zr, Rn/zr, #immr #imms
+</pre>
+<p>This behaves the same as the unsigned version, except that the upper bits are filled with the sign bit of the bitfield. Like <code>UBFM</code>, the <code>SBFM</code> instruction is also never seen in the wild; it is always replaced by a pseudo-instruction.</p>
+<pre>    ; signed bitfield extract
+    ; (used when immr ≤ imms)
+    ; extract w bits starting at position lsb
+    ; sign-fill upper bits
+    sbfx    Rd/zr, Rn/zr, #lsb, #w
+
+    ; signed bitfield insert into zeroes
+    ; (used when immr &gt; imms)
+    ; extract low-order w bits and shift left by lsb
+    ; sign-fill upper bits
+    sbfiz   Rd/zr, Rn/zr, #lsb, #w
+</pre>
+<p>Here is the operation of <code>SBFX</code> in pictures:</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td colspan="2">w</td>
+<td>lsb</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; width: 10em;"> </td>
+<td style="border: solid 1px gray; border-right: none; width: 4em; text-align: left; background-color: #ddd; color: black;">S</td>
+<td style="border: solid 1px gray; border-left: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; width: 4em;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="1">
+<table border="0" cellpadding="0" cellspacing="0" style="width: 100%;">
+<tbody>
+<tr>
+<td align="left">⇘</td>
+<td align="center">⇘</td>
+<td align="center">⇘</td>
+<td align="right">⇘</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none; text-align: right; width: 10em;">sign-fill</td>
+<td style="border: 1px gray; border-style: solid none; width: 4em;">⇐⇐⇐</td>
+<td style="border: solid 1px gray; border-right: none; width: 3em; text-align: left; background-color: #ddd; color: black;">S</td>
+<td style="border: solid 1px gray; border-left: none; width: 4em; background-color: #ddd;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2">w</td>
+</tr>
+</tbody>
+</table>
+<p>And here is <code>SBFIZ</code>:</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2">w</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none; text-align: right; width: 10em;"> </td>
+<td style="border: 1px gray; border-style: solid none; width: 4em;"> </td>
+<td style="border: solid 1px gray; border-right: none; width: 3em; text-align: left; background-color: #ddd; color: black;">S</td>
+<td style="border: solid 1px gray; border-left: none; width: 4em; background-color: #ddd;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="1">
+<table border="0" cellpadding="0" cellspacing="0" style="width: 100%;">
+<tbody>
+<tr>
+<td align="left">⇙</td>
+<td align="center">⇙</td>
+<td align="center">⇙</td>
+<td align="right">⇙</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; width: 10em; text-align: right;">sign-fill ⇐⇐⇐</td>
+<td style="border: solid 1px gray; border-right: none; width: 4em; text-align: left; background-color: #ddd; color: black;">S</td>
+<td style="border: solid 1px gray; border-left: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; width: 4em;">zero-fill</td>
+</tr>
+<tr>
+<td> </td>
+<td colspan="2">w</td>
+<td>lsb</td>
+</tr>
+</tbody>
+</table>
+<p>Note that in the case of <code>SBFIZ</code>, the lower bits are still zero-filled.</p>
+<p>The last bitfield opcode is <code>BFM</code>, which follows the same pattern, but just combines the results differently:</p>
+<pre>    ; bitfield move
+    ;
+    ; if immr ≤ imms:
+    ;   take bits immr through imms and rotate right by immr
+    ;   merge with existing bits in destination
+    ;
+    ; if immr &gt; imms:
+    ;   take imms+1 low bits and rotate right by immr
+    ;   merge with existing bits in destination
+
+    bfm     Rd/zr, Rn/zr, #immr #imms
+</pre>
+<p>Again, you will never see this instruction in the wild because it always disassembles as a pseudo-instruction:</p>
+<pre>    ; bitfield extract and insert low
+    ; (used when immr ≤ imms)
+    ; replace bottom w bits in destination
+    ; with w bits of source starting at lsb
+    ;
+    ; Rd[w-1:0] = Rn[lsb+w-1:lsb]
+    ;
+    bfxil   Rd/zr, Rn/zr, #lsb, #w
+</pre>
+<p>The <code>BFXIL</code> instruction is like the <code>UBFX</code> and <code>SBFX</code> instructions, but instead of filling the unused bits with zero or sign bits, the original bits of the destination are preserved.</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td colspan="2">w</td>
+<td>lsb</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; width: 10em;"> </td>
+<td style="border: solid 1px gray; border-right: none; width: 4em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-left: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; width: 4em;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="1">
+<table border="0" cellpadding="0" cellspacing="0" style="width: 100%;">
+<tbody>
+<tr>
+<td align="left">⇘</td>
+<td align="center">⇘</td>
+<td align="center">⇘</td>
+<td align="right">⇘</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none; text-align: right; width: 10em;">unchanged</td>
+<td style="border: 1px gray; border-style: solid none; width: 4em;"> </td>
+<td style="border: solid 1px gray; border-right: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-left: none; width: 4em; background-color: #ddd;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2">w</td>
+</tr>
+</tbody>
+</table>
+<pre>    ; bitfield insert
+    ; (used when immr &gt; imms)
+    ; replace w bits in destination starting at lsb
+    ; with low w bits of source
+    ;
+    ; Rd[lsb+w-1:lsb] = Rn[w-1:0]
+    ;
+    bfi     Rd/zr, Rn/zr, #lsb, #w
+</pre>
+<p>The <code>BFI</code> instruction is like the <code>UBFIZ</code> and <code>SBFIZ</code> instructions, but instead of filling the unused bits with zero or sign bits, the original bits of the destination are preserved.</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2">w</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none; text-align: right; width: 10em;"> </td>
+<td style="border: 1px gray; border-style: solid none; width: 4em;"> </td>
+<td style="border: solid 1px gray; border-right: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-left: none; width: 4em; background-color: #ddd;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="1">
+<table border="0" cellpadding="0" cellspacing="0" style="width: 100%;">
+<tbody>
+<tr>
+<td align="left">⇙</td>
+<td align="center">⇙</td>
+<td align="center">⇙</td>
+<td align="right">⇙</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; width: 10em;">unchanged</td>
+<td style="border: solid 1px gray; border-right: none; width: 4em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-left: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; width: 4em; font-size: 80%;">unchanged</td>
+</tr>
+<tr>
+<td> </td>
+<td colspan="2">w</td>
+<td>lsb</td>
+</tr>
+</tbody>
+</table>
+<pre>    ; bitfield clear
+    ; replace w bits in destination starting at lsb
+    ; with zero
+    ;
+    ; Rd[lsb+w-1:lsb] = 0
+    ;
+    bfc     Rd/zr, #lsb, #w     ; bfi Rd/zr, zr, #lsb, #w
+</pre>
+<p>The <code>BFC</code> instruction just inserts zeroes.</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid 1px gray; width: 10em;">unchanged</td>
+<td style="border: solid 1px gray; width: 7em; background-color: #ddd; color: black;">zero-fill</td>
+<td style="border: solid 1px gray; width: 4em; font-size: 80%;">unchanged</td>
+</tr>
+<tr>
+<td> </td>
+<td>w</td>
+<td>lsb</td>
+</tr>
+</tbody>
+</table>
+<p>The last instruction in the bitfield manipulation category is word/doubleword extraction.</p>
+<pre>    ; extract a register from a pair of registers
+    ;
+    ; Wd = ((Wn &lt;&lt; 32) | Wm)[lsb+31:lsb]
+    ; Xd = ((Xn &lt;&lt; 64) | Xm)[lsb+63:lsb]
+    ;
+    extr    Rd/zr, Rn/zr, Rm/zr, #lsb
+</pre>
+<p>The <i>extract register</i> instruction treats its inputs as a register pair and extracts a register-sized stretch of bits from them. This can be used to synthesize multiword shifts.</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td colspan="2" style="border: 1px gray; border-style: solid solid none solid;">size</td>
+<td style="border: 1px gray; border-style: solid solid none solid;">shift</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right-style: dashed; width: 5em; position: relative;">
+
+</td>
+<td style="border: solid 1px gray; border-left-style: dashed; width: 2em; background-color: #ddd; position: relative;"> </td>
+<td style="border: solid 1px gray; border-right-style: dashed; width: 5em; position: relative; background-color: #ddd; color: black;">
+
+</td>
+<td style="border: solid 1px gray; border-left-style: dashed; width: 2em;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td colspan="2">
+<table border="0" cellpadding="0" cellspacing="0" style="width: 100%;">
+<tbody>
+<tr>
+<td align="center">⇓</td>
+<td align="center">⇓</td>
+<td align="center">⇓</td>
+<td align="center">⇓</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td colspan="2" style="border: solid 1px gray; text-align: center; background-color: #ddd; color: black;">Rd</td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>Note that the two input registers are concatenated in big-endian order.</p>
+<p>It turns out that a lot of other operations can be reinterpreted as bitfield extractions. We’ll look at some of them next time.</p>
+<p><b>Bonus chatter</b>: AArch32 also had instructions <code>bfi</code>, <code>bfc</code>, <code>ubfx</code>, and <code>sbfx</code>, but each was treated as a unique instruction. AArch64 generalizes them to cover additional scenarios, leaving the classic instructions as special cases of the generalized instructions.</p>
+
+
+</body>

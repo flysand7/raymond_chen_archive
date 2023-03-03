@@ -1,0 +1,321 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Customers not getting the widgets they paid for if they click too fast -or- In C#, the += operator is not merely not guaranteed to be atomic, it is guaranteed not to be atomic</h1>  <!-- .entry-meta -->
+
+<p>In the C# language, operation/assignment such as <code>+=</code>
+are explicitly <i>not</i> atomic.
+But you already knew this, at least for properties.
+</p>
+<p>
+Recall that properties are syntactic sugar for method calls.
+A property declaration
+</p>
+<pre>
+string Name { get { ... } set { ... } }
+</pre>
+<p>
+is internally converted to the equivalent of</p>
+<pre>
+string get_Name() { ... }
+void set_Name(string value) { ... }
+</pre>
+<p>
+Accessing a property is similarly transformed.
+</p>
+<pre>
+// o.Name = "fred";
+o.put_Name("fred");
+// x = o.Name;
+x = o.get_Name();
+</pre>
+<p>
+Note that the only operations you can provide for properties
+are <code>get</code> and <code>set</code>.
+There is no way of customizing any other operations, like
+<code>+=</code>.
+Therefore, if you write
+</p>
+<pre>
+o.Name += ", Jr.";
+</pre>
+<p>
+the compiler has no choice but to convert it to
+</p>
+<pre>
+o.put_Name(o.get_Name() + ", Jr.");
+</pre>
+<p>
+If all you have is a hammer, everything needs to be converted to a nail.
+</p>
+<p>
+Since the read and write are explicitly decoupled, there is naturally
+a race condition here.
+The underlying property may change value in between the time you read
+the old value and the time you write the new value.
+</p>
+<p>
+But there are extra subtleties here.
+Let’s dig in.
+</p>
+<p>
+The rule for operators like <code>+=</code> are spelled out in
+<a href="http://www.jaggersoft.com/csharp_standard/14.13.2.htm">
+<i>Section 14.3.2: Compound Assignment</i></a>:
+</p>
+<blockquote class="q"><p>
+[T]he operation is evaluated as x = x op y,
+except that x is evaluated only once.
+</p></blockquote>
+<p>
+(There is some discussion of what “evaluated only once” means,
+but that’s not important here.)
+</p>
+<p>
+The subtleties lurking in that one sentence
+are revealed when you see how that sentence interacts
+with other rules in the language.
+</p>
+<p>
+Now, you might say,
+“Sure, it’s not atomic, but my program is single-threaded,
+so this should never affect me.”
+</p>
+<p>
+Actually, you can get bitten by this even in single-threaded programs.
+Let’s try it:
+</p>
+<pre>
+class Program
+{
+ static int x = 0;
+ static int f()
+ {
+  x = x + 10;
+  return 1;
+ }
+ public static void Main()
+ {
+  x += f();
+  System.Console.WriteLine(x);
+ }
+}
+</pre>
+<p>
+What does this program print?
+</p>
+<p>
+You might naïvely think that it prints <code>11</code>
+because <code>x</code> is incremented by 1 by <code>Main</code>
+and incremented by 10 in <code>f</code>.
+</p>
+<p>
+But it actually prints 1.
+</p>
+<p>
+What happened here?
+</p>
+<p>
+Recall that C# uses
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2007/08/14/4374222.aspx">
+strict left-to-right evaluation order</a>.
+Therefore, the order of operations in the evaluation of
+<code>x += f()</code> is
+</p>
+<ol type="1">
+<li>Rewrite as <code>x = x + f()</code>.
+<li>Evaluate both sides of the <code>=</code> operator, left to right.
+<ol type="a">
+<li>Left hand side of assignment: Find the variable <code>x</code>.
+<li>Right hand side of assignment:
+<ol type="i">
+<li>Evaluate both sides of the <code>+</code> operator, left to right.
+<ol type="1">
+<li>Evaluate <code>x</code>.
+<li>Evaluate <code>f()</code>.
+            </li></li></ol>
+<li>Add together the results of steps 2b(i)1 and 2b(i)2.
+        </li></li></ol>
+</li></li></ol>
+<li>Take the result of step 2b(ii) and assign it to
+        the variable <code>x</code> found in step 2a.
+</li></li></li></ol>
+<p>
+The thing to notice is that a lot of things can happen between step
+2b(i)1 (evaluating the old value of <code>x</code>),
+and step 3 (assigning the final result to <code>x</code>).
+Specifically,
+we shoved a whole function call in there: <code>f()</code>.
+</p>
+<p>
+In our case, the function
+<code>f()</code> <i>also modifies <code>x</code></i>.
+That modification takes place after we already captured the
+value of <code>x</code> in step 2b(i)1.
+When we get around to adding the values in step 2b(ii),
+we don’t realize that the values are out of date.
+</p>
+<p>
+Let’s step through this evaluation in our example.
+</p>
+<ol type="1">
+<li>Rewrite as <code>x = x + f()</code>.
+<li>Evaluate both sides of the <code>=</code> operator, left to right.
+<ol type="a">
+<li>Left hand side of assignment: Find the variable <code>x</code>.
+<li>Right hand side of assignment:
+<ol type="i">
+<li>Evaluate both sides of the <code>+</code> operator, left to right.
+<ol type="1">
+<li>Evaluate <code>x</code>. The result is 0.
+<li>Evaluate <code>f()</code>. The result is 1.
+                It also happens that <code>x</code> is modified as a
+                side-effect.
+            </li></li></ol>
+<li>Add together the results of steps 2b(i)1 and 2b(i)2.
+            In this case, 0 + 1 = 1.
+        </li></li></ol>
+</li></li></ol>
+<li>Take the result of step 2b and assign it to
+        the variable <code>x</code> found in step 2a.
+        In this case, assign 1 to <code>x</code>.
+</li></li></li></ol>
+<p>
+The modification to <code>x</code> that took place in <code>f</code>
+was clobbered by the assignment operation that completed the
+<code>+=</code> sequence.
+And this behavior is not just in some weird
+“undefined behavior” corner of the language specification.
+The language specification explicitly <i>requires</i> this behavior.
+</p>
+<p>
+Now, you might say,
+“Okay, I see your point, but this is clearly an unrealistic example,
+because nobody would write code this weird.”
+</p>
+<p>
+Maybe you don’t intentionally write code this weird, but you can
+do it accidentally.
+And this is particularly true if you are using the new
+<code>await</code> keyword,
+because an <code>await</code> means,
+“Hey, like, put my function on hold and do other stuff for a while.
+When the thing I’m awaiting is ready,
+then resume execution of my function.”
+And that “do other stuff for a while”
+might change <code>x</code>.
+</p>
+<p>
+Suppose that you have a button in your application called <i>Buy More</i>.
+When the user clicks it, they can buy more widgets.
+Let’s assume that the <code>Buy­More­Async</code>
+function return the
+number of items bought. (If the user cancels the purchase
+it returns zero.)
+</p>
+<pre>
+// Suppose the user starts with 100 widgets.
+async void BuyMoreButton_OnClick()
+{
+ TotalWidgets += await BuyMoreAsync();
+ Inventory.Text = string.Format("You have {0} widgets.",
+                                TotalWidgets);
+}
+async Task&lt;int&gt; BuyMoreAsync()
+{
+ int quantity = QuickPurchase.IsChecked ? 1
+                                        : await GetQuantityAsync();
+ if (quantity != 0) {
+  if (await DebitAccountAsync(quantity * PricePerWidget)) {
+   return quantity;
+  }
+ }
+ return 0; // user bought no items
+}
+</pre>
+<p>
+You receive a bug report that you track back to the fact that
+<code>Total­Widgets</code> does not match the
+number of widgets purchased.
+It affects only people who checked the <i>quick purchase</i> box,
+and only people purchasing from overseas.
+</p>
+<p>
+Here’s what is going on.
+</p>
+<p>
+The user clicks the <i>Buy More</i> button,
+and they have <i>Quick Purchase</i> enabled.
+The <i>Buy­More­Async</i> function tries to
+debit the account for the price of one widget.
+</p>
+<p>
+While waiting for the server to process the transaction,
+the user gets impatient and clicks <i>Buy More</i> a second time.
+This triggers a second task to debit the account for the
+price of one widget.
+</p>
+<p>
+Okay, so you now have two tasks running,
+each processing one of the clicks.
+In theory, the worst case is that the user accidentally
+buys two widgets,
+but in practice…
+</p>
+<p>
+The first <code>Debit­Account­Async</code> task completes,
+and <code>Buy­More­Async</code> returns 1,
+which is then added to the value of
+<code>Total­Widgets</code> at the time the button was clicked,
+as we discussed above.
+At the time the button was clicked the first time, the number of
+widgets was 100,
+so the total number of widgets is now 101.
+</p>
+<p>
+The second <code>Debit­Account­Async</code> task completes,
+and <code>Buy­More­Async</code> returns 1,
+which is then added to the value of <code>Total­Widgets</code>
+at the time the button was clicked,
+as we discussed above.
+When the button was clicked the second time,
+the number of widgets was <i>still 100</i>.
+We set the total widget count to <code>100 + 1 = 101</code>.
+</p>
+<p>
+Result: The user paid for two widgets but got only one.
+</p>
+<p>
+The fix for this is to explicitly move waiting for the
+purchase to complete outside of the compound assignment.
+</p>
+<pre>
+ int quantity = await BuyMoreAsync();
+ TotalWidgets += quantity;
+</pre>
+<p>
+Now, the <code>await</code> is outside the compound assignment
+so that the value of <code>Total­Widgets</code> is not captured
+prematurely.
+When the purchase completes, we update <code>Total­Widgets</code>
+without interruption from any async operations.
+</p>
+<p>
+(You probably also should fix the program so it disables the
+<i>Buy More</i> button while a transaction is in progress,
+to avoid the <i>impatient user ends up making an accidental double
+purchase</i> problem. The above fix merely gets rid of the
+<i>user pays for two items and gets only one</i> problem.)
+</p>
+<p>
+Like
+<a href="http://blogs.msdn.com/b/ericlippert/archive/2009/11/12/closing-over-the-loop-variable-considered-harmful.aspx">
+closing around the loop control variable</a>,
+this is the sort of subtle change that should be well-commented
+so that somebody doesn’t “fix” it in a well-intentioned but
+misguided attempt to remove unnecessary variables.
+The purpose of the variable is not to break an expression into two
+but rather to force a particular order of evaluation:
+You want to to finish the purchase operation before starting to
+update the widget count.</p>
+
+
+</body>

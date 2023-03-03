@@ -1,0 +1,149 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Be careful when redirecting both a process’s stdin and stdout to pipes, for you can easily deadlock</h1>  <!-- .entry-meta -->
+
+<p>A common problem when people create a process and redirect both stdin and stdout to pipes is that they fail to keep the pipes flowing. Once a pipe clogs, the disturbance propagates backward until everything clogs up.</p>
+<p>Here is a common error, in pseudocode:</p>
+<pre>// Create pipes for stdin and stdout
+CreatePipe(&amp;hReadStdin, &amp;hWriteStdin, NULL, 0);
+CreatePipe(&amp;hReadStdout, &amp;hWriteStdout, NULL, 0);
+
+// hook them up to the process we're about to create
+startup_info.hStdOutput = hWriteStdout;
+startup_info.hStdInput = hReadStdin;
+
+// create the process
+CreateProcess(...);
+
+// write something to the process's stdin
+WriteFile(hWriteStdin, ...);
+
+// read the result from the process's stdout
+ReadFile(hReadStdout, ...);
+</pre>
+<p>You see code like this <a href="http://msdn.microsoft.com/en-us/library/ms682499.aspx"> all over the place</a>. I want to generate some input to a program and capture the output, so I pump the input as the process’s stdin and read the output from the process’s stdout. What could possibly go wrong?</p>
+<p>This problem is well-known to unix programmers, but it seems that the knowledge hasn’t migrated to Win32 programmers. (Or .NET programmers, who also encounter this problem.)</p>
+<p>Recall how anonymous pipes work. (Actually, this description is oversimplified, but it gets the point across.) A pipe is a marketplace for a single commodity: Bytes in the pipe. If there is somebody selling bytes (<code>Write­File</code>), the seller waits until there is a buyer (<code>Read­File</code>). If there is somebody looking to buy bytes, then the buyer waits until there is a seller.</p>
+<p>In other words, when somebody writes to a pipe, the call to <code>Write­File</code> waits until somebody issues a <code>Read­File</code>. Conversely, when somebody reads from a pipe, the call to <code>Read­File</code> waits until somebody calls <code>Write­File</code>. When there is a matching read and write, the bytes are transferred from the writer’s buffer to the reader’s buffer. If the reader asks for fewer bytes than the writer provided, then the writer continues waiting until all the bytes have been read. (On the other hand, if the writer provides fewer bytes than the reader requested, the reader is given a partial read. Yes, there’s asymmetry there.)</p>
+<p>Okay, so where’s the deadlock in the above code fragment? We write some data into one pipe (connected to a process’s stdin) and then read from another pipe (connected to a process’s stdout). For example, the program might take some input, do some transformation on it, and print the result to stdout. Consider:</p>
+<table border="0">
+<tbody>
+<tr>
+<th>You</th>
+<th>Helper</th>
+</tr>
+<tr>
+<td><code>WriteFile(stdin, "AB")</code></td>
+</tr>
+<tr>
+<td>(waits for reader)</td>
+</tr>
+<tr>
+<td> </td>
+<td><code>ReadFile(stdin, ch)</code></td>
+</tr>
+<tr>
+<td> </td>
+<td>reads <code>A</code></td>
+</tr>
+<tr>
+<td>(still waiting since not all data read)</td>
+</tr>
+<tr>
+<td> </td>
+<td>encounters errors</td>
+</tr>
+<tr>
+<td> </td>
+<td><code>WriteFile(stdout,
+      "Error: Widget unavailable\r\n")</code></td>
+</tr>
+<tr>
+<td> </td>
+<td>(waits for reader)</td>
+</tr>
+</tbody>
+</table>
+<p>And now we’re deadlocked. Your process is waiting for the helper process to finish reading all the data you wrote (specifically, waiting for it to read <code>B</code>), and the helper process is waiting for your process to finish reading the data it wrote to its stdout (specifically, waiting for you to read the error message).</p>
+<p>There’s a feature of pipes that can mask this problem for a long time: Buffering.</p>
+<p>The pipe manager might decide that when somebody offers some bytes for sale, instead of making the writer wait for a reader to arrive, the pipe manager will be a market-maker and <i>buy the bytes himself</i>. The writer is then unblocked and permitted to continue execution. Meanwhile, when a reader finally arrives, the request is satisfied from the stash of bytes the pipe manager had previously bought. (But the pipe manager doesn’t take a 10% cut.)</p>
+<p>Therefore, the error case above happens to work, because the buffering has masked the problem:</p>
+<table border="0">
+<tbody>
+<tr>
+<th>You</th>
+<th>Helper</th>
+</tr>
+<tr>
+<td><code>WriteFile(stdin, "AB")</code></td>
+</tr>
+<tr>
+<td>pipe manager accepts the write</td>
+</tr>
+<tr>
+<td><code>ReadFile(stdout, result)</code></td>
+</tr>
+<tr>
+<td>(waits for read)</td>
+</tr>
+<tr>
+<td> </td>
+<td><code>ReadFile(stdin, ch)</code></td>
+</tr>
+<tr>
+<td> </td>
+<td>reads <code>A</code></td>
+</tr>
+<tr>
+<td> </td>
+<td>encounters errors</td>
+</tr>
+<tr>
+<td> </td>
+<td><code>WriteFile(stdout,
+      "Error: Widget unavailable\r\n")</code></td>
+</tr>
+<tr>
+<td>Read completes</td>
+</tr>
+</tbody>
+</table>
+<p>As long as the amount of unread data in the pipe is within the budget of the pipe manager, the deadlock is temporarily avoided. Of course, that just means it will show up later under harder-to-debug situations. (For example, if the program you are driving prints a prompt for each line of input, then the problem won’t show up until you give the program a large input data set: For small data sets, all the prompts will fit in the pipe buffer, but once you hit the magic number, the program hangs because the pipe is waiting for you to drain all those prompts.)</p>
+<p>To avoid this problem, your program needs to keep reading from stdout while it’s writing to stdin, so that neither will block the other. The easiest way to do this is to perform the two operations on separate threads.</p>
+<p><a href="https://devblogs.microsoft.com/oldnewthing/20110708-00/?p=10203" title="We've traced the pipe, and it's coming from inside the process!"> Next time</a>, another common problem with pipes.</p>
+<p><b>Exercise</b>: A customer reported that this function would sometimes hang waiting for the process to exit. Discuss.</p>
+<pre>int RunCommand(string command, string commandParams)
+{
+ var info = new ProcessStartInfo(command, commandParams);
+ info.UseShellExecute = false;
+ info.RedirectStandardOutput = true;
+ info.RedirectStandardError = true;
+ var process = Process.Start(info);
+ while (!process.HasExited) Thread.Sleep(1000);
+ return process.ExitCode;
+}
+</pre>
+<p><b>Exercise</b>: Based on your answer to the previous exercise, the customer responds, “I added the following code, but the problem persists.” Discuss.</p>
+<pre>int RunCommand(string command, string commandParams)
+{
+ var info = new ProcessStartInfo(command, commandParams);
+ info.UseShellExecute = false;
+ info.RedirectStandardOutput = true;
+ info.RedirectStandardError = true;
+ var process = Process.Start(info);
+ <span style="color: #08f;">var reader = Process.StandardOutput;
+ var results = new StringBuilder();
+ string lineOut;
+ while ((lineOut = reader.ReadLine()) != null) {
+  results.AppendLine("STDOUT: " + lineOut);
+ }
+ reader = Process.StandardError;
+ while ((lineOut = reader.ReadLine()) != null) {
+  results.AppendLine("STDERR: " + lineOut);
+ }</span>
+ while (!process.HasExited) Thread.Sleep(1000);
+ return process.ExitCode;
+}
+</pre>
+
+
+</body>

@@ -1,0 +1,97 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The MIPS R4000, part 2: 32-bit integer calculations</h1>  <!-- .entry-meta -->
+
+<p>The MIPS R4000 has the usual collection of arithmetic operations, but the mnemonics are confusingly-named. The general notation for arithmetic operations is </p>
+<pre>
+    OP      destination, source1, source2
+</pre>
+<p>with the destination register on the left and the source register or registers on the right. </p>
+<p>Okay, here goes. We start with addition and subtraction. </p>
+<pre>
+    ADD     rd, rs, rt      ; rd = rs + rt, trap on overflow
+    ADDU    rd, rs, rt      ; rd = rs + rt, no trap on overflow
+    SUB     rd, rs, rt      ; rd = rs - rt, trap on overflow
+    SUBU    rd, rs, rt      ; rd = rs - rt, no trap on overflow
+</pre>
+<p>The <code>ADD</code> and <code>SUB</code> instructions perform addition and subtraction and raise a trap if a signed overflow occurs. The <code>ADDU</code> and <code>SUBU</code> instructions do the same thing, but without the overflow trap. The <code>U</code> suffix officially means “unsigned”, but this is confusing because the addition can be performed on both signed and unsigned values, thanks to twos complement. The real issue is whether an overflow trap is raised. </p>
+<p>There are also versions of the addition instructions that accept a 16-bit signed immediate as a second addend: </p>
+<pre>
+    ADDI    rd, rs, imm16   ; rd = rs + (int16_t)imm16, trap on overflow
+    ADDIU   rd, rs, imm16   ; rd = rs + (int16_t)imm16, no trap on overflow
+</pre>
+<p>Note that the <code>U</code> is double-confusing here, because even though the <code>U</code> officially stands for “unsigned”, the immediate value is treated as signed, and the addition is suitable for both signed and unsigned values. </p>
+<p>There are no corresponding <code>SUBI</code> or <code>SUBIU</code> instructions, but they can be synthesized: </p>
+<pre>
+    ADDI   rd, rs, -imm16   ; SUBI   rd, rs, imm16
+    ADDIU  rd, rs, -imm16   ; SUBIU  rd, rs, imm16
+</pre>
+<p>(Of course, this doesn’t work if the value you want to subtract is −32768, but hey, it mostly works.) </p>
+<p>The next group of instructions is the bitwise operations. These never trap.¹ </p>
+<pre>
+    AND     rd, rs, rt      ; rd = rs &amp; rt
+    ANDI    rd, rs, imm16   ; rd = rs &amp; (uint16_t)imm16
+    OR      rd, rs, rt      ; rd = rs | rt
+    ORI     rd, rs, imm16   ; rd = rs | (uint16_t)imm16
+    XOR     rd, rs, rt      ; rd = rs ^ rt
+    XORI    rd, rs, imm16   ; rd = rs ^ (uint16_t)imm16
+    NOR     rd, rs, rt      ; rd = ~(rs | rt)
+</pre>
+<p>Note the inconsistency: The addition instructions treat the immediate as a signed 16-bit value (and sign-extend it to a 32-bit value), but the bitwise logical operations treat it as an unsigned 16-bit value (and zero-extend it to a 32-bit value). Stay alert! </p>
+<p>The last group of instructions for today is the shift instructions. These also never trap. </p>
+<pre>
+    SLL     rd, rs, imm5    ; rd = rs &lt;&lt;  imm5
+    SLLV    rd, rs, rt      ; rd = rs &lt;&lt;  (rt % 32)
+    SRL     rd, rs, imm5    ; rd = rs &gt;&gt;U imm5
+    SRLV    rd, rs, rt      ; rd = rs &gt;&gt;U (rt % 32)
+    SRA     rd, rs, imm5    ; rd = rs &gt;&gt;  imm5
+    SRAV    rd, rs, rt      ; rd = rs &gt;&gt;  (rt % 32)
+</pre>
+<p>The mnemonics stand for “shift left logical”, “shift right logical” and “shift right arithmetic”. The <code>V</code> suffix stands for “variable”, and indicates that the shift amount comes from a register rather than an immediate. </p>
+<p>Yup, that’s another inconsistency. Following the pattern of the addition and bitwise logical groups, these instructions should have been named <code>SLL</code> for shifting by an amount specified by a register and <code>SLLI</code> for shifting by an amount specified by an immediate. Go figure. </p>
+<p>There are no built-in sign-extension or zero-extension instructions. You can get zero-extension in one instruction by explicitly masking out the upper bytes: </p>
+<pre>
+    ; zero extend byte to word
+    ANDI    rd, rs, 0xFF    ; rd = ( uint8_t)rs
+
+    ; zero extend halfword to word
+    ANDI    rd, rs, 0xFFFF  ; rd = (uint16_t)rs
+</pre>
+<p>Sign extension requires two instructions. </p>
+<pre>
+    ; sign extend byte to word
+    SLL     rd, rs, 24      ; rd = rs &lt;&lt; 24
+    SRA     rd, rd, 24      ; rd = (int32_t)rd &gt;&gt; 24
+
+    ; sign extend halfword to word
+    SLL     rd, rs, 16      ; rd = rs &lt;&lt; 16
+    SRA     rd, rd, 16      ; rd = (int32_t)rd &gt;&gt; 16
+</pre>
+
+<p>And I’m going to mention these instructions here because I can’t find a good place to put them: </p>
+<pre>
+    SYSCALL imm20           ; system call
+    BREAK   imm20           ; breakpoint
+</pre>
+<p>Both instructions trap into the kernel. The system call instruction is intended to be used to make operation system calls; the breakpoint instruction is intended to be used for software breakpoints. Both instructions carry a 20-bit immediate payload that can be used for whatever purpose the operating system chooses. </p>
+<p>Here are some more instructions you can synthesize from the official instructions: </p>
+<pre>
+    SUB     rd, zero, rs    ; NEG     rd, rs
+    SUBU    rd, zero, rs    ; NEGU    rd, rs
+    ADDU    rd, zero, rs    ; MOVE    rd, rs
+    OR      rd, zero, rs    ; MOVE    rd, rs
+    NOR     rd, zero, rs    ; NOT     rd, rs
+    SLL     zero, zero, 0   ; NOP
+    SLL     zero, zero, 1   ; SSNOP
+</pre>
+<p>There are many possible ways of synthesizing a <code>MOVE</code> instruction, but in order to be able to unwind exceptions, Windows NT requires that register motion in the prologue or epilogue of a function must take one of the two forms given above. </p>
+<p>Similarly, there are many ways of performing a <code>NOP</code>. Basically, any non-trapping 32-bit computation that targets the <var>zero</var> register is functionally a nop, but the two above are treated specially by the processor. </p>
+<ul>
+<li> <code>NOP</code> = <code>SLL zero, zero, 0</code>     is special-cased by the processor as a nop that can be optimized     out entirely.     Use it when you need to pad out some code for space. </li>
+<li> <code>SSNOP</code> = <code>SLL zero, zero, 1</code>     is special-cased by the processor as a nop that must be issued,     and it will not be simultaneously issued with any other     instruction.     Use it when you need to pad out some code for time.     (The <code>SS</code> stands for “super-scalar”.) </li>
+</ul>
+<p>The encoding of <code>SLL zero, zero, 0</code> happens to be <code>0x00000000</code>, which I’m sure is not a coincidence. I’m not convinced that it’s a good idea, though. I would have chosen <code>0x00000000</code> to be the encoding of a breakpoint or invalid instruction. </p>
+<p>Okay, those are the 32-bit computation instructions. Next time, we’ll look at multiplication, division, and the temperamental <var>HI</var> and <var>LO</var> registers. </p>
+<p>¹ Alas, there is no <code><a href="https://en.wikipedia.org/wiki/Nori">NORI</a></code> instruction. You think I’m joking, but I’m not. Be patient. </p>
+
+
+</body>

@@ -1,0 +1,55 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Adventures in application compatibility: The case of the display control panel crash on exit</h1>  <!-- .entry-meta -->
+
+<p>Windows reliability telemetry reported that there were a large number of crashes in the Display control panel. Since these crashes are coming via telemetry and the Windows Error Reporting service, there is no information about what steps are required to reproduce the problem. All we have are crash dumps.</p>
+<p>The crash was due to the instruction pointer being in the middle of nowhere. For example, in one dump, it was at address <code>ffffffff`924bbde0</code>. Close study shows that this value is suspiciously similar to <code>00007fff`924bbde0</code>, which is the address of <code>ntdll!ButtonWndProc_A</code>. This tells me that somebody subclassed a button, and then tried to restore the original window procedure, but they messed up and truncated the 64-bit pointer value to a 32-bit signed integer. Bonus insult: Their button is ANSI, not Unicode. It’s (checks watch) 2023, get with the program. Not everybody who uses a computer speaks English.</p>
+<p>To debug this problem, I had to do some triangulation of the crash dumps to look for a third party component that was common to all (or at least most) of the crashes. Since this was a Display control panel, I focused on the video card information, since video card drivers can provide a custom Display control panel plug-in to show off their driver-specific features.</p>
+<p>And I found it.</p>
+<p>The custom property sheet that comes with one particular video card has a bug in its <code>WM_<wbr/>DESTROY</code> handler: It casts a <code>WNDPROC</code> to a 32-bit value, causing the upper 32 bits to be lost.</p>
+<p>Here is the reverse-engineered dialog procedure:</p>
+<pre>INT_PTR CALLBACK DialogProc(
+    HWND hdlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+  if (uMsg == WM_INITDIALOG) {
+        SetWindowLongPtr(hdlg, GWLP_USERDATA,
+                ((PROPSHEETPAGE*)lParam)-&gt;lParam);
+  }
+  MyClass* self = (MyClass*)GetWindowLongPtr(
+        hdlg, GWLP_USERDATA);
+  return self ? self-&gt;RealDialogProc(hdlg, uMsg, wParam, lParam)
+              : FALSE;
+}
+</pre>
+<p>And here is the “real” <code>DLGPROC</code>:</p>
+<pre>INT_PTR CALLBACK MyClass:RealDialogProc(
+    HWND hdlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+  switch (uMsg)
+  {
+  ...
+  case WM_DESTROY:
+    SetWindowLongPtr(GetDlgItem(m_dlg, IDC_SOME_BUTTON),
+        GWLP_WNDPROC, (LONG)g_originalWndProc);
+   ...
+  }
+}
+</pre>
+<p>I suspect this code was originally written as 32-bit code, and the line was</p>
+<pre>    SetWindowLong(GetDlgItem(m_dlg, IDC_SOME_BUTTON),
+        GWL_WNDPROC, (LONG)g_originalWndProc);
+</pre>
+<p>When porting to 64-bit, the <code>Set­Window­Long</code> becomes <code>Set­Window­Long­Ptr</code> to expand the value to 64 bits, and the name of the index changes from <code>GWL_<wbr/>WNDPROC</code> to <code>GWLP_<wbr/>WNDPROC</code>, with the extra P emphasizing that the value should be passed to <code>Get</code>/<code>Set­Window­Long­Ptr</code>.</p>
+<p>But they forgot to upgrade their cast from <code>(LONG)</code> to <code>(LONG_PTR)</code>, so they were accidentally truncating their 64-bit value to a sign-extended 32-bit value as part of the restoration.</p>
+<p>I went for <a href="/code/microsoft-money-crashes-during-import-of-account-transactions-or-when-changing-a-payee-of-a-downloaded-transaction" title="Microsoft Money crashes during import of account transactions or when changing a payee of a downloaded transaction"> style points</a> and came up with a one-byte patch to fix the bug.</p>
+<pre>// rbx = (LONG)g_originalWndProc
+48631d33540300  movsxd  rbx,dword ptr [contoso+0x39c50]
+</pre>
+<p>Patch the second byte from <code>63</code> to <code>8b</code>:</p>
+<pre>// rbx = (LONG_PTR)g_originalWndProc
+488b1d33540300  mov     rbx,qword ptr [contoso+0x39c50]
+</pre>
+<p>It turns out that all the machines that are hitting this bug are running drivers that are over ten years old. The current drivers don’t have this bug. In fact, the current drivers don’t even have the custom control panel extension! In the time since I originally did this investigation, it appears that people finally got their act together and upgraded their video drivers, because there has been only one recorded occurrence of this crash worldwide in the past 30 days.</p>
+<p><b>Bonus reading</b>: <a href="/other/the-difference-between-a-junior-and-senior-position-at-a-video-card-company"> The difference between a junior and senior position at a video card company</a>.</p>
+
+
+</body>

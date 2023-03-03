@@ -1,0 +1,288 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Async-Async: Reducing the chattiness of cross-thread asynchronous operations</h1>  <!-- .entry-meta -->
+
+<p>The Windows Runtime expresses the concept of asynchronous activity with the <code>IAsync­Operation&lt;T&gt;</code> and <code>IAsyncAction</code> interfaces. The former represents an operation that completes asynchronously with a result of type <code>T</code>. The latter represents an operation that completes asynchronously with no result; you can think of it as <code>IAsync­Operation&lt;void&gt;</code>. In fact, let’s just treat it as such for the purpose of this discussion.</p>
+<p>When you call a method like <code>Do­Something­Async</code>, it returns an instance of the <code>IAsync­Operation</code> interface. All of the details of the <code>IAsync­Operation</code> interface are normally hidden from the developer by the language projection. If you are writing in C#, you see a <code>Task</code>; in JavaScript, you get a <code>Promise</code>. In C++/WinRT and C++/CX, you <code>co_await</code> <code>IAsync­Operation</code>, and the <code>co_await</code> machinery hides the details. In C++/CX, you can also convert the <code>IAsync­Operation</code> into a <code>concurrency::</code><code>task</code>, and then schedule your continuation that way.</p>
+<p>But today, we’re going to look at how things work under the covers.</p>
+<p>At the raw interface level, asynchronous operations work like this. In the diagrams, a solid arrow represents a call, and a dotted arrow represents the return from that call.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3">
+<tbody>
+<tr>
+<th>Client</th>
+<th style="border-style: solid; border-width: 0px 1px;"> </th>
+<th>Server</th>
+</tr>
+<tr>
+<td><code>Do­Something­Async()</code></td>
+<td style="border-style: solid; border-width: 0px 1px;">→</td>
+<td>Start operation</td>
+</tr>
+<tr>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;">⇠</td>
+<td>return <code>IAsync­Operation</code></td>
+</tr>
+<tr>
+<td><code>put_Completed(callback)</code></td>
+<td style="border-style: solid; border-width: 0px 1px;">→</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;">⇠</td>
+<td>return</td>
+</tr>
+<tr>
+<td><code>Release()</code></td>
+<td style="border-style: solid; border-width: 0px 1px;">→</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;">⇠</td>
+<td>release <code>IAsync­Operation</code></td>
+</tr>
+<tr>
+<td colspan="3" style="text-align: center;">… time passes …</td>
+</tr>
+<tr>
+<td colspan="3" style="text-align: center;">Operation completes</td>
+</tr>
+<tr>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;">←</td>
+<td><code>callback.Invoke()</code></td>
+</tr>
+<tr>
+<td><code>get_Status()</code></td>
+<td style="border-style: solid; border-width: 0px 1px;">→</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;">⇠</td>
+<td>return Completed (or Error)</td>
+</tr>
+<tr>
+<td><code>GetResults()</code></td>
+<td style="border-style: solid; border-width: 0px 1px;">→</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;">⇠</td>
+<td>return results</td>
+</tr>
+<tr>
+<td><code>callback</code> returns</td>
+<td style="border-style: solid; border-width: 0px 1px;">⇢</td>
+<td><code>IAsync­Operations</code> is destroyed</td>
+</tr>
+</tbody>
+</table>
+<p>When the client calls the <code>Do­Something­Async()</code> method, the call is sent to the server, which starts the operation and returns an <code>IAsync­Operation</code> which represents the operation in progress.</p>
+<p>The client calls the <code>IAsync­Operation::</code><code>put_</code><code>Completed</code> method to specify a callback that will be invoked when the operation is complete, thereby allowing the client to resume execution when the operation is complete. The server saves this callback and returns.</p>
+<p>The client releases the <code>IAsync­Operation</code>, since it no longer needs it. The operation itself keeps the <code>IAsync­Operation</code> alive.</p>
+<p>Time passes, and eventually the operation is complete.</p>
+<p>The server invokes the callback to let it know that the operation is complete. The client receives a reference to the original <code>IAsync­Operation</code> as part of the callback. The client can interrogate the <code>IAsync­Operation</code> to determine whether the operation was successful or not, and if successful, what the result was.</p>
+<p>Finally, when the callback returns, there are no more outstanding reference to the <code>IAsync­Operation</code>, so it destroys itself.</p>
+<p>You may have noticed that this is a very <a href="https://blogs.msdn.microsoft.com/oldnewthing/20160212-00/?p=93013"> chatty</a> interface between the client and server. I mean, look at all those arrows!</p>
+<p>Enter Async-Async.</p>
+<p>Async-Async interposes layers on both the client and server which do local caching. The layer returns a fake async operation to the client and provides a fake client to the server.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3">
+<tbody>
+<tr>
+<th>Client</th>
+<th> </th>
+<th>Client Layer</th>
+<th style="border-style: solid; border-width: 0px 1px;"> </th>
+<th>Server Layer</th>
+<th> </th>
+<th>Server</th>
+</tr>
+<tr>
+<td><code>Do­Something­Async()</code></td>
+<td>→</td>
+<td>create fake <code>IAsyncOperation</code></td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td>⇠</td>
+<td>return fake <code>IAsyncOperation</code></td>
+<td style="border-style: solid; border-width: 0px 1px;">→</td>
+<td>fake client</td>
+<td>→</td>
+<td>Start operation</td>
+</tr>
+<tr>
+<td><code>put_Completed(callback)</code></td>
+<td>→</td>
+<td>save in fake <code>IAsyncOperation</code></td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+<td> </td>
+<td>⇠</td>
+<td>return <code>IAsyncOperation</code></td>
+</tr>
+<tr>
+<td> </td>
+<td>⇠</td>
+<td>return</td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+<td><code>put_Completed(private)</code></td>
+<td>→</td>
+</tr>
+<tr>
+<td><code>Release()</code></td>
+<td>→</td>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+<td> </td>
+<td>⇠</td>
+<td>return</td>
+</tr>
+<tr>
+<td> </td>
+<td>⇠</td>
+<td>release fake <code>IAsync­Operation</code></td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+<td><code>Release()</code></td>
+<td>→</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+<td> </td>
+<td>⇠</td>
+<td>release <code>IAsync­Operation</code></td>
+</tr>
+<tr>
+<td colspan="7" style="text-align: center;">… time passes …</td>
+</tr>
+<tr>
+<td colspan="7" style="text-align: center;">Operation completes</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+<td> </td>
+<td>←</td>
+<td><code>private.Invoke()</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+<td><code>get_Status()</code></td>
+<td>→</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+<td> </td>
+<td>⇠</td>
+<td>return Completed (or Error)</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+<td><code>GetResults()</code></td>
+<td>→</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+<td> </td>
+<td>⇠</td>
+<td>return results</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;">⇠</td>
+<td>return status and results</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>cache status and results</td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td>←</td>
+<td><code>callback.Invoke()</code></td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+<td><code>private</code> returns</td>
+<td>⇢</td>
+<td><code>IAsyncOperation</code> is destroyed</td>
+</tr>
+<tr>
+<td><code>get_Status()</code></td>
+<td>→</td>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td>⇠</td>
+<td>return cached status</td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+</tr>
+<tr>
+<td><code>GetResults()</code></td>
+<td>→</td>
+<td> </td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td>⇠</td>
+<td>return cached results</td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+</tr>
+<tr>
+<td><code>callback</code> returns</td>
+<td>⇢</td>
+<td>fake <code>IAsync­Operation</code> is destroyed</td>
+<td style="border-style: solid; border-width: 0px 1px;"> </td>
+</tr>
+</tbody>
+</table>
+<p>With Async-Async, the client’s call to <code>Do­Something­Async()</code> creates a fake <code>IAsync­Operation</code> on the client side. This fake <code>IAsync­Operation</code> makes a call out to the server to initiate the operation, but doesn’t wait for the server to respond to the request. Instead, the fake <code>IAsync­Operation</code> immediately returns to the client.</p>
+<p>As before, the client calls <code>IAsync­Operation::</code><code>put_</code><code>Completed</code> method to specify a callback that will be invoked when the operation is complete, thereby allowing the client to resume execution when the operation is complete. The fake <code>IAsync­Operation</code> saves this callback and returns.</p>
+<p>The client releases the fake <code>IAsync­Operation</code>, since it no longer needs it. The operation itself keeps the <code>IAsync­Operation</code> alive.</p>
+<p>Meanwhile, the request from the fake <code>IAsync­Operation</code> reaches the server, where a fake client is constructed. This fake client asks the real server to start the operation, and it registers its own private callback to be notified when the operation is complete, and then it releases the <code>IAsync­Operation</code>.</p>
+<p>Time passes, and eventually the operation is complete.</p>
+<p>The server invokes the callback to notify the fake client that the operation is complete. The fake client immediately retrieves the status and result, and transmits both to the fake <code>IAsync­Operation</code>, thereby completing the asynchronous call that was initiated by the fake <code>IAsync­Operation</code> at the start.</p>
+<p>The fake client then returns from its callback, and everything on the server side is now all done.</p>
+<p>Meanwhile, the fake <code>IAsync­Operation</code> has received the operation’s status and result and invokes the client’s callback. As before, the client calls the <code>IAsync­Operation::</code><code>get_</code><code>Status()</code> method to find out whether the operation was successful or not, and it calls the <code>IAsync­Operation::</code><code>Get­Results()</code> method to obtain the results of the asynchronous operation from the fake <code>IAsync­Operation</code>. The client returns from its callback, and everything on the client side is now all done.</p>
+<p>This interface is much less chatty. There is only one call from the client to the server (to start the operation), and only one call from the server back to the client (to indicate the status and result of the operation). All the rest of the calls are local and therefore fast.</p>
+<p>From the client’s perspective, Async-Async takes asynchronous operations and makes them even more asynchronous: Not only does the operation itself run asynchronously, even the <i>starting</i> of the operation takes place asynchronously. This gives control back to the client sooner, so it can do productive things like, say, running other ready tasks.</p>
+<p>Note that Async-Async comes into play only when the method call needs to be marshaled. If the client and server are on the same thread, then there is no need for Async-Async because the calls are all local already.</p>
+<p>Async-Async was introduced in Windows 10, and it is enabled for nearly all Windows-provided asynchronous operations. There are some methods that do not use Async-Async because they need to start synchronously; UI operations fall into this category.</p>
+<p>You can enable Async-Async for your own asynchronous operations by adding <a href="https://docs.microsoft.com/en-us/uwp/api/windows.foundation.metadata.remoteasyncattribute"> the <code>[remote_async]</code> attribute</a> to your methods.</p>
+<pre>runtimeclass Awesome
+{
+  <span style="color: blue;">[remote_async]</span>
+  Windows.Foundation.IAsyncAction BeAwesomeAsync();
+};
+</pre>
+<p>Although Async-Async is intended to be transparent to the client, there are some things to be aware of. We’ll look at those next time.</p>
+
+
+</body>

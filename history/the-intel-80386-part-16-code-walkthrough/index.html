@@ -1,0 +1,265 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Intel 80386, part 16: Code walkthrough</h1>  <!-- .entry-meta -->
+
+<p>Let’s put into practice what we’ve learned so far by walking through a simple function and studying its disassembly. </p>
+<pre>
+#define _lock_str(s)                    _lock(s+_STREAM_LOCKS)
+#define _unlock_str(s)                  _unlock(s+_STREAM_LOCKS)
+
+extern FILE _iob[];
+
+int fclose(FILE *stream)
+{
+    int result = EOF;
+
+    if (stream-&gt;_flag &amp; _IOSTRG) {
+        stream-&gt;_flag = 0;
+    } else {
+        int index = stream - _iob;
+        _lock_str(index);
+        result = _fclose_lk(stream);
+        _unlock_str(index);
+    }
+
+    return result;
+}
+</pre>
+<p>This is a function from the C runtime library, so the functions use the <code>__cdecl</code> calling convention. This means that the parameters are pushed right-to-left, and the caller is responsible for cleaning them from the stack. </p>
+<pre>
+_fclose:
+    push    ebx
+    push    esi
+    push    edi
+</pre>
+<p>This code was compiled back in the days when frame pointer omission was fashionable. The function does not create a traditional stack frame with the <var>ebp</var> register acting as frame pointer. </p>
+<p>The 80386 calling convention says that the <var>ebx</var>, <var>esi</var>, the <var>edi</var>, and <var>ebp</var> registers must be preserved across the call. </p>
+<pre>
+    mov     esi,dword ptr [esp+10h] ; esi = stream
+</pre>
+<p>We will be using the <var>stream</var> variable a lot, so we’ll load it into a register for convenient access. </p>
+<pre>
+; int result = EOF;
+    mov     edi,0FFFFFFFFh          ; edi = result = EOF
+</pre>
+<p>The other variable is <var>result</var>, which we will keep in the <var>edi</var> register, and we set it to its initial value of −1. This is a straight <code>MOV</code> instruction, which is five-byte encoding (one opcode byte plus a four-byte immediate). A smaller encoding would have been <code>or edi, -1</code>, which uses two bytes for the opcode and one for the 8-bit signed immediate. But the smaller encoding comes at a perfornance cost because it creates a false dependency on the <var>edi</var> register. (Mind you, the 80386 did not have out-of-order execution, so dependencies really aren’t a factor yet.) </p>
+<pre>
+; if (stream-&gt;_flag &amp; _IOSTRG) {
+    test    byte ptr [esi+0Ch],40h  ; is this a string?
+    je      not_string              ; N: then need a true flush
+</pre>
+<p>Even though <var>_flag</var> is a 32-bit field, we use a byte test to save code size. This takes advantage of the fact that testing a single bit can be done by testing a single bit in a 32-bit field, or by testing a single bit in an 8-bit subfield. The <var>_flag</var> field is at offset <code>0Ch</code>, and the value of <code>_IOSTRG</code> is <code>0x40</code>, so the bit we want is in the first byte. </p>
+<p>We learned some time ago that this size optimization defeats the <a href="https://devblogs.microsoft.com/oldnewthing/">store-to-load forwarder</a>, but the 80386 didn’t have a store-to-load forwarder, so that wasn’t really a factor. </p>
+<pre>
+; stream-&gt;_flag = 0;
+    mov     dword ptr [esi+0Ch],0
+</pre>
+<p>Again, the compiler chooses a full 32-bit immediate instead of using a smaller instruction. An alternative would have been <code>and dword ptr [esi+0Ch], 0</code>, using a sign-extended 8-bit immediate instead of a 32-bit immediate, but at a cost of incurring a read-modify-write rather than simply a write. </p>
+<pre>
+; return result;
+    mov     eax,edi                 ; eax = return value
+    pop     edi
+    pop     esi
+    pop     ebx
+    ret
+</pre>
+<p>The compiler chose to inline the common <code>return</code> instruction into this branch of the <code>if</code> statement. The value being returned is in the <var>result</var> variable, which we had enregistered in the <var>edi</var> register. The return value goes in the <var>eax</var> register, so we move it there. And then we restore the registers we had saved on the stack and return to the caller. Since this function uses the <code>__cdecl</code> calling convention, the function does no stack cleanup; it is the caller’s responsibility to clean the stack. </p>
+<pre>
+    nop
+</pre>
+<p>This <code>nop</code> instruction is padding to bring the next instruction, a jump target, to an address that is a multiple of 16. The 80386 fetches instructions in 16-byte chunks, and putting jump targets at the start of a 16-byte chunk means that all of the fetched bytes are potentially executable. </p>
+<pre>
+not_string:
+; int index = stream - _iob;
+    mov     ebx,esi                 ; ebx = stream
+    sub     ebx,77E243F0h           ; ebx = stream - _iob (byte offset)
+    sar     ebx,5                   ; ebx = stream - _iob (element offset)
+</pre>
+<p>This sequence of instructions calculates the value for the <var>index</var> local variable, which the compiler chose to enregister in the <var>ebx</var> register. We start with the value in the <var>esi</var> register, which is the <var>stream</var> variable. Next, we subtract the offset of the <var>_iob</var> variable, which is a global variable, so its address looks like a constant in the code stream. We then take that byte offset and shift it right by 5, which means dividing by 32, which is the size of a <var>FILE</var> structure in this particular implementation. The result now sits in the <var>ebx</var> register. </p>
+<pre>
+; _lock_str(index) ⇒ _lock(index+_STREAM_LOCKS)
+    add     ebx,19h                 ; add _STREAM_LOCKS
+    push    ebx                     ; the sole parameter
+    call    _lock                   ; call the function
+    add     esp,4                   ; clean stack arguments
+</pre>
+<p>The <var>_lock_str</var> macro is a wrapper around the <var>_lock</var> function. We add <var>STREAM_</var><var>LOCKS</var>, which happens to be 25, or <code>0x19</code>, and the push it onto the stack as the sole parameter for the <var>_lock</var> function. Since this is a <code>__cdecl</code> function, it is the caller’s responsibility to clean the stack, so we add 4 (the number of bytes of parameters) to the <var>esp</var> register to drop them from the stack. </p>
+<pre>
+; result = _fclose_lk(stream)
+    push    esi                     ; the sole parameter
+    call    _fclose_lk              ; call the function
+    add     esp,4                   ; clean stack arguments
+    mov     edi,eax                 ; save in edi = result
+</pre>
+<p>Another function call: We push the sole parameter, call the function, and clean the stack. The return value was placed in the <var>eax</var> register, so we move it into the <var>edi</var> register, which we saw represents the <var>result</var> variable. </p>
+<pre>
+; _unlock_str(index) ⇒_unlock(index+_STREAM_LOCKS)
+    push    ebx                     ; the sole parameter
+    call    _unlock                 ; call the function
+    add     esp,4                   ; clean stack arguments
+</pre>
+<p>The compiler realized it could pull out the common subexpression <var>s+_STREAM_</var><var>LOCKS</var> and stored the value of that subexpression in the <var>ebx</var> register. It could therefore push the precomputed value (helpfully saved in the <var>ebx</var> register) as the parameter for the <var>_lock</var> function. </p>
+<pre>
+; return result;
+    mov     eax,edi                 ; eax = return value
+    pop     edi
+    pop     esi
+    pop     ebx
+    ret
+</pre>
+<p>And this is the same code we saw last time. The return value (<var>result</var>) is moved to the <var>eax</var> register, which is where the <code>__cdecl</code> calling convention places it. We then restore the registers we had saved at entry and return to our caller, leavving our caller to clean the stack parameters. </p>
+<p>The resulting function size is 81 bytes. </p>
+<p>Okay, now let’s see how we could optimize this function further. Let’s look closely at the calculation of <var>index + _STREAM_</var><var>LOCKS</var>. </p>
+<pre>
+    mov     ebx,esi                 ; ebx = stream
+    sub     ebx,77E243F0h           ; ebx = stream - _iob (byte offset)
+    sar     ebx,5                   ; ebx = stream - _iob (element offset)
+    add     ebx,19h                 ; add _STREAM_LOCKS
+</pre>
+<p>The first thing you might think of is combining the first two instructions into a single <code>LEA</code> instruction: </p>
+<pre>
+    lea     ebx,[esi+881dbc10h]     ; ebx = stream - _iob (byte offset)
+</pre>
+<p>The <code>LEA</code> instruction lets us perform an addition operation in a single instruction by taking advantage of the effective address computation circuitry in the memory unit. The operation we want to perform is subtraction of a constant, which we can transform into an addition of the negative of that constant. </p>
+<p>Unfortunately, the trick doesn’t work in this case because the “constant” is a relocatable address, and there is no loader fixup type for “negative of the address of a variable.” </p>
+<p>But all is not lost. There’s another trick we could use: Fold in the subsequent addition. </p>
+<table border="0" cellpadding="3" class="cp3">
+<tr>
+<td><var>ebx</var></td>
+<td>= ((<var>esi</var> − 77E243F0h) &gt;&gt; 5) + 19h</td>
+</tr>
+<tr>
+<td></td>
+<td>= ((<var>esi</var> − 77E243F0h) &gt;&gt; 5) + (320h &gt;&gt; 5)</td>
+</tr>
+<tr>
+<td></td>
+<td>= (<var>esi</var> − 77E243F0h + 320h) &gt;&gt; 5 </td></tr>
+<tr>
+<td></td>
+<td>= (<var>esi</var> − 77E240D0h) &gt;&gt; 5 </td></tr>
+</table>
+<p>Another way to do this calculation: </p>
+<table border="0" cellpadding="0">
+<tr>
+<td><code>adjusted_index </code></td>
+<td><code>= stream - _iob + 0x19</code></td>
+</tr>
+<tr>
+<td></td>
+<td><code>= stream - (_iob - 0x19)</code></td>
+</tr>
+<tr>
+<td></td>
+<td><code>= stream - &amp;_iob[-0x19]</code></td>
+</tr>
+</table>
+<p>Either way, the result is this: </p>
+<pre>
+    mov     ebx,esi                 ; ebx = stream
+    sub     ebx,77E240D0h           ; ebx = stream - &amp;_iob[-0x19] (byte offset)
+    sar     ebx,5                   ; ebx = stream - &amp;_iob[-0x19] (element offset)
+</pre>
+<p>Another observation is that <var>stream</var> and <var>result</var> do not have overlapping useful lifetimes. The useful lifetime of <var>result</var> doesn’t start until it receives the value from <var>_fclose_lk</var>. Prior to that, its value is known at compile time to be <code>EOF</code>, so there’s no need to devote a register to it. </p>
+<p>And we can combine the <code>add esp, 4</code> with the subsequent <code>push</code> (which decrements the <var>esp</var> register) by simply storing the new value into the top-of-stack slot. </p>
+<p>The case of a string-based stream does not use the <var>ebx</var> register, so we can use a technique know as <i>shrink-wrapping</i>, where we start with one stack frame, and then expand it to a larger one on certain code paths. In this case, we start by saving only the <var>esi</var> register, and then later save the <var>ebx</var> register only if we realize that we need it. </p>
+<p>A simple size/speed optimization (in favor of size) is to use the <code>pop</code> instruction to pop a value off the stack (and ignore it). This replaces a three-byte <code>add esp,4</code> with a one-byte register <code>pop</code>. </p>
+<p>A very aggressive size optimization would be to replace the two-byte instructions <code>mov eax, r</code> or <code>mov r, eax</code> with the one-byte <code>xchg eax, r</code> instruction. This assumes you need to move the value into or out of the <var>eax</var> register and you don’t care about the source any more. </p>
+<p>Finally, a string-based stream is quite uncommon (and certainly the case of closing a string-based stream), so we’ll make that the out-of-line case, and we won’t bother optimizing the fetch of the jump target for the same reason. </p>
+<pre>
+_fclose:
+    push    esi                     ; save register
+    mov     esi,dword ptr [esp+0Ch] ; esi = stream
+    test    byte ptr [esi+0Ch],40h  ; Is this an _IOSTRG?
+    jnz     is_string                  
+
+    push    ebx                     ; shrink-wrap
+    mov     ebx,esi
+    sub     ebx,77E240D0h           ; ebx = stream - &amp;_iob[-0x19] (byte offset)
+    sar     ebx,5                   ; ebx = index + _STREAM_LOCKS
+    push    ebx
+    call    _lock                   ; call the function
+
+    mov    [esp],esi                ; parameter for _fclose_lk
+    call   _fclose_lk               ; close the stream
+
+    mov    [esp],ebx                ; parameter for _unlock
+    mov    ebx,eax                  ; ebx = result
+    call   _unlock
+
+    pop    eax                      ; clean the stack once
+    mov    eax,ebx                  ; eax = result
+    pop    ebx
+    pop    esi
+    ret
+
+is_string:
+    mov    dword ptr [esi+0Ch],0    ; stream-&gt;_flag = 0
+    or     eax,-1                   ; return EOF
+    pop    esi
+    ret
+</pre>
+<p>This reduces the function size to 65 bytes. </p>
+<p>Yet another trick is to pre-push the parameters for multiple function calls. </p>
+<pre>
+_fclose:
+    mov     ecx,dword ptr [esp+8]   ; ecx = stream
+    test    byte ptr [ecx+0Ch],40h  ; Is this an _IOSTRG?
+    jnz     is_string               ; Y: handle strings out of line
+
+    push    ebx                     ; shrink-wrap
+    mov     ebx,ecx
+    sub     ebx,77E240D0h           ; ebx = stream - &amp;_iob[-0x19] (byte offset)
+    sar     ebx,5                   ; ebx = index + _STREAM_LOCKS
+    push    ecx                     ; push for _fclose_lk
+    push    ebx                     ; push for _lock
+    call    _lock                   ; call the function
+    pop     eax                     ; discard arg to _lock
+    call    _fclose_lk              ; close the stream
+    mov     dword ptr [esp],ebx     ; parameter for _unlock
+    mov     ebx,eax                 ; save result
+    call    _unlock
+    pop     eax                     ; discard arg to _unlock
+    mov     eax,ebx                 ; recover result
+    pop     ebx
+    ret
+
+is_string:
+    mov    dword ptr [ecx+0Ch],0    ; stream-&gt;_flag = 0
+    or     eax,-1                   ; return EOF
+    ret
+</pre>
+<p>This brings us down to 57 bytes. </p>
+<p>If we abandon the idea of enregistering the <var>result</var>, we can do this: </p>
+<pre>
+_fclose:
+    mov     ecx,dword ptr [esp+8]   ; ecx = stream
+    test    byte ptr [ecx+0Ch],40h  ; Is this an _IOSTRG?
+    jnz     is_string               ; Y: handle strings out of line
+
+    mov     eax,ecx
+    sub     eax,77E240D0h           ; ebx = stream - &amp;_iob[-0x19] (byte offset)
+    sar     eax,5                   ; ebx = index + _STREAM_LOCKS
+    push    ecx                     ; garbage (for future result)
+    push    eax                     ; push for _unlock
+    push    ecx                     ; push for _fclose_lk
+    push    eax                     ; push for _lock
+    call    _lock                   ; call the function
+    pop     eax                     ; discard arg to _lock
+    call    _fclose_lk              ; close the stream
+    mov     dword ptr [esp+0Ch],eax ; save result
+    pop     eax                     ; discard arg to _lock
+    call    _unlock
+    pop     eax                     ; discard arg to _unlock
+    pop     eax                     ; recover result
+    ret
+
+is_string:
+    mov    dword ptr [ecx+0Ch],0    ; stream-&gt;_flag = 0
+    or     eax,-1                   ; return EOF
+    ret
+</pre>
+<p>But this comes out to 59 bytes. </p>
+<p><a href="https://devblogs.microsoft.com/oldnewthing/20190212-00/?p=101048">Next time</a>, a bonus chapter on future developments to this architecture. </p>
+
+
+</body>

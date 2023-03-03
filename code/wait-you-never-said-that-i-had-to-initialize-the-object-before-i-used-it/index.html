@@ -1,0 +1,107 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Wait, you never said that I had to initialize the object before I used it!</h1>  <!-- .entry-meta -->
+
+<p>
+A customer reported that they were having trouble creating
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa904937(v=vs.85).aspx">
+slim reader/writer locks</a>
+at runtime.
+They simplified the issue to a short program:
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;iostream&gt;
+using namespace std; // this is just a quick test app
+int a = 10;
+// This version works
+int working_version()
+{
+ SRWLOCK lock;
+ AcquireSRWLockExclusive(&amp;lock);
+ cout&lt;&lt;"Acquired exclusively"&lt;&lt;endl;
+ a++;
+ ReleaseSRWLockExclusive(&amp;lock);
+}
+// This one doesn't
+int broken_version_1()
+{
+ SRWLOCK *lock = new SRWLOCK;
+ AcquireSRWLockExclusive(lock);
+ cout&lt;&lt;"Acquired exclusively"&lt;&lt;endl;
+ a++;
+ ReleaseSRWLockExclusive(lock);
+ // ignore the memory leak - this is just a quick test app
+}
+// This one doesn't either
+int broken_version_2()
+{
+ SRWLOCK *lock = new SRWLOCK[2];
+ AcquireSRWLockExclusive(&amp;lock[0]);
+ cout&lt;&lt;"Acquired exclusively"&lt;&lt;endl;
+ a++;
+ ReleaseSRWLockExclusive(&amp;lock[0]);
+ // ignore the memory leak - this is just a quick test app
+}
+int main(int argc, char **argv)
+{
+ switch (argv[1][0]) {
+ case '0': working_version(); break;
+ case '1': broken_version_1(); break;
+ case '2': broken_version_2(); break;
+ }
+ cout&lt;&lt;"a="&lt;&lt;a&lt;&lt;endl;
+ return 0;
+}
+</pre>
+<p>
+“What is the correct way of creating an <code>SRWLOCK</code>
+via the <code>new</code> operator?”
+</p>
+<p>
+It wasn’t long before somebody noted that nowhere in the code
+is the function
+<code>Initialize­SRW­Lock</code> called.
+</p>
+<p>
+“Oh, yeah, thanks for catching that.
+It looks like one needs to initialize SRW locks which are
+created via the <code>new</code> operator.
+Otherwise it’s not required.”
+</p>
+<p>
+No, the function is <i>always</i> required.
+It’s just that you got lucky in the local variable case
+and the initial stack garbage looks enough like an initialized SRW lock
+that you don’t notice the problem.
+</p>
+<p>
+MSDN doesn’t say
+“You must initialize an SRW lock before using it”
+because the statement was believed to be so obvious
+that it never occurred to anybody that somebody would
+think the opposite was true.
+I mean, what’s the point of having an
+<code>Initialize­SRW­Lock</code> function if initialization
+is not required?
+Think of it as one of the
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2006/03/20/555511.aspx">
+ground rules for programming</a>:
+If an object has an initialization method,
+you must initialize the object before using it.
+</p>
+<p>
+But just to be sure, I’ve submitted a documentation change request
+to add the requirement.
+</p>
+<p>
+<b>Bonus chatter</b>:
+A common coding pattern is to wrap the low-level C-style object
+inside a C++style RAII-style object.
+</p>
+<p>
+<b>Bonus chatter 2</b>:
+If you’re creating a highly-concurrent system, then you should
+probably put each lock on its own cache line.</p>
+
+
+</body>

@@ -1,0 +1,97 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Mundane git commit-tree tricks, Part 3: Building a throwaway commit in order to perform a combined cherry-pick-squash</h1>  <!-- .entry-meta -->
+
+<p>Suppose you have a series of commits you want to cherry-pick and squash onto another branch.</p>
+<p>The traditional way of doing this is to cherry-pick the series of commits with the <code>-n</code> option so that they all stack on top of each other, and then perform a big <code>git commit</code> when you’re done. However, this mechanism churns the local hard drive with copies of each of the intermediate commits, and if there are merge conflicts, you may end up having to resolve the conflict in the same block of code over and over again.</p>
+<p>For example, suppose that you want to cherry-pick a series of commits that look like this:</p>
+
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid 1px black; width: 4em;">base</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">A</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">B</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">revert A</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">B2</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">B3</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">C</td>
+</tr>
+</tbody>
+</table>
+<p>Suppose you are cherry-picking it onto a branch which contains changes that conflict with A and B. The conflict may not be serious, but it could be tedious.</p>
+<p>For example, maybe the target branch changed one line of code, and A changed the indentation of a large section of code that encompasses that one line. This results in a large merge conflict. It’s not hard to resolve, but it can be tedious verifying that the only change from A was indentation and therefore the correct merge is to take the one modified line from the target branch and fix its indentation.</p>
+<p>And then the cherry-pick reverts A and you have to go through the same exercise.</p>
+<p>Similarly, if B conflicts with a change in the target branch, you are going to have to deal with that conflict three times. Once when B is cherry-picked, and once again each for the follow-up commits.</p>
+<p>What you want to do is squash all the commits together and then cherry-pick that one commit. That way, you have to deal with the conflicts only once. (Or, in the case of a conflict that was later reverted, you won’t have to deal with it at all!)</p>
+<p>So let’s do that. Squash all the commits from A to C (inclusive) into a single commit:</p>
+<pre>git commit-tree C^{tree} -p A~ -m "squasheroo!"
+(this prints a hash)
+</pre>
+<p><b>Note</b>: If using the Windows <code>CMD</code> command prompt, you need to type</p>
+<pre>git commit-tree C^^{tree} -p A~ -m "squasheroo!"
+</pre>
+<p>for reasons discussed earlier.</p>
+<p>The hash that got printed out is a dangling commit that is the squash of everything from A to C inclusive.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid 1px black; width: 4em;">base</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">A</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">B</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">revert A</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">B2</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">B2</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">C</td>
+</tr>
+<tr>
+<td> </td>
+<td>↖︎</td>
+</tr>
+<tr>
+<td colspan="2"> </td>
+<td colspan="11" style="border: solid 1px black; text-align: center;">A + B + revert A + B2 + B3 + C</td>
+</tr>
+</tbody>
+</table>
+<p>Note that you don’t have to be checked out to the branch that contains the series of commits you want to cherry-pick. You are creating a commit with an explicit parent, so there’s no reference to <tt>HEAD</tt> and therefore no need to be on a particular branch. (And in practice, you are already checked out to the branch that you want to cherry-pick <i>into</i>.)</p>
+<p>Now you can cherry-pick the dangling commit and deal with the conflicts only once.</p>
+<pre>git checkout target-branch [but you are probably there already]
+git cherry-pick 〈that hash that was printed by git commit-tree〉
+</pre>
+<p>This is similar to <code>git diff A~ C | git apply</code>, but has the following advantages:</p>
+<ul>
+<li>The <code>git cherry-pick</code> can take advantage of the full contents of the base version to help resolve the conflict.</li>
+<li>The output of <code>git diff</code> may be problematic for binary content.</li>
+<li>If there are any merge conflicts, the <code>git apply</code> will just throw away the conflicting chunks, rather than leaving merge markers in the output. You’ll have to go dig into the patch to find the pieces that were not successfully applied and then try to merge them yourself.</li>
+<li>The <code>git cherry-pick</code> keeps track of the conflicting files and will remind you of them when you do a <code>git status</code>.</li>
+<li>You can use your regular merge conflict workflow (such as <code>git mergetool</code>) to resolve the conflicts.</li>
+<li>If you decide that the merge conflicts are too nasty, you can abandon the <code>git cherry-pick</code>. A <code>git apply</code> cannot be abandoned.</li>
+</ul>
+<p>
+<script>
+window.addEventListener("load", function() {
+  var fullFF = getComputedStyle(document.body).fontFamily;
+  var simpleFF = fullFF.replace(/ Emoji/g, "");
+  // break up "style" to prevent wordpress from injecting random junk
+  document.getElementById("p20190508_head").innerHTML =
+`<s` + `tyle>
+body { font-family: ${simpleFF}; }
+.emoji { font-family: ${fullFF}; }
+</s` + `tyle>`;
+});
+</script></p>
+
+
+</body>

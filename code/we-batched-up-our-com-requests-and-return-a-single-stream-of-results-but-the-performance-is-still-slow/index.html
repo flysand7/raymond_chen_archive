@@ -1,0 +1,192 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">We batched up our COM requests and return a single stream of results, but the performance is still slow</h1>  <!-- .entry-meta -->
+
+<p>A customer had a performance problem with an interface that connected to a service: The design was too chatty. (“Chatty” is a technical term that means “Too much time is spent communicating back and forth, often at the expense of actual work.”) The original design went like this: </p>
+<pre>
+// All error checking deleted for expository purposes.
+void
+GetIdsAndNamesOfEverythingInContainer(IContainer* container)
+{
+  CComPtr&lt;IIEnumItem&gt; enumerator;
+  container-&gt;GetEnumerator(&amp;enumerator);
+  for (CComPtr&lt;IItem&gt; item;
+       enumerator-&gt;Next(&amp;item) == S_OK;
+       item.Release()) {
+    UINT id;
+    item-&gt;GetId(&amp;id);
+    CComHeapPtr&lt;wchar_t&gt; name;
+    item-&gt;GetName(&amp;name);
+    AddToUI(id, name);
+  }
+}
+</pre>
+<p>If there are 10,000 items, then the number of trips to the server comes out to </p>
+<table border="0">
+<tr>
+<th>Line</th>
+<th>Calls to server</th>
+</tr>
+<tr>
+<td><code>Get­Enumerator</code></td>
+<td align="right">1</td>
+</tr>
+<tr>
+<td><code>Next</code></td>
+<td align="right">10,001</td>
+</tr>
+<tr>
+<td><code>Get­Id</code></td>
+<td align="right">10,000</td>
+</tr>
+<tr>
+<td><code>Get­Name</code></td>
+<td align="right">10,000</td>
+</tr>
+<tr>
+<td><code>item-&gt;Release</code></td>
+<td align="right">10,000</td>
+</tr>
+<tr>
+<td><code>enumerator-&gt;Release</code></td>
+<td align="right">1</td>
+</tr>
+<tr>
+<td colspan="2">
+<hr/>
+</td>
+</tr>
+<tr>
+<td>Total</td>
+<td align="right">40,003</td>
+</tr>
+</table>
+<p>If every call to the server takes one millisecond to complete, that’s forty seconds spent collecting the IDs and names of all the items. (In this particular case, the server was local, but the high level of chattiness made the problem noticeable even for a local server.) </p>
+<p>They reduced the chattiness by adding a special <code>Get­Ids­And­Names­Of­All­Children</code> method to <a href="http://blogs.msdn.com/b/oldnewthing/archive/2006/04/07/570801.aspx">perform a bulk operation</a>. On the server side, it collects all the information and serializes it into a stream, then it returns the stream to the client. The client can then deserialize the data from the stream. Something like this: </p>
+<pre>
+// All error checking deleted for expository purposes.
+void
+GetIdsAndNamesOfEverythingInContainer(IContainer* container)
+{
+  // Issue the bulk request for the IDs and names of all children.
+  CComPtr&lt;IIStream&gt; stream;
+  container-&gt;GetIdsAndNamesOfAllChildren(&amp;stream);
+
+  // Now parse out the results.
+
+  // First thing in the stream is the number of items.
+  ULONG bytesRead;
+  UINT count;
+  stream-&gt;Read(&amp;count, sizeof(count), &amp;bytesRead);
+
+  // For each item, read the ID and name
+  for (UINT i = 0; i &lt; count; i++) {
+    UINT id;
+    stream-&gt;Read(&amp;id, sizeof(id), &amp;bytesRead);
+
+    // The string is preceded by a character count.
+    UINT length;
+    stream-&gt;Read(&amp;length, sizeof(length), &amp;bytesRead);
+
+    // Yes, there is an integer overflow here - like I said,
+    // I removed error checking for expository purposes.
+    UINT byteLength = (length + 1) * sizeof(wchar_t);
+    CComHeapPtr&lt;wchar_t&gt; name(CoTaskMemAlloc(byteLength));
+    ZeroMemory(name, byteLength);
+
+    stream-&gt;Read(name.m_pData, byteLength, &amp;bytesRead);
+
+    AddToUI(id, name);
+  }
+}
+</pre>
+<p>But the operation was still slow. </p>
+<p>Let’s study how chatty this new design is: </p>
+<table border="0">
+<tr>
+<th>Line</th>
+<th>Calls to server</th>
+</tr>
+<tr>
+<td><code>Get­Ids­And­Names</code></td>
+<td align="right">1</td>
+</tr>
+<tr>
+<td><code>IStream::Read</code> for count</td>
+<td align="right">1</td>
+</tr>
+<tr>
+<td><code>IStream::Read</code> for Id</td>
+<td align="right">10,000</td>
+</tr>
+<tr>
+<td><code>IStream::Read</code> for length</td>
+<td align="right">10,000</td>
+</tr>
+<tr>
+<td><code>IStream::Read</code> for string</td>
+<td align="right">10,000</td>
+</tr>
+<tr>
+<td><code>IStream::Release</code></td>
+<td align="right">1</td>
+</tr>
+<tr>
+<td colspan="2">
+<hr/>
+</td>
+</tr>
+<tr>
+<td>Total</td>
+<td align="right">30,003</td>
+</tr>
+</table>
+<p>It’s still ridiculously chatty! (We traded calls to <code>Next</code> and <code>Release</code> for a single call to get the length in the inner loop, but the other calls are still there.) </p>
+<p>The problem is that the stream is marshaled by reference. When the COM marshaler returns the stream, it returns a proxy that talks back to the stream on the server. COM doesn’t have any special knowledge about how you’re using the stream. If you issue a read on the stream, COM marshal the read call back to the original object so that it can perform the read, which may consist of generating data on the fly or calling out to other objects, and it will certainly update the position of the stream pointer. Or maybe the stream on the server is constantly changing, so the read needs to retrieve the current data in the stream, even if it changed after the call to <code>Get­Ids­And­Names­Of­All­Children</code> returned. </p>
+<p>The solution here is to bring domain-specific knowledge to the table. We know that the stream being returned is immutable, and it’s not being shared with anybody. Indeed, once the server generates the output stream and returns it to the client, the server throws the stream away! What we want to happen is to transfer the <i>contents</i> of the stream to the client, so that the client gets a clone of the stream. Once that’s done, all the stream operations on the client can be performed without having to talk back to the server. </p>
+<p>One solution is to make the stream <i>marshal by value</i> by implementing <i>IMarshal</i> and providing a custom marshaler. Marshaling by value is common for immutable objects, because you can just transfer the object’s state to the client, and then you’re done. The client can talk to its local copy of the object instead of having to go back to the server all the time. </p>
+<p>Another solution is to make the marshaling by value explicit by returning a block of memory rather than a COM object. Annotating your interface to indicate this is rather tricky, using the wacky <a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/09/23/9898230.aspx"><code>size_is(, ...)</code> syntax</a>, where there is nothing between the open parenthesis and the comma. Once the client gets the raw buffer, it can parse the buffer directly, or it can create an <code>IStream</code> wrapper around it. (You might choose to create an <code>IStream</code> wrapper so that you minimize change to code that you’ve already spent time writing and debugging.) </p>
+<p>Here’s the revised table once we marshal the buffer by value, so that all of the <code>IStream</code> operations can be performed on the client side. </p>
+<table border="0">
+<tr>
+<th>Line</th>
+<th>Calls to server</th>
+</tr>
+<tr>
+<td><code>Get­Ids­And­Names</code></td>
+<td align="right">1</td>
+</tr>
+<tr>
+<td><code>IStream::Read</code> for count</td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td><code>IStream::Read</code> for Id</td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td><code>IStream::Read</code> for length</td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td><code>IStream::Read</code> for string</td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td><code>IStream::Release</code></td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td colspan="2">
+<hr/>
+</td>
+</tr>
+<tr>
+<td>Total</td>
+<td align="right">1</td>
+</tr>
+</table>
+<p><b>Bonus reading</b>: <a href="http://blogs.msdn.com/b/larryosterman/archive/2010/05/26/what-does-size-is-mean-in-an-idl-file.aspx">Larry Osterman explains some of the nuances</a> of <code>size_is</code> and <code>length_is</code>. </p>
+<p><b>Update</b>: Math is hard. Let’s go shopping. </p>
+
+
+</body>

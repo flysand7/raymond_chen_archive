@@ -1,0 +1,329 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Optimizing code to darken a bitmap, part 4</h1>  <!-- .entry-meta -->
+
+<p>Our investigation into a simple function to darken a bitmap is still trying to beat this function:</p>
+<pre>union Pixel
+{
+    uint8_t c[4]; // four channels: red, green, blue, alpha
+    uint32_t v;   // full pixel value as a 32-bit integer
+};
+
+void darken(Pixel* first, Pixel* last, int darkness)
+{
+  int lightness = 256 - darkness;
+  for (; first &lt; last; ++first) {
+    first-&gt;c[0] = (uint8_t)(first-&gt;c[0] * lightness / 256);
+    first-&gt;c[1] = (uint8_t)(first-&gt;c[1] * lightness / 256);
+    first-&gt;c[2] = (uint8_t)(first-&gt;c[2] * lightness / 256);
+  }
+}
+</pre>
+<p>We tried parallelizing the multiplication by treating a traditional 32-register as a bunch of 10-bit fields, but it turns out that all the overhead of shifting and masking ended up costing more than the savings of reducing the number of multiplications.</p>
+<p>But instead of doing fake SIMD, let’s just do real SIMD.</p>
+<p>First, we’ll use the x86 SIMD intrinsics. I’m going to limit myself to SSE2, since that’s the minimum requirement for x86-based Windows starting with Windows 8.</p>
+<p>For simplicity of exposition, let’s assume that the start of the pixel array is aligned on a 16-byte boundary and the total size is a perfect multiple of 16. This avoids the hassle of dealing with the edge cases at the start and end.</p>
+<pre>void darken(Pixel* first, Pixel* last, int darkness)
+{
+  int lightness = 256 - darkness;
+  auto lightness128 = _mm_set_epi16(
+        256, lightness, lightness, lightness,
+        256, lightness, lightness, lightness);
+  void* end = last;
+  for (auto pixels = (__m128i*)first; pixels &lt; end; pixels++) {
+    auto val = _mm_loadu_si128(pixels);
+    auto vlo = _mm_unpacklo_epi8(val, _mm_setzero_si128());
+    vlo = _mm_mullo_epi16(vlo, alpha128);
+    vlo = _mm_srli_epi16(vlo, 8);
+    auto vhi = _mm_unpackhi_epi8(val, _mm_setzero_si128());
+    vhi = _mm_mullo_epi16(vhi, alpha128);
+    vhi = _mm_srli_epi16(vhi, 8);
+    val = _mm_packus_epi16(vlo, vhi);
+    _mm_storeu_si128(pixels, val);
+  }
+}
+</pre>
+<p>First, we set up our <code>lightness128</code> vector to consists of eight 16-bit lanes. The lanes corresponding to color channels get the specified lightness, and the lanes corresponding to alpha channels get a lightness of 256, which means “do not darken”.</p>
+<p>Inside the loop, we process 16 bytes at a time, which comes out to four pixels.</p>
+<p>First, we load the 16 bytes into an SSE2 register and call it <code>val</code>.</p>
+<p>Next, we unpack the low part of the register with a register full of zeroes, putting the result into <code>vlo</code>. The “unpack low” instruction interleaves the low bytes of the two source registers.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td>source 1</td>
+<td> </td>
+<td style="border: solid 1px black;">A7</td>
+<td> </td>
+<td style="border: solid 1px black;">A6</td>
+<td> </td>
+<td style="border: solid 1px black;">A5</td>
+<td> </td>
+<td style="border: solid 1px black;">A4</td>
+<td> </td>
+<td style="border: solid 1px black;">A3</td>
+<td> </td>
+<td style="border: solid 1px black;">A2</td>
+<td> </td>
+<td style="border: solid 1px black;">A1</td>
+<td> </td>
+<td style="border: solid 1px black;">A0</td>
+</tr>
+<tr>
+<td>source 2</td>
+<td style="border: solid 1px black;">B7</td>
+<td>↓</td>
+<td style="border: solid 1px black;">B6</td>
+<td>↓</td>
+<td style="border: solid 1px black;">B5</td>
+<td>↓</td>
+<td style="border: solid 1px black;">B4</td>
+<td>↓</td>
+<td style="border: solid 1px black;">B3</td>
+<td>↓</td>
+<td style="border: solid 1px black;">B2</td>
+<td>↓</td>
+<td style="border: solid 1px black;">B1</td>
+<td>↓</td>
+<td style="border: solid 1px black;">B0</td>
+<td>↓</td>
+</tr>
+<tr>
+<td> </td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+</tr>
+<tr>
+<td>destination</td>
+<td style="border: solid 1px black;">D15</td>
+<td style="border: solid 1px black;">D14</td>
+<td style="border: solid 1px black;">D13</td>
+<td style="border: solid 1px black;">D12</td>
+<td style="border: solid 1px black;">D11</td>
+<td style="border: solid 1px black;">D10</td>
+<td style="border: solid 1px black;">D09</td>
+<td style="border: solid 1px black;">D08</td>
+<td style="border: solid 1px black;">D07</td>
+<td style="border: solid 1px black;">D06</td>
+<td style="border: solid 1px black;">D05</td>
+<td style="border: solid 1px black;">D04</td>
+<td style="border: solid 1px black;">D03</td>
+<td style="border: solid 1px black;">D02</td>
+<td style="border: solid 1px black;">D01</td>
+<td style="border: solid 1px black;">D00</td>
+</tr>
+</tbody>
+</table>
+<p>In our case, the second source register is all zeroes, so it has the effect of performing a zero extension of the first eight 8-bit values (corresponding to the first two pixels) into eight 16-bit values.</p>
+<pre>    auto vlo = _mm_unpacklo_epi8(val, _mm_setzero_si128());
+</pre>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td>source 1</td>
+<td> </td>
+<td style="border: solid 1px black;">A7</td>
+<td> </td>
+<td style="border: solid 1px black;">A6</td>
+<td> </td>
+<td style="border: solid 1px black;">A5</td>
+<td> </td>
+<td style="border: solid 1px black;">A4</td>
+<td> </td>
+<td style="border: solid 1px black;">A3</td>
+<td> </td>
+<td style="border: solid 1px black;">A2</td>
+<td> </td>
+<td style="border: solid 1px black;">A1</td>
+<td> </td>
+<td style="border: solid 1px black;">A0</td>
+</tr>
+<tr>
+<td>source 2</td>
+<td style="border: solid 1px black;">00</td>
+<td>↓</td>
+<td style="border: solid 1px black;">00</td>
+<td>↓</td>
+<td style="border: solid 1px black;">00</td>
+<td>↓</td>
+<td style="border: solid 1px black;">00</td>
+<td>↓</td>
+<td style="border: solid 1px black;">00</td>
+<td>↓</td>
+<td style="border: solid 1px black;">00</td>
+<td>↓</td>
+<td style="border: solid 1px black;">00</td>
+<td>↓</td>
+<td style="border: solid 1px black;">00</td>
+<td>↓</td>
+</tr>
+<tr>
+<td> </td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+<td>↓</td>
+</tr>
+<tr>
+<td>destination</td>
+<td style="border: solid 1px black;">00</td>
+<td style="border: solid 1px black;">A7</td>
+<td style="border: solid 1px black;">00</td>
+<td style="border: solid 1px black;">A6</td>
+<td style="border: solid 1px black;">00</td>
+<td style="border: solid 1px black;">A5</td>
+<td style="border: solid 1px black;">00</td>
+<td style="border: solid 1px black;">A4</td>
+<td style="border: solid 1px black;">00</td>
+<td style="border: solid 1px black;">A3</td>
+<td style="border: solid 1px black;">00</td>
+<td style="border: solid 1px black;">A2</td>
+<td style="border: solid 1px black;">00</td>
+<td style="border: solid 1px black;">A1</td>
+<td style="border: solid 1px black;">00</td>
+<td style="border: solid 1px black;">A0</td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">A7</td>
+<td colspan="2" style="border: solid 1px black;">A6</td>
+<td colspan="2" style="border: solid 1px black;">A5</td>
+<td colspan="2" style="border: solid 1px black;">A4</td>
+<td colspan="2" style="border: solid 1px black;">A3</td>
+<td colspan="2" style="border: solid 1px black;">A2</td>
+<td colspan="2" style="border: solid 1px black;">A1</td>
+<td colspan="2" style="border: solid 1px black;">A0</td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>Next up is the multiplication and division:</p>
+<pre>    vlo = _mm_mullo_epi16(vlo, alpha128);
+    vlo = _mm_srli_epi16(vlo, 8);
+</pre>
+<p>We perform a parallel multiply of the 16-bit values against the values in our <code>lightness128</code> register, and then we perform a parallel right-shift by 8 positions.</p>
+<p>This combination of operations performs the <code>newPixel = oldPixel * lightness / 256</code> calculation on eight values at once. Recall that we preloaded the alpha channel with a lightness value of 256, so this multiplies by 256 and the shifts right by 8, which is a net nop.</p>
+<p>We perform the same sequence of operations on the high bytes. The only difference is that we unpack with the <code>unpackhi</code> flavor of the intrinsic, so that it operates on the high 8 bytes instead of the low 8 bytes, thereby performing the calculations on the last two pixels instead of the first two.</p>
+<p>We now have the desired results in sixteen 16-bit lanes, spread over two registers. We want to collapse those 16-bit lanes back into sixteen 8-bit lanes of a single register, which we do with the <code>pack</code> instruction. The <code>us</code> suffix means that this uses unsigned saturation. The unsigned part is important, but the saturation part isn’t, since we know that the values are already in the range 0…255.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td>source 1</td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">A7</td>
+<td colspan="2" style="border: solid 1px black;">A6</td>
+<td colspan="2" style="border: solid 1px black;">A5</td>
+<td colspan="2" style="border: solid 1px black;">A4</td>
+<td colspan="2" style="border: solid 1px black;">A3</td>
+<td colspan="2" style="border: solid 1px black;">A2</td>
+<td colspan="2" style="border: solid 1px black;">A1</td>
+<td colspan="2" style="border: solid 1px black;">A0</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+</tr>
+<tr>
+<td>destination</td>
+<td style="width: 3ex;"> </td>
+<td style="border: solid 1px black; width: 3ex;">B7</td>
+<td style="border: solid 1px black;">A7</td>
+<td style="border: solid 1px black;">B6</td>
+<td style="border: solid 1px black;">A6</td>
+<td style="border: solid 1px black;">B5</td>
+<td style="border: solid 1px black;">A5</td>
+<td style="border: solid 1px black;">B4</td>
+<td style="border: solid 1px black;">A4</td>
+<td style="border: solid 1px black;">B3</td>
+<td style="border: solid 1px black;">A3</td>
+<td style="border: solid 1px black;">B2</td>
+<td style="border: solid 1px black;">A2</td>
+<td style="border: solid 1px black;">B1</td>
+<td style="border: solid 1px black;">A1</td>
+<td style="border: solid 1px black;">B0</td>
+<td style="border: solid 1px black;">A0</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>↑</td>
+<td> </td>
+<td>↑</td>
+<td> </td>
+<td>↑</td>
+<td> </td>
+<td>↑</td>
+<td> </td>
+<td>↑</td>
+<td> </td>
+<td>↑</td>
+<td> </td>
+<td>↑</td>
+<td> </td>
+<td>↑</td>
+<td> </td>
+</tr>
+<tr>
+<td>source 2</td>
+<td colspan="2" style="border: solid 1px black; width: 6ex;">B7</td>
+<td colspan="2" style="border: solid 1px black;">B6</td>
+<td colspan="2" style="border: solid 1px black;">B5</td>
+<td colspan="2" style="border: solid 1px black;">B4</td>
+<td colspan="2" style="border: solid 1px black;">B3</td>
+<td colspan="2" style="border: solid 1px black;">B2</td>
+<td colspan="2" style="border: solid 1px black;">B1</td>
+<td colspan="2" style="border: solid 1px black;">B0</td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>At each iteration of the loop, we process four pixels.</p>
+<p>This rewrite of the loop using SIMD pays off: It’s 3.5 times faster then the non-SIMD version.</p>
+<p>Next time, we’ll apply the same approach to the ARM version.</p>
+<p><b>Bonus chatter</b>: I tried reducing the strength of the multiplication by using the same “addition with masking” trick that I tried in the general-purpose register version. It didn’t help. The multiplication is fast enough that attempts to reduce its strength end up costing more in overhead than they do in savings by avoiding the multiplcation instruction.</p>
+
+
+</body>

@@ -1,0 +1,55 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I decode a <code>#pragma detect_mismatch</code> error?</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, I mentioned that you can <a href="/code/using-pragma-detect-mismatch-to-help-catch-odr-violations" title="Using #pragma detect_mismatch to help catch ODR violations"> use <code>#pragma detect_mismatch</code> to get the linker to verify that everybody agreed on a setting</a>. This is typically used to avoid violations of the C++ One Definition Rule (ODR), which often fall into the category known in the standard as “ill-formed, no diagnostic required” (IFNDR), meaning “You broke the rules, and the compiler is not required to tell you that you broke the rules.”</p>
+<p>Okay, so you use the <code>#pragma detect_mismatch</code> trick as described in the earlier article to detect these mismatches at link time. But how do you decode the error message?</p>
+<pre style="white-space: pre-wrap;">widget.lib(viewer.obj) : error LNK2038: mismatch detected for 'Contoso threading': value 'Single' doesn't match value 'Multi' in gadget.lib(printer.obj)
+</pre>
+<p>Let’s take apart the error message.</p>
+<ul>
+<li><code>widget.lib(viewer.obj)</code>: This is identifying one of the files involved in the conflict. If the file is part of a library, the name is given as the library name, with the file in parentheses. If the file is being consumed directly, it will just be the file itself. In this case, the file is <code>viewer.obj</code> (presumably compiled from <code>viewer.cpp</code>) in the <code>widget.lib</code> library.</li>
+<li><code>Contoso threading</code>: This is the name of the key that was passed as the first argument to the <code>#pragma detect_mismatch</code>.</li>
+<li><code>Single</code>: This is the second parameter passed to <code>#pragma detect_mismatch</code>, as provided in <code>viewer.obj</code>.</li>
+<li><code>Multi</code>: This is the second parameter passed to <code>#pragma detect_mismatch</code>, as provided in <code>printer.obj</code>.</li>
+<li><code>gadget.lib(printer.obj)</code>: This is the other file involved in the conflict. It takes the same form as above.</li>
+</ul>
+<p>Let me annotate the error message.</p>
+<table border="0" cellpadding="0" cellspacing="3" style="border-collapse: separate;">
+<tbody>
+<tr>
+<td><code><span style="border: solid 1px black;">widget.lib(viewer.obj)</span>:</code></td>
+<td>first party to the conflict</td>
+</tr>
+<tr>
+<td><code>error LNK2038: mismatch detected for</code></td>
+</tr>
+<tr>
+<td><code>'<span style="border: solid 1px black;">Contoso threading</span>':</code></td>
+<td>conflicting property</td>
+</tr>
+<tr>
+<td><code>value '<span style="border: solid 1px black;">Single</span>'</code></td>
+<td>first party value</td>
+</tr>
+<tr>
+<td><code>doesn't match</code></td>
+</tr>
+<tr>
+<td><code>value '<span style="border: solid 1px black;">Multi</span>'</code></td>
+<td>second party value</td>
+</tr>
+<tr>
+<td><code>in <span style="border: solid 1px black;">gadget.lib(printer.obj)</span></code></td>
+<td>second party to the conflict</td>
+</tr>
+</tbody>
+</table>
+<p>In other words, when you compiled <code>printer.cpp</code> to produce <code>printer.obj</code> in <code>gadget.lib</code>, somebody did a <code>#pragma detect_mismatch("Contoso threading", "Single")</code>. Looking at the implementation of the header file, we see that this happens if <code>SINGLE_THREADED</code> is defined.</p>
+<p>On the other hand, when you compiled <code>viewer.cpp</code> to produce <code>viewer.obj</code> in <code>widget.lib</code>, somebody did a <code>#pragma detect_mismatch("Contoso threading", "Multi")</code>. Looking at the implementation of the header file, we see that this happens if <code>SINGLE_THREADED</code> is <i>not</i> defined.</p>
+<p>This conflict results in an inconsistency between the two versions of the <code>Contoso</code> class, and that’s what the error message is telling you.</p>
+<p>Your job now is to resolve the conflict. Maybe you need to edit the <code>printer.cpp</code> and <code>viewer.cpp</code> files so that they agree on whether the <code>Contoso</code> object is single-threaded or multi-threaded.</p>
+<p>Or maybe you split the <code>Contoso</code> class into two classes, one single-threaded and one multi-threaded, and let <code>Contoso</code> be an alias for one or the other. This lets each component use the <code>Contoso</code> they prefer, but it also means that they cannot pass <code>Contoso</code> objects between each other, since they aren’t the same object any more.</p>
+<p>How to resolve the conflict is your call. I’m just here to interpret the error message for you.</p>
+
+
+</body>

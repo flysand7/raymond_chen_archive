@@ -1,0 +1,62 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does my synchronous overlapped ReadFile return FALSE when the end of the file is reached?</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that the behavior of <code>Read­File</code> was not what they were expecting. </p>
+<blockquote class="q"><p>We have a synchronous file handle (not created with <code>FILE_FLAG_OVERLAPPED</code>), but we issue reads against it with an <code>OVERLAPPED</code> structure. We find that when we read past the end of the file, the <code>Read­File</code> returns <code>FALSE</code> even though the documentation says it should return <code>TRUE</code>. </p></blockquote>
+<p>They were kind enough to <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/10/18/10457796.aspx">include a simple program that demonstrates the problem</a>. </p>
+<pre>
+#include &lt;windows.h&gt;
+
+int __cdecl wmain(int, wchar_t **)
+{
+ // Create a zero-length file. This succeeds.
+ HANDLE h = CreateFileW(L"test", GENERIC_READ | GENERIC_WRITE,
+               0, nullptr, CREATE_ALWAYS,
+               FILE_ATTRIBUTE_NORMAL, nullptr);
+
+ // Read past EOF.
+ char buffer[10];
+ DWORD cb;
+ OVERLAPPED o = { 0 };
+ ReadFile(h, buffer, 10, &amp;cb, &amp;o); // returns FALSE
+ GetLastError(); // returns ERROR_HANDLE_EOF
+
+ return 0;
+}
+</pre>
+<p>The customer quoted this section from <a href="http://msdn.microsoft.com/library/aa365467">The documentation for <code>Read­File</code></a>: </p>
+<blockquote class="m">
+<p>Considerations for working with synchronous file handles: </p>
+<ul>
+<li>If <i>lpOverlapped</i> is <b>NULL</b>,     the read operation starts at the current file position and     <b>Read­File</b> does not return until the oepration     is complete,     and the system updates the file pointer before <b>Read­File</b>     returns. 
+<li>If <i>lpOverlapped</i> is not <b>NULL</b>,     the read operation starts at the offset that is specified     in the <b>OVERLAPPED</b> structure and <b>Read­File</b>     does not return until the read operation is complete.     The system updates the <b>OVERLAPPED</b> offset before     <b>Read­File</b> returns. 
+<li>When a synchronous read operation reads the end of a file,     <b>Read­File</b> returns <b>TRUE</b> and sets     <code>*lpNumberOfBytesRead</code> to zero. </li></li></li></ul>
+</blockquote>
+<p>and then added </p>
+<blockquote class="q"><p>According to the third bullet point, the <code>Read­File</code> should return <code>TRUE</code>, but in practice it returns <code>FALSE</code> and the error code is <code>ERROR_HANDLE_EOF</code>. </p></blockquote>
+<p>The problem here is that there are two concepts here, and they confusingly both use the word <i>synchronous</i>. </p>
+<ul>
+<li>A synchronous file handle is a handle opened without     <code>FILE_FLAG_OVERLAPPED</code>.     All I/O to a synchronous file handle is serialized     and synchronous. 
+<li>A synchronous I/O operation is an I/O issued with     <code>lpOverlapped == NULL</code>. </li></li></ul>
+<p>The sample program issues an asynchronous read against a synchronous handle. The third bullet point applies only to synchronous reads. </p>
+<p>To reduce confusion, the documentation would have been clearer if it hadn’t switched terminology midstream. </p>
+<blockquote class="m">
+<ul>
+<li>If <i>lpOverlapped</i> is <b>NULL</b>,     the read operation starts at the current file position and     <b>Read­File</b> does not return until the oepration     is complete,     and the system updates the file pointer before <b>Read­File</b>     returns. 
+<li>If <i>lpOverlapped</i> is not <b>NULL</b>,     the read operation starts at the offset that is specified     in the <b>OVERLAPPED</b> structure and <b>Read­File</b>     does not return until the read operation is complete.     The system updates the <b>OVERLAPPED</b> offset before     <b>Read­File</b> returns. 
+<li><u>If <i>lpOverlapped</i> is <b>NULL</b> and</u>     the read operation reads the end of a file,     <b>Read­File</b> returns <b>TRUE</b> and sets     <code>*lpNumberOfBytesRead</code> to zero. </li></li></li></ul>
+</blockquote>
+<p>We asked what the customer was doing that caused them to trip over this confusion in the documentation. </p>
+<blockquote class="q">
+<p>The customer’s original code opened a file (synchronously) and read from it (synchronously). The customer is parallelizing the computation in a way that will read that single file from multiple threads. A single file pointer is therefore not suitable, because different threads will want to read from different positions. </p>
+<p>One idea would be to have each thread call <code>Create­File</code> so that each handle has its own file position. Unfortunately, this won’t work for the customer because the sharing mode on the file handle denies read sharing. </p>
+<p>The solution they came up with was to open the file synchronously (without <code>FILE_FLAG_OVERLAPPED</code>) but to read asynchronously (by using an <code>OVERLAPPED</code> structure). The <code>OVERLAPPED</code> structure lets you specify where you want to read from, so multiple threads can issue reads against the file position they want. </p>
+<p>This solution works, but the customer is concerned because this hybrid model is not well-documented in MSDN. They found <a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/04/05/10290954.aspx">a blog entry that discusses it</a>, but even that blog entry does not discuss what happens in the multithreaded case.) In particular, they are seeing that the end-of-file behavior acts according to asynchronous rather than synchronous rules. </p>
+<p>Any advice you have on how we can pursue this model would be appreciated. Another concern is that since we do not set the <code>hEvent</code> in the <code>OVERLAPPED</code> structure, the file handle itself is used as the signal that I/O has completed, and this will cause problems if multiple I/O’s are active simultaneously. </p>
+</blockquote>
+<p>The problem is that the customer confused the two senses of synchronous, one when applied to files and one when applied to I/O operations. Since they opened a synchronous file handle, all I/O operations are serialized and execute synchronously. Passing an <code>OVERLAPPED</code> structure issues an asynchronous I/O, but since the underlying handle is synchronous, the I/O is serialized and synchronous. The customer’s code therefore is not actually performing I/O asynchronously; its requests for asynchronous I/O is overridden by the fact that the underlying handle is synchronous. </p>
+<p>The hybrid model doesn’t actually realize any gains of asynchronous I/O. The use of the <code>OVERLAPPED</code> structure merely provides the convenience of combining the seek and read operations into a single call. Since the benefit is rather meager, the hybrid model is not commonly used, and consequently it is not covered in depth in the documentation. (The facts are still there, but there is relatively little discussion and elaboration.) </p>
+<p>Based on this feedback, the customer considered switching to using an asynchronous file handle and setting the <code>hEvent</code> in the <code>OVERLAPPED</code> structure so that each thread can wait for its specific I/O to complete. In the end, however, they decided to stick with the hybrid model because switching to an asynchronous handle was too disruptive to their code base. They are satisfied with the <code>OVERLAPPED</code> technique that lets them perform the equivalent of an atomic <code>Set­File­Pointer</code> + <code>Read­File</code> (even if the I/O is synchronous and serialized). </p>
+
+
+</body>

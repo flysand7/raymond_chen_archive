@@ -1,0 +1,176 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you want to use GUIDs to identify your files, then nobody's stopping you</h1>  <!-- .entry-meta -->
+
+<p>
+Igor Levicki proposes solving the problem of file extensions by
+<a href="http://blogs.msdn.com/oldnewthing/archive/2007/12/17/6785519.aspx#6793266">
+using a GUID instead of a file name to identify a file</a>.
+</p>
+<p>
+You can do this already.
+Every file on an NTFS volume has an <i>object identifier</i>
+which is formally 16-byte buffer, but let’s just call it a GUID.
+By default a file doesn’t have an object identifier,
+but you can ask for one to be created with
+<code>FSCTL_CREATE_OR_GET_OBJECT_ID</code>,
+which will retrieve the existing object identifier associated with
+a file, or create one if there isn’t one already.
+If you are a control freak, you can use
+<code>FSCTL_SET_OBJECT_ID</code> to specify the GUID you want to use
+as the object identifier.
+(The call fails if the file already has an object identifier.)
+And of course there is
+<code>FSCTL_GET_OBJECT_ID</code> to retrieve the object identifier, if any.
+</p>
+<pre>
+#define UNICODE
+#define _UNICODE
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;tchar.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;winioctl.h&gt;
+int __cdecl _tmain(int argc, PTSTR *argv)
+{
+ HANDLE h = CreateFile(argv[1], 0,
+                 FILE_SHARE_READ | FILE_SHARE_WRITE |
+                 FILE_SHARE_DELETE, NULL,
+                 OPEN_EXISTING, 0, NULL);
+ if (h != INVALID_HANDLE_VALUE) {
+  FILE_OBJECTID_BUFFER buf;
+  DWORD cbOut;
+  if (DeviceIoControl(h, FSCTL_CREATE_OR_GET_OBJECT_ID,
+                 NULL, 0, &amp;buf, sizeof(buf),
+                 &amp;cbOut, NULL)) {
+    GUID guid;
+    CopyMemory(&amp;guid, &amp;buf.ObjectId, sizeof(GUID));
+    WCHAR szGuid[39];
+    StringFromGUID2(guid, szGuid, 39);
+    _tprintf(_T("GUID is %ws\n"), szGuid);
+  }
+  CloseHandle(h);
+ }
+ return 0;
+}
+</pre>
+<p>
+This program takes a file or directory name
+as its sole parameter and prints the associated object identifier.
+</p>
+<p>
+Big deal, now we have a GUID associated with each file.
+</p>
+<p>
+The other half is, of course, using this GUID to open the file:
+</p>
+<pre>
+#define UNICODE
+#define _UNICODE
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;tchar.h&gt;
+#include &lt;ole2.h&gt;
+int __cdecl _tmain(int argc, PTSTR *argv)
+{
+ HANDLE hRoot = CreateFile(_T("C:\\"), 0,
+                 FILE_SHARE_READ | FILE_SHARE_WRITE |
+                 FILE_SHARE_DELETE, NULL,
+                 OPEN_EXISTING,
+                 FILE_FLAG_BACKUP_SEMANTICS, NULL);
+ if (hRoot != INVALID_HANDLE_VALUE) {
+  FILE_ID_DESCRIPTOR desc;
+  desc.dwSize = sizeof(desc);
+  desc.Type = ObjectIdType;
+  if (SUCCEEDED(CLSIDFromString(argv[1], &amp;desc.ObjectId))) {
+   HANDLE h = OpenFileById(hRoot, &amp;desc, GENERIC_READ,
+                 FILE_SHARE_READ | FILE_SHARE_WRITE |
+                 FILE_SHARE_DELETE, NULL, 0);
+   if (h != INVALID_HANDLE_VALUE) {
+    BYTE b;
+    DWORD cb;
+    if (ReadFile(h, &amp;b, 1, &amp;cb, NULL)) {
+     _tprintf(_T("First byte of file is 0x%02x\n"), b);
+    }
+    CloseHandle(h);
+   }
+  }
+  CloseHandle(hRoot);
+ }
+ return 0;
+}
+</pre>
+<p>
+To open a file by its GUID, you first need to open
+something—anything—on the volume the file resides on.
+Doesn’t matter what you open;
+the only reason for having this handle is so that
+<code>OpenFileById</code> knows which volume you’re talking about.
+In our little test program, we use the C: drive,
+which means that the file search will take place on the
+C: drive.
+</p>
+<p>
+Next, you fill in the <code>FILE_ID_DESCRIPTOR</code>,
+saying that you want to open the file by its object identifier,
+and then it’s off to the races with <code>OpenFileById</code>.
+Just as a proof of concept, we read and print the first byte
+of the file that was opened as a result.
+</p>
+<p>
+Notice that the file you open by its object identifier does not
+have to be in the current directory.
+It can be <i>anywhere on the C: drive</i>.
+As long as you have the GUID for a file, you can open it
+no matter where it is on the drive.
+</p>
+<p>
+You can run these two programs just to enjoy the thrill of
+opening a file by its GUID.
+Notice that once you get the GUID for a file, you can move
+it anywhere on the drive, and <code>OpenFileById</code>
+will still open it.
+</p>
+<p>
+(And if you want to get rid of those pesky drive letters,
+you can use the volume GUID instead.
+Now every file is identified by a pair of GUIDs:
+the volume GUID and the object identifier.)
+</p>
+<p>
+So Igor’s dream world where all files are referenced by GUID
+already exists.
+Why isn’t everybody switching over to this utopia of GUID-based
+file identification?
+</p>
+<p>
+You probably know the answer already:
+Because people prefer to name things with something mnemonic
+rather than a GUID.
+Imagine a file open dialog in this dream world.
+“Enter the GUID of the file you wish to open, or click Browse
+to see the GUIDs of all the files on this volume so you can pick
+from a list.”
+How long would this dialog survive?
+</p>
+<p>
+For today, you don’t have to call me Raymond.
+You can call me
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/03/15/89753.aspx">
+{7ecf65a0-4b78-5f9b-e77c-8770091c0100}</a>,
+or “91c” for short.
+</p>
+<p>
+(And I’ve totally ignored the fact that
+using GUIDs to identify files does nothing
+to solve the problem of trying to figure out what program should be
+used to open a particular file.)
+</p>
+<p><p>
+<b>Bonus chatter</b>:
+You can also open files by their file identifer, which is a
+volume-specific 64-bit value.
+But I chose to use the GUID both for the extra challenge,
+and just to show that Igor’s dream world already exists.</p>
+
+
+</p></body>

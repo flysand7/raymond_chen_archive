@@ -1,0 +1,137 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the crash during the release of an object from an unloaded DLL during apartment rundown</h1>  <!-- .entry-meta -->
+
+<p>A Windows component was experiencing a crash in its service. Here’s the stack trace:</p>
+<pre>Call Site
+ntdll!RtlUnhandledExceptionFilter2+0x364
+KERNELBASE!UnhandledExceptionFilter+0x1f1
+ntdll!RtlpThreadExceptionFilter+0x65
+ntdll!RtlUserThreadStart$filt$0+0x76
+ntdll!__C_specific_handler+0x96
+ntdll!RtlpExecuteHandlerForException+0xf
+ntdll!RtlDispatchException+0x21c
+ntdll!KiUserExceptionDispatch+0x2e
+combase!CStdMarshal::DisconnectSrvIPIDs::__l35::&lt;lambda_03ceb3c306c371a8ea5da27fc98e7b7c&gt;::operator()+0x11
+combase!ObjectMethodExceptionHandlingAction&lt;&lt;lambda_03ceb3c306c371a8ea5da27fc98e7b7c&gt; &gt;+0x2e
+combase!CStdMarshal::DisconnectSrvIPIDs+0x3fb
+combase!CStdMarshal::DisconnectWorker_ReleasesLock+0x757
+combase!CStdMarshal::DisconnectSwitch_ReleasesLock+0x1c
+combase!CStdMarshal::DisconnectAndReleaseWorker_ReleasesLock+0x32
+combase!COIDTable::ThreadCleanup+0x130
+combase!FinishShutdown::__l2::&lt;lambda_eb459d6b43445c5cc6a7489c5b769eeb&gt;::operator()+0x5
+combase!ObjectMethodExceptionHandlingAction&lt;&lt;lambda_eb459d6b43445c5cc6a7489c5b769eeb&gt; &gt;+0x9
+combase!FinishShutdown+0x78
+combase!NAUninitialize+0x5e
+combase!ApartmentUninitialize+0x177
+combase!wCoUninitialize+0x1c4
+combase!CoUninitialize+0xeb
+svchost!SvcHostMain+0x328
+svchost!wmain+0x9
+svchost!__wmainCRTStartup+0x74
+kernel32!BaseThreadInitThunk+0x14
+ntdll!RtlUserThreadStart+0x2b
+</pre>
+<p>First let’s understand what the stack is telling us.</p>
+<p>Reading from the bottom, we see that the service host calls <code>CoUninitialize</code> to uninitialize COM, presumably because the service is shutting down. This goes into <code>combase</code> and it’s doing a bunch of cleanup work. Eventually, it gets into <code>Disconnect­Srv­IPIDs</code>.</p>
+<p>When you go digging into COM, you’ll run into a bunch of weird acronymy IDs. Here are the ones you’re most likely to bump into:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td>MID</td>
+<td>Machine identifier</td>
+</tr>
+<tr>
+<td>OXID</td>
+<td>Object exporter identifier</td>
+</tr>
+<tr>
+<td>OID</td>
+<td>Object identifier</td>
+</tr>
+<tr>
+<td>IPID</td>
+<td>Interface pointer identifier</td>
+</tr>
+</tbody>
+</table>
+<p><i>Object exporter</i> is a fancy name for <i>COM apartment</i>.</p>
+<p>The tuple of (MID, OXID, OID, IPID) uniquely identify an instance of an interface anywhere in the known COM universe.</p>
+<p>When an apartment is shut down, one of the things that COM needs to do is <i>run down</i> objects. <i>Running down</i> is just a fancy way of saying “shut down in an organized way”. In this case, it means that any outstanding clients are disconnected so that they can’t call back into the object any more. This in turn causes the underlying object to be released, at which point is is most likely going to destroy itself.</p>
+<p>We crashed during this disconnection process. Since we are in <code>Rtl­Unhandled­Exception­Filter2</code>, this suggests that we are in an exception filter, and the first parameter to the exception filter is a pointer to an <code>EXCEPTION_<wbr/>POINTERS</code> structure, which is just <a href="/code/sucking-the-exception-pointers-out-of-a-stack-trace" title="Sucking the exception pointers out of a stack trace"> a pair of pointers</a>, one to the exception record and one to the context.</p>
+<p>We are interested in the context, because that lets us see the underlying exception. How can we fish it out?</p>
+<p>This is a 64-bit process, and the <code>EXCEPTION_<wbr/>POINTERS</code> pointer is the first parameter, so it came in the <code>rcx</code> register. Let’s see if we can see what the function did with that register:</p>
+<pre>ntdll!RtlUnhandledExceptionFilter2:
+    mov     qword ptr [rsp+10h],rdx
+    mov     qword ptr [rsp+8],rcx &lt; Went onto the stack
+    push    rbx
+    push    rsi
+    push    rdi
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp,40h
+    mov     r13,rdx
+    mov     r14,rcx &lt; Went into the r14 register
+    mov     rax,qword ptr gs:[60h]
+    mov     r15,qword ptr [rax+20h]
+    xor     esi,esi
+    test    r15,r15
+    je      ntdll!RtlUnhandledExceptionFilter2+0x39
+</pre>
+<p>The value in the <code>rcx</code> register got saved in two places: It went into the home space on the stack, and it was also stashed into the <code>r14</code> register.</p>
+<p>Let’s see what’s there:</p>
+<pre>0:000&gt; dps @rsp+40+38+8 L1
+000000a5`a7c8e470  000000a5`a7c8df40 
+0:000&gt; dps @r14 L2
+000000a5`a7c8df40  000000a5`a7c8ebb0
+000000a5`a7c8df48  000000a5`a7c8e6c0
+</pre>
+<p>Reading the disassembly, we see that the stack pointer is adjusted by seven pushes and an explicit <code>sub rsp, 40h</code>, so we need to add <code>38h + 40h</code> to the current stack pointer to get back to what the stack pointer was at the start of the function, and then we can add the offset of 8 to that result. The value stored there matches what’s in <code>r14</code>, which is a nice little confirmation that things are not too far gone.</p>
+<p>Dumping the two pointers at <code>r14</code> gives us the exception record and the context record. Let’s switch to the context in the context record:</p>
+<pre>0:000&gt; .cxr 000000a5`a7c8e6c0
+rax=00007fff3a1c4480 rbx=00007fff3a1c4480 rcx=00000285a6c5e6e0
+rdx=000000a5a7c8f570 rsi=000000a5a7c8f500 rdi=00007fff40e6c6a8
+rip=00007fff40c2f2ca rsp=000000a5a7c8f480 rbp=000000a5a7c8f530
+ r8=000000a5a7c8f538  r9=0000000000000003 r10=baac1f10365eb170
+r11=4201100001040004 r12=0000000000000008 r13=00000285a6c4b708
+r14=0000000000000001 r15=deaddeaddeaddead
+iopl=0         nv up ei pl zr na po nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00010246
+combase!CStdMarshal::DisconnectSrvIPIDs::__l35::&lt;lambda_03ceb3c306c371a8ea5da27fc98e7b7c&gt;::operator()+0x11:
+00007fff`40c2f2ca 488b4010        mov     rax,qword ptr [rax+10h] ds:00007fff`3a1c4490=????????????????
+0:000&gt;
+</pre>
+<p>We are calling the Release method on a COM object because the proxy is disconnecting from it. (Since this a 64-bit system, the offsets are <code>08h</code> for <code>AddRef</code> and <code>10h</code> for <code>Release</code>.)</p>
+<p>We can look at the vtable address to see what this object is.</p>
+<pre>0:000&gt; ln @rax
+(00007ff8`1a464480)   &lt;Unloaded_windows.serviceframework.widget&gt;+0x14480
+</pre>
+<p>As expected, this vtable came from an unloaded module. The system keeps track of the most recently unloaded modules, but the buffer for the file name is fixed in size (to avoid memory allocations). If the name of the DLL were reasonably short, it would all fit into the buffer, and you could use <code>!reload /unl name.dll</code> to tell the debugger to pretend that <code>name.dll</code> were still in memory so you could resolve addresses within it.</p>
+<p>Unfortunately, <code>windows.<wbr/>service­framework.<wbr/>widget­service.dll</code> is too long to fit in the buffer, so its name gets truncated, and the debugger can’t recover it.</p>
+<p>We’ll have to resolve the symbol manually¹ using <a href="https://devblogs.microsoft.com/oldnewthing/20131115-00/?p=2653" title="Restoring symbols to a stack trace originally generated without symbols"> a technique I discussed some time ago</a>: Loading the module as if were a dump file and fixing up the addresses.</p>
+<pre>C:\&gt; ntsd -z windows.serviceframework.widgetservice.dll
+...
+ModLoad: 00000001`80000000 00000001`8001f000 windows.serviceframework.widgetservice.dll
+windows_serviceframework_widgetservice!_DllMainCRTStartup:
+00000001`80010c70 48895c2408      mov     qword ptr [rsp+8],rbx ss:00000000`00000008=????????????????
+0:000&gt; ln 00000001`80000000+14480
+(00000001`80014480)   windows_serviceframework_widgetservice!winrt::impl::produce
+                         &lt;winrt::Windows::ServiceFramework::WidgetService::implementation::ColorChangedEventArgs,
+                          winrt::Windows::ServiceFramework::WidgetService::IColorChangedEventArgs&gt;::`vftable'
+</pre>
+<p>Aha, so this object is a <code>Color­Changed­Event­Args</code> object, and we see that it is implemented in C++/WinRT.</p>
+<p>Services that are also COM servers <a href="https://devblogs.microsoft.com/oldnewthing/20191126-00/?p=103140" title="Yo dawg, I hear you like COM apartments, so I put a COM apartment in your COM apartment so you can COM apartment while you COM apartment"> use COM custom contexts so they can disconnect all their objects prior to being unloaded</a>. For this trick to work, all the interfaces they expose to clients must be marshalable, and the objects themselves must not be free-threaded. If the objects are free-threaded (also known as <i>agile</i>, short for apartment-agile), then the request for a marshaler would produce the free-threaded marshaler, which says, “Don’t worry about marshaling me. You can just take me from any context to any other context without having to do anything special.” But this is the opposite of what you want with an object provided by a service DLL, since you want those objects to stay inside the custom context so you can disconnect them at unload.</p>
+<p>C++/WinRT objects are free-threaded by default. This particular component was careful to mark its main object with the <code>non_<wbr/>agile</code> marker type, thereby preventing it from being free-threaded. However, it forgot to mark some of its helper classes as <code>non_<wbr/>agile</code>, and it is one of those helper classes that escaped the custom COM context and therefore escaped being run down when all objects in the context were disconnected.</p>
+<p>The fix was to make another pass through the objects offered by the DLL and make sure all of the ones used by the service are marked as non-agile. The unit tests for these helper classes were updated to verify that they are not agile, with the hope that if somebody introduces a new helper class, they will copy an existing unit test to use as a starting point and therefore will copy the agility test.</p>
+<p>¹ In retrospect, I probably could have done</p>
+<pre>.reload windows.serviceframework.widgetservice.dll=0x00007ff8`1a450000
+</pre>
+<p>to tell the debugger to pretend that a DLL was loaded in memory at a particular address.</p>
+
+
+</body>

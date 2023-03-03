@@ -1,0 +1,135 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The AArch64 processor (aka arm64), part 13: Atomic access</h1>  <!-- .entry-meta -->
+
+<p>Atomic operations are performed by the traditional RISC-style <i>load locked</i>/<i>store conditional</i> pattern.</p>
+<pre>    ; load exclusive register byte
+    ldxrb   Rd/zr, [Xn/sp]
+
+    ; load exclusive register halfword
+    ldxrh   Rd/zr, [Xn/sp]
+
+    ; load exclusive register
+    ldxr    Rd/zr, [Xn/sp]
+
+    ; load exclusive register pair
+    ldxp    Rd1/zr, Rd2/zr, [Xn/sp]
+</pre>
+<p>These instructions atomically load a byte, halfword, word, doubleword, or pair of registers from memory. The instruction also tells the processor to monitor the memory address to see if any other processor writes to that same address, or addresses in the same “exclusive reservation granule”. (Implementations are allowed to have granules as large as 2KB.)</p>
+<p>Note that the atomicity guarantee is only partial if you use <code>LDXP</code> to load a pair of 64-bit registers.¹ The entire 128-bit value is not loaded atomically; instead, each 64-bit portion is loaded atomically separately. You can still get tearing between the two registers.</p>
+<p>The only supported addressing mode is register indirect. No offsets or indexes allowed.</p>
+<p>After an exclusive load, you can attempt to store a value back to the same address:</p>
+<pre>    ; store exclusive register byte
+    stxrb   Rs/zr, Rt/zr, [Xn/sp]
+
+    ; store exclusive register halfword
+    stxrh   Rs/zr, Rt/zr, [Xn/sp]
+
+    ; store exclusive register
+    stxr    Rs/zr, Rt/zr, [Xn/sp]
+
+    ; store exclusive register pair
+    stxp    Rs/zr, Rt1/zr, Rt2/zr, [Xn/sp]
+</pre>
+<p>If the reservation obtained by the previous <code>LDX</code> instruction is still valid, then the value in <var>Rt/zr</var> is stored to memory, and <var>Rs</var> is set to 0. Otherwise, no store is performed, and <var>Rs</var> is set to 1.</p>
+<p>Whether the store succeeds or fails, the <code>STX</code> instructions clears the reservation.</p>
+<p>For these exclusive load and store instructions, the address must be a multiple of the number of bytes being loaded. If not, then the behavior is undefined: There is no requirement that an exception be raised.</p>
+<p>So don’t do that.</p>
+<p>It is also required that the <code>STX</code> match the <code>LDX</code> both in address and operand sizes. You cannot perform an <code>LDX</code> for one address and follow up with a <code>STX</code> to a different address. You also cannot perform a <code>LDXR</code> and follow up with a <code>STXRH</code> to the same address. You aren’t even allowed to do a <code>LDXP</code> with two 32-bit registers and follow up with a <code>STXR</code> with a single 64-bit register. Again, the behavior is undefined if you break this rule.</p>
+<p>The last instruction allows you to hit the reset button:</p>
+<pre>    ; clear exclusive
+    clrex
+</pre>
+<p>The <code>CLREX</code> discards any active reservation, and forces any subsequent <code>STX</code> to fail. This typically happens as part of interrupt handling or context switching to ensure that undefined behavior doesn’t occur if the thread was interrupted while it was in the middle of a <code>LDX</code>/<code>STX</code> sequence.</p>
+<p>These instructions are usually coupled with memory barriers, which we’ll look at soon, but the next entry will be a little diversion.</p>
+<p><b>Bonus chatter</b>: There is an optional instruction set extension (mandatory starting in version 8.4) which includes a large set of atomic read-modify-write operations.</p>
+<pre>    ; atomic read-modify-write operation
+    ; Rt = previous value of [Xr]
+    ; [Xr] = Rt op Rs
+    ldadd   Rs/zr, Rt/zr, [Xr/sp]       ; add
+    ldclr   Rs/zr, Rt/zr, [Xr/sp]       ; and not
+    ldeor   Rs/zr, Rt/zr, [Xr/sp]       ; exclusive or
+    ldset   Rs/zr, Rt/zr, [Xr/sp]       ; or
+    ldsmax  Rs/zr, Rt/zr, [Xr/sp]       ; signed maximum
+    ldsmin  Rs/zr, Rt/zr, [Xr/sp]       ; signed minimum
+    ldumax  Rs/zr, Rt/zr, [Xr/sp]       ; unsigned maximum
+    ldumin  Rs/zr, Rt/zr, [Xr/sp]       ; unsigned minimum
+</pre>
+<p>By default, there is no memory ordering. You can add the suffix <code>a</code> to load with acquire, the suffix <code>l</code> to store with release, or the suffix <code>al</code> to get both. Note, however, that the acquire suffix is ignored if the destination register <var>Rt</var> is <var>zr</var>.</p>
+<p>Furthermore, you can suffix <code>b</code> for byte memory access or <code>h</code> for halfword memory access.</p>
+<p>The overall syntax is therefore</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Prefix</th>
+<th>Op</th>
+<th>Acquire</th>
+<th>Release</th>
+<th>Size</th>
+</tr>
+<tr>
+<td><code>ld</code></td>
+<td><code>add</code><br/>
+<code>clr</code><br/>
+<code>eor</code><br/>
+<code>set</code><br/>
+<code>smax</code><br/>
+<code>smin</code><br/>
+<code>umax</code><br/>
+<code>umin</code></td>
+<td>(none)<br/>
+<code>a</code></td>
+<td>(none)<br/>
+<code>l</code></td>
+<td>(none)<br/>
+<code>b</code><br/>
+<code>h</code></td>
+</tr>
+</tbody>
+</table>
+<p>For example, the instruction <code>ldclrlh</code> means</p>
+<ul>
+<li><code>ld</code>: Atomic load/modify/store</li>
+<li><code>clr</code>: Clear bits</li>
+<li>(blank): No acquire on load</li>
+<li><code>l</code>: Release on store</li>
+<li><code>h</code>: Halfword size.</li>
+</ul>
+<p>If you don’t care about the previous value, then you can use a pseudo-instruction that uses <var>zr</var> as the destination.</p>
+<pre>    ; atomic read-modify-write operation
+    ; [Xr] = [Xr] op Rs
+    stadd   Rs/zr, [Xr/sp]       ; add
+    stclr   Rs/zr, [Xr/sp]       ; and not
+    steor   Rs/zr, [Xr/sp]       ; exclusive or
+    stset   Rs/zr, [Xr/sp]       ; or
+    stsmax  Rs/zr, [Xr/sp]       ; signed maximum
+    stsmin  Rs/zr, [Xr/sp]       ; signed minimum
+    stumax  Rs/zr, [Xr/sp]       ; unsigned maximum
+    stumin  Rs/zr, [Xr/sp]       ; unsigned minimum
+</pre>
+<p>You can add the <code>l</code> suffix for store with release, and you can add <code>b</code> and <code>h</code> suffixes to operate on smaller sizes. You cannot request acquire on load for these instructions because the acquire is ignored due to the destination being <var>zr</var>.</p>
+<p>The optional instruction set extension also provides for atomic exchanges:</p>
+<pre>    ; swap
+    ; write Rs and return previous value in Rt (atomic)
+    swp     Rs/zr, Rt/zr, [Xn/sp]       ; word or doubleword
+    swpb    Ws/zr, Wt/zr, [Xn/sp]       ; byte
+    swph    Ws/zr, Wt/zr, [Xn/sp]       ; halfword
+
+    ; compare and swap
+    ; if value is Rs, then write Rt; Rs receives previous value
+    ; (atomic)
+    cas     Rs/zr, Rt/zr, [Xn/sp]       ; word or doubleword
+    casb    Ws/zr, Wt/zr, [Xn/sp]       ; byte
+    cash    Ws/zr, Wt/zr, [Xn/sp]       ; halfword
+    casp    Rs/zr, Rt/zr, [Xn/sp]       ; register pair
+                                        ; Rs,R(s+1) and Rt,R(t+1)
+
+    ; also a, l, and al versions for acquire/release semantics
+</pre>
+<p>The memory order modifiers go between the <code>swp</code>/<code>cas</code> prefix and the size suffix, <i>except</i> that they go after the <code>p</code>. So you have <code>casab</code> (compare and swap with acquire, byte size) but <code>caspa</code> (compare and swap pair with acquire).</p>
+<p>As with the <code>ld</code> instructions, requests to aquire on load are ignored if the destination register is <var>zr</var>.</p>
+<p>The memory operand must be writable, even if the comparison fails. If no value is stored, then any requested release semantics are ignored.</p>
+<p><b>Bonus reading</b>: <a href="https://cpufun.substack.com/p/atomics-in-aarch64"> Atomics in AArch64</a>.</p>
+<p>¹ The load is required to be fully atomic starting with version 8.4 of the AArch64. On older processors, Windows uses <code>CASP</code> instead of <code>LDXP</code>/<code>STXP</code>.</p>
+
+
+</body>

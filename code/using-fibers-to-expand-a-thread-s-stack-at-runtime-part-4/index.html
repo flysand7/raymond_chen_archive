@@ -1,0 +1,77 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using fibers to expand a thread’s stack at runtime, part 4</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/using-fibers-to-expand-a-thread-s-stack-at-runtime-part-3"> Last time</a>, we transported some ephemeral error state from the temporary fiber to the originating thread. A common way of reporting an error in C++ is to use an exception, so let’s use that.</p>
+<pre><span style="color: blue;">[[noreturn]] void ThrowWin32Error(DWORD error);</span>
+
+template&lt;typename RetType&gt;
+RetType RunOnFiberWorker(
+    RetType (*callback)(void*),
+    void* parameter)
+    <span style="color: red;">// <span style="text-decoration: line-through;">RetType failureValue</span></span>
+{
+  <span style="color: red;">// <span style="text-decoration: line-through;">static_assert(std::is_trivially_copyable_v&lt;RetType&gt;);</span>
+  // <span style="text-decoration: line-through;">static_assert(std::is_trivially_destructible_v&lt;RetType&gt;);</span></span>
+
+  struct State
+  {
+    RetType (*callback)(void*);
+    void* parameter;
+    <span style="color: blue;">std::variant&lt;std::exception_ptr, RetType&gt;
+      capturedValue;</span>
+    HANDLE originalFiber;
+
+    void FiberProc()
+    {
+      <span style="color: blue;">try {
+        capturedValue.template emplace&lt;1&gt;
+          (callback(parameter));
+      } catch (...) {
+        capturedValue.template emplace&lt;0&gt;
+          (std::current_exception());
+      }</span>
+      SwitchToFiber(originalFiber);
+    }
+
+  } state{ callback, parameter };
+  <span style="color: red;">// <span style="text-decoration: line-through;">std::move(failureValue), errno</span></span>
+
+  DWORD error = RunOnFiberTypeNeutral(
+    [](void* parameter)
+    {
+      reinterpret_cast&lt;State*&gt;(parameter)-&gt;FiberProc();
+    }, &amp;state, &amp;state.originalFiber);
+  if (error != ERROR_SUCCESS) {
+    <span style="color: blue;">ThrowWin32Error(error);</span>
+  }
+
+  <span style="color: blue;">auto e = std::get_if&lt;0&gt;(&amp;state.capturedValue);
+  if (e) std::rethrow_exception(*e);
+  return std::get&lt;1&gt;(std::move(state.capturedValue));</span>
+}
+
+template&lt;typename Lambda&gt;
+<span style="color: blue;">auto</span> RunOnFiber(Lambda&amp;&amp; lambda)
+{
+  using Type = std::remove_reference_t&lt;Lambda&gt;;
+  using RetType = decltype(lambda());
+  return RunOnFiberWorker&lt;RetType&gt;(
+    [](void* parameter)
+    {
+      return (*reinterpret_cast&lt;Type*&gt;(parameter))();
+    }, &amp;lambda);
+}
+</pre>
+<p>In this case, we capture the result of the callback with a <code>std::variant</code> of an <code>exception_ptr</code> or the formal return value. The <code>exception_ptr</code> is used if the callback threw an exception.</p>
+<p>The <code>exception_ptr</code> is the first type in the variant because the <code>RetType</code> may not be default-constructible, and even if it has a default constructor, that default constructor may be heavy with unwanted side-effects. Putting the <code>exception_ptr</code> as the first type in the variant means that the default constructor for the variant creates an <code>exception_ptr</code>, which is default-constructible.</p>
+<p>We then ask <code>Run­On­Fiber­Type­Neutral</code> to do the fiber magic. If it failed, then we use some program-specific <code>Throw­Win32­Error()</code> function to transform the Win32 error into some kind of an exception.</p>
+<p>Otherwise, we know that the fiber ran to completion. In the fiber procedure, we call the callback and we save the result in the <code>capturedValue</code> variable as the <code>RetType</code>. If the callback threw an exception, we catch the exception and stow it in the <code>capturedValue</code> as an <code>exception_ptr</code>.</p>
+<p>After returning to the original thread, we keep inside the variant to see whether it holds an exception or a value. If it holds an exception, we rethrow it. Otherwise, we return the value.</p>
+<p>We must use the explicit index versions of <code>variant::</code><code>emplace</code>, <code>get</code>, and <code>get_if</code> rather than the more readable type-based versions because the type-based version won’t work if the <code>RetType</code> is <code>exception_ptr</code>!</p>
+<p>Observe that the <code>RetType</code> is always moved. There is no requirement that it be default-constructible or copyable.</p>
+<p>Note that the above code does not work if the lambda returns a reference. I’ll leave that as an exercise.</p>
+<p>Even if you don’t plan on working with fibers, this series showed how to transport state between threads, which is still useful.</p>
+<p>But wait, our discussion of using fibers to expand a stack dynamically isn’t over. We’ll pick up additional topics next time.</p>
+
+
+</body>

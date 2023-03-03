@@ -1,0 +1,171 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Reading the output of a command into a batch file variable</h1>  <!-- .entry-meta -->
+
+<p>
+It’s Day Two of Batch File Week.
+Don’t worry, it’ll be over in a few days.
+</p>
+<p>
+There is no obvious way to read the output of a command
+into a batch file variable.
+In unix-style shells, this is done via backquoting.
+</p>
+<pre>
+x=`somecommand`
+</pre>
+<p>
+The Windows command processor does not have direct backquoting,
+but you can fake it by abusing the <code>FOR</code> command.
+Here’s the evolution:
+</p>
+<p>
+The <code>/F</code> flag to the <code>FOR</code> command says
+that it should open the file you pass in parentheses and set
+the loop variable to the contents of each line.
+</p>
+<pre>
+for /f %%i in (words.txt) do echo [%%i]
+</pre>
+<p>
+The loop variable in the <code>FOR</code> command takes one
+percent sign if you are executing it directly from the command prompt,
+but two percent signs if you are executing it from a batch file.
+I’m going to assume you’re writing a batch file, so if you want
+to practice from the command line, remember to collapse the double
+percent signs to singles.
+</p>
+<p>
+I’m cheating here because I know that <code>words.txt</code>
+contains one word per line.
+By default,
+the <code>FOR</code> command sets the loop variable to the first
+word of each line.
+If you want to capture the entire line, you need to change the delimiter.
+</p>
+<pre>
+for /f "delims=" %%i in (names.txt) do echo [%%i]
+</pre>
+<p>
+There are other options for capturing say the first and third word
+or whatever.
+See the <code>FOR /?</code> online help for details.
+</p>
+<p>
+Now, parsing files is not what we want, but it’s closer.
+You can put the file name in single quotes
+to say “Instead of opening this file and reading the contents,
+I want you to run this <i>command</i> and read the contents.”
+For example, suppose you have a program called
+<code>printappdir</code> which outputs a directory,
+and you want a batch file that changes to that directory.
+</p>
+<pre>
+for /f "delims=" %%i in ('printappdir') do cd "%%i"
+</pre>
+<p>
+We ask the <code>FOR</code> command to run the <code>printappdir</code>
+program and execute the command <code>cd "%%i"</code> for each
+line of output.
+Since the program has only one line of output,
+the loop executes only once, and the result is that the directory
+is changed to the path that the
+<code>printappdir</code> program prints.
+</p>
+<p>
+If you want to capture the output into a variable,
+just update the action:
+</p>
+<p><pre>
+for /f %%i in ('printappdir') do set RESULT=%%i
+echo The directory is %RESULT%
+</pre>
+<p>
+If the command has multiple lines of output, then this will
+end up saving only the last line, since previous lines get
+overwritten by subsequent iterations.
+</p>
+<p>
+But what if the line you want to save isn’t the last line?
+Or what if you don’t want the entire line?
+</p>
+<p>
+If the command has multiple lines of output and you’re interested
+only in a particular one,
+you can filter it in the <code>FOR</code> command itself…
+</p>
+<pre>
+for /f "tokens=1-2,14" %%i in ('ipconfig') do <a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/08/06/8835317.aspx">^</a>
+    if "%%i %%j"=="IPv4 Address." set IPADDR=%%k
+</pre>
+<p>
+The above command asked to execute the
+<code>ipconfig</code> command and extract the first,
+second, and fourteenth words into loop variable
+starting with <code>%i</code>.
+In other words,
+<code>%i</code> gets the first word,
+<code>%j</code> gets the second word,
+and
+<code>%k</code> gets the fourteenth word.
+(Exercise: What if you want to extract more than 26 words?)
+</p>
+<p>
+The loop then checks each line to see if it begins
+with “<tt>IPv4 Address.</tt>“,
+and if so, it saves the fourteenth word (the IP address itself)
+into the <code>IPADDR</code> variable.
+</p>
+<p>
+How did I know that the IP address was the fourteenth word?
+I counted!
+</p>
+<pre>
+   IPv4 Address. . . . . . . . . . . : 192.168.1.1
+   ---- -------- - - - - - - - - - - - -----------
+     1      2    3 4 5 6 7 8 9  11  13      14
+                              10  12
+</pre>
+<p>
+That’s also why my test includes the period after
+<tt>Address</tt>:
+The first dot comes right after the word <tt>Address</tt>
+without an intervening space, so it’s considered part of the
+second “word”.
+</p>
+<p>
+Somebody thought having the eye-catching dots would look pretty,
+but didn’t think about how it makes parsing a real pain in the butt.
+(Note also that the above script works only for US-English systems,
+since the phrase <tt>IPv4 Address</tt> will change based on your
+current language.)
+</p>
+<p>
+Instead of doing the searching yourself,
+you can have another program do the filtering,
+which is important if the parsing you want is
+beyond the command prompt’s abilities.
+</p>
+<pre>
+for /f "tokens=14" %%i in ('ipconfig ^| findstr /C:"IPv4 Address"') do ^
+  set IPADDR=%%i
+</pre>
+<p>
+This alternate version makes the findstr program do the
+heavy lifting, and then saves the fourteenth word.
+(But this version will get fooled by the line
+<tt>Autoconfiguration IPv4 Address</tt>.)
+</p>
+<p>
+<b>Yes I know</b>
+that you can do this in PowerShell
+</p>
+<pre>
+foreach ($i in Get-WmiObject Win32_NetworkAdapterConfiguration) {
+  if ($i.IPaddress) { $i.IPaddress[0] }
+}
+</pre>
+<p>
+You’re kind of missing the point of Batch File Week.</p>
+
+
+</p></body>

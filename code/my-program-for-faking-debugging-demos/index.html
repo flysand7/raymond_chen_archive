@@ -1,0 +1,411 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">My program for faking debugging demos</h1>  <!-- .entry-meta -->
+
+<p>When I present a debugging session at TechReady, there are a lot of things that can go wrong. A network hiccup might cause my debugger session to hang trying to load symbols over the network. An errant typo may cause the debugger to run off into the weeds. The machine I’m given to present on may be running an old version of Windows that the debugger doesn’t support. </p>
+<p>For my last TechReady presentation, I decided to play it safe and use a canned demo. The session still acted like a debugger, but I taught it canned responses to the commands I intended to execute. Today’s Little Program is the program I wrote to do that. I intentionally limited myself to features available in C# 2.0, just to play it safe(r). </p>
+<pre>
+using System;
+using System.IO;
+using System.Threading;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
+
+static class Extensions
+{
+ public static TValue ItemOrDefault&lt;TKey, TValue&gt;(
+   this Dictionary&lt;TKey, TValue&gt; dict,
+   TKey key,
+   TValue def = default(TValue))
+ {
+  TValue value;
+  return dict.TryGetValue(key, out value) ? value : def;
+ }
+}
+</pre>
+<p>The <code>Item­Or­Default</code> extension method looks up a value in a dictionary and returns the associated value if it exists, or a default value if it doesn’t. </p>
+<p>The rest of the work happens in the debugger emulator. </p>
+<p>When you type a command, the emulator looks up the command in the master table and spits back the canned response. Inside the canned response you can embed commands. For example, the <code>@sleep nnn</code> command pauses playback for the specified number of milliseconds. There is also an <code>@if</code> command that lets me change the response based on the state of the virtual debugger. </p>
+<p>Let’s dive in. </p>
+<pre>
+class Emulator
+{
+ class CommandDescription
+ {
+  [Flags]
+  public enum CommandFlags
+  {
+   None = 0,
+   Meta = 1,
+  }
+</pre>
+<p>Most of the time, everything inside a false conditional is skipped. The exceptions are the flow control primitives like <code>@else</code> and <code>@endif</code>, because if they got skipped over, you wouldn’t be able to regain control! I called those commands <i>Meta</i> commands since they are commands which control other commands. </p>
+<pre>
+  public CommandDescription(Action&lt;string&gt; action,
+                            CommandFlags flags = CommandFlags.None)
+  {
+   this.action = action;
+   this.flags = flags;
+  }
+
+  public Action&lt;string&gt; action;
+  public CommandFlags flags;
+ }
+ private Dictionary&lt;string, CommandDescription&gt; _commands;
+</pre>
+<p>The <code>_commands</code> dictionary maps <code>@</code>-commands to the corresponding handlers. The handler itself is passed its arguments as a string (for example, the <code>@sleep</code> handler receives <code>nnn</code> as its argument parameter). The flags specify whether the command should be skipped when encountered in a false conditional. </p>
+<pre>
+ void cmdSleep(string arg)
+ {
+  int milliseconds = int.Parse(arg);
+  Thread.Sleep(milliseconds);
+ }
+</pre>
+<p>The <code>@sleep</code> command simply sleeps the emulator for a little while. I use this to simulate the debugger pausing to do some thinking. No big deal. </p>
+<pre>
+ void cmdLet(string arg)
+ {
+  var args = arg.Split(new char[] { '=' }, 2);
+  if (args.Length == 2) 
+  {
+   _vars[args[0]] = args[1];
+  }
+  else
+  {
+   Echo("Internal debugger error 1");
+  }
+ }
+ private Dictionary&lt;string, string&gt; _vars =
+          new Dictionary&lt;string, string&gt;();
+</pre>
+<p>The <code>@let x=y</code> command creates a variable named <code>x</code> and sets its value to <code>y</code>, overwriting any previous one if it existed. The value of the variable is just a string. There is no math or anything. We implement it by splitting on the equals-sign, treating the left-hand side as the variable name and the right-hand side as the value. </p>
+<pre>
+ private bool _taken = true;
+
+ void cmdIf(string arg)
+ {
+  var args = arg.Split(new char[] { '=' }, 2);
+  if (args.Length == 2)
+  {
+   _taken = _vars.ItemOrDefault(args[0], string.Empty) == args[1];
+  }
+  else
+  {
+   Echo("Internal debugger error 2");
+  }
+ }
+
+ void cmdElse(string arg)
+ {
+  _taken = !_taken;
+ }
+
+ void cmdEndif(string arg)
+ {
+  _taken = true;
+ }
+</pre>
+<p>The <code>@if x=y</code> command checks whether the variable <code>x</code> has the value <code>y</code>. A variable that has not been defined is treated as if its value is the empty string. </p>
+<p>We set the <code>_taken</code> member variable based on whether the conditional was satisfied or not. Note that <code>@if</code> does not nest. I could add supporting for nesting, but I’ve never needed it. If I ever need it, I’ll add it. (There’s also no error checking.) </p>
+<pre>
+ Emulator()
+ {
+  _commands = new Dictionary&lt;string, CommandDescription&gt; {
+   { "sleep", new CommandDescription(cmdSleep) },
+   { "let", new CommandDescription(cmdLet) },
+   { "if", new CommandDescription(cmdIf, CommandDescription.CommandFlags.Meta) },
+   { "else", new CommandDescription(cmdElse, CommandDescription.CommandFlags.Meta) },
+   { "endif", new CommandDescription(cmdEndif, CommandDescription.CommandFlags.Meta) },
+  };
+ }
+</pre>
+<p>And those are the commands we support in our debugger simulator. Not much, really. </p>
+<pre>
+ private bool _interrupted = false;
+
+ void Echo(string s)
+ {
+  if (!_interrupted)
+  {
+   Thread.Sleep(1);
+   Console.WriteLine(s);
+  }
+ }
+</pre>
+<p>Generated output is produced by the <code>Echo</code> method. If the user hasn’t hit <kbd>Ctrl</kbd>+<kbd>C</kbd> to sto the output, the requested output is printed to the screen, with a brief delay to make the output speed look more realistic. </p>
+<pre>
+ void ProcessResponseFile(string file)
+ {
+  using (var streamCurrent = new StreamReader(file))
+  {
+   string s;
+   while ((s = streamCurrent.ReadLine()) != null)
+   {
+    if (s.Length &gt; 0 &amp;&amp; s[0] == '@')
+    {
+     var args = s.Substring(1).Split(new char[] { ' ' }, 2,
+                        StringSplitOptions.RemoveEmptyEntries);
+     var desc = _commands.ItemOrDefault(args[0]);
+     if (desc != null)
+     {
+      if ((desc.flags &amp; CommandDescription.CommandFlags.Meta) != 0 ||
+       _taken)
+      {
+       desc.action(args.Length &gt; 1 ? args[1] : string.Empty);
+      }
+     }
+     else
+     {
+      Echo("Internal debugger error 3");
+     }
+    }
+    else
+    {
+     if (_taken)
+     {
+      Echo(s);
+     }
+    }
+   }
+  }
+ }
+</pre>
+<p>The <code>Process­Response­File</code> method reads the canned response and executes it. If the line begins with an <code>@</code>, we take the first word, look it up in the <code>_commands</code>, and execute it if we are in a taken branch, or if it is a meta-command. If it is not command, then we simply echo it if we are in a taken branch. </p>
+<p>Finally, the program entry point loads up the rules and drives execution based on user commands. </p>
+<pre>
+ Dictionary&lt;string, string&gt; _rules =
+        new Dictionary&lt;string, string&gt;();
+ List&lt;Tuple&lt;string, string&gt;&gt; _rewrite =
+        new List&lt;Tuple&lt;string, string&gt;&gt;();
+</pre>
+<p>The <code>_rules</code> dictionary maps strings typed by the user into response files. We’ll talk about the <code>_rewrite</code> dictionary a little later. </p>
+<pre>
+ void Run(string[] args)
+ {
+  Console.CancelKeyPress += delegate(object sender,
+                            ConsoleCancelEventArgs e)
+  {
+   e.Cancel = true;
+   this._interrupted = true;
+  };
+</pre>
+<p>We hook up a <kbd>Ctrl</kbd>+<kbd>C</kbd> handler that sets the <code>_interrupted</code> flag. This causes output to be suppressed, so that we can get back to the command loop faster. </p>
+<p><pre>
+  using (var rulesFile = new StreamReader(args[0]))
+  {
+   string s;
+   while ((s = rulesFile.ReadLine()) != null)
+   {
+    if (s.Length &gt; 0 &amp;&amp; s[0] != ';')
+    {
+     var index = s.LastIndexOf('=');
+     if (index &gt;= 0)
+     {
+      var left = s.Substring(0, index);
+      var right = s.Substring(index + 1);
+      if (left.StartsWith("@rewrite "))
+      {
+       _rewrite.Add(new Tuple&lt;string, string&gt;
+                      (left.Substring(9), right));
+      }
+      else
+      {
+       _rules.Add(left, right);
+      }
+     }
+    }
+   }
+  }
+</pre>
+<p>The command line parameter is the name of the rules file. The rules file consists of lines of the form <code>x=y</code> where <code>x</code> is a command string and <code>y</code> is the name of the canned response file to use when the user types <code>x</code>. For example, </p>
+<pre>
+!locks=locks.txt
+!locks -v=locksv.txt
+</pre>
+<p>says that if I type <code>!locks</code>, it will print the contents of the <code>locks.txt</code> file (executing any possible <code>@</code>-commands), whereas if I type <code>!locks -v</code>, it will use <code>locksv.txt</code>. </p>
+<p>If the rules file has a line of the form </p>
+<pre>
+@rewrite x=y
+</pre>
+<p>then any command that starts with <code>x</code> will be treated as if it started with <code>y</code>. In my case, I had a rewrite rule </p>
+<pre>
+@rewrite !ntsdexts.locks=!locks
+</pre>
+<p>so that all the <code>!locks</code> commands also work with <code>!ntsdexts.locks</code>. From a minimalist point of view, the <code>@rewrite</code> rule wasn’t necessary, because I could have just repeated every single <code>!locks</code> command with a matching <code>!ntsdexts.locks</code> command, but it’s much less error-prone. </p>
+<p>Blank lines and lines beginning with semicolons are ignored. </p>
+<pre>
+  var startup = _rules.ItemOrDefault("@startup");
+  if (startup != null)
+  {
+   ProcessResponseFile(startup);
+  }
+</pre>
+<p>If there is a rule of the form <code>@startup=xyz</code>, then we will run the <code>xyz</code> response file at startup. This lets me print the debugger banner and set variables to their initial values. </p>
+<pre>
+  var prompt = _rules.ItemOrDefault("@prompt", string.Empty);
+</pre>
+<p>Oh, and the rule <code>@prompt=xyz</code> sets the prompt to <code>xyz</code>. I don’t have any commands to change the prompt dynamically since I never needed it, but if I did, I would probably switch over to making <code>prompt</code> a special variable settable via <code>@let</code>. </p>
+<pre>
+  StreamReader input = null;
+  if (args.Length &gt; 1)
+  {
+   input = new StreamReader(args[1]);
+  }
+</pre>
+<p>For testing purposes, I can pass a second file name on the command line which acts as canned input for the emulator. This lets me feed it canned input and watch it generate canned output. It’s like letting two chatbots have a conversion. </p>
+<pre>
+  while (true)
+  {
+   _interrupted = false;
+   Console.Write(prompt);
+   string s;
+   if (input == null)
+   {
+    s = Console.ReadLine();
+   }
+   else
+   {
+    s = input.ReadLine();
+    if (s != null)
+    {
+     Console.Write(s);
+     if (s.StartsWith("$$"))
+     {
+      Console.WriteLine();
+     }
+     else
+     {
+      // let user see the next step
+      if (Console.ReadLine() == "q")
+      {
+       break;
+      }
+     }
+    }
+   }
+   if (s == null)
+   {
+    break;
+   }
+</pre>
+<p>Here is the main loop. We reset the interrupt flag because we successfully returned to the main loop. (The interrupt, if requested, did its job.) We display the prompt and collect a line (either from the canned input the actual console). If the line came from the canned input, we print it to the screen, and if it doesn’t begin with two dollar signs (the comment command to the debugger), we also pause for input to let the human being running the program abandon the program by typing <kbd>q</kbd>. </p>
+<pre>
+   // Apply rewrite rules
+   foreach (var tuple in _rewrite)
+   {
+    if (s.StartsWith(tuple.Item1))
+    {
+     s = tuple.Item2 + s.Substring(tuple.Item1.Length);
+    }
+   }
+</pre>
+<p>After getting the command, we apply the rewrite rules. </p>
+<pre>
+   var file = _rules.ItemOrDefault(s);
+   if (file != null)
+   {
+    ProcessResponseFile(file);
+   }
+  }
+</pre>
+<p>We look up the command in our rules list to get the response file and execute it. If we didn’t find the command in our list, we just ignore it. (If I tell a joke, people might not notice the mistake.) </p>
+<pre>
+  if (input != null)
+  {
+   input.Close();
+  }
+ }
+</pre>
+<p>And we finish with some cleanup. </p>
+<pre>
+ public static void Main(string[] args)
+ {
+  var p = new Emulator();
+  p.Run(args);
+ }
+}
+</pre>
+<p>The main function just instantiates the emulator and runs it. </p>
+<p>Here’s a sample rules file: </p>
+<pre>
+bp contoso!MyFunction=bpmyfunction.txt
+r=r.txt
+g=g.txt
+
+; Note! There is a space at the end of the next line
+@prompt=0:001&gt; 
+
+@startup=startup.txt
+</pre>
+<p>This is a simple debugger session where I break in at one location, set a breakpoint, resume execution, and watch the breakpoint get hit. </p>
+<p><b>startup.txt</b> </p>
+<pre>
+@let state=initialbreakpoint
+(6820.6dfc): Break instruction exception - code 80000003 (first chance)
+eax=7ece8000 ebx=00000000 ecx=00000000 edx=77b9dbeb esi=00000000 edi=00000000
+eip=77b2f9fc esp=0120fb2c ebp=0120fb58 iopl=0         nv up ei pl zr na pe nc
+cs=0023  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+ntdll!DbgBreakPoint:
+77b2f9fc cc              int     3
+</pre>
+<p><b>r.txt</b> </p>
+<pre>
+@if state=initialbreakpoint
+eax=7ece8000 ebx=00000000 ecx=00000000 edx=77b9dbeb esi=00000000 edi=00000000
+eip=77b2f9fc esp=0120f864 ebp=0120f890 iopl=0         nv up ei pl zr na pe nc
+cs=0023  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+ntdll!DbgBreakPoint:
+77b2f9fc cc              int     3
+@else
+eax=00f4fc84 ebx=00000000 ecx=00000000 edx=00000000 esi=af9208a3 edi=75cbb8ad
+eip=00d310f3 esp=00f4fc6c ebp=00f4fca0 iopl=0         nv up ei pl zr na pe nc
+cs=0023  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+contoso!MyFunction:
+00d310f3 55              push    ebp
+@endif
+</pre>
+<p><b>bpmyfunction.txt</b> </p>
+<pre>
+@let state=myfunctionbreakpoint
+</pre>
+<p><b>g.txt</b> </p>
+<pre>
+Breakpoint 0 hit
+eax=00f4fc84 ebx=00000000 ecx=00000000 edx=00000000 esi=af9208a3 edi=75cbb8ad
+eip=00d310f3 esp=00f4fc6c ebp=00f4fca0 iopl=0         nv up ei pl zr na pe nc
+cs=0023  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+contoso!MyFunction:
+00d310f3 55              push    ebp
+</pre>
+<p>The debug session goes like this: </p>
+<pre>
+(6820.6dfc): Break instruction exception - code 80000003 (first chance)
+eax=7ece8000 ebx=00000000 ecx=00000000 edx=77b9dbeb esi=00000000 edi=00000000
+eip=77b2f9fc esp=0120fb2c ebp=0120fb58 iopl=0         nv up ei pl zr na pe nc
+cs=0023  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+ntdll!DbgBreakPoint:
+77b2f9fc cc              int     3
+0:001&gt; bp contoso!MyFunction
+0:001&gt; r
+eax=7ece8000 ebx=00000000 ecx=00000000 edx=77b9dbeb esi=00000000 edi=00000000
+eip=77b2f9fc esp=0120f864 ebp=0120f890 iopl=0         nv up ei pl zr na pe nc
+cs=0023  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+ntdll!DbgBreakPoint:
+77b2f9fc cc              int     3
+0:001&gt; g
+Breakpoint 0 hit
+eax=00f4fc84 ebx=00000000 ecx=00000000 edx=00000000 esi=af9208a3 edi=75cbb8ad
+eip=00d310f3 esp=00f4fc6c ebp=00f4fca0 iopl=0         nv up ei pl zr na pe nc
+cs=0023  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+contoso!MyFunction:
+0:001&gt; r
+00d310f3 55              push    ebp
+eax=00f4fc84 ebx=00000000 ecx=00000000 edx=00000000 esi=af9208a3 edi=75cbb8ad
+eip=00d310f3 esp=00f4fc6c ebp=00f4fca0 iopl=0         nv up ei pl zr na pe nc
+cs=0023  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+contoso!MyFunction:
+00d310f3 55              push    ebp
+0:001&gt; q
+</pre>
+
+
+</p></body>

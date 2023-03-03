@@ -1,0 +1,115 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating double-precision integer multiplication with a quad-precision result from single-precision multiplication with a double-precision result</h1>  <!-- .entry-meta -->
+
+<p>Suppose you want to multiply two double-word values producing a quad-word result, but your processor supports only single-word multiplication with a double-word result. For concreteness, let’s say that your processor supports 32 × 32 → 64 multiplication and you want to implement 64 × 64 → 128 multiplication. (Sound like any processor you know?)</p>
+<p>Oh boy, let’s do some high school algebra. Let’s start with unsigned multiplication.</p>
+<p>Let <var>x</var> = <var>A</var> × 2³² + <var>B</var> and <var>y</var> = <var>C</var> × 2³² + <var>D</var>, where <var>A</var>, <var>B</var>, <var>C</var>, and <var>D</var> are all in the range 0 … 2³² − 1.</p>
+<table border="0" cellpadding="0" cellspacing="0" style="text-align: center;">
+<tbody>
+<tr>
+<td align="right" valign="baseline"><var>x </var>× <var>y</var> = </td>
+<td colspan="3" valign="baseline"><var>A</var><var>C</var> × 2<sup>64</sup> + (<var>A</var><var>D</var> + <var>B</var><var>C</var>) × 2<sup>32</sup> + <var>B</var><var>D</var></td>
+</tr>
+<tr>
+<td align="right" valign="baseline">= </td>
+<td valign="baseline"><var>A</var><var>C</var> × 2<sup>64</sup> + <var>B</var><var>D</var></td>
+<td valign="baseline"> + </td>
+<td valign="baseline">(<var>A</var><var>D</var> + <var>B</var><var>C</var>) × 2<sup>32</sup></td>
+</tr>
+<tr>
+<td valign="baseline"> </td>
+<td style="border-top: solid black 1px;" valign="baseline">provisional result</td>
+<td> </td>
+<td style="border-top: solid black 1px;" valign="baseline">cross-terms</td>
+</tr>
+</tbody>
+</table>
+<p>Each of the multiplications (not counting the power-of-two multiplications) is a 32 × 32 → 64 multiplication, so they are something we have as a building block. And the basic implementation is simply to perform the four multiplications and add the pieces together. But if you have SSE, you can perform two multiplies in a single instruction.</p>
+<pre>    // Prepare our source registers
+    movq xmm0, x         // xmm0 = { 0, 0, A, B } = { *, *, A, B }
+    movq xmm1, y         // xmm1 = { 0, 0, C, D } = { *, *, C, D }
+    punpckldq xmm0, xmm0 // xmm0 = { A, A, B, B } = { *, A, *, B }
+    punpckldq xmm1, xmm1 // xmm1 = { C, C, D, D } = { *, C, *, D }
+    pshufd xmm2, xmm1, _MM_SHUFFLE(2, 0, 3, 1)
+                         // xmm2 = { D, D, C, C } = { *, D, *, C }
+</pre>
+<p>The <code>PMULUDQ</code> instruction multiplies 32-bit lanes 0 and 2 of its source and destination registers, producing 64-bit results. The values in lanes 1 and 3 do not participate in the multiplication, so it doesn’t matter what we put there. It so happens that the <code>PUNPCKLDQ</code> instruction duplicates the value, but we really don’t care. I used <code>*</code> to represent a don’t-care value.</p>
+<pre>    pmuludq xmm1, xmm0 // xmm1 = { AC, BD } // provisional result
+    pmuludq xmm2, xmm0 // xmm2 = { AD, BC } // cross-terms
+</pre>
+<p>In two <code>PMULUDQ</code> instructions, we created the provisional result and the cross-terms. Now we just need to add the cross-terms to the provisional result. Unfortunately, SSE does not have a 128-bit addition (or at least SSE2 doesn’t; who knows what they’ll add in the future), so we need to do that the old-fashioned way.</p>
+<pre>    movdqa result, xmm1
+    movdqa crossterms, xmm2
+    mov    eax, crossterms[0]
+    mov    edx, crossterms[4] // edx:eax = BC
+    add    result[4], eax
+    adc    result[8], edx
+    adc    result[12], 0      // add the first cross-term
+    mov    eax, crossterms[8]
+    mov    edx, crossterms[12] // edx:eax = AD
+    add    result[4], eax
+    adc    result[8], edx
+    adc    result[12], 0      // add the second cross-term
+</pre>
+<p>There we go, a 64 × 64 → 128 multiply constructed from 32 × 32 → 64 multiplies.</p>
+<p><b>Exercise</b>: Why didn’t I use the <code>rax</code> register to perform the 64-bit addition? (This is sort of a trick question.)</p>
+<p>That calculates an unsigned multiplication, but how do we do a signed multiplication? Let’s work modulo 2<sup>128</sup> so that signed and unsigned multiplication are equivalent. This means that we need to expand <var>x</var> and <var>y</var> to 128-bit values <var>X</var> and <var>Y</var>.</p>
+<p>Let <var>s</var> = the sign bit of <var>x</var> expanded to a 64-bit value, and similarly <var>t</var> = the sign bit of <var>y</var> expanded to a 64-bit value. In other words, <var>s</var> is <code>0xFFFFFFFF`FFFFFFFF</code> if <var>x</var> &lt; 0 and zero if <var>x</var> ≥ 0.</p>
+<p>The 128-bit values being multiplied are</p>
+<table border="0" cellpadding="0" cellspacing="0">
+<tbody>
+<tr>
+<td valign="baseline"><var>X</var> = </td>
+<td valign="baseline"><var>s</var> × 2<sup>64</sup> + <var>x</var></td>
+</tr>
+<tr>
+<td valign="baseline"><var>Y</var> = </td>
+<td valign="baseline"><var>t</var> × 2<sup>64</sup> + <var>y</var></td>
+</tr>
+</tbody>
+</table>
+<p>The product is therefore</p>
+<table border="0" cellpadding="0" cellspacing="0" style="text-align: center;">
+<tbody>
+<tr>
+<td align="right" valign="baseline"><var>X </var>× <var>Y</var> = </td>
+<td valign="baseline"><var>s</var><var>t</var> × 2<sup>128</sup> </td>
+<td valign="baseline">+ </td>
+<td valign="baseline">(<var>s</var><var>y</var> + <var>t</var><var>x</var>) × 2<sup>64</sup> </td>
+<td valign="baseline"> + </td>
+<td valign="baseline"><var>x</var><var>y</var></td>
+</tr>
+<tr>
+<td> </td>
+<td style="border-top: solid black 1px;">zero</td>
+<td> </td>
+<td style="border-top: solid black 1px;">adjustment</td>
+<td> </td>
+<td nowrap="nowrap" style="border-top: solid black 1px; text-align: left;">unsigned product</td>
+</tr>
+</tbody>
+</table>
+<p>The first term is zero because it overflows the 128-bit result. That leaves the second term as the adjustment, which simplifies to “If <var>x &lt; 0</var> then subtract <var>y</var> from the high 64 bits; if <var>y &lt; 0</var> then subtract <var>x</var> from the high 64 bits.”</p>
+<pre>    if (x &lt; 0) result.m128i_u64[1] -= y;
+    if (y &lt; 0) result.m128i_u64[1] -= x;
+</pre>
+<p>If we were still playing with SSE, we could compute this as follows:</p>
+<pre>    movdqa xmm0, result   // xmm0 = { high, low }
+    movq   xmm1, x        // xmm1 = { 0, x }
+    movq   xmm2, y        // xmm2 = { 0, y }
+    pshufd xmm3, xmm1, _MM_SHUFFLE(1, 1, 3, 2) // xmm3 = { xhi, xhi, 0, 0 }
+    pshufd xmm1, xmm1, _MM_SHUFFLE(1, 0, 3, 2) // xmm1 = { x, 0 }
+    pshufd xmm4, xmm2, _MM_SHUFFLE(1, 1, 3, 2) // xmm4 = { yhi, yhi, 0, 0 }
+    pshufd xmm2, xmm2, _MM_SHUFFLE(1, 0, 3, 2) // xmm2 = { y, 0 }
+    psrad  xmm3, 31       // xmm3 = { s, s, 0, 0 } = { s, 0 }
+    psrad  xmm4, 31       // xmm4 = { t, t, 0, 0 } = { t, 0 }
+    pand   xmm3, xmm2     // xmm3 = { x &lt; 0 ? y : 0, 0 }
+    pand   xmm4, xmm1     // xmm4 = { y &lt; 0 ? x : 0, 0 }
+    psubq  xmm0, xmm3     // first adjustment
+    psubq  xmm0, xmm4     // second adjustment
+    movdqa result, xmm0   // update result
+</pre>
+<p>The code is a bit strange because SSE2 doesn’t have a full set of 64-bit integer opcodes. We would have liked to have used a <code>psraq</code> instruction to fill a 64-bit field with a sign bit. But there is no such instruction, so instead we duplicate the 64-bit sign bit into two 32-bit sign bits (one in lane 2 and one in lane 3) and then fill the lanes with that bit using <code>psrad</code>.</p>
+
+
+</body>

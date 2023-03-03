@@ -1,0 +1,240 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I pass an array of variable-sized <code>PROPSHEETPAGE</code> structures to <code>PropertySheet</code>?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we noted that <a href="/code/appending-additional-payload-to-a-propsheetpage-structure"> you can add your own custom data to the end of the <code>PROPSHEETPAGE</code></a>, and if you set the <code>dwSize</code> to include the custom data, then the system will copy that custom data into the <code>HPROPSHEETPAGE</code>.</p>
+<p>This technique comes in handy if you need to create a property sheet page with <code>Create­Prop­Sheet­Page</code>, since it gives you a way to store more data than just the single <code>lParam</code> that comes with the <code>PROPSHEETPAGE</code> structure.</p>
+<p>When you fill out a <code>PROPSHEETHEADER</code> structure, you can choose whether you’re passing an array of <code>HPROPSHEETPAGE</code> handles (created by <code>Create­Prop­Sheet­Page</code>) or an array of <code>PROPSHEETPAGE</code> structures. Passing an array of <code>HPROPSHEETPAGE</code> handles isn’t a problem, since all <code>HPROPSHEETPAGE</code> handles are the same size, regardless of the size of the <code>PROPSHEETPAGE</code> lurking inside them. But passing an array of variable-sized <code>PROPSHEETPAGE</code> structures is a trickier business.</p>
+<p>What we want to do is lay out the memory like this:</p>
+<p><!-- "margin-left: 1px" to work around devblogs.microsoft.com default style sheet --></p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; margin-left: 1px;">
+<tbody>
+<tr>
+<td rowspan="2" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>page1.dwSize</code></span></td>
+<td> </td>
+<td style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; padding: 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮<br/>
+<code>lParam</code><br/>
+⋮</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">page1<br/>
+ extra<br/>
+  data</td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>page2.dwSize</code></span></td>
+<td> </td>
+<td style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; padding: 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮<br/>
+<code>lParam</code><br/>
+⋮</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">page2<br/>
+ extra<br/>
+  data</td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>page3.dwSize</code></span></td>
+<td> </td>
+<td style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; padding: 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮<br/>
+<code>lParam</code><br/>
+⋮</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">page3<br/>
+ extra<br/>
+  data</td>
+</tr>
+</tbody>
+</table>
+<p>We can do this by manufacturing a structure to hold the three extended <code>PROPSHEETPAGE</code> structures.</p>
+<pre>struct ThreePages
+{
+    Page1Data page1;
+    Page2Data page2;
+    Page3Data page3;
+};
+
+ThreePages pages;
+</pre>
+<p>The naïve say of setting the <code>dwSize</code> members is to set each one to the size of the corresponding structure.</p>
+<pre>pages.page1.dwSize = sizeof(pages.page1);
+pages.page2.dwSize = sizeof(pages.page2);
+pages.page3.dwSize = sizeof(pages.page3);
+</pre>
+<p>This assumes that the three structures can be laid out next to each other without any inter-member padding. But that may not be true if the structures have different alignment requirements, say, if one of them contains a <code>__mi128</code>.</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; margin-left: 1px;">
+<tbody>
+<tr>
+<td rowspan="2" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>sizeof(page1)</code></span></td>
+<td> </td>
+<td style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; padding: 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮<br/>
+<code>lParam</code><br/>
+⋮</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">page1<br/>
+ extra<br/>
+  data</td>
+</tr>
+<tr>
+<td colspan="2">oops</td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">(padding?)</td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>sizeof(page2)</code></span></td>
+<td> </td>
+<td style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; padding: 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮<br/>
+<code>lParam</code><br/>
+⋮</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">page2<br/>
+ extra<br/>
+  data</td>
+</tr>
+<tr>
+<td colspan="2">oops</td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">(padding?)</td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>sizeof(page3)</code></span></td>
+<td> </td>
+<td style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; padding: 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮<br/>
+<code>lParam</code><br/>
+⋮</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">page3<br/>
+ extra<br/>
+  data</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">(padding?)</td>
+</tr>
+</tbody>
+</table>
+<p>In the presence of padding, we have a shortfall between the size of each page and the start of the next page, resulting in an “oops” gap highlighted above.</p>
+<p>In order to accommodate varying alignment requirements, the <code>dwSize</code> must include the padding so that the property sheet manager can find the next structure.¹ I’ve marked some key addresses in the diagram below:</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; margin-left: 1px;">
+<tbody>
+<tr>
+<td rowspan="3" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>page1.dwSize</code></span></td>
+<td> </td>
+<td style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; padding: 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮<br/>
+<code>lParam</code><br/>
+⋮</td>
+<td style="position: relative; top: -1ex;" valign="top">← <code>&amp;page1</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">page1<br/>
+ extra<br/>
+  data</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">(padding?)</td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>page2.dwSize</code></span></td>
+<td> </td>
+<td style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; padding: 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮<br/>
+<code>lParam</code><br/>
+⋮</td>
+<td style="position: relative; top: -1ex;" valign="top">← <code>&amp;page2</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">page2<br/>
+ extra<br/>
+  data</td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>page3.dwSize</code></span></td>
+<td> </td>
+<td style="border: solid 1px black; border-right: none; vertical-align: middle; width: 1em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-lr; transform: rotate(180deg);"><code>PROPSHEETPAGE</code></span></td>
+<td style="border: solid 1px black; padding: 3px;"><code>dwSize</code><br/>
+<code>dwFlags</code><br/>
+⋮<br/>
+<code>lParam</code><br/>
+⋮</td>
+<td style="position: relative; top: -1ex;" valign="top">← <code>&amp;page3</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; padding: 3px;">page3<br/>
+ extra<br/>
+  data</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="position: relative; top: -1ex;" valign="top">← <code>&amp;pages + 1</code></td>
+</tr>
+</tbody>
+</table>
+<pre>pages.page1.dwSize = static_cast&lt;DWORD&gt;(
+    reinterpret_cast&lt;DWORD_PTR&gt;(std::addressof(pages.page2)) -
+    reinterpret_cast&lt;DWORD_PTR&gt;(std::addressof(pages.page1)));
+pages.page2.dwSize = static_cast&lt;DWORD&gt;(
+    reinterpret_cast&lt;DWORD_PTR&gt;(std::addressof(pages.page3)) -
+    reinterpret_cast&lt;DWORD_PTR&gt;(std::addressof(pages.page2)));
+pages.page3.dwSize = static_cast&lt;DWORD&gt;(
+    reinterpret_cast&lt;DWORD_PTR&gt;(std::addressof(pages + 1)) -
+    reinterpret_cast&lt;DWORD_PTR&gt;(std::addressof(pages.page3)));
+</pre>
+<p>This is quite a mouthful, but the idea is that we want to measure the distance to the next thing. We use <code>std::addressof</code> instead of the traditional <code>&amp;</code> operator to protect against the possibility that the <code>&amp;</code> operator has been overloaded.²</p>
+<p>Yes, this is quite annoying, but it’s also probably not something you’re likely to be doing, because you could just use a pointer to a stack-allocated object which will remain valid until <code>Property­Sheet</code> returns. The main value of the <code>PROPSHEETPAGE</code> payload is in the case where you need to produce an <code>HPROPSHEETPAGE</code>, since the <code>HPROPSHEETPAGE</code> is probably going to outlive any stack variables.</p>
+<p>But it’s there if you need it.</p>
+<p>¹ Don’t even think of using <code>#pragma pack(1)</code> to remove the padding. This will misalign the next structure and result in crashes on alignment-sensitive platforms.</p>
+<p>² Overloading the <code>&amp;</code> operator is something that annoys C++ library authors, although it’s still nowhere as annoying as <a href="https://devblogs.microsoft.com/oldnewthing/20200904-00/?p=104172"> overloading the comma operator</a>.</p>
+
+
+</body>

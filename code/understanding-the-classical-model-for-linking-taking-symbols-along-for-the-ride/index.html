@@ -1,0 +1,140 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Understanding the classical model for linking: Taking symbols along for the ride</h1>  <!-- .entry-meta -->
+
+<p><p>
+Last time, we learned the basics of
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/07/10382714.aspx">
+the classical model for linking</a>.
+Today, we’ll look at the historical background for that model,
+and how the model is exploited by libraries.
+</p>
+<p>
+In the classical model,
+compilers and assemblers consume source code and spit out
+an OBJ file.
+They do as much as they can, but eventually they get stuck
+because they don’t have the entire module at their disposal.
+To record the work remaining to be done, the OBJ file contains
+various sections:
+a data section, a code section (historically
+and confusingly called <i>text</i>),
+an uninitialized data section, and so on.
+The linker resolves symbols, and then for each OBJ file
+that got pulled into the module,
+it combines all the code sections into one giant code section,
+all the data sections into one giant data section, and so on.
+</p>
+<p>
+One thing you may have noticed is that the unit of consumption
+is the OBJ file.
+If an OBJ file is added to the module,
+the whole thing gets added,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/04/27/10002865.aspx">
+even if you needed only a tiny part</a>
+of the OBJ file.
+Historically,
+the reason for this rule is that the compilers and assemblers
+did not include information in the OBJ file to indicate
+how to separate all the little pieces.
+It’s like if somebody said,
+“Can you get me a portable mp3 player?”
+and the only thing available in the library
+was a smartphone.
+Sure, it plays mp3 files, but there’s a lot of other
+electronic junk in there that you <i>didn’t</i> ask for,
+but it came along for the ride.
+And you don’t know how to disassemble the smartphone
+and extract just the mp3-player part.
+</p>
+<p>
+This behavior is actually exploited as a <i>feature</i>,
+because it allows for tricks like this:
+</p>
+<pre>
+/* magicnumber.h */
+extern int magicNumber;</pre></p>
+<p>/* magicnumber.c */
+int magicNumber;</p>
+<p>class InitMagicNumber
+{
+ InitMagicNumber()
+ {
+    magicNumber = …;
+ }
+}
+g_InitMagicNumber;
+
+<p>
+I’m not going to go into the magic of
+<a href="http://msdn.microsoft.com/library/7977wcck.aspx">
+how the compiler knows to construct the
+<code>g_Init­Magic­Number</code>
+object at module entry</a>;
+I’ll let you read up on that.
+</p>
+<p>
+The point is that if anybody in the module refers
+to the <code>magic­Number</code> variable,
+then that causes <code>magic­number.obj</code>
+to be pulled into the module, which brings in not
+just the <code>magic­Number</code> variable,
+but also the
+<code>g_Init­Magic­Number</code> object,
+which initializes the magic number when
+the process starts.
+</p>
+<p>
+One place the C runtime library took advantage of this
+was in deciding whether or not to include floating point
+support.
+</p>
+<p>
+As you may recall, the 8086 processor did not have
+native floating support.
+You had to buy the 8087 coprocessor for that.
+It was therefore customary for programs of that era
+to include a floating point library if they
+did any floating point arithmetic.
+The library would redirect floating point
+operations from the coprocessor to the emulator.
+</p>
+<p>
+The floating point emulation library was pretty
+hefty, and it would have been a waste to include
+it for programs that didn’t use floating point
+(which was most of them),
+so the compiler used a trick to allow it to pull
+in the floating point library only if the
+program used floating point:
+If you used floating point,
+then the compiler added a <i>needed</i> symbol
+to your OBJ file:
+<code>__fltused</code>.
+</p>
+<p>
+That magical
+<code>__fltused</code> symbol was marked as
+<i>provided</i>
+by… the floating point emulation library!
+</p>
+<p>
+The linker found the symbol in an OBJ in
+the floating point emulation library,
+and that served as the loose thread that
+caused the rest of the floating point
+emulation library to be pulled into your module.
+</p>
+<p>
+Next time,
+we’ll look at the interaction between OBJ files and LIB files.
+</p>
+<p>
+<b>Bonus reading</b>:
+Larry Osterman gives
+<a href="http://blogs.msdn.com/b/larryosterman/archive/2004/09/27/234840.aspx">
+another example</a>
+of this trick.
+</p></p>
+
+
+</body>

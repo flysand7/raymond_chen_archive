@@ -1,0 +1,45 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Little gotcha with C++/WinRT iterators: The case of the mutated temporary</h1>  <!-- .entry-meta -->
+
+<p>C++/WinRT iterators resemble iterators in many ways, most notable they resemble them enough to let you use them in ranged for loops or in standard algorithms that use input iterators.</p>
+<p>But they aren’t full iterators, so watch out.</p>
+<p>Most notably, the iterators for indexed collections (known internally as <code>fast_iterator</code>) support random access, such as <code>it += 2</code> to step forward two items, or <code>it[-1]</code> to read the previous item. But they are not full-fledged random access iterators.</p>
+<p>They aren’t proper random access iterators because the return type of the dereferencing <code>operator*</code> is not a reference. It’s a value.</p>
+<p>That means that you can’t do this:</p>
+<pre>auto it = collection.First();
+*it = replacement_value; // replace the first element
+</pre>
+<p>If the underlying type of the collection is not a class type, then the compiler will complain:</p>
+<pre>IVector&lt;int&gt; collection;
+auto start = collection.First();
+*start = 42; // C2106: '=' left operand must be an l-value
+</pre>
+<p>But if the underlying type is of class type, then the class’s assignment operator will be used. You’re assigning to a temporary object, which is legal, though not particularly useful.</p>
+<pre>IVector&lt;Point&gt; collection;
+auto start = collection.First();
+*start = Point{ 1.0f, 2.0f }; // doesn't do what you think
+start[0].X = 1.0f; // doesn't do what you think
+
+IVector&lt;Class&gt; collection;
+auto start = collection.First();
+*start = Class(); // doesn't do what you think
+</pre>
+<p>In both cases, what you’re doing is assigning a new object to (or in the case of <code>.X</code>, mutating) the temporary object returned by <code>operator*</code>, and then throwing the temporary away. The original collection remains unchanged.</p>
+<p>For reference types like the imaginary Windows Runtime class <code>Class</code>, this is largely not a problem, because the C++/WinRT projection of Windows Runtime classes is as a reference-counted object (similar to <code>shared_ptr</code>), so you can invoke methods, and those methods will affect the underlying shared object.</p>
+<p>But for value types like <code>Point</code>, this is a hidden gotcha.</p>
+<p><b>Bonus chatter</b>: The dereferencing <code>operator*</code> could have returned a proxy object which supported conversion to <code>T</code> (which performs a <code>GetAt</code>) or assignment from <code>T</code> (which performs a <code>SetAt</code>), but that would result in a different kind of confusion, because</p>
+<pre>auto v = *it;
+</pre>
+<p>wouldn’t actually produce the value. It would merely produce a proxy. And that would be really weird:</p>
+<pre>void Something(T value);
+
+IIterable&lt;T&gt; it = ...;
+auto v = *it;
+*it = new_value;
+Something(v); // passes new_value!
+</pre>
+<p>The problem is that <code>auto v = *it</code> deduces that <code>v</code> is a proxy object. It is only when the proxy is converted to a <code>T</code> that the <code>GetAt</code> is performed. In the above code fragment, that happens at the call to <code>Something</code>, and that means that when <code>GetAt</code> is called, it will fetch the <code>new_value</code> that was assigned in the meantime.</p>
+<p>To avoid surprises like this, the C++/WinRT iterators are strictly input iterators.</p>
+
+
+</body>

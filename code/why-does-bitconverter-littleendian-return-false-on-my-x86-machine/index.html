@@ -1,0 +1,127 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does BitConverter.LittleEndian return false on my x86 machine?</h1>  <!-- .entry-meta -->
+
+<p>
+Welcome to CLR Week 2013,
+returned from its
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2012/07/30/10334554.aspx">
+two-year hiatus</a>.
+</p>
+<p>
+A customer reported that when they checked with the debugger,
+<code>Bit­Converter.Little­Endian</code>
+reported <code>false</code>
+even though they were running on an x86 machine,
+which is a little-endian architecture.
+</p>
+<pre>
+ushort foo = 65280;
+<i>65280</i>
+BitConverter.IsLittleEndian
+<i>false</i>
+BitConverter.GetBytes(foo)
+<i>{byte[2]}
+[0]: 0
+[1]: 255</i>
+</pre>
+<p>
+The bytes are extracted in little-endian order,
+despite the claim that the machine is big-endian.
+“I don’t get it.”
+</p>
+<p>
+I didn’t know the answer,
+but I knew how to use a search engine,
+and a simple search quickly found
+<a href="http://stackoverflow.com/q/2023672/">this explanation</a>:
+</p>
+<p>
+Reading a member from the debugger merely reads the value of the member
+from memory.
+</p>
+<p>
+That simple statement hides the answer by saying what happens
+and leaving you to figure out what doesn’t happen.
+Here’s what doesn’t happen:
+Reading a member from the debugger
+<i>does not execute the code to initialize that member</i>.
+</p>
+<p>
+In the case of
+<code>Bit­Converter</code>,
+the <code>Little­Endian</code> member
+is initialized by the static constructor.
+But when are static constructors run?
+For C#, static constructors are run
+<a href="http://msdn.microsoft.com/en-us/library/k9x6w0hc%28v=vs.80%29.aspx">
+before the first instance is created or any static members are referenced</a>.
+Therefore, if you never create any <code>Bit­Converter</code> objects
+(which you can’t since it is a static-only class),
+and if you never access any static members,
+then its static constructor is not guaranteed to have run,
+and consequently
+anything that is initialized by the static constructor
+is not guaranteed to have been initialized.
+</p>
+<p>
+And then when you go looking at in the debugger,
+you see the uninitialized value.
+</p>
+<p>
+Why doesn’t the debugger execute static constructors
+before dumping a value from memory?
+Probably because the debugger wants to avoid surprises.
+It would be weird if you tried to dump a value from the debugger
+and the program resumed execution!
+</p>
+<p>
+Now, when you ask the debugger to evaluate
+<code>Bit­Converter.Get­Bytes(foo)</code>,
+the debugger has no choice but to execute application code,
+but that’s okay because you explicitly told it to.
+But let’s continue that debugging session:
+</p>
+<pre>
+ushort foo = 65280;
+<i>65280</i>
+BitConverter.IsLittleEndian
+<i>false</i>
+BitConverter.GetBytes(foo)
+<i>{byte[2]}
+[0]: 0
+[1]: 255</i>
+BitConverter.IsLittleEndian
+<i>true</i> ← hey look
+</pre>
+<p>
+Your call to
+<code>Bit­Converter.Get­Bytes(foo)</code>
+caused code to execute,
+and then the CLR said,
+“Okay, but before I call this member function, I am required
+to run the static constructor, because those are the rules,”
+and that resulted in the <code>Is&amp;shy:Little­Endian</code>
+field being initialized to <code>true</code>.
+</p>
+<p>
+The customer replied,
+“Thanks.
+The trick was finding the correct search terms.”
+</p>
+<p>
+I didn’t think my choice of search terms was particularly
+devious.
+I simply searched for
+<a href="http://www.bing.com/search?q=bitconverter.islittleendian+false">
+bit­converter.is­little­endian false</a>.
+</p>
+<p>
+<b>Bonus reading</b>:
+<a href="http://commandcenter.blogspot.com/2012/04/byte-order-fallacy.html">
+The byte order fallacy</a> by
+<a href="http://en.wikipedia.org/wiki/Rob_Pike">Rob Pike</a>.
+“Whenever I see code that asks what the native byte order is,
+it’s almost certain the code is either wrong or misguided.”</p>
+
+
+</body>

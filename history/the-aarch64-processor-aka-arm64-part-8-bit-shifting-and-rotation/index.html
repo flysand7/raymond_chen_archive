@@ -1,0 +1,233 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The AArch64 processor (aka arm64), part 8: Bit shifting and rotation</h1>  <!-- .entry-meta -->
+
+<p>Bit shifting and rotation instructions on AArch64 fall into two general categories: Hard-coded shift amounts and variable shifts.</p>
+<p>The hard-coded shifts are done by repurposing the versatile <a href="/history/the-aarch64-processor-aka-arm64-part-7-bitfield-manipulation" title="The AArch64 processor (aka arm64), part 7: Bitfield manipulation"> bitfield manipulation instructions</a>.</p>
+<pre>    ; logical shift left by fixed amount
+    ; ubfiz Rd, Rn, #(size-shift), #shift
+    lsl     Rd/zr, Rn/zr, #shift
+
+    ; logical shift right by fixed amount
+    ; ubfx  Rd, Rn, #(size-shift), #shift
+    lsr     Rd/zr, Rn/zr, #shift
+
+    ; arithmetic shift right by fixed amount
+    ; sbfx  Rd, Rn, #(size-shift), #shift
+    asr     Rd/zr, Rn/zr, #shift
+</pre>
+<p>Left shifting is done by doing a bit insertion of the surviving bits into the upper bits of the destination. It’s the special case where the number of bits is exactly equal to the register size minus the shift amount.</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td>shift</td>
+<td colspan="2">size−shift</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none; text-align: right; width: 4em;"> </td>
+<td style="border: solid 1px gray; border-right: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-left: none; width: 4em; background-color: #ddd;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td colspan="1">
+<table border="0" cellpadding="0" cellspacing="0" style="width: 100%;">
+<tbody>
+<tr>
+<td align="left">⇙</td>
+<td align="center">⇙</td>
+<td align="center">⇙</td>
+<td align="right">⇙</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none; width: 4em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-left: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; width: 4em;">zero-fill</td>
+</tr>
+<tr>
+<td colspan="2">size−shift</td>
+<td>shift</td>
+</tr>
+</tbody>
+</table>
+<p>Right shifting is the same thing, but using the unsigned bitfield extract instruction to go in the opposite direction:</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td colspan="2">size−shift</td>
+<td>shift</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none; width: 4em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-left: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; width: 4em;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td colspan="1">
+<table border="0" cellpadding="0" cellspacing="0" style="width: 100%;">
+<tbody>
+<tr>
+<td align="left">⇘</td>
+<td align="center">⇘</td>
+<td align="center">⇘</td>
+<td align="right">⇘</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; width: 4em;">zero-fill</td>
+<td style="border: solid 1px gray; border-right: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-left: none; width: 4em; background-color: #ddd;"> </td>
+</tr>
+<tr>
+<td>shift</td>
+<td colspan="2">size−shift</td>
+</tr>
+</tbody>
+</table>
+<p>And arithmetic right shifting uses the signed bitfield extract in order to get sign-extension behavior.</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td colspan="2">size−shift</td>
+<td>shift</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right: none; width: 4em; text-align: left; background-color: #ddd; color: black;">S</td>
+<td style="border: solid 1px gray; border-left: none; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; width: 4em;"> </td>
+</tr>
+<tr>
+<td style="text-align: left;">⇓</td>
+<td colspan="1">
+<table border="0" cellpadding="0" cellspacing="0" style="width: 100%;">
+<tbody>
+<tr>
+<td align="left">⇘</td>
+<td align="center">⇘</td>
+<td align="center">⇘</td>
+<td align="right">⇘</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; width: 4em;">sign-fill</td>
+<td style="border: solid 1px gray; border-right: none; width: 3em; text-align: left; background-color: #ddd; color: black;">S</td>
+<td style="border: solid 1px gray; border-left: none; width: 4em; background-color: #ddd;"> </td>
+</tr>
+<tr>
+<td>shift</td>
+<td colspan="2">size−shift</td>
+</tr>
+</tbody>
+</table>
+<p>Rotation can be synthesized from double-register extraction by using the rotation source as both of the source registers for extraction.</p>
+<pre>    ; rotate right by fixed amount
+    ; extr  Rd, Rs, Rs, #shift
+    ror     Rd/zr, Rs/zr, #shift
+</pre>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td colspan="2" style="border: 1px gray; border-style: solid solid none solid;">size</td>
+<td style="border: 1px gray; border-style: solid solid none solid;">shift</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px gray; border-right-style: dashed; width: 4em; position: relative;">
+
+</td>
+<td style="border: solid 1px gray; border-left-style: dashed; width: 3em; background-color: #ddd;"> </td>
+<td style="border: solid 1px gray; border-right-style: dashed; width: 4em; position: relative; background-color: #ddd; color: black;">
+
+</td>
+<td style="border: solid 1px gray; border-left-style: dashed; width: 3em;"> </td>
+</tr>
+<tr>
+<td> </td>
+<td colspan="2">
+<table border="0" cellpadding="0" cellspacing="0" style="width: 100%;">
+<tbody>
+<tr>
+<td align="center">⇓</td>
+<td align="center">⇓</td>
+<td align="center">⇓</td>
+<td align="center">⇓</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td colspan="2" style="border: solid 1px gray; text-align: center; background-color: #ddd; color: black;">Rd</td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>Note that there is no “rotate with carry” instruction. The AArch32 <code>rrx</code> instruction does not exist in AArch64.¹ It would have been handy for <a href="/code/on-finding-the-average-of-two-unsigned-integers-without-overflow"> finding the average of two unsigned integers without overflow</a>.</p>
+<p>The variable shifts have their own dedicated instructions.</p>
+<pre>    ; logical shift left variable
+    ; Wd = Wn &lt;&lt; (Wm &amp; 31)
+    ; Xd = Xn &lt;&lt; (Xm &amp; 63)
+    lslv    Rd/zr, Rn/zr, Rm/zr
+
+    ; logical shift right variable
+    ; Wd = Wn &gt;&gt; (Wm &amp; 31), unsigned shift
+    ; Xd = Xn &gt;&gt; (Xm &amp; 63), unsigned shift
+    lsrv    Rd/zr, Rn/zr, Rm/zr
+
+    ; arithmetic shift right variable
+    ; Wd = Wn &gt;&gt; (Wm &amp; 31), signed shift
+    ; Xd = Xn &gt;&gt; (Xm &amp; 63), signed shift
+    asrv    Rd/zr, Rn/zr, Rm/zr
+
+    ; rotate right variable
+    ; Rd = Rn rotated right by Rm positions
+    rorv    Rd/zr, Rn/zr, Rm/zr
+</pre>
+<p>Note that the shift amount is taken modulo the bit size of the operand. (This doesn’t really matter for <code>RORV</code> since rotating by the operand bit size has no effect.)</p>
+<p>The pseudo-instructions <code>LSL</code> <code>LSR</code>, <code>ASR</code>, and <code>ROR</code> accept a register as the second input operand and convert it to the corresponding <code>V</code> instruction. This means that when writing assembly, you can just write <code>LSL</code> and let the assembler figure out which real opcode it corresponds to.</p>
+<p>There are no <code>S</code> variants to the bit shifting instructions. They never update flags, unlike AArch32, which updated the carry with the last bit shifted out. If you want to know what bit got shifted out, you’ll have to calculate it yourself, say by shifting the same value again, but by one less position, and then inspecting the top/bottom bit (depending on the shift direction).</p>
+<p>I have my guesses as to why the designers removed the flags behavior from these instructions: First, it removes a partial register update (flags), which creates a usually-unwanted dependency on the previous flags. Second, no major programming language gives you access to the bit that was shifted out, so it wasn’t used in practice anyway.</p>
+<p><b>Exercise</b>: Suppose there was no double-register extraction instruction or variable rotation instruction. Synthesize fixed and variable rotation from other instructions. (Answer below.)</p>
+<p><b>Bonus chatter</b>: In AArch32, the bottom 8 bits of the shift-count register were used. But in AArch64, only the bottom 5 (for 32-bit operands) or 6 (for 64-bit operands) bits are used.</p>
+<p><b>Answer to exercise</b>: You can synthesize a fixed rotation from a shift and a bitfield insertion.</p>
+<pre>    ; rotate r1 left by #imm, producing r0
+                                        ; r1 = ABCDEFGH
+    lsl     r0, r1, #imm                ; r0 = EFGH0000
+    bfxil   r0, r1, #(size-imm), #imm   ; r0 = EFGHABCD
+</pre>
+<p>A variable rotation can be synthesized from a pair of shifts.</p>
+<pre>    ; rotate r1 left by r2, producing r0
+    ; (destroys r2)
+                                        ; r1 = ABCDEFGH
+    lslv    r0, r1, r2                  ; r0 = EFGH0000
+    mvn     r2, r2                      ; r2 = leftover bits
+    lsrv    r2, r1, r2                  ; r2 = 0000ABCD
+    orr     r0, r0, r2                  ; r0 = EFGHABCD
+</pre>
+<p>¹ Although it doesn’t explicitly have a “rotate left through carry” instruction, you can still do it in a single instruction:</p>
+<pre>    adcs    r0, r1, r1  ; r0 = r1 rotated left through carry
+</pre>
+
+
+</body>

@@ -1,0 +1,54 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The initializing constructor looks like an assignment, but it isn’t</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, I warned about <a href="/code/the-perils-of-the-accidental-c-conversion-constructor"> the perils of the accidental C++ conversion constructor</a>: A single-parameter constructor is considered by default to be a conversion constructor; you can opt out of this by marking the constructor <code>explicit</code>.</p>
+<p>I gave as an example this class:</p>
+<pre>class Buffer
+{
+public:
+  Buffer(size_t capacity);
+  Buffer(std::initializer_list&lt;int&gt; values);
+};
+</pre>
+<p>The <code>size_t</code> constructor is not marked as <code>explicit</code>, so it is a conversion constructor. And that permits weird things like this:</p>
+<pre>Buffer b = 1; // um...
+</pre>
+<p>What exactly is happening here?</p>
+<p>A common misconception is that what’s happening is that a temporary <code>Buffer</code> is created (with the capacity 1), and then that temporary buffer is assigned to the destination buffer <code>b</code>.</p>
+<p>That’s not what’s happening. You can prove this by deleting the assignment operators.</p>
+<pre>class Buffer
+{
+public:
+  Buffer(size_t capacity);
+  Buffer(std::initializer_list&lt;int&gt; values);
+  <span style="color: blue;">Buffer&amp; operator=(Buffer const&amp;) = delete;
+  Buffer&amp; operator=(Buffer&amp;&amp;) = delete;</span>
+};
+
+Buffer b = 1; // still compiles
+</pre>
+<p>(Deleting the move assignment operator is redundant because declaring the copy assignment operator automatically suppresses the implicit move assignment operator. But I deleted it explicitly for emphasis.)</p>
+<p>Even though there is an equal-sign in the statement, there is no actual assignment.</p>
+<p>There can’t be an assignment, if you think about it, because the assignment operator assumes that <code>this</code> refers to an already-constructed object. But we don’t have a constructed object yet.</p>
+<p>According to the language rules,</p>
+<pre>Buffer b = 1;
+</pre>
+<p>is a <i>copy-initialization</i>, and the copy initialization is performed by taking the thing on the right-hand side and, if the types don’t match,¹ it looks for a conversion constructor.</p>
+<p>The equals sign doesn’t mean assignment here. It’s just a quirk of the syntax.</p>
+<p>¹ If the types do match, then “the initializer expression is used to initialize the destination object.” At this point <i>copy elision</i> kicks in:</p>
+<pre>extern Buffer get_buffer();
+
+Buffer b = get_buffer();
+</pre>
+<p>The <code>Buffer</code> returned by <code>get_buffer()</code> is placed directly into the memory occupied by <code>b</code>.</p>
+<p>Copy elision also means that</p>
+<pre>Buffer b = Buffer(1);
+</pre>
+<p>does not create a temporary <code>Buffer</code> of capacity 1, and then construct <code>b</code> from that temporary buffer. Instead, the <code>Buffer</code> of capacity 1 is constructed directly into <code>b</code>. The result is the same as <code>Buffer b(1);</code>.</p>
+<p>Since the copy elision rule can be repeated,</p>
+<pre>Buffer b = Buffer(Buffer(Buffer(1)));
+</pre>
+<p>is also the same as <code>Buffer b(1);</code>, because each repetition of the rule strips away one of the calls to <code>Buffer(...)</code>.</p>
+
+
+</body>

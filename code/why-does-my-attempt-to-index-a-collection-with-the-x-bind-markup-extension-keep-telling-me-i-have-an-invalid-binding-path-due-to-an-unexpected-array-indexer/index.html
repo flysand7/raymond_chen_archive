@@ -1,0 +1,47 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does my attempt to index a collection with the <code>x:Bind</code> markup extension keep telling me I have an invalid binding path due to an unexpected array indexer?</h1>  <!-- .entry-meta -->
+
+<p>The documentation for <a href="https://docs.microsoft.com/en-us/windows/uwp/xaml-platform/x-bind-markup-exension#property-path"> the <code>x:Bind</code> markup extension</a> notes that you can use a binding path to bind to a collection with an indexer. For example, <code>Teams[0].Players</code> and</p>
+<pre>&lt;TextBlock Text="{x:Bind Players['John Smith']}" /&gt;
+</pre>
+<p>It notes that the prerequisites for being able to index into a collection from a binding path are that the model needs to implement <code>IList&lt;T&gt;</code> or <code>IVector&lt;T&gt;</code> for numeric indexing, or <code>IDictionary&lt;string, T&gt;</code> or <code>IMap&lt;string, T&gt;</code>.</p>
+<p>So you try it out…</p>
+<pre>&lt;TextBlock Text="{x:Bind Teams[0].Name}"&gt;
+&lt;TextBlock Text="{x:Bind Players['John Smith']}" /&gt;
+</pre>
+<p>… and you get errors.</p>
+<pre>WMC1110 Invalid binding path 'Teams[0]' : Unexpected array indexer
+WMC1110 Invalid binding path 'Players['John Smith']' : Unexpected array indexer
+XLS0522 Invalid index value ''John Smith''.
+</pre>
+<p>What’s going on? What’s wrong with the array indexer that made it unexpected? Why is <code>'John Smith'</code> an invalid index value?</p>
+<p>Look more closely at the list of collection interfaces that support index notation. Notable by omission are the interfaces <code>IRead­Only­List&lt;T&gt;</code>, <code>IVector­View&lt;T&gt;</code>, <code>IRead­Only­Dictionary&lt;string, T&gt;</code> and <code>IMap­View&lt;string, T&gt;</code>.</p>
+<p>What’s actually going on is that <code>Teams</code> and <code>Players</code> are not any of the types for which the <code>x:Bind</code> markup extension supports indexing. The error message was saying “I wasn’t expecting an array indexer here, because the thing you are trying to apply it to is not something that can be indexed.” (<!-- Generating good error messages from code analysis tools is harder than it looks -->Writing error messages is hard.)</p>
+<p>The <code>Teams</code> and <code>Players</code> properties are a read-only vector and read-only dictionary, and the <code>x:Bind</code> markup extension supports indexing only for read-write vectors and read-write dictionaries.</p>
+<p>Nevermind that the binding was done in one-time mode and therefore will never attempt to write back to the vector or dictionary. The markup compiler requires that the vector and dictionary be read-write in order for you to be able to use index notation.</p>
+<p>You can work around this by creating helper functions.</p>
+<pre>class MyPage
+{
+  public IReadOnlyList&lt;Team&gt; Teams { get; private set; }
+  public IReadOnlyDictionary&lt;string, string&gt; Players { get; private set; }
+  MyPage()
+  {
+    this.InitializeComponent();
+  }
+
+  <span style="color: blue;">string GetTeamName(int i) =&gt; Teams[i].Name;
+  string GetPlayer(string s) =&gt; Players[s];</span>
+}
+
+&lt;!-- xaml --&gt;
+&lt;TextBlock Text="{x:Bind <span style="color: blue;">GetTeamName(0)</span>}"&gt;
+&lt;TextBlock Text="{x:Bind <span style="color: blue;">GetPlayer('John Smith')</span>}" /&gt;
+</pre>
+<p>Unfortunately, you cannot chain beyond a function call, so you can’t write</p>
+<pre>&lt;!-- code in italics is wrong --&gt;
+&lt;TextBlock Text="{x:Bind <i>GetTeam(0).Name</i>}"&gt;
+</pre>
+<p><b>Bonus chatter</b>: If you are using one-way binding rather than one-time binding, then you need a way to signal that the result of the function call has changed. You can do that by raising a <code>PropertyChanged</code> event for the function name itself. This is analogous to how you raise <code>PropertyChanged</code> events when the value of a property changes.</p>
+
+
+</body>

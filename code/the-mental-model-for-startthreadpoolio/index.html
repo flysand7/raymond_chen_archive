@@ -1,0 +1,45 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The mental model for StartThreadpoolIo</h1>  <!-- .entry-meta -->
+
+<p>A customer was having trouble using asynchronous I/O with the Windows thread pool. Their proof-of-concept program was crashing once they issue their second write. Here’s a sketch:</p>
+<pre>auto io = CreateThreadpoolIo(fileHandle, callback, nullptr, nullptr);
+StartThreadpoolIo(io);
+
+OVERLAPPED pending[NUMBER] = {};
+
+for (int i = 0; i &lt; NUMBER; i++) {
+    pending[i].Offset = offset[i];
+    pending[i].OffsetHigh = 0;
+    bool result = WriteFile(fileHandle, data[i], size[i],
+            &amp;bytesWritten, &amp;pending[i]);
+
+    if (!result &amp;&amp; GetLastError() != ERROR_IO_PENDING) {
+        CancelThreadpoolIo(io);
+    }
+}
+</pre>
+<p>They found that if <code>NUMBER</code> is 1, then everything works great. If <code>NUMBER</code> is greater than 1, then the first I/O completion is successful, but the second one crashes.</p>
+<p>The confusion is over what <code>StartThreadpoolIo</code> does. The customer thought that it needed to be called once for each file handle. But really, it needs to be called once for each I/O operation. If you issue ten writes against a file handle, you need to call <code>Start­Threadpool­Io</code> ten times, once before each call.</p>
+<p>The point of <code>Start­Threadpool­Io</code> is to tell the thread pool to prepare for an incoming completion against the file handle. If you issue an I/O without first preparing the thread pool, then the completion arrives and the thread pool doesn’t know what to do with it.</p>
+<p>The fix is to move the call to <code>Start­Threadpool­Io</code> to immediately before issuing the I/O operation:</p>
+<pre>auto io = CreateThreadpoolIo(fileHandle, callback, nullptr, nullptr);
+<span style="color: red;">// <span style="text-decoration: line-through;">StartThreadpoolIo(io);</span></span> // from here
+
+OVERLAPPED pending[NUMBER] = {};
+
+for (int i = 0; i &lt; NUMBER; i++) {
+    pending[i].Offset = offset[i];
+    pending[i].OffsetHigh = 0;
+    <span style="color: blue;">StartThreadpoolIo(io);</span> // to here
+    bool result = WriteFile(fileHandle, data[i], size[i],
+            &amp;bytesWritten, &amp;pending[i]);
+
+    if (!result &amp;&amp; GetLastError() != ERROR_IO_PENDING) {
+        CancelThreadpoolIo(io);
+    }
+}
+</pre>
+<p>If you discover that the I/O won’t generate a completion after all (because it failed synchronously, or because it succeeded synchronously on a handle that is marked as <code>FILE_<wbr/>SKIP_<wbr/>COMPLETION_<wbr/>PORT_<wbr/>ON_<wbr/>SUCCESS</code>), then you need to call <code>Cancel­Threadpool­Io</code> to say, “Um, it looks like there won’t be any completion at all. Sorry.” That way, the thread pool knows that it shouldn’t be expecting one.</p>
+
+
+</body>

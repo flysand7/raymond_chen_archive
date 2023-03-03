@@ -1,0 +1,145 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Kernel handles are not reference-counted</h1>  <!-- .entry-meta -->
+
+<p>
+Here’s a question that floated past some time ago:
+</p>
+<blockquote class="q"><p>
+In my code, I have multiple objects that want to talk to the
+same handle (via <code>DeviceIoControl</code>).
+Each time I create an object, I use <code>DuplicateHandle</code>
+to increment the reference count on the handle.
+That way, when each object calls <code>CloseHandle</code>,
+only the last one actually closes the handle.
+However, when I run the code, I find as soon as the first object
+calls <code>CloseHandle</code>, the handle is no longer valid
+and nobody else can use it.
+What flags do I need to pass to <code>CreateFile</code> to get
+this to work?
+</p></blockquote>
+<p>
+In other words, the code went something like this:
+</p>
+<pre>
+<i>// h is the handle that we want to share with a new CFred object
+CFred *MakeFred(HANDLE h)
+{
+ // "Duplicate the handle to bump the reference count"
+ // This code is wrong - see discussion
+ // All error checking removed for expository purposes
+ HANDLE hDup;
+ DuplicateHandle(GetCurrentProcess(), h,
+                 GetCurrentProcess(), &amp;hDup,
+                 0, FALSE, DUPLICATE_SAME_ACCESS);
+ return new CFred(h);
+}</i>
+</pre>
+<p>
+Kernel handles aren’t reference-counted.
+When you call <code>CloseHandle</code>,
+that closes the handle, end of story.
+</p>
+<p>
+From the original problem statement, we know that
+the <code>CFred</code> object closes the handle when it
+is destroyed.
+Just for argument’s sake, let’s say that the caller goes
+something like this:
+</p>
+<pre>
+CFred *pfred1 = MakeFred(h);
+CFred *pfred2 = MakeFred(h);
+delete pfred1;
+delete pfred2;
+</pre>
+<p>
+What actually happens when you run this fragment?
+</p>
+<p>
+The first time we call <code>MakeFred</code> we take
+the original handle <code>h</code> and duplicate it,
+but we give the original handle to the <code>CFred</code>
+constructor and leak the <code>hDup</code>!
+The original poster assumed that duplicating a handle merely
+incremented the handle’s imaginary reference count,
+so that <code>h == hDup</code>.
+(Which would also have made the original poster wonder why
+we even bother having a <code>lpTargetHandle</code> parameter
+in the first place.)
+</p>
+<p>
+When <code>pfred1</code> is deleted, it closes its handle,
+which is <code>h</code>.
+This closes the <code>h</code> handle and renders it invalid
+and available to be recycled for another <code>CreateFile</code>
+or other operation that creates a handle.
+</p>
+<p>
+When <code>pfred2</code> is deleted, it also closes its handle,
+which is still <code>h</code>.
+This is now closing an already-close handle,
+which is an error.
+If we had bothered calling a method on <code>pfred2</code> that
+used the handle, it would have gotten failures from those operations
+as well, since the handle is no longer valid.
+(Well, if we’re lucky, we would have gotten a failure.
+If we were unlucky, the handle would have been recycled and
+we ended up performing a <code>DeviceIoControl</code> on somebody
+else’s handle!)
+</p>
+<p>
+Meanwhile, the calling code’s copy of <code>h</code> is also bad,
+since <code>pfred1</code> closed it when it was deleted.
+</p>
+<p>
+What we really want to do here is duplicate the handle
+and pass the <strong>duplicate</strong> to each object.
+The <code>DuplicateHandle</code> function creates a new
+handle that refers to the same object as the original handle.
+That new handle can be closed without affecting the original handle.
+</p>
+<pre>
+// h is the handle that we want to share with a new CFred object
+CFred *MakeFred(HANDLE h)
+{
+ // Create another handle that refers to the same object as "h"
+ // All error checking removed for expository purposes
+ HANDLE hDup;
+ DuplicateHandle(GetCurrentProcess(), h,
+                 GetCurrentProcess(), &amp;hDup,
+                 0, FALSE, DUPLICATE_SAME_ACCESS);
+ return new CFred(<font color="blue">hDup</font>);
+}
+</pre>
+<p>
+The fix is one word, highlighted in blue.
+We give the duplicated handle to the <code>CFred</code> object.
+That way, it gets its own handle which it is free to close
+any time it wants, and it won’t affect anybody else’s handle.
+</p>
+<p>
+You can think of <code>DuplicateHandle</code> as a sort of
+<code>AddRef</code> for kernel objects.
+Each time you duplicate a handle, the reference count on the
+kernel object goes up by one, and you gain a new reference
+(the new handle).
+Each time you close a handle, the reference count on the kernel
+object drops by one.
+</p>
+<p>
+In summary, a handle is not a reference-counted object.
+When you close a handle, it’s gone.
+When you duplicate a handle, you gain a new obligation to
+close the duplicate, in addition to the existing obligation
+to close the original handle.
+The duplicate handle refers to the same object as the original handle,
+and it is the underlying object that is reference-counted.
+(Note that kernel objects can have reference from things
+that aren’t handles.
+For example, an executing thread maintains a reference to the underlying
+thread object.
+Closing the last handle to a thread will not destroy the thread object
+because the thread keeps a reference to itself as long as it’s running.)</p>
+
+
+</body>

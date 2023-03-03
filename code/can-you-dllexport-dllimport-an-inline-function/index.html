@@ -1,0 +1,225 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Can you dllexport/dllimport an inline function?</h1>  <!-- .entry-meta -->
+
+<p>
+The MSDN documentation on the subject of
+<a href="http://msdn.microsoft.com/en-us/library/xa0d9ste">
+Defining Inline C++ Functions with dllexport and dllimport</a>
+was written with
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/05/12/10163578.aspx">
+compiler-colored glasses</a>.
+The statements are perfectly true, but they use terminology
+that only compiler-writers understand.
+</p>
+<p>
+The short version is that all modules which share an inline function
+are considered to be part of the same program,
+so all of the C++ rules regarding inline functions in programs
+need to be followed.
+</p>
+<p>
+Let’s look at the paragraphs one at a time
+and translate them into English.
+</p>
+<blockquote class="q"><p>
+You can define as inline a function with the
+<b>dllexport</b> attribute.
+In this case, the function is always instantiated and exported,
+whether or not any module in the program references the function.
+The function is presumed to be imported by another program.
+</p></blockquote>
+<p>
+Okay, first of all, what is <i>instantiation</i>?
+</p>
+<p>
+In this context, the term <i>instantiation</i> when applied
+to an inline function means
+“The code is generated (<i>instantiated</i>)
+for the function as if it had not been
+marked inline.”
+</p>
+<p>
+For the purpose of discussion, let’s say that you have
+a function written as
+</p>
+<pre>
+__declspec(dllexport)
+inline int times3(int i) { return i * 3; }
+</pre>
+<p>
+Suppose that you compile this into a DLL,
+and that DLL also calls the inline function.
+</p>
+<pre>
+int times9(int i) { return times3(times3(i)); }
+</pre>
+<p>
+What code gets generated?
+</p>
+<p>
+The <code>times9</code> function sees that the
+<code>times3</code> function is inline,
+so it inlines the function body and there is no
+trace of a <code>times3</code> function at all.
+The compiler generates the code as if it had
+been written
+</p>
+<pre>
+int times9(int i) { return (i * 3) * 3; }
+</pre>
+<p>
+That would normally be the end of it,
+except that
+the <code>times3</code> function was marked
+<code>dllexport</code>.
+This means that the compiler also generates
+and exports
+a plain old function called <code>times3</code>
+even though <i>nobody in the DLL actually calls it as such</i>.
+The code is generated and exported because you told the
+compiler to export the function, so it needs to generate
+a function in order to export it.
+</p>
+<p>
+This is not anything special about the <code>dllexport</code>
+keyword.
+This is just a side-effect of the rule that
+“If you generate a pointer to an inline function,
+the compiler must generate a non-inline version of the
+function and use a pointer to that non-inline version.”
+In this case, the <code>dllexport</code> causes a pointer
+to the function to be placed in the export table.
+</p>
+<p>
+Okay, next paragraph:
+</p>
+<blockquote class="q"><p>
+You can also define as inline a function declared
+with the <b>dllimport</b> attribute.
+In this case,
+the function can be expanded (subject to /Ob specifications),
+but never instantiated.
+In particular,
+if the address of an inline imported function is taken,
+the address of the function residing in the DLL is returned.
+This behavior is the same as taking the address
+of a non-inline imported function.
+</p></blockquote>
+<p>
+What this is trying to say is that if you declare
+an inline function as <b>dllimport</b>,
+the compiler treats it just like a plain old inline
+function:
+it inlines the function based on the usual rules for
+inlining.
+But if the compiler chooses to generate code for the function
+as if it were not inline
+(because the compiler decided to ignore the inline qualifier,
+or because somebody took the address of the inline function),
+it defers to the generated code from the original DLL,
+because you said,
+“Hey, the non-inline version of this
+function is also available from that DLL over there,”
+and the compiler says,
+“Awesome, you saved me the trouble of having to generate the non-inline
+version the function.
+I can just use that one!”
+</p>
+<p>
+The “I can just use that one!” is not just an optimization.
+It is necessary in order to comply with the language standard,
+which says [dcl.fct.spec]
+that
+“An inline function with external linkage
+shall have the same address in all translation units.”
+This is the compiler-speak way of saying that the address of an
+inline function must be the same regardless of who asks.
+You can’t have a different copy of the inline function in each DLL,
+because that would result in them having different addresses.
+(The “with external linkage” means that the rule doesn’t apply to
+static inline functions, which is behavior consistent
+with static non-inline functions.)
+</p>
+<p>
+Okay, let’s try paragraph three:
+</p>
+<blockquote class="q"><p>
+These rules apply to inline functions whose definitions appear
+within a class definition.
+In addition, static local data and strings in inline functions
+maintain the same identities between the DLL and client
+as they would in a single program
+(that is, an executable file without a DLL interface).
+</p></blockquote>
+<p>
+The first part of the paragraph is just saying that
+an inline function defined as part of a class definition counts
+as an inline function for the purpose of this section.
+No big deal; we were expecting that.
+</p>
+<p>
+<b>Update</b>: On the other hand, it is a big deal, because it
+results in inline functions being exported when you may not realize it.
+Consider:
+</p>
+<pre>
+class __declspec(dllexport) SimpleValue
+{
+public:
+ SimpleValue() : m_value(0) { }
+ void setValue(int value);
+ int getValue() { return m_value; }
+private:
+ int m_value;
+};
+</pre>
+<p>
+The <code>Simple­Value</code> constructor and the
+<code>Simple­Value::get­Value</code> method
+are exported inline functions!
+Consequently, any change to the constructor or to
+<code>getValue</code> requires a recompilation of all code
+that constructs a <code>Simple­Value</code> or calls
+the <code>get­Value</code> method.
+<b>End update</b>.</p>
+<p>
+The second part says that if the inline function uses a static
+local variable or a string literal,
+it is the same static local variable or string literal everywhere.
+This is required by the standard [dcl.fct.spec] and is what you
+would naturally expect:
+</p>
+<pre>
+int inline count()
+{
+ static int c = 0;
+ return ++c;
+}
+</pre>
+<p>
+You expect there to be only one counter.
+</p>
+<p>
+And the final paragraph:
+</p>
+<blockquote class="q"><p>
+Exercise care when providing imported inline functions.
+For example, if you update the DLL,
+don’t assume that the client will use the changed version of the DLL.
+To ensure that you are loading the proper version of the DLL,
+rebuild the DLL’s client as well.
+</p></blockquote>
+<p>
+This is just working through the consequences of the language requirement
+[dcl.fct.spec] that an inline function “shall have exactly the
+same definition” everywhere.
+If you change the definition in the exporting DLL
+and don’t recompile the importing DLL with the new definition,
+you have violated a language constraint and the behavior is undefined.
+</p>
+<p>
+So there you have it.
+The rules of inline exported functions translated into English.</p>
+
+
+</body>

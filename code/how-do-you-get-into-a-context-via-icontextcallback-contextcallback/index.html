@@ -1,0 +1,124 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do you get into a context via <code>IContext­Callback::</code><code>Context­Callback</code>?</h1>  <!-- .entry-meta -->
+
+<p><a href="/none/yo-dawg-i-hear-you-like-com-apartments-so-i-put-a-com-apartment-in-your-com-apartment-so-you-can-com-apartment-while-you-com-apartment"> For the past</a> <a href="https://devblogs.microsoft.com/oldnewthing/20191127-00/?p=103153"> few articles</a>, I’ve been talking about COM contexts and how you can use them to resolve the impasse that is created when the COM programming model requires you to keep your DLL loaded because there are still outstanding references to objects in it, but a competing programming model (say, a Windows NT service or an application’s custom plug-in model) requires you to unload your DLL.</p>
+<p>As I noted before, the method for doing this is the <code>IContext­Callback::</code><code>Context­Callback</code> method. When you call this method, you provide a callback function: The <code>IContext­Callback::</code><code>Context­Callback</code> switches to the target context and calls your callback function. When your callback function returns, its <code>HRESULT</code> return value is propagated out of the context back to the original caller.</p>
+<p>Okay, now here is where I admit that the <code>IContext­Callback::</code><code>Context­Callback</code> method is kind of weird. It’s weird because it’s really a backdoor into the very low-level COM infrastructure. This is the same infrastructure that COM itself uses to marshal method calls, but we’re repurposing it to marshal a simple function call.</p>
+<p>The parameters to <code>IContext­Callback::</code><code>Context­Callback</code> are as follows:</p>
+<ul>
+<li>A callback function. This is the function that executes in the context.</li>
+<li>A pointer to a <code>ComCallData</code> structure. The only thing interesting in this structure is the <code>pUserDefined</code>, which allows you to pass a pointer’s worth of data to the callback.</li>
+<li>An interface ID that represents the interface you are fake-marshaling.</li>
+<li>A zero-based index representing the method on the interface you are fake-marshaling.</li>
+<li>A reserved parameter that must be <code>nullptr</code>.</li>
+</ul>
+<p>I say “fake-marshaling” because what we’re doing is prank-calling the existing marshaling infrastructure.</p>
+<blockquote class="m">
+<p>Two teenagers sit at a kitchen table. One is on the phone.</p>
+<p>“Um, hi, is this the COM marshaler? Great. Could you uh marshal a method call into a context for me?” (stifled giggle)</p>
+<p>(regains composure) “No, I’m totally serious.”</p>
+<p>“Who is this?” (looks at other prankster nervously) “This is um… your boss.”</p>
+<p>“The object is in this context I’m giving you. Do you see it? Okay, great. The interface is <code>IID_</code><code>ITotally­Not­A­Joke</code>.”</p>
+<p>(to other prankster) “I think they’re falling for it.”</p>
+<p>(to phone) “What’s the method index? Um…” (looks at other prankster, who shrugs) “Five? Yeah, five.”</p>
+<p>“Uh huh. Okay, great. Just marshal that method call for me, okay? I’ll stay on the line until you’re done. Thanks.”</p>
+</blockquote>
+<p>What you’ve done is ask the COM infrastructure to marshal the specified method on the specified interface to an object living inside that context. COM thinks that your callback is going to invoke the target method, but instead, your callback is going to do something different entirely. The net effect is that you managed to get your callback to execute inside the context.</p>
+<p>Since this is a prank call, you have to be careful not to raise any suspicions. The interface must not be <code>IUnknown</code>, because the COM marshaler treats <code>IUnknown</code> as a special case.¹ Similarly, the method index must not be less than 3, because the first three methods on every interface come from <code>IUnknown</code>.²</p>
+<p>In practice, people tend to pick <code>IContext­Callback</code> as the fake-marshaled interface and 5 as the fake-marshaled method index.</p>
+<p>Now, it turns out that COM is not a total dupe when it comes to these fake-marshaled calls. Once they realized that the interface ID and method index were basically-garbage parameters, they decided to put them to use: You can request particular behavior by passing special sentinel values. Therefore, in practice, the values for the fake-marshaled interface and method index are as follows:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Behavior</th>
+<th>Interface ID</th>
+<th>Method index</th>
+</tr>
+<tr>
+<td>Classic</td>
+<td><code>IID_</code><code>Context­Callback</code></td>
+<td>5</td>
+</tr>
+<tr>
+<td>No activity lock</td>
+<td><code>IID_</code><code>IEnter­Activity­With­No­Lock</code></td>
+<td>5</td>
+</tr>
+<tr>
+<td>No ASTA reentrancy</td>
+<td><code>IID_</code><code>ICallback­With­No­Reentrancy­To­Application­STA</code></td>
+<td>5</td>
+</tr>
+</tbody>
+</table>
+<p>For general purpose use (i.e., if you don’t have any need for the other flavors), the recommended practice is to disable ASTA reentrancy, but you’ll see the classic version in older code.</p>
+<p>The callback is executed in the target context, switching threads if necessary, and the return value of the callback becomes the return value of the <code>Context­Callback</code> method.</p>
+<p>Here’s a handy wrapper function.</p>
+<pre>template&lt;typename TLambda&gt;
+HRESULT InvokeInContext(IContextCallback* context, TLambda&amp;&amp; lambda)
+{
+  ComCallData data;
+  data.pUserDefined = &amp;lambda;
+  return context-&gt;ContextCallback([](ComCallData* data) -&gt; HRESULT {
+    auto&amp; lambda =
+      *reinterpret_cast&lt;TLambda*&gt;(data-&gt;pUserDefined);
+    return lambda();
+  }, &amp;data, IID_ICallbackWithNoReentrancyToApplicationSTA, 5, nullptr);
+}
+</pre>
+<p>As a convenience, we can permit the lambda to return <code>void</code>, in which case we treat it as if it had returned <code>S_OK</code>.</p>
+<pre>template&lt;typename TLambda&gt;
+HRESULT InvokeInContext(IContextCallback* context, TLambda&amp;&amp; lambda)
+{
+  ComCallData data;
+  data.pUserDefined = &amp;lambda;
+  return context-&gt;ContextCallback([](ComCallData* data) -&gt; HRESULT {
+    auto&amp; lambda =
+      *reinterpret_cast&lt;TLambda*&gt;(data-&gt;pUserDefined);
+    <span style="color: blue;">if constexpr (std::is_same_v&lt;void, decltype(lambda())&gt;) {
+      lambda();
+      return S_OK;
+    } else {
+      return lambda();
+    }</span>
+  }, &amp;data, IID_ICallbackWithNoReentrancyToApplicationSTA, 5, nullptr);
+}
+</pre>
+<p>Creating an object inside a context and marshaling it out could be written something like this:</p>
+<pre>HRESULT CreateSomethingInContext(ISomething** something)
+{
+  *something = nullptr;
+  Microsoft::WRL::AgileRef agileRef;
+  HRESULT hr = InvokeInContext(context, [&amp;]()
+  {
+    Microsoft::WRL::ComPtr&lt;ISomething&gt; something;
+    HRESULT hr = MakeSomething(&amp;something);
+    if (SUCCEEDED(hr)) {
+     hr = something.AsAgile(&amp;agileRef);
+    }
+    return hr;
+  });
+  if (SUCCEEDED(hr)) {
+    hr = agileRef.CopyTo(something);
+  }
+  return hr;
+}
+</pre>
+<p>Inside the context, we create the <code>Something</code> and convert it to an agile reference, which we store in the <code>agileRef</code> variable, which is shared by reference with the code that runs outside the context. This is legal because agile references can be taken freely across contexts. When we’re back outside the context, we convert the agile reference to an <code>ISomething</code>, which will cause a proxy to be created, and it’s that proxy which we return to the caller.</p>
+<p>Later, we can disconnect all the proxies from the context:</p>
+<pre>HJRSULT DisconnectAllProxiesFromContext()
+{
+  return InvokeInContext(context, []()
+  {
+    return CoDisconnectContext(INFINITE);
+  });
+}
+</pre>
+<p>Next time, we’ll see how we can use existing contexts, rather than creating our own custom ones.</p>
+<p>¹ COM has special knowledge of the methods of <code>IUnknown</code> because that’s the interface that everything else is built out of. The <code>IUnknown</code> interface is the foot in the door that makes the rest of marshaling possible.</p>
+<p>For example, when you call <code>IUnknown::AddRef</code> on a proxy, it doesn’t marshal the <code>AddRef</code> call to the original object. it merely updates the reference count of the proxy. If you prank-called COM and said, “Yeah, can you get all ready to call <code>IUnknown::</code><code>AddRef</code>, but at the last minute, instead of doing the <code>AddRef</code>, just call me back,” it would say, “Well, I know that <code>IUnknown::</code><code>AddRef</code> doesn’t require any context switching at all, so I can optimize out the whole thing.”</p>
+<p>² There may be other interfaces that the COM marshaler gives special treatment, like <code>IInspectable</code> and <code>IWeakReference</code>, so you should avoid those too. If you stick to the values in the table, then you’ll avoid the problems.</p>
+<p> </p>
+
+
+</body>

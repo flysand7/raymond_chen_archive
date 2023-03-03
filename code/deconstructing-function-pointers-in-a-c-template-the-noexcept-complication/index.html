@@ -1,0 +1,78 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Deconstructing function pointers in a C++ template, the noexcept complication</h1>  <!-- .entry-meta -->
+
+<p>Last time, we put together a little traits class to <a href="/code/deconstructing-function-pointers-in-a-c-template"> decompose a function pointer into its components</a>. But one thing missing from our class is the <code>noexcept</code> qualifier.</p>
+<p>For the remainder of the discussion, I’ve removed the <code>First­Arg</code> and <code>Last­Arg</code> type aliases, since I came to the conclusion that they aren’t really needed. What’s left is this:</p>
+<pre>template&lt;typename R, typename... Args&gt;
+struct FunctionTraitsBase
+{
+  using RetType = R;
+  using ArgTypes = std::tuple&lt;Args...&gt;;
+  static constexpr std::size_t ArgCount = sizeof...(Args);
+  template&lt;std::size_t N&gt;
+  using NthArg = std::tuple_element_t&lt;N, ArgTypes&gt;;
+};
+
+template&lt;typename F&gt; struct FunctionTraits;
+
+template&lt;typename R, typename... Args&gt;
+struct FunctionTraits&lt;R(*)(Args...)&gt;
+    : FunctionTraitsBase&lt;R, Args...&gt;
+{
+  using Pointer = R(*)(Args...);
+};
+</pre>
+<p>But it falls apart when we give it a <code>noexcept</code> function pointer. (Note that <code>noexcept</code> did not become part of the function pointer type until C++17.)</p>
+<pre>void f()
+{
+  using T = int(*)() noexcept;
+  using R = FunctionTraits&lt;T&gt;::RetType; // error
+}
+</pre>
+<p>There is no match for <code>T</code> because none of our specializations support <code>noexcept</code> function pointers.</p>
+<p>So let’s add <code>noexcept</code> to our signatures. Let’s try this version, which takes advantage of the fact that <code>noexcept</code> takes a Boolean parameter that says whether the <code>noexcept</code> applies. Saying <code>noexcept</code> with no parameters is shorthand for <code>noexcept(true)</code>, and omitting <code>noexcept</code> is the same as <code>noexcept(false)</code>.</p>
+<pre>template&lt;typename R, typename... Args, bool Nonthrowing&gt;
+struct FunctionTraits&lt;R(*)(Args...) noexcept(Nonthrowing)&gt;
+    : FunctionTraitsBase&lt;R, Args...&gt;
+{
+  using Pointer = R(*)(Args...) noexcept(Nonthrowing);
+  static constexpr bool IsNoexcept = Nonthrowing;
+};
+</pre>
+<p>The Microsoft compiler doesn’t like it:</p>
+<pre style="white-space: pre-wrap;">// MSVC
+error C2057: expecting constant expression
+    struct FunctionTraits&lt;R(*)(Args...) noexcept(Nonthrowing)&gt;
+                                                 ^^^^^^^^^^^
+error C27027: 'Nonthrowing': template parameter not used or deducible
+</pre>
+<p>icc also doesn’t like it, but for a different reason: It’s perfectly happy to match the partial specialization to a non-<code>noexcept</code> function, but thinks it doesn’t apply to a <code>noexcept</code> function.</p>
+<pre>    // icc is okay with this
+    using Test1 = FunctionTraits&lt;int(*)(float) noexcept&gt;;
+
+    // but not this. "error: incomplete type is not allowed"
+    using Test2 = FunctionTraits&lt;int(*)(float) noexcept&gt;;
+</pre>
+<p>On the other hand, gcc and clang are okay with it and deduce <code>Nonthrowing</code> appropriately. I’m not sure who is right. (I didn’t check icc.)</p>
+<p>Well that’s a bummer. The parameter to <code>noexcept</code> is not deducible by the Microsoft compiler. We’ll just have to add a separate specialization.</p>
+<pre>template&lt;typename R, typename... Args&gt;
+struct FunctionTraits&lt;R(*)(Args...)&gt;
+    : FunctionTraitsBase&lt;R, Args...&gt;
+{
+  using Pointer = R(*)(Args...);
+  constexpr static bool IsNoexcept = false;
+};
+
+template&lt;typename R, typename... Args&gt;
+struct FunctionTraits&lt;R(*)(Args...) noexcept&gt;
+    : FunctionTraitsBase&lt;R, Args...&gt;
+{
+  using Pointer = R(*)(Args...);
+  constexpr static bool IsNoexcept = true;
+};
+</pre>
+<p>Okay, so that takes care of the <code>noexcept</code> wrinkle. We’ll look at another attribute next time.</p>
+<p><b>Update</b>: Paragraph [temp.deduct.type]/8 of the C++ specification lists the deducible contexts, and the <code>noexcept</code> specifier is not on the list. Therefore, MSVC is correct to reject it, and gcc and clang’s behavior are nonstandard extensions. This was tracked as Core Working Group <a href="https://cplusplus.github.io/CWG/issues/2355.html"> issue number CWG2355</a>, with a vote to revise the standard <a href="https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2021/p1018r9.html#CWG2355"> passing in January 2022</a> and accepted on May 21, 2022. MSVC implemented the language change in February 2020.</p>
+
+
+</body>

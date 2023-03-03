@@ -1,0 +1,95 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Can an x64 function repurpose parameter home space as general scratch space?</h1>  <!-- .entry-meta -->
+
+<p>
+We saw some time ago that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/01/14/58579.aspx">
+the x64 calling convention in Windows</a>
+reserves space for the register parameters on the stack,
+in case the called function wants to spill them.
+But can the called function use the memory for other purposes, too?
+</p>
+<p>
+You sort of already know the answer to this question.
+Consider this function:
+</p>
+<pre>
+void testfunction(int a)
+{
+ a = 42;
+}
+</pre>
+<p>
+How would a naïve compiler generate code for this function?
+</p>
+<pre>
+testfunction:
+    sub rsp, 8 ;; realign the stack
+    ;; spill all register parameters into home locations
+    mov [rsp+0x10], rcx
+    mov [rsp+0x18], rdx
+    mov [rsp+0x20], r8
+    mov [rsp+0x28], r9
+    ;; a = 42
+    mov [rsp+0x10], 42
+    ;; return
+    add rsp, 8 ;; clean up local frame
+    ret
+</pre>
+<p>
+Observe that after spilling the register parameters into their
+home locations onto the stack,
+the function modified the local variable,
+which updated the value in the home location.
+</p>
+<p>
+Since a function can arbitrarily modify a parameter,
+you can see that a function is therefore allowed to arbitrarily
+modify a parameter’s home location.
+At which point you can see that an optimizing compiler might
+choose an arbitrary value completely unrelated to the parameter.
+</p>
+<p>
+Our test function has only one parameter.
+What about the other three home registers?
+</p>
+<blockquote class="q"><p>
+The caller is responsible for allocating space for parameters to the callee,
+and
+<a href="http://msdn.microsoft.com/library/ms235286.aspx">
+must always allocate sufficient space for the 4 register parameters</a>,
+even if the callee doesn’t have that many parameters.
+</p></blockquote>
+<p>
+A function can therefore treat those 32 bytes as
+<i>bonus free play</i>.
+The rationale behind those 32 bytes is that it gives you a place
+to spill your inbound register
+parameters so that they will be adjacent to the
+stack-based parameters.
+(We saw how the naïve compiler took advantage of this by
+not trying to be clever in its function prologue and simply
+spilling all register parameters whether it needs them or not.)
+</p>
+<p>
+Nevertheless, you are free to use them for whatever purpose you like,
+and if you’re looking at heavily-optimized code,
+you’ll probably find that the compiler found all sorts of clever
+things it can do with them.
+For example, a common trick is to use them to save the nonvolatile
+registers that the function locally uses to hold the corresponding
+parameter!
+</p>
+<p>
+(Did this article look familiar?
+Turns out
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/03/02/10135747.aspx">
+I covered this article a few years ago</a>,
+but I’m senile and accidentally repeated a topic.
+And since I put so much effort into writing it,
+I’m going to make you suffer through it,
+even though it’s a repeat.
+Hey, television programs repeat during the summer.)</p>
+
+
+</body>

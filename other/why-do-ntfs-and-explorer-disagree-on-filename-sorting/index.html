@@ -1,0 +1,168 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why do NTFS and Explorer disagree on filename sorting?</h1>  <!-- .entry-meta -->
+
+<p>Some people have noticed that NTFS automatically sorts filenames, but does so in a manner different from Explorer. Why is that?
+ For illustration purposes, I created files with the following names:</p>
+<table>
+<tr>
+<th>Name    </th>
+<th>Code                          point </th>
+<th>Description           </th>
+</tr>
+<tr>
+<td>a</td>
+<td>U+0061</td>
+<td>Latin small letter A  </td>
+</tr>
+<tr>
+<td>b</td>
+<td>U+0062</td>
+<td>Latin small letter B  </td>
+</tr>
+<tr>
+<td>×</td>
+<td>U+00D7</td>
+<td>Multiplication sign   </td>
+</tr>
+<tr>
+<td>å</td>
+<td>U+00E5</td>
+<td>Latin small letter A                                         with ring above       </td>
+</tr>
+<tr>
+<td>ø</td>
+<td>U+00F8</td>
+<td>Latin small letter O                                         with stroke           </td>
+</tr>
+</table>
+<p> And here’s the sort order for various scenarios, at least on my machine. (You’ll later see why it’s important whose machine you test on.)</p>
+<table>
+<tr>
+<th>Plain “dir” command</th>
+</tr>
+<tr>
+<td>a</td>
+<td>U+0061</td>
+<td>Latin small letter A  </td>
+</tr>
+<tr>
+<td>b</td>
+<td>U+0062</td>
+<td>Latin small letter B  </td>
+</tr>
+<tr>
+<td>å</td>
+<td>U+00E5</td>
+<td>Latin small letter A                                         with ring above       </td>
+</tr>
+<tr>
+<td>×</td>
+<td>U+00D7</td>
+<td>Multiplication sign   </td>
+</tr>
+<tr>
+<td>ø</td>
+<td>U+00F8</td>
+<td>Latin small letter O                                         with stroke           </td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+<tr>
+<th>“dir /on”</th>
+</tr>
+<tr>
+<td>×</td>
+<td>U+00D7</td>
+<td>Multiplication sign   </td>
+</tr>
+<tr>
+<td>a</td>
+<td>U+0061</td>
+<td>Latin small letter A  </td>
+</tr>
+<tr>
+<td>å</td>
+<td>U+00E5</td>
+<td>Latin small letter A                                         with ring above       </td>
+</tr>
+<tr>
+<td>b</td>
+<td>U+0062</td>
+<td>Latin small letter B  </td>
+</tr>
+<tr>
+<td>ø</td>
+<td>U+00F8</td>
+<td>Latin small letter O                                         with stroke           </td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+<tr>
+<th>Explorer sorted by name</th>
+</tr>
+<tr>
+<td>×</td>
+<td>U+00D7</td>
+<td>Multiplication sign   </td>
+</tr>
+<tr>
+<td>a</td>
+<td>U+0061</td>
+<td>Latin small letter A  </td>
+</tr>
+<tr>
+<td>å</td>
+<td>U+00E5</td>
+<td>Latin small letter A                                         with ring above       </td>
+</tr>
+<tr>
+<td>b</td>
+<td>U+0062</td>
+<td>Latin small letter B  </td>
+</tr>
+<tr>
+<td>ø</td>
+<td>U+00F8</td>
+<td>Latin small letter O                                         with stroke           </td>
+</tr>
+</table>
+<p> First, notice that Explorer and “dir /on” agree on the alphabetic sort order. (<a href="http://blogs.msdn.com/michkap/archive/2005/01/05/346933.aspx">Once you throw digits into the mix, things diverge</a>.) This is not a coincidence. Both are using the default locale’s word sort algorithm.
+ Why does the raw NTFS sort order differ?
+ Because NTFS’s raw sort order has different goals.
+ The “dir /on” and Explorer output are sorting the items for humans. When sorting for humans, you need to respect their locale. If my computer were in Sweden, Explorer and “dir /on” would have sorted the items in a different order:</p>
+<table>
+<tr>
+<td>×</td>
+<td>U+00D7</td>
+<td>Multiplication sign   </td>
+</tr>
+<tr>
+<td>a</td>
+<td>U+0061</td>
+<td>Latin small letter A  </td>
+</tr>
+<tr>
+<td>b</td>
+<td>U+0062</td>
+<td>Latin small letter B  </td>
+</tr>
+<tr>
+<td>å</td>
+<td>U+00E5</td>
+<td>Latin small letter A                                         with ring above       </td>
+</tr>
+<tr>
+<td>ø</td>
+<td>U+00F8</td>
+<td>Latin small letter O                                         with stroke           </td>
+</tr>
+</table>
+<p> You can ask a Swede why this is the correct sort order if you’re that curious.  My point is that different locales have different sorting rules.
+ NTFS’s raw sort order, on the other hand, is not for humans. As we saw above, sorting for humans can result in different results depending on which human you ask. But there is only one order for files on the disk, and NTFS needs to apply a consistent rule so that it can find a file when asked for it later.
+ In order to maintain this consistency, the NTFS raw sort order cannot be dependent upon such fickle properties as the current user’s locale.  It needs to lock in a sort algorithm and stick to it. As Michael Kaplan pointed out earlier, <a href="http://blogs.msdn.com/michkap/archive/2005/01/16/353873.aspx"> NTFS captures the case mapping table at the time the drive is formatted</a> and continues to use that table, even if the OS’s case mapping tables change subsequently. Once the string has been converted to uppercase, it then needs to be sorted. Since this is not for humans, there’s no need to implement the complex rules regarding secondary and tertiary keys, the interaction between alphanumerics and punctuation, and all the other things that make sorting hard. It just compares the code points as binary values, also known as <a href="http://blogs.msdn.com/michkap/archive/2004/12/29/344136.aspx"> an ordinal sort</a>.</p>
+<p> In summary, therefore, Explorer sorts the items so you (a human) can find them. NTFS sorts the items so it (the computer) can find them. If you’re writing a program and you want the results of a directory listing to be sorted, then sort it yourself according to the criteria of your choice. </p>
+
+
+</body>

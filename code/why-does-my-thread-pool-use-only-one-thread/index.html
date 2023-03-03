@@ -1,0 +1,103 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does my thread pool use only one thread?</h1>  <!-- .entry-meta -->
+
+<p>
+The thread pool is about reducing thread creating/termination
+overhead by consolidating work that would normally go onto separate
+threads into a small number of threads.
+In a sense, you shouldn’t be surprised that the thread pool is using
+only one thread; instead, you should be happy!
+</p>
+<blockquote class="m"><p>
+I switched to using the thread pool, and I’m finding that it’s
+using only one thread.
+To demonstrate this, I wrote a test program that fires off a bunch
+of “work items” into the thread pool via
+<code>QueueUserWorkItem</code>.
+Each work item does some intensive computations.
+What I’m seeing is that they are all running serially on a single
+thread instead of running in parallel.
+Since I have a dual-processor machine, this leaves half of
+the computing capacity unutilized.
+If I create a separate thread for each “work item”,
+then I get (not surprising) multiple threads and 100% CPU utilization.
+Why does my thread pool use only one thread?
+</p></blockquote>
+<p>
+The purpose of the thread pool, as I noted above, was to reduce
+the overhead of creating and terminating threads by running
+multiple tasks on a thread.
+For example, suppose you have three short tasks, say 1ms each.
+If you put each one on its own thread, you have
+</p>
+<ul>
+<li>
+    Task1.CreateThread,
+    Task1.Run,
+    Task1.EndThread
+</li>
+<li>
+    Task2.CreateThread,
+    Task2.Run,
+    Task2.EndThread
+</li>
+<li>
+    Task3.CreateThread,
+    Task3.Run,
+    Task3.EndThread
+</li>
+</ul>
+<p>
+Now suppose, for the purpose of this discussion, that creating
+and terminating a thread take 1ms each.
+if you create a separate thread for each task, you’ve spent
+6ms on thread overhead and only 3ms doing actual work.
+</p>
+<p>
+What if we could run multiple tasks on a single thread?
+That way, the cost of creating and terminating the thread
+could be amortized over all the tasks.
+</p>
+<ul>
+<li>
+    ThreadPool.CreateThread,
+    Task1.Run,
+    Task2.Run,
+    Task3.Run,
+    ThreadPool.EndThread
+</li>
+</ul>
+<p>
+Ah, now we have only 2ms of overhead for 3ms of work.
+Not great, but certainly better than what we had before.
+If we can pack more tasks into the thread pool,
+the fixed overhead of creating and terminating the thread
+becomes proportionally less.
+</p>
+<p>
+The thread pool is designed for handling a collection of
+brief tasks, since those are the tasks that would best benefit
+from thread pooling.
+If you had a task that ran for ten seconds, putting it on
+the thread pool wouldn’t yield much in the way of savings;
+that 2ms overhead you avoided is just noise compared to your
+ten seconds of running time.
+(Last year, we saw
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/03/14/551140.aspx#551339">
+another case of a series of tasks ill-suited to thread pooling</a>.)
+</p>
+<p>
+As an accommodation for people who will put the occasional
+long-running task onto the thread pool (perhaps because it
+simplifies the program logic by treating everything as a
+work item), the thread pool allows you to give it a heads-up
+by
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/07/22/441785.aspx">
+passing the <code>WT_EXECUTELONGFUNCTION</code> flag</a>.
+But that’s not really what the thread pool is for.
+It’s for quick-running tasks for which the overhead of creating
+a separate thread would be disproportionate to the work
+done by the task itself.</p>
+
+
+</body>

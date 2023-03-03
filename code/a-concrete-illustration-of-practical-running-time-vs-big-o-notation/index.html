@@ -1,0 +1,211 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A concrete illustration of practical running time vs big-O notation</h1>  <!-- .entry-meta -->
+
+<p><p>
+One of the
+<a href="http://channel9.msdn.com/Showpost.aspx?postid=116704">
+five things every Win32 programmer needs to know</a>
+is that memory latency
+can throw your big-<i>O</i> computations out the window.
+Back in 2003, I ran into a concrete example of this.
+</p>
+<p>
+Somebody started with the algorithm presented in
+<a href="http://www.cs.princeton.edu/~rs/strings/">
+<i>Fast Algorithms for Sorting and Searching Strings</i></a>
+by
+<a href="http://www.cs.bell-labs.com/cm/cs/pearls/">
+Jon L. Bentley</a>
+and
+<a href="http://www.cs.princeton.edu/~rs/">
+Robert Sedgewick</a>,
+implemented it in C#, and compared the performance
+against a <code>HashTable</code>, <code>TernaryTree</code>
+and <code>SortedList</code>.
+Surprisingly, the hash table won on insertion and retrieval of
+tens of thousands of randomly-generated strings.
+Why?
+</p>
+<p>
+Remember, big-<i>O</i> notation hides the constants,
+and those constants can get pretty big.
+What’s more, the impact of those constants is critical
+for normal-sized workloads.
+The big-<i>O</i> notation allows you to compare algorithms
+when the data sets become extremely large,
+but you have to keep the constants in mind
+to see when the balance tips.
+</p>
+<p>
+The central point of my presentation at the PDC was
+that complexity analysis typically ignores memory bandwidth effects
+and assumes that all memory accesses perform equally.
+This is rarely true in practice.
+As we saw, leaving L2 is a big hit on performance,
+and accessing the disk is an even greater hit.
+</p>
+<p>
+The tree doesn’t rebalance,
+so inserting strings in alphabetical order
+will result in a bad search tree.
+(They do call this out in their paper.)
+To locate a <i>k</i>-character string,
+Bentley-Sedgewick traverses at least <i>k</i> pointers, usually more.
+(“How much more” depends on how many prefixes are shared.
+More shared prefixes = more pointers traversed.)
+It also requires <i>k</i>(<i>4p</i>) bytes of memory to store that string,
+where <i>p</i> is the size of a pointer.
+Remember those pesky constants.
+High constant factor overhead starts to kill you
+when you have large datasets.
+</p>
+<p>
+More on those constants:
+Complexity analysis assumes that
+an add instruction executes in the same amount of time as a memory access.
+This is not true in practice,
+but the difference is a bounded constant factor,
+so it can be ignored for big-<i>O</i> purposes.
+Note, however, that that constant often exceeds
+one million if you take a page fault.
+One million is a big constant.
+</p>
+<p>
+Going back to memory bandwidth effects:
+At each node, you access one character and one pointer.
+So you use only 6 bytes out of a 64-byte cache line.
+You’re wasting 90% of your bus bandwidth and you will certainly fall out of L2.
+</p>
+<p>
+Bentley-Sedgewick says that this is beaten out
+by not traversing the entire string being searched for in the case of a miss.
+<i>I.e., their algorithm is tuned for misses</i>.
+If you expect most of your probes to be misses, this can be a win.
+(The entire string is traversed on a hit,
+of course, so there is no gain for hits.)
+</p>
+<p>
+Note also that this “cost” for traversing the string on a miss
+is overstated due to memory bandwidth effects.
+The characters in a string are contiguous,
+so traversing the string costs you only <i>L</i>/64 cache lines,
+where <i>L</i> is the length of the string,
+and one potential page fault,
+assuming your string is less than 4KB.
+Traversing the tree structure costs you at least <i>L</i> cache lines
+and probably more depending on your branching factor,
+as well as <i>L</i> potential page faults.
+</p>
+<p>
+Let’s look at the testing scenario again.
+The testing was only on hits,
+so the improved performance on misses was overlooked entirely.
+What’s more,
+the algorithm takes advantage of strings with common prefixes,
+but the testing scenario used randomly-generated strings,
+which generates a data set opposite from the one the algorithm
+was designed for,
+since randomly-generated strings are spread out across the problem space
+instead of being clustered with common prefixes.
+</p>
+<p>
+Those are some general remarks; here are some performance notes
+specific to the CLR.
+<p>
+I don’t know whether it does or not, but
+I would not be surprised if <code>System.String.GetHashCode</code>
+caches the hash value in the string,
+which would mean that the cost of computing the hash
+is shared by everybody who uses it in a hashing operation.
+(Therefore, if you count the cost incurred only by the algorithm,
+hashing is free.)
+<p>
+Note also that Bentley-Sedgewick’s <code>insert()</code> function
+stores the object back into the tree in the recursive case.
+Most of the time, the value being stored is the same
+as the value that was already there.
+This dirties the cache line for no reason
+(forcing memory bandwidth to be wasted on a flush)
+and—particularly
+<a href="http://msdn2.microsoft.com/en-us/library/ms973837.aspx">
+painful for the CLR</a>—you hit
+the
+<a href="http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.54.1655">
+write barrier</a>
+and end up dirting a whole boatload of
+<a href="http://portal.acm.org/citation.cfm?doid=66068.66077">
+cards</a>.
+A very small change avoids this problem:
+Change
+</p>
+<pre>
+    p-&gt;eqkid = insert(p-&gt;eqkid, ++s); 
+</pre>
+<p>
+to
+</p>
+<pre>
+    Tptr newkid = insert(p-&gt;eqkid, ++s);
+    if (p-&gt;eqkid != newkid) p-&gt;eqkid = newkid;
+</pre>
+<p>
+(and similarly in the other branches).
+“This code is short but subtle, and worth careful study.”  How very true.
+</p>
+<p>
+Note also that if you use their “sleazy hack” of
+coercing a string to a <code>Tptr</code>,
+you had to have changed the type of <code>eqkid</code> from
+<code>Tptr</code> to <code>object</code>.
+This introduces a CLR type-check into the inner loop.
+Congratulations, you just tubed the inner loop performance.
+</p>
+<p>
+Now go to the summary at the end of the article.
+<ol>
+<li>“Ternary trees do not incur extra overhead
+    for insertion or successful searches.”
+    I’m not sure what “extra” means here,
+    but hash tables have the same behavior.
+<li>“Ternary trees are usually substantially faster
+    than hashing for unsuccessful searches.”
+    Notice that they are optimized for misses.
+<li>“Ternary trees gracefully grow and shrink;
+    hash tables need to be rebuilt after large size changes.”
+    True, but the CLR hashtable does this so you
+    don’t have to. Somebody wrote it for you.
+<li>“Ternary trees support advanced searches
+    such as partial-match and near-neighbor search.”
+    These operations weren’t tested.
+<li>“Ternary trees support many other operations,
+    such as traversal to report items in sorted order.”
+    These operations weren’t tested either.
+</li></li></li></li></li></ol>
+<p>
+Notice that the article doesn’t claim that ternary trees
+are faster than hashing for successful searches.
+So if that’s all you’re testing, you’re testing the wrong thing.
+One of the big benefits of ternary trees
+is the new operations available (4 and 5),
+but if you’re not going to perform those operations,
+then you ended up paying for something you don’t use.
+</p>
+<p>
+There are several morals of the story.
+</p>
+<ol>
+<li>Constants are important.
+<li>Memory bandwith is important.
+<li>Performance optimizations for unmanged code
+    do not necessarily translate to managed code.
+<li>What are you really testing?
+</li></li></li></li></ol>
+<p>
+Mind you, Bentley and Sedgewick are not morons.  They know all this.
+</p>
+<p>
+[Typo fixed 11am, thanks Nathan_works and Jachym Kouba.]
+</p></p>
+
+
+</p></p></p></body>

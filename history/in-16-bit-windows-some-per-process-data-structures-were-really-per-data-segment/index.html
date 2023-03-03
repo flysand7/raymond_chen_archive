@@ -1,0 +1,18 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">In 16-bit Windows, some per-process data structures were really per-data segment</h1>  <!-- .entry-meta -->
+
+<p>In 16-bit Windows, one of the things you did at the start of your program (or more accurately, which the runtime did for you before calling your <code>WinMain</code>) was call the <code>Local­Init</code> function. This function initialized your local heap. </p>
+<p>When a process started, it was given a data segment, which it could use for whatever purpose it liked. This data segment was the <i>instance</i>, and its handle was the <i>instance handle</i>, the unit of identification for the process. You could have two copies of the program running, and they would share code, but have different data segments (different instances, different instance handles), so they operated on different sets of memory. </p>
+<p>This data segment was up to 64KB in size, and it held your program’s stack, heap, and atom table. The operating system set the stack pointer at the end of your instance data segment, so the stack was already taken care of. Setting up the other two, though, are on you. </p>
+<p>The <code>Local­Init</code> function takes your instance data segment and creates the necessary data structures to make it a heap. This is something the C runtime library startup code did for you. Once that’s done, you can call <code>Local­Alloc</code> to allocate memory from it. </p>
+<p>Once you initialized a data segment as a heap, it was also ready to serve as an atom table. </p>
+<p>While it’s normally the case that an application uses the local heap and atom table that comes in its instance data segment, it was technically legal to take any zero-initialized data segment and create a heap and atom table in it. </p>
+<p>The <code>Local­Init</code> function took three parameters: The data segment handle, a pointer to the first byte of memory you want to use as the heap, and a pointer to the last byte of memory you want to use as the heap. So it explicitly lets you pick the data segment and which bytes in that segment you want to turn into a heap. </p>
+<p>But the <code>Local­Alloc</code> function doesn’t have a parameter for the data segment handle. Neither does <code>Add­Atom</code>. They always operate on the current data segment, the one specified by the <code>ds</code> register. During execution of a program, the <code>ds</code> register holds that program’s instance data segment, so that all references to global variables are relative to that data segment. </p>
+<p>The trick is to load your custom data segment into the <code>ds</code> register before calling <code>Local­Alloc</code>, and then restoring the program’s instance data segment after the call returns. Similarly for the other heap and atom functions. </p>
+<p>Mind you, there was no way to express this in C, so you had to use either an assembly language wrapper or use inline assembly. That probably contributed to the fact that the trick was little-known and little-used. </p>
+<p>But if you knew the trick, you could set up your own local heap and atom table anywhere you liked. </p>
+<p>The dialog box manager in 16-bit Windows knew this trick, and if the dialog box contains any edit controls, then it sets up a new data segment to hold the data for those edit controls, so that the total text in the edit controls for the dialog box could go up to 64KB. (A single segment is used for all the edit controls in the dialog box.) There is a style <code>DS_</code><code>LOCAL­EDIT</code> which suppresses this behavior, in which case the memory for the edit controls come from the caller’s data segment. </p>
+
+
+</body>

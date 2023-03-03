@@ -1,0 +1,132 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Reading a contract from the other side: Application publishers</h1>  <!-- .entry-meta -->
+
+<p><a href="/oldnewthing/archive/2003/12/26/45979.aspx"> In an earlier article, I gave an example of reading a contract from the other side</a>. Here’s another example of how you can read a specification and play the role of the operating system.</p>
+<p>I chose this particular example because somebody wanted to do this and didn’t realize that everything they needed was already documented; they just needed to look at the documentation in a different light.</p>
+<p>The goal today is to mimic the list of programs that appears on the “Add New Programs” page of the Add or Remove Programs control panel. Note that in order for this list to appear at all, you need to be on a domain, and for the list to be nonempty, your domain controller needs to publish applications for domain members to install. Consequently, I suspect many of my readers won’t get to see any interesting results from this exercise, but then again, the point of exercise is not the result but merely the doing of it.</p>
+<p>The documentation for <a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/iapppublisher/iapppublisher.asp"> the IAppPublisher interface</a> describes how a publisher can register itself to appear in the list of programs that can be installed. All you have to do is read the documentation from the other side: Instead of reading documentation about a method and asking, “How would I implement this method?”, read it and ask, “How would I call this method?”</p>
+<p>The documentation says that an app publisher registers its CLSID under the specified registry key. Therefore, if you want to find all the app publishers, you need to enumerate that key.</p>
+<pre>#define REGSTR_PATH_PUBLISHERS  \
+    L"Software\\Microsoft"      \
+    L"\\Windows\\CurrentVersion\\App Management\\Publishers"
+
+    HKEY hkPub;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, REGSTR_PATH_PUBLISHERS,
+                      0, KEY_READ, &amp;hkPub) == ERROR_SUCCESS) {
+      WCHAR szKey[MAX_PATH];
+      for (DWORD dwIndex = 0;
+           RegEnumKeyW(hkPub, dwIndex, szKey, MAX_PATH) == ERROR_SUCCESS;
+           dwIndex++) {
+          ...
+      }
+      RegCloseKey(hkPub);
+    }
+</pre>
+<p>The documentation says that the subkeys have the CLSID in REG_SZ format, so that’s what we read out.</p>
+<pre>        WCHAR szCLSID[MAX_PATH];
+        LONG l = sizeof(szCLSID) - sizeof(WCHAR);
+        if (RegQueryValueW(hkPub, szKey, szCLSID, &amp;l) == ERROR_SUCCESS)
+          szCLSID[l/sizeof(WCHAR)] = 0;
+          CLSID clsid;
+          if (SUCCEEDED(<a href="http://msdn.microsoft.com/library/en-us/com/htm/cmf_a2c_3b3b.asp">CLSIDFromString</a>(szCLSID, &amp;clsid))) {
+            ...
+          }
+        }
+</pre>
+<p>Notice the extra care we take to avoid the problem of registry strings that aren’t null-terminated, as discussed in an earlier entry.</p>
+<p>The documentation quite explicitly states how this CLSID is used.</p>
+<blockquote class="q"><p><b>Add/Remove Programs</b> creates an instance of your object by calling <a href="http://msdn.microsoft.com/library/en-us/com/htm/cmf_a2c_1nad.asp"> CoCreateInstance</a> for your object and requests the approprite [sic] <b>IAppPublisher</b> interface when the <b>Add New Programs</b> view is populated.</p></blockquote>
+<p>Not much choice, now, is there. So we do what it says.</p>
+<pre>            IAppPublisher *ppub;
+            if (SUCCEEDED(CoCreateInstance(clsid, NULL,
+                            CLSCTX_ALL, IID_IAppPublisher,
+                          (void**)&amp;ppub))) {
+              ...
+              ppub-&gt;Release();
+            }
+</pre>
+<p>Okay, now that we have an app publisher, we can invoke the various methods on it to get information from that publisher. If we were more ambitious, we could ask for the categories but today we’re just going to be happy with enumerating the programs so we can print their names.</p>
+<pre>              <a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ienumpublishedapps/ienumpublishedapps.asp">IEnumPublishedApps</a> *penum;
+              if (SUCCEEDED(ppub-&gt;<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/iapppublisher/EnumApps.asp">EnumApps</a>(NULL, &amp;penum))) {
+                <a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ipublishedapp/ipublishedapp.asp">IPublishedApp</a> *papp;
+                while (penum-&gt;<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ienumpublishedapps/next.asp">Next</a>(&amp;papp) == S_OK) {
+                  ...
+                  papp-&gt;Release();
+                }
+                penum-&gt;Release();
+              }
+</pre>
+<p>The enumerator gives us an application interface, and we can use that interface to get information about the application and print it out.</p>
+<pre>                  <a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/structures/appinfodata.asp">APPINFODATA</a> info = { sizeof(info) };
+                  info.dwMask = AIM_DISPLAYNAME;
+                  if (SUCCEEDED(papp-&gt;<a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ishellapp/GetAppInfo.asp">GetAppInfo</a>(&amp;info)) &amp;&amp;
+                      (info.dwMask &amp; AIM_DISPLAYNAME)) {
+                    wprintf(L"%ls\n", info.pszDisplayName);
+                    CoTaskMemFree(info.pszDisplayName);
+                  }
+</pre>
+<p>We ask only for the display name, since that’s all we’re interested in today. In a more complicated program, we may ask for other data and would probably not release the IPublishedApp interface immediately, but rather hang onto it so we could invoke some other more interesting method like <a href="http://msdn.microsoft.com/library/en-us/shellcc/platform/shell/reference/ifaces/ipublishedapp/install.asp"> IPublishedApp::Install</a>.</p>
+<p>(Note that we have to use the correct memory allocator to free the memory.)</p>
+<p>Okay, let’s assemble all this into a simple console program.</p>
+<pre>#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;shappmgr.h&gt;
+#include &lt;stdio.h&gt;
+
+#define REGSTR_PATH_PUBLISHERS  \
+    L"Software\\Microsoft"      \
+    L"\\Windows\\CurrentVersion\\App Management\\Publishers"
+
+int __cdecl main(int argc, char **argv)
+{
+  if (SUCCEEDED(CoInitialize(NULL)) {
+    HKEY hkPub;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, REGSTR_PATH_PUBLISHERS,
+                      0, KEY_READ, &amp;hkPub) == ERROR_SUCCESS) {
+      WCHAR szKey[MAX_PATH];
+      for (DWORD dwIndex = 0;
+           RegEnumKeyW(hkPub, dwIndex, szKey, MAX_PATH) == ERROR_SUCCESS;
+           dwIndex++) {
+        WCHAR szCLSID[MAX_PATH];
+        LONG l = sizeof(szCLSID) - sizeof(WCHAR);
+        if (RegQueryValueW(hkPub, szKey, szCLSID, &amp;l) == ERROR_SUCCESS)
+          szCLSID[l/sizeof(WCHAR)] = 0;
+          CLSID clsid;
+          if (SUCCEEDED(CLSIDFromString(szCLSID, &amp;clsid))) {
+            IAppPublisher *ppub;
+            if (SUCCEEDED(CoCreateInstance(clsid, NULL,
+                            CLSCTX_ALL, IID_IAppPublisher,
+                          (void**)&amp;ppub))) {
+              IEnumPublishedApps *penum;
+              if (SUCCEEDED(ppub-&gt;EnumApps(NULL, &amp;penum))) {
+                IPublishedApp *papp;
+                while (penum-&gt;Next(&amp;papp) == S_OK) {
+                  APPINFODATA info = { sizeof(info) };
+                  info.dwMask = AIM_DISPLAYNAME;
+                  if (SUCCEEDED(papp-&gt;GetAppInfo(&amp;info)) &amp;&amp;
+                      (info.dwMask &amp; AIM_DISPLAYNAME)) {
+                    wprintf(L"%ls\n", info.pszDisplayName);
+                    CoTaskMemFree(info.pszDisplayName);
+                  }
+                  papp-&gt;Release();
+                }
+                penum-&gt;Release();
+              }
+              ppub-&gt;Release();
+            }
+          }
+        }
+      }
+      RegCloseKey(hkPub);
+    }
+    CoUninitialize();
+  }
+  return 0;
+}
+</pre>
+<p>When you run this program, a list of all programs published by your domain controller should go scrolling past. (As I noted at the beginning of this entry, you won’t see much if your computer is not on a domain or if your domain controller doesn’t publish any programs.)</p>
+<p>Yes, this program is not very pretty, because prettiness was not my goal. In real life, a lot of the mess would be moved out into helper functions, and you can clean it up even more by using a smart pointer library, but the goal here was not to write a pretty program; it was to show how something could be done by reading the specification from the other side.</p>
+<p>(Why don’t I use a smart pointer library? Because I try to write in “raw” C++ in order to avoid arguments about <a href="http://www.boost.org/libs/smart_ptr/index.html"> whose</a> <a href="http://msdn.microsoft.com/library/en-us/vclang98/html/MEMORY_auto_ptr.asp"> smart</a> <a href="http://msdn.microsoft.com/library/en-us/vclib/html/vclrfCAutoPtr.asp"> pointer</a> <a href="http://msdn.microsoft.com/library/en-us/vclang/html/_pluslang__com_ptr_t.asp"> library</a> is best, or why smart pointers are evil… It’s easy to convert “raw” C++ to use a smart pointer library, but it’s harder to convert from one smart pointer library to another.)</p>
+
+
+</body>

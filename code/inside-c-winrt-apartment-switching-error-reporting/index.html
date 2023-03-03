@@ -1,0 +1,125 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Inside C++/WinRT: Apartment switching: Error reporting</h1>  <!-- .entry-meta -->
+
+<p>So far, we’ve been looking at how C++/WinRT handles apartment switching, and I noted that everything works when it works. But what if it doesn’t work?</p>
+<p>Recall that the core of the apartment-switching code is this function:</p>
+<pre>void resume_apartment_sync(
+    com_ptr&lt;IContextCallback&gt; const&amp; context,
+    std::coroutine_handle&lt;&gt; handle)
+{
+    com_callback_args args{};
+    args.data = handle.address();
+
+    check_hresult(
+        context-&gt;ContextCallback(resume_apartment_callback,
+            &amp;args,
+            guid_of&lt;ICallbackWithNoReentrancyToApplicationSTA&gt;(),
+            5, nullptr));
+}
+</pre>
+<p>If the <code>ContextCallback</code> method fails, <code>check_hresult</code> will throw a C++/WinRT exception to whoever is calling.</p>
+<p>In the case of <code>co_await</code>‘ing an <code>apartment_<wbr/>context</code>, the caller is the <code>await_<wbr/>suspend()</code> that is running in the context of the calling coroutine, so the caller can handle (or not handle) the exception as it sees fit.</p>
+<p>The case that doesn’t work is the case where we are trying to return to the original apartment context when an awaited coroutine completes. In that case, the exception is thrown from the completion handler, which runs in the context of the completed coroutine, rather than the context of the resuming coroutine. That means that a failure to return to the original context is not catchable by the caller:</p>
+<pre>winrt::IAsyncAction Outer()
+{
+    co_await Inner();
+}
+</pre>
+<p>After <code>Inner()</code> completes, we try to return to the original COM context of <code>Outer()</code>, but if that fails, the exception is thrown in the <code>Completed</code> handler that we passed to <code>Inner</code>. The <code>Outer</code> never gets to see it. The <code>Outer</code> coroutine never resumes, which manifests itself as a hung coroutine (that is also leaked).</p>
+<p>To fix this, we need to resume the <code>Outer</code> coroutine, and then throw the exception as part of the execution of <code>Outer</code>. The <code>resume_<wbr/>apartment_<wbr/>sync()</code> function is not running in the context of the <code>Outer</code>, so it can’t throw the exception yet. It has to save the error, so it can be thrown later.</p>
+<pre>inline void resume_apartment_sync(
+    com_ptr&lt;IContextCallback&gt; const&amp; context,
+    coroutine_handle&lt;&gt; handle,
+    <span style="color: #08f;">int32_t* failure</span>)
+{
+    com_callback_args args{};
+    args.data = handle.address();
+    <span style="color: #08f;">auto result =</span>
+        context-&gt;ContextCallback(resume_apartment_callback,
+            &amp;args,
+            guid_of&lt;ICallbackWithNoReentrancyToApplicationSTA&gt;(),
+            5, nullptr);
+
+    <span style="color: #08f;">if (result &lt; 0) {
+        *failure = result;
+        handle();
+    }</span>
+}
+</pre>
+<p>If we are unable to resume the coroutine in the correct apartment, then we record the failure in the caller-provided location and then <i>resume the coroutine anyway</i> on the wrong thread. The expectation is that upon resumption, the coroutine will check that location and see that the apartment-switch failed and re-throw the exception, this time while inside the execution context of the <code>Outer</code>.</p>
+<p><b>Exercise</b>: Why does <code>resume_<wbr/>apartment_<wbr/>sync()</code> update <code>*failure</code> only if <code>Context­Callback</code> failed? Shouldn’t we update it on success, too?</p>
+<pre>    <span style="color: #08f;">*failure =</span>
+        context-&gt;ContextCallback(resume_apartment_callback,
+            &amp;args,
+            guid_of&lt;ICallbackWithNoReentrancyToApplicationSTA&gt;(),
+            5, nullptr);
+    <span style="color: #08f;">if (*failure &lt; 0) {
+        handle();
+    }</span>
+</pre>
+<p>The answer to the exercise is at the end of this article.</p>
+<p>We now need to teach our callers to call <code>resume_<wbr/>apartment_<wbr/>sync</code> in the new way:</p>
+<pre>struct apartment_awaiter
+{
+    apartment_context const&amp; context;
+    <span style="color: #08f;">int32_t failure = 0;</span>
+
+    bool await_ready() const noexcept
+    {
+        return false;
+    }
+
+    void await_suspend(coroutine_handle&lt;&gt; handle)
+    {
+        apartment_context extend_lifetime = context;
+        resume_apartment(context.context, handle,
+            <span style="color: #08f;">&amp;failure</span>);
+    }
+
+    void await_resume() const <span style="color: #c65353;">// <span style="text-decoration: line-through;">noexcept</span></span>
+    {
+        <span style="color: #08f;">check_hresult(failure);</span>
+    }
+};
+</pre>
+<p>When the coroutine resumes, it calls <code>await_resume()</code>, and that is where we check whether the apartment switch was successful. If not, we throw an exception from <code>await_resume()</code>, which is running in the context of <code>Outer</code> and therefore can be caught and reported like any other exception that occurs in a coroutine.</p>
+<p>We do the same thing for coroutine resumption after <code>co_await</code>‘ing a Windows Runtime asynchronous operation.</p>
+<pre>template &lt;typename Async&gt;
+struct await_adapter
+{
+    await_adapter(Async const&amp; async) : async(async) { }
+
+    Async const&amp; async;
+    <span style="color: #08f;">int32_t failure = 0;</span>
+
+    bool await_ready() const noexcept
+    {
+        return false;
+    }
+
+    void await_suspend(coroutine_handle&lt;&gt; handle) const
+    {
+        auto extend_lifetime = async;
+        async.Completed([
+            handle,
+            <span style="color: #08f;">this,</span>
+            context = resume_apartment_context()
+        ](auto&amp;&amp; ...)
+        {
+            resume_apartment(context.context, handle,
+                <span style="color: #08f;">&amp;failure</span>);
+        });
+    }
+
+    auto await_resume() const
+    {
+        <span style="color: #08f;">check_hresult(failure);</span>
+        return async.GetResults();
+    }
+};
+</pre>
+<p>Things are getting better, but there is still room for improvement. We’ll continue our study next time.</p>
+<p><b>Answer to exercise</b>: We cannot store the answer into <code>*failure</code>, because a successful call to <code>Context­Callback</code> resumes the coroutine. When the coroutine resumes, it calls <code>await_resume()</code> and then destructs the awaiter. If we had updated <code>*failure</code> on success, we risk writing to an already-destructed object and corrupting memory.</p>
+
+
+</body>

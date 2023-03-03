@@ -1,0 +1,97 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Mundane std::tuple tricks: Creating interesting index sequences</h1>  <!-- .entry-meta -->
+
+<p>We saw last time that <a href="https://devblogs.microsoft.com/oldnewthing/20200624-00/?p=103886"> manipulating tuples boils down to the <code>index_sequence</code></a>. The problem is that the C++ standard library doesn’t provide very much in the way of helpers to manipulate these index sequences.</p>
+<p>The only ones that come with the standard library are <code>make_integer_sequence</code>, a helper for generating the integer sequence <code>0, 1, 2, …, N-1</code>, and its close relative <code>make_index_sequence</code>, which does the same thing for <code>size_t</code>.</p>
+<p>Note that the template parameter to <code>make_index_sequence</code> is the size of the resulting index sequence, not the highest value in the index sequence. The highest value is one less than the size since the sequence starts at zero.</p>
+<p>Even with only index sequences that start at zero, we can do something interesting.</p>
+<pre>template&lt;typename Tuple&gt;
+auto remove_last(Tuple&amp;&amp; tuple)
+{
+  constexpr auto size = std::tuple_size_v&lt;Tuple&gt;;
+  using indices = std::make_index_sequence&lt;size-1&gt;;
+  return select_tuple(std::forward&lt;Tuple&gt;(tuple), indices{});
+}
+</pre>
+<p>The <code>remove_last</code> function removes the last element from the tuple and returns what’s left. We do this by extracting the size of the source tuple, subtracting one, and using that to generate a new index sequence that goes from 0 to <code>size</code> − 2, for a total of <code>size</code> − 1 elements.</p>
+<p>Okay, but what about other index sequences? We’ll have to build those ourselves.</p>
+<pre>template&lt;std::size_t N, typename Seq&gt; struct offset_sequence;
+
+template&lt;std::size_t N, std::size_t... Ints&gt;
+struct offset_sequence&lt;N, std::index_sequence&lt;Ints...&gt;&gt;
+{
+ using type = std::index_sequence&lt;Ints + N...&gt;;
+};
+template&lt;std::size_t N, typename Seq&gt;
+using offset_sequence_t = typename offset_sequence&lt;N, Seq&gt;::type;
+
+// example = index_sequence&lt;3, 4, 5, 6&gt;
+using example = offset_sequence_t&lt;3, std::make_index_sequence&lt;4&gt;&gt;;
+</pre>
+<p>To offset an index sequence, we generate a new index sequence whose integers are the old integers plus the provided offset value <var>N</var>. The magic happens in the template parameter pack expansion:</p>
+<pre> using type = std::index_sequence&lt;Ints + N...&gt;;
+</pre>
+<p>This takes each of the integers in the original index sequence, adds <var>N</var> to each one, and uses the results to build a new index sequence.</p>
+<p>Now we can remove the <i>first</i> element from the tuple.</p>
+<pre>template&lt;typename Tuple&gt;
+auto remove_first(Tuple&amp;&amp; tuple)
+{
+  constexpr auto size = std::tuple_size_v&lt;Tuple&gt;;
+  using indices = offset_sequence_t&lt;1,
+                    std::make_index_sequence&lt;size-1&gt;&gt;;
+  return select_tuple(std::forward&lt;Tuple&gt;(tuple), indices{});
+}
+</pre>
+<p>And in fact, we can remove the <var>N</var>th element.</p>
+<pre>template&lt;std::size_t N, typename Tuple&gt;
+auto remove_Nth(Tuple&amp;&amp; tuple)
+{
+  constexpr auto size = std::tuple_size_v&lt;Tuple&gt;;
+  using first = std::make_index_sequence&lt;N&gt;;
+  using rest = offset_sequence_t&lt;N+1,
+                std::make_index_sequence&lt;size-N-1&gt;&gt;;
+  return std::tuple_cat(
+    select_tuple(std::forward&lt;Tuple&gt;(tuple), first{}),
+    select_tuple(std::forward&lt;Tuple&gt;(tuple), rest{}));
+}
+</pre>
+<p>What we want to do is extract the first <var>N</var> elements, skip element <var>N</var>, and then extract elements <var>N</var> + 1 to the end.</p>
+<p>Extracting the first <var>N</var> is easy: We select from the index sequence that goes from 0 to <var>N</var> − 1.</p>
+<p>Extracting the rest of the elements is trickier: We want to start at <var>N</var> + 1 and continue until <code>size</code> − 1, for a length of (<code>size</code> − 1) − (<var>N</var> + 1) + 1 = <code>size</code> − <var>N</var> − 1. We generate an index sequence of length <code>size</code> − <var>N</var> − 1 (starting at zero), then add <var>N</var> + 1 to each element, to bring us to the desired sequence.</p>
+<p>We call <code>select_tuple</code> twice, once to get the front part, once to get the back part, and then use <code>tuple_cat</code> to put them together.</p>
+<p>Another way to do this is with a single selection. For that, we need a way to concatenate two index sequences.</p>
+<pre>template&lt;typename Seq1, typename Seq&gt; struct cat_sequence;
+
+template&lt;std::size_t... Ints1, std::size_t... Ints2&gt;
+struct cat_sequence&lt;std::index_sequence&lt;Ints1...&gt;,
+                    std::index_sequence&lt;Ints2...&gt;&gt;
+{
+ using type = std::index_sequence&lt;Ints1..., Ints2...&gt;;
+};
+template&lt;typename Seq1, typename Seq2&gt;
+using cat_sequence_t = typename cat_sequence&lt;Seq1, Seq2&gt;::type;
+
+// example = index_sequence&lt;3, 1, 4, 1, 5, 9&gt;
+using example = cat_sequence_t&lt;std::index_sequence&lt;3, 1, 4&gt;,
+                               std::index_sequence&lt;1, 5, 9&gt;&gt;;
+</pre>
+<p>The magic happens at</p>
+<pre> using type = std::index_sequence&lt;Ints1..., Ints2...&gt;;
+</pre>
+<p>which takes the two sequences and places them one after the other into a single index sequence.</p>
+<p>We can now use this alternate formulation:</p>
+<pre>template&lt;std::size_t N, typename Tuple&gt;
+auto remove_Nth(Tuple&amp;&amp; tuple)
+{
+  constexpr auto size = std::tuple_size_v&lt;Tuple&gt;;
+  using first = std::make_index_sequence&lt;N&gt;;
+  using rest = offset_sequence_t&lt;N+1,
+                std::make_index_sequence&lt;size-N-1&gt;&gt;;
+  <span style="color: blue;">using indices = cat_sequence_t&lt;first, rest&gt;;
+  return select_tuple(std::forward&lt;Tuple&gt;(tuple), indices{});</span>
+}
+</pre>
+<p>We’ll continue manipulating index sequences next time.</p>
+
+
+</body>

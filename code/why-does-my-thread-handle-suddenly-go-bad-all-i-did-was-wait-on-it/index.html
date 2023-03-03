@@ -1,0 +1,22 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does my thread handle suddenly go bad? All I did was wait on it!</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that they had a very strange bug, where waiting on a thread handle causes it to become invalid. Here’s a code fragment: </p>
+<pre>
+DWORD waitResult = WaitForSingleObject(hThread, INFINITE);
+assert(waitResult == WAIT_OBJECT_0); // assertion passes
+
+DoSomeCleanup();
+
+CloseHandle(hThread);
+</pre>
+<p>That final call to <code>Close­Handle</code> results in a <code>STATUS_</code><code>INVALID_</code><code>HANDLE</code> exception when run in the debugger. How did the handle become invalid? We sucessfully waited on it just a few lines earlier. </p>
+<p>There wasn’t enough information to go on, so we had to make some guesses. Perhaps <code>hThread</code> was already closed, and it got recycled to refer to some unrelated kernel object, and it’s that unrelated object that you’re waiting on when you call <code>Wait­For­Single­Object</code>. And then when you do some cleanup, that causes the unrelated handle to be closed, which means that the numeric value of <code>hThread</code> now refers to an invalid handle. </p>
+<p>The customer did some investigation and discovered that they were obtaining the thread handle from the <a href="https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/beginthread-beginthreadex"><code>_begin­thread</code> function</a>. The handle returned by the <code>_begin­thread</code> function is explicitly documented as being closed by the <code>_end­thread</code> function. </p>
+<blockquote class="q"><p><code>_end­thread</code> automatically closes the thread handle, whereas <code>_end­thread­ex</code> does not. Therefore, when you use <code>_begin­thread</code> and <code>_end­thread</code>, do not explicitly close the thread handle by calling the Win32 <code>Close­Handle</code> API. This behavior differs from the Win32 <code>Exit­Thread</code> API.  </p></blockquote>
+<p>Basically, the deal is that the <code>_begin­thread</code> function returns a handle to the created thread, but does not give you ownership of the handle. Ownership of that handle remains with the thread itself, and the thread automatically closes the handle when it exits. (Not mentioned in the MSDN documentation for <code>_begin­thread</code> is that the runtime automatically calls <code>_end­thread</code> if the thread function returns normally. This detail is mentioned <a href="https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/endthread-endthreadex">in the documentation for <code>_end­thread</code></a>, which is probably a better place for it anyway.) </p>
+<p>Basically, the handle returned by the <code>_begin­thread</code> function is useless. You don’t know how long it’s valid, and it might even be invalid by the time you even receive it! </p>
+<p>Switching to <code>_end­thread­ex</code> fixed the problem. </p>
+
+
+</body>

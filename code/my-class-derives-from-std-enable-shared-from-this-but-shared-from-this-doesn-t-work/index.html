@@ -1,0 +1,45 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">My class derives from <code>std::enable_<wbr/>shared_<wbr/>from_<wbr/>this</code>, but <code>shared_<wbr/>from_<wbr/>this()</code> doesn’t work</h1>  <!-- .entry-meta -->
+
+<p>If you make a class <code>T</code> that derives from <code>std::enable_<wbr>shared_<wbr>from_<wbr>this&lt;T&gt;</wbr></wbr></wbr></code>, then the creation of a <code>std::shared_ptr</code> to that class will activate the <code>shared_<wbr>from_<wbr>this()</wbr></wbr></code> method to return a <code>shared_ptr</code> that shares ownership with the originally-created <code>std::shared_ptr</code>.</p>
+<p>The catch is that the <code>shared_ptr</code> constructor and <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code> are in cahoots, and the <code>shared_ptr</code> must be able to access the <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code> in order to finish the job. This requires that you <i>publicly</i> derive from <code>std::enable_<wbr/>shared_<wbr/>from_<wbr/>this</code>:</p>
+<pre>class MyClass : <span style="color: blue;">public</span> std::enable_shared_from_this&lt;MyClass&gt;
+{
+    ...
+};
+</pre>
+<p>If you forget the <code>public</code> keyword, then the base class defaults to <code>private</code>, and the secret signal between <code>shared_ptr</code> and <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code> does not get through.</p>
+<p>Here’s how <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code> and <code>shared_ptr</code> work together. Note that I’ve ignored edge cases; the idea here is to give the basic idea so you can diagnose <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code> issues yourself.</p>
+<pre>template&lt;typename T&gt;
+struct enable_shared_from_this
+{
+    shared_ptr&lt;T&gt; shared_from_this()
+    { return shared_ptr&lt;T&gt;(weak_this); }
+
+    weak_ptr&lt;T&gt; weak_this;
+};
+
+template&lt;typename T&gt;
+struct shared_ptr
+{
+    shared_ptr(T* p) : ptr(p)
+    {
+        if (T derives from enable_shared_from_this) {
+            ptr-&gt;weak_ptr = *this;
+        }
+    }
+
+    T* ptr;
+    /* other stuff */
+};
+</pre>
+<p>When a <code>shared_ptr</code> is created, it snoops at the managed object to see if it derives from <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code>. If so, then it sets the <code>weak_ptr</code> to hold a weak pointer to the shared object. When you later ask for a <code>shared_<wbr/>from_<wbr/>this()</code>, it promotes this weak pointer to a shared pointer and returns it.</p>
+<p>Okay, so we already see some consequences and pitfalls:</p>
+<p>First of all, if you fail to derive <i>publicly</i> from <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code>, the feature simply fails silently. There is no diagnostic that says, “Hey, like, you’re deriving from <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code>, but you did it privately, so it’s not going to work.”¹</p>
+<p>Second, notice that the weak pointer is set only when the object is placed inside a <code>shared_ptr</code>, which happens <i>after</i> the shared object has been constructed. This means that you cannot use <code>shared_<wbr/>from_<wbr/>this()</code> in your constructor.</p>
+<p>Third, if the object is not wrapped inside a <code>shared_<wbr/>ptr</code> at all, then <code>shared_<wbr/>from_<wbr/>this()</code> will always fail. For example, if somebody constructs the object on the stack, or via <code>new</code> or <code>make_unique</code>, it will not be controlled by a <code>shared_<wbr/>ptr</code>.</p>
+<p>There are so many ways <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code> can go wrong. Next time, we’ll see what we can do to guard against them.</p>
+<p>¹ Maybe it’s possible to add a diagnostic to <code>shared_<wbr/>from_<wbr/>this()</code>. I wonder if the shared type is required to be complete by that point.</p>
+
+
+</body>

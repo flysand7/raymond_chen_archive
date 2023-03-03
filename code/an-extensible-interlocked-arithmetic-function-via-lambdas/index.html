@@ -1,0 +1,88 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">An extensible interlocked arithmetic function (via lambdas)</h1>  <!-- .entry-meta -->
+
+<p>
+Some time ago, I noted that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/09/15/229915.aspx">
+you can build other interlocked operations out of
+<code>Interlocked­Compare­Exchange</code></a>.
+Here’s an example:
+</p>
+<pre>
+using System.Threading;
+public static int InterlockedMax(ref int location, int value)
+{
+    int initialValue, newValue;
+    do
+    {
+        initialValue = location;
+        newValue = Math.Max(initialValue, value);
+    }
+    while (Interlocked.CompareExchange(ref location, newValue,
+                                       initialValue) != initialValue);
+    return initialValue;
+}
+</pre>
+<p>
+(There’s a corresponding C++ version, which I leave as an exercise.)
+</p>
+<p>
+This function atomically updates a “highest value seen so far” variable.
+It follows the usual pattern:
+</p>
+<ul>
+<li>Capture the starting value.
+<li>Do a computation based on that value.
+<li>Compare-exchange the new value in.
+<li>If the compare-exchange failed, then start over.
+</li></li></li></li></ul>
+<p>
+(For bonus points, add an
+early-out if the operation should be abandoned.)
+</p>
+<p>
+You can make this function extensible by use of lambdas,
+so that you can update the old value with any computation you like.
+</p>
+<pre>
+using System;
+using System.Threading;
+public static int InterlockedCombine(ref int location,
+                                     Func&lt;int, int&gt; update)
+{
+    int initialValue, newValue;
+    do
+    {
+        initialValue = location;
+        newValue = update(initialValue);
+    }
+    while (Interlocked.CompareExchange(ref location, newValue,
+                                       initialValue) != initialValue);
+    return initialValue;
+}
+public static int InterlockedMax(ref int location, int value)
+{
+    return InterlockedCombine(ref location,
+                              v =&gt; Math.Max(v, value));
+}
+public static int InterlockedMultiply(ref int location, int value)
+{
+    return InterlockedCombine(ref location,
+                              v =&gt; v * value);
+}
+public static int InterlockedIncrementWithSaturation(
+    ref int location, int maximum)
+{
+    return InterlockedCombine(ref location,
+                              v =&gt; v &lt; maximum ? v + 1 : maximum);
+}
+public static int InterlockedCompareExchangeIfNotEqual(
+    ref int location, int newValue, int avoidValue)
+{
+    return InterlockedCombine(ref location,
+                              v =&gt; v != avoidValue ? newValue : avoidValue);
+}
+</pre>
+
+
+</body>

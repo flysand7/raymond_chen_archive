@@ -1,0 +1,117 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Displaying the dictionary, part 2:  Using text callbacks</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/06/13/428534.aspx">
+As we noted last time</a>,
+adding items to the listview takes an absurd amount of time.
+Today, we’ll make a failed attempt at improving this
+because it lets me illustrate a listview technique
+and it lays the groundwork for the real fix next time.
+</p>
+<p>
+Instead of creating the items in their entirety,
+let’s set their text to <code>LPSTR_TEXTCALLBACK</code>.
+This is a placeholder value which indicates
+“I’m not going to tell you what the string is.
+If you need it, call me back.”
+</p>
+<pre>
+class RootWindow : public Window
+{
+ ...
+ LRESULT OnCreate();
+ <font color="blue">LRESULT OnNotify(NMHDR* pnm);
+ void OnGetDispInfo(NMLVDISPINFO* pnmv);</font>
+ ...
+};
+LRESULT RootWindow::OnCreate()
+{
+ ...
+ <font color="blue"><strike>// item.pszText = const_cast&lt;LPWSTR&gt;(de.m_pszTrad);</strike>
+ item.pszText = LPSTR_TEXTCALLBACK;</font>
+ ...
+   <font color="blue"><strike>// item.pszText = const_cast&lt;LPWSTR&gt;(de.m_pszPinyin);</strike>
+   item.pszText = LPSTR_TEXTCALLBACK;</font>
+ ...
+   <font color="blue"><strike>// item.pszText = const_cast&lt;LPWSTR&gt;(de.m_pszEnglish);</strike>
+   item.pszText = LPSTR_TEXTCALLBACK;</font>
+ ...
+}
+<font color="blue">LRESULT RootWindow::OnNotify(NMHDR *pnm)
+{
+ switch (pnm-&gt;code) {
+ case LVN_GETDISPINFO:
+  OnGetDispInfo(CONTAINING_RECORD(pnm, NMLVDISPINFO, hdr));
+  break;
+ }
+ return 0;
+}
+void RootWindow::OnGetDispInfo(NMLVDISPINFO* pnmv)
+{
+ if (pnmv-&gt;item.iItem &lt; 0 || // typo fixed 11am
+     pnmv-&gt;item.iItem &gt;= Length()) {
+  return;         // requesting invalid item
+ }
+ if (pnmv-&gt;item.mask &amp; LVIF_TEXT) {
+  const DictionaryEntry&amp; de = Item(pnmv-&gt;item.iItem);
+  LPCWSTR pszResult = L"";
+  switch (pnmv-&gt;item.iSubItem) {
+   case COL_TRAD:    pszResult = de.m_pszTrad;    break;
+   case COL_PINYIN:  pszResult = de.m_pszPinyin;  break;
+   case COL_ENGLISH: pszResult = de.m_pszEnglish; break;
+  }
+  pnmv-&gt;item.pszText = const_cast&lt;LPWSTR&gt;(pszResult);
+ }
+ if (pnmv-&gt;item.mask &amp; LVIF_IMAGE) {
+  pnmv-&gt;item.iImage = -1;
+ }
+ if (pnmv-&gt;item.mask &amp; LVIF_STATE) {
+     pnmv-&gt;item.state = 0;
+ }
+}</font>
+LRESULT RootWindow::HandleMessage(
+                          UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+ ...
+  <font color="blue">case WM_NOTIFY:
+   return OnNotify(reinterpret_cast&lt;NMHDR*&gt;(lParam));</font>
+ ...
+}
+</pre>
+<p>
+Instead of setting the strings when we create the listview items,
+we set their texts to <code>LPSTR_TEXTCALLBACK</code>.
+When the listview needs the text, it sends us a
+<code>LVN_GETDISPINFO</code> notification, which we handle
+by returning the data that the listview requested.
+</p>
+<p>
+<strong>Sidebar</strong>:
+In our case, obtaining the missing data is very fast.
+If it were slow, we could have optimized the function further by
+adding the line</p>
+<pre>
+ pnmv-&gt;item.mask |= LVIF_DI_SETITEM;
+</pre>
+<p>to the end.  This tells the listview, “Please cache these results
+and don’t ask me for them again.”
+That way, we do the slow computation only once.
+</p>
+<p>
+After making these changes (though not the <code>LVIF_DI_SETITEM</code>
+change; that was just a sidebar),
+notice that the it didn’t really help much.
+On my machine, the startup time dropped from eleven to ten seconds,
+but ten seconds is still way too long.
+This optimization turns out to have been a washout.
+</p>
+<p>
+(Note also that our program is now relying heavily on the fact
+that a vector is a fast random-access data structure.)
+</p>
+<p>
+We’ll do better next time.</p>
+
+
+</body>

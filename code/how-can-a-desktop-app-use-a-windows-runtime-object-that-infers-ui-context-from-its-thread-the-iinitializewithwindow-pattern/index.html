@@ -1,0 +1,45 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can a desktop app use a Windows Runtime object that infers UI context from its thread? The IInitializeWithWindow pattern</h1>  <!-- .entry-meta -->
+
+<p>Many objects in the Windows Runtime can be used from desktop apps. For today’s example, we’ll use the <code>File­Open­Picker</code>. This is a rather artificial example because you could just use the <code>IFile­Dialog</code> interface to get equivalent functionality in a desktop app, but I just picked it for use as an example. </p>
+<p>Start with our <a href="https://blogs.msdn.microsoft.com/oldnewthing/20030723-00/?p=43073">scratch program</a> and make these changes: </p>
+<pre>
+<font color="blue">#include &lt;winrt/windows.storage.pickers.h&gt;
+
+winrt::Windows::Foundation::IAsyncAction
+ShowFilePickerAsync(HWND hwnd)
+{
+    auto picker = winrt::Windows::Storage::Pickers::FileOpenPicker();
+    picker.FileTypeFilter().Append(L".jpg");
+    auto file = co_await picker.PickSingleFileAsync();
+}
+
+winrt::fire_and_forget OnChar(HWND hwnd, TCHAR ch, int cRepeat)
+{
+    co_await ShowFilePickerAsync(hwnd);
+}</font>
+
+// Add to WndProc
+    <font color="blue">HANDLE_MSG(hwnd, WM_CHAR, OnChar);</font>
+</pre>
+<p>Run this program and press a key. The program will crash because the <code>File­Open­Picker</code> looks for a <code>Core­Window</code> on the current thread to serve as the owner of the dialog. But we are a Win32 desktop app without a <code>Core­Window</code>. </p>
+<p>The solution is to use the <code>IInitialize­With­Window</code> interface. <a href="https://docs.microsoft.com/en-us/windows/desktop/api/shobjidl_core/nn-shobjidl_core-iinitializewithwindow">Many Windows Runtime objects</a> which infer the <code>Core­Window</code> from the current thread support the <code>IInitialize­With­Window</code> interface to allow a Win32 desktop app to specify an explicit window. </p>
+<p>Make the following changes to the program: </p>
+<pre>
+<font color="blue">#include &lt;shobjidl.h&gt;</font>
+#include &lt;winrt/windows.storage.pickers.h&gt;
+
+winrt::Windows::Foundation::IAsyncAction
+ShowFilePickerAsync(HWND hwnd)
+{
+    auto picker = winrt::Windows::Storage::Pickers::FileOpenPicker();
+    <font color="blue">picker.as&lt;IInitializeWithWindow&gt;()-&gt;Initialize(hwnd);</font>
+    picker.FileTypeFilter().Append(L".jpg");
+    auto file = co_await picker.PickSingleFileAsync();
+}
+</pre>
+<p>This time, the File Open dialog opens because we explicitly provided a window handle to use as the owner. </p>
+<p>The <code>IInitialize­Window­Window</code> pattern is used mostly in the case where an object is simply constructed. There is another pattern for the case where an object is obtained by calling a method: The interop pattern, which I covered <a href="https://blogs.msdn.microsoft.com/oldnewthing/20170315-00/?p=95735">some time ago</a>. </p>
+
+
+</body>

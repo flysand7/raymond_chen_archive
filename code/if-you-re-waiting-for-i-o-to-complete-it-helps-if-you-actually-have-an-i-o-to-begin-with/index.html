@@ -1,0 +1,97 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you're waiting for I/O to complete, it helps if you actually have an I/O to begin with</h1>  <!-- .entry-meta -->
+
+<p>
+We saw earlier
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/02/03/10124060.aspx">
+the importance of waiting for I/O to complete before
+freeing the data structures associated with that I/O</a>.
+On the other hand, before you start waiting, you have to make
+sure that you have something to wait <i>for</i>.
+</p>
+<p>
+A customer reported a hang in <code>Get­Overlapped­Result</code>
+waiting for an I/O to cancel, and the
+I/O team was brought in to investigate.
+They looked at the I/O stack and found that the I/O the customer
+was waiting for was no longer active.
+The I/O people considered a few possibilities.
+</p>
+<ul>
+<li>The I/O was active at one point, but when it completed,
+    a driver bug prevented the completion event from being signaled.
+</li>
+<li>The I/O was active at one point, and the I/O completed,
+    but the program inadvertently called <code>Reset­Event</code>
+    on the handle, negating the <code>Set­Event</code> performed
+    by the I/O subsystem.
+</li>
+<li>The I/O was never active in the first place.
+</li>
+</ul>
+<p>
+These possibilities are in increasing order of likelihood
+(and, perhaps not coincidentally,
+decreasing order of relevance to the I/O team).
+</p>
+<p>
+A closer investigation of the customer’s code showed a code path
+in which the <code>Read­File</code> call was bypassed.
+When the bypass code path rejoined the mainline code path,
+the code continued its work for a while, and then if it decided
+that it was tired of waiting for the read to complete, it
+performed a <code>Cancel­Io</code> followed by a
+<code>Get­Overlapped­Result</code> to
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/02/02/10123392.aspx">
+wait for the cancellation to complete</a>.
+</p>
+<p>
+If you never issue the I/O, then a wait for the I/O to complete
+will wait forever,
+since you’re waiting for something that will never happen.
+</p>
+<p>
+Okay, so maybe this was a dope-slap type of bug.
+But here’s something perhaps a little less self-evident:
+</p>
+<pre>
+<i>// there is a flaw in this code - see discussion
+// assume operating on a FILE_FLAG_OVERLAPPED file
+if (ReadFile(h, ..., &amp;overlapped)) {
+ // I/O completed synchronously, as we learned earlier
+} else {
+ // I/O under way
+ ... do stuff ...
+ // okay, let's wait for that I/O
+ GetOverlappedResult(h, &amp;overlapped, &amp;dwRead, TRUE);
+ ...
+}</i>
+</pre>
+<p>
+The <code>Get­Overlapped­Result</code> call can hang here
+because the comment “I/O is under way” is overly optimistic:
+The I/O may never even have gotten started.
+If it never started, then it will never complete either.
+You cannot assume that a <code>FALSE</code> return from
+<code>Read­File</code> implies that the I/O is under way.
+You also have to check that <code>Get­Last­Error()</code>
+returns <code>ERROR_IO_PENDING</code>.
+Otherwise, the I/O failed to start, and you shouldn’t wait for it.
+</p>
+<pre>
+// assume operating on a FILE_FLAG_OVERLAPPED file
+if (ReadFile(h, ..., &amp;overlapped)) {
+ // I/O completed synchronously, as we learned earlier
+} else <font color="blue">if (GetLastError() == ERROR_IO_PENDING)</font> {
+ // I/O under way
+ ... do stuff ...
+ // okay, let's wait for that I/O
+ GetOverlappedResult(h, &amp;overlapped, &amp;dwRead, TRUE);
+ ...
+<font color="blue">} else {
+ // I/O failed - don't wait because there's nothing to wait for!
+}</font>
+</pre>
+
+
+</body>

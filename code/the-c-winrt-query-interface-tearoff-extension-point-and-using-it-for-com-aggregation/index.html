@@ -1,0 +1,34 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The C++/WinRT <code>query_<wbr/>interface_<wbr/>tearoff</code> extension point, and using it for COM aggregation</h1>  <!-- .entry-meta -->
+
+<p>The C++/WinRT library’s <code>implements</code> template does the heavy lifting of implementing COM classes. One of the extension points is a method called <code>query_<wbr>interface_<wbr>tearoff</wbr></wbr></code>. This method is called as part of the implementation of the <code>IUnknown::<wbr/>Query­Interface</code> method if the caller is asking for an interface that wasn’t declared as part of the <code>implements</code> type parameter list. This gives you a chance to support additional interfaces.</p>
+<p>From its name, it’s apparent that the primary use case for this is <a href="https://www.codeguru.com/cpp/com-tech/atl/performance/article.php/c3613/ATL-TearOff-Interfaces.htm"> COM tear-off interfaces</a>. But you can use it for any scenario where you want to support an interface that you didn’t list in your <code>implements</code>. For example, the interface might be dynamically-generated. But today we’re going to use it for <a href="https://docs.microsoft.com/en-us/windows/win32/com/aggregation"> COM aggregation</a>.</p>
+<p>Let’s say that we want to aggregate the free-threaded marshaler. Yes, I know that C++/WinRT does this automatically, but let’s do it manually just to show how it’s done.</p>
+<pre>struct MyFreeThreaded :
+    winrt::implements&lt;MyFreeThreaded, ::IAgileObject, winrt::non_agile&gt;
+{
+  winrt::IUnknown m_ftm;
+
+  MyFreeThreaded()
+  {
+    winrt::check_hresult(CoCreateFreeThreadedMarshaler(this, m_ftm.put()));
+  }
+
+  int32_t query_interface_tearoff(winrt::guid const&amp; id, void** object)
+        const noexcept override
+  {
+    if (id == winrt::guid_of&lt;::IMarshal&gt;()) {
+      return m_ftm.as(id, object);
+    }
+    return E_NOINTERFACE;
+  }
+};
+</pre>
+<p>The <code>My­Free­Threaded</code> object implements <code>IAgile­Object</code>, which is a marker interface for free-threaded objects. It also uses the <code>winrt::non_agile</code> marker to tell C++/WinRT not to implement free-threading support for this object. Because we’re about to do it manually!</p>
+<p>We declare a member variable <code>m_ftm</code> which holds the free-threaded marshaler. At construction we create the free-threaded marshaler passing ourselves as the controlling unknown. This makes the free-threaded marshaler act as if it were part of our object, and it will forward all interface requests back to the main object. However, the <code>IUnknown</code> produced by <code>Co­Create­Free­Threaded­Marshaler</code> is a special one that does not delegate its <code>IUnknown::<wbr/>Query­Interface</code> method. This lets you access the interfaces of the aggregated object. (Without it, any attempt to obtain an interface from the aggregated object would just be forwarded back to the outer object.)</p>
+<p>To complete the circle, we forward requests for <code>IMarshal</code> into the free-threaded marshaler by overriding <code>query_<wbr/>interface_<wbr/>tearoff</code>. That way, if somebody asks for <code>IMarshal</code>—and by <i>somebody</i> I mean <i>COM itself</i>—we forward the request into the aggregated object, which says “Free-threaded marshaler at your service!”</p>
+<p>An important detail of implementing your own <code>query_<wbr/>interface_<wbr/>tearoff</code> is that you should return <code>E_NOINTERFACE</code> (or forward to the base class) if you don’t handle the interface.</p>
+<p>That’s a pretty quick rundown of doing COM aggregation in C++/WinRT. It’ll come in handy in a few months.</p>
+
+
+</body>

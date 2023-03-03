@@ -1,0 +1,96 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A survey of the various ways of declaring pages of memory to be uninteresting</h1>  <!-- .entry-meta -->
+
+<p>The list of ways a program can declare pages of memory to be uninteresting seems to be growing steadily. Let’s look at what we have so far today. </p>
+<p>The most old-fashioned way of declaring a page to be uninteresting is to free it. The catch with that is that freeing the memory with the <code>Virtual­Free</code> function and the <code>MEM_RELEASE</code> flag frees the entire allocation, not individual pages. If you allocated a 64<a href="https://blogs.msdn.microsoft.com/oldnewthing/20090611-00/?p=17933">KB</a> chunk of memory, then you have to release the whole thing. You can’t release half of it. </p>
+<p>But all is not lost. Because while you cannot free a single page from a larger allocation, you <i>can</i> decommit it, which is almost as good. Decommitting page is like freeing it, except that the address space is still reserved. To decommit a page, call <code>Virtual­Free</code> with the <code>MEM_DECOMMIT</code> flag. </p>
+<p>For quite some time, those were the only tools you had available. Around the Windows NT 4 era, a new trick arrived on the scene: You could <code>Virtual­Unlock</code> memory that was already unlocked in order to remove it from your working set. This was a trick, because it took what used to be a programming error and gave it additional meaning, but in a way that didn’t break backward compatibility because the contractual behavior of the memory did not change: The contents of the memory remain valid and the program is still free to access it at any time. The new behavior is that unlocking unlocked memory also takes it out of the process’s working set, so that it becomes a prime candidate for being paged out and used to satisfy another memory allocation. </p>
+<p>The fact that it preserved contractual behavior means that you could scatter <code>Virtual­Unlock</code> calls randomly throughout the program and have no effect on correctness. It might run slower (or faster), but it will still run. </p>
+<p>Around the Windows 2000 era, the <code>MEM_RESET</code> flag was added to <code>Virtual­Alloc</code>. If you pass this flag, this tells the memory manager that the memory in question is no longer interesting to your program, and the memory manager is free to discard it without saving the contents. The memory itself remains accessible to the program, and doing so before the memory gets discarded will read the old values. On the other hand, if the memory manager decides that it needs to evict the memory (in order to satisfy a memory request elsewhere), it will throw away the contents without saving it, and then turn the page into a demand-zero-initialized page. Later, if your program tries to access the memory, it will see a page full of zeroes. </p>
+<p>Windows 8 added the <code>MEM_RESET_UNDO</code> flag which says, “Hey, um, I changed my mind. I don’t want you to discard the contents of the memory after all.” If the memory hasn’t yet been discarded, then it is “rescued” and behaves like normal memory again. But if the memory has already been discarded, then the memory manager will say, “Sorry, too late.” </p>
+<p>And then at some point, I don’t know exactly when, my colleague Adrian added code to check if a page of memory is all zeroes before paging it out, and turning it into a demand-zero-initialized page if so. So another way to say that you are not interested in a page of memory is to explicitly zero it. That causes it to turn into a demand-zero-initialized page at page-out time, which avoids the I/O of writing a page full of zeroes to disk. This is another one of those things that has no effect on the programming model; it’s just an optimization. If you are running on a system that doesn’t perform this optimization, everything still behaves the same as before, just a little slower. </p>
+<p>Note that writing the zeroes to the page does have its own side effects. (Well, aside from the obvious side effect of, y’know, <i>filling the page with zeroes</i>.) Writing to the page will set both the Dirty and Accessed bits in the page table, which will bring it into the process’s working set, and therefore will reduce its likelihood of being selected for eviction. In other words, zeroing out the page “resets the clock” on the eviction calendar. Therefore, if you’re going to do this, do it as soon as you’re done with the memory. </p>
+<p>In Windows 8.1 we got the function <code>Offer­Virtual­Memory</code> which mixes in a few new wrinkles. First of all, when you call <code>Offer­Virtual­Memory</code>, you pass a flag that says how much you don’t care about this memory: You can say that you totally don’t care, you mostly don’t care, you sort of don’t care, or you have no opinion on the concept of caring. </p>
+<p>Okay, formally, what you’re doing is saying how to prioritize the memory for discarding. At one extreme, you can make it a prime candidate for discarding. At the other extreme, you can say, “No special priority here. Just prioritize it according to the standard rules, as if it were plain old regular process memory.” </p>
+<p>The other wrinkle to the <code>Offer­Virtual­Memory</code> function is that once you offer the memory, it is no longer accessible to your program. Trying to access memory that has been offered will take an access violation. </p>
+<p>If you later decide that you want the memory back, you can call  <code>Reclaim­Virtual­Memory</code>, which will try to bring the memory back into your process. If it fails, then the contents are garbage. </p>
+<p>There’s also a companion function <code>Discard­Virtual­Memory</code> which forces an immediate discard and leaves the page contents undefined. It’s the equivalent of <code>Offer­Virtual­Memory</code>, and then calling <code>Reclaim­Virtual­Memory</code>, and forcing the reclaim to fail. </p>
+<p>Okay, so here we go with the table. </p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tr>
+<th></th>
+<th>Virtual­Free +<br/>MEM_RELEASE</th>
+<th>Virtual­Free +<br/>MEM_DECOMMIT</th>
+<th>Virtual­Unlock</th>
+<th>Virtual­Alloc +<br/>MEM_RESET</th>
+<th>Zero­Memory</th>
+<th>Discard­Virtual­Memory</th>
+<th>Offer­Virtual­Memory</th>
+</tr>
+<tr>
+<th>Is address space still reserved?</th>
+<td align="center">N</td>
+<td align="center">Y</td>
+<td align="center">Y</td>
+<td align="center">Y</td>
+<td align="center">Y</td>
+<td align="center">Y</td>
+<td align="center">Y</td>
+</tr>
+<tr>
+<th>Is memory accessible?</th>
+<td align="center">N</td>
+<td align="center">N</td>
+<td align="center">Y</td>
+<td align="center">Y</td>
+<td align="center">Y</td>
+<td align="center">Y</td>
+<td align="center">N</td>
+</tr>
+<tr>
+<th>Is memory removed from working set?</th>
+<td align="center">Y</td>
+<td align="center">Y</td>
+<td align="center">Y</td>
+<td align="center">N<span><span>¹</span></span></td>
+<td align="center">N</td>
+<td align="center">Y</td>
+<td align="center">Y</td>
+</tr>
+<tr>
+<th>Can control eviction priority?</th>
+<td align="center">N</td>
+<td align="center">N</td>
+<td align="center">N</td>
+<td align="center">N</td>
+<td align="center">N</td>
+<td align="center">N</td>
+<td align="center">Y</td>
+</tr>
+<tr>
+<th>Are previous contents recoverable?</th>
+<td align="center">N</td>
+<td align="center">N</td>
+<td align="center">Y</td>
+<td align="center">Y until eviction</td>
+<td align="center">N</td>
+<td align="center">N</td>
+<td align="center">Y until eviction</td>
+</tr>
+<tr>
+<th>Contents if recovery failed</th>
+<td align="center">N/A</td>
+<td align="center">N/A</td>
+<td align="center">N/A</td>
+<td align="center">Zeroes</td>
+<td align="center">Zeroes</td>
+<td align="center">Garbage</td>
+<td align="center">Garbage</td>
+</tr>
+</table>
+<p><b>Bonus chatter</b>: The flip side of discarding memory is prefetching it. I’ve <a href="https://blogs.msdn.microsoft.com/oldnewthing/20160225-00/?p=93091">discussed the <code>Prefetch­Virtual­Memory</code> before</a>, so I’ll leave it at a mention this time. (And here’s a <a href="https://blogs.msdn.microsoft.com/oldnewthing/20120601-00/?p=7483">non-mention</a>.) </p>
+<p>¹ The fact that <code>MEM_RESET</code> does not remove the page from the working set is not actually mentioned in the documentation for the <code>MEM_RESET</code> flag. Instead, it’s mentioned in the documentation for the <code>Offer­Virtual­Memory</code> function, and in a sort of backhanded way: </p>
+<blockquote class="q"><p>Note that offering and reclaiming virtual memory is similar to using the MEM_RESET and MEM_RESET_UNDO memory allocation flags, except that <b>Offer­Virtual­Memory</b> removes the memory from the process working set and restricts access to the offered pages until they are reclaimed. </p></blockquote>
+
+
+</body>

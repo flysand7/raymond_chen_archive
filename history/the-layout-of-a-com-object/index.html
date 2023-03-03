@@ -1,0 +1,169 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The layout of a COM object</h1>  <!-- .entry-meta -->
+
+<p>
+The Win32 COM calling convention specifies the layout of
+the virtual method table (vtable) of an object.
+If a language/compiler wants to support COM, it must lay
+out its object in the specified manner so other components
+can use it.</p>
+<p>
+It is no coincidence that the Win32 COM object layout matches
+closely the C++ object layout.  Even though COM was originally
+developed when C was the predominant programming language,
+the designers saw fit to “play friendly” with the up-and-coming
+new language C++.
+</p>
+<p>
+The layout of a COM object is made explicit in the header files
+for the various
+interfaces. For example, here’s IPersist from objidl.h, after cleaning
+up some macros.</p>
+<pre>
+typedef struct IPersistVtbl
+{
+    HRESULT ( STDMETHODCALLTYPE *QueryInterface )(
+        IPersist * This,
+        /* [in] */ REFIID riid,
+        /* [iid_is][out] */ void **ppvObject);
+    ULONG ( STDMETHODCALLTYPE *AddRef )(
+        IPersist * This);
+    ULONG ( STDMETHODCALLTYPE *Release )(
+        IPersist * This);
+    HRESULT ( STDMETHODCALLTYPE *GetClassID )(
+        IPersist * This,
+        /* [out] */ CLSID *pClassID);
+} IPersistVtbl;
+struct IPersist
+{
+    const struct IPersistVtbl *lpVtbl;
+};
+</pre>
+<p>
+This corresponds to the following memory layout:
+</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse">
+<col align="center" span="5"/>
+<tr>
+<td>p</td>
+<td>→</td>
+<td style="border: solid 1px buttonshadow">   lpVtbl   </td>
+<td>→</td>
+<td style="border: solid 1px buttonshadow;height: 2em">QueryInterface</td>
+</tr>
+<tr>
+<td rowspan="3"></td>
+<td rowspan="3"></td>
+<td rowspan="3"></td>
+<td rowspan="3"></td>
+<td style="border: solid 1px buttonshadow;height: 2em">AddRef</td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow;height: 2em">Release</td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow;height: 2em">GetClassID</td>
+</tr>
+</table>
+<p>
+What does this mean?
+</p>
+<p>
+A COM interface pointer is a pointer to a structure that consists
+of just a vtable.
+The vtable is a structure that contains a bunch of function pointers.
+Each function in the list takes that interface pointer (p) as its first
+parameter (“this”).
+</p>
+<p>
+The magic to all this is that since your function gets p
+as its first parameter, you can “hang” additional
+stuff onto that vtable:
+</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse">
+<col align="center" span="5"/>
+<tr>
+<td>p</td>
+<td>→</td>
+<td style="border: solid 1px buttonshadow">   lpVtbl   </td>
+<td>→</td>
+<td style="border: solid 1px buttonshadow;height: 2em">QueryInterface</td>
+</tr>
+<tr>
+<td rowspan="3"></td>
+<td rowspan="3"></td>
+<td rowspan="3" style="border: solid 1px buttonshadow">…<br/>
+          other stuff<br/>…</td>
+<td rowspan="3"></td>
+<td style="border: solid 1px buttonshadow;height: 2em">AddRef</td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow;height: 2em">Release</td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow;height: 2em">GetClassID</td>
+</tr>
+</table>
+<p>
+The functions in the vtable can use offsets relative to the
+interface pointer to access its other stuff.
+</p>
+<p>
+If an object implements multiple interfaces but they are all descendants
+of each other, then a single vtable can be used for all of them.
+For example, the object above is already set to be used either as
+an IUnknown or as an IPersist, since IUnknown is a subset of IPersist.
+</p>
+<p>
+On the other hand, if an object implements multiple interfaces
+that are not descendants of each other, then you get multiple
+inheritance, in which case the object is typically laid out in
+memory like this:
+</p>
+<table border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse">
+<col align="center" span="7"/>
+<tr>
+<td>p</td>
+<td>→</td>
+<td style="border: solid 1px buttonshadow">   lpVtbl   </td>
+<td>→</td>
+<td align="center">→</td>
+<td>→</td>
+<td style="border: solid 1px buttonshadow;height: 2em">QueryInterface (1)</td>
+</tr>
+<tr>
+<td>q</td>
+<td>→</td>
+<td style="border: solid 1px buttonshadow">   lpVtbl   </td>
+<td>→</td>
+<td style="border: solid 1px buttonshadow;height: 2em">QueryInterface (2)</td>
+<td rowspan="4"><span style="width: 2em"></span></td>
+<td style="border: solid 1px buttonshadow;height: 2em">AddRef (1)</td>
+</tr>
+<tr>
+<td colspan="2" rowspan="3"></td>
+<td rowspan="3" style="border: solid 1px buttonshadow">…<br/>
+          other stuff<br/>…</td>
+<td rowspan="3"></td>
+<td style="border: solid 1px buttonshadow;height: 2em">AddRef (2)</td>
+<td style="border: solid 1px buttonshadow;height: 2em">Release (1)</td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow;height: 2em">Release (2)</td>
+<td style="border: solid 1px buttonshadow;height: 2em">…</td>
+</tr>
+<tr>
+<td style="border: solid 1px buttonshadow;height: 2em">…</td>
+</tr>
+</table>
+<p>
+If you are using an interface that comes from the first vtable, then
+the interface pointer is p.  But if you’re using an interface that
+comes from the second vtable, then the interface pointer is q.
+</p>
+<p>
+Hang onto that diagram, because
+tomorrow we will learn about those mysterious “adjustor thunks”.</p>
+
+
+</body>

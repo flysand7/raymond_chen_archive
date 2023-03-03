@@ -1,0 +1,128 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Itanium processor, part 4: The Windows calling convention, leaf functions</h1>  <!-- .entry-meta -->
+
+<p><a href="https://blogs.msdn.microsoft.com/oldnewthing/20150729-00/?p=90801">Last time</a>, we looked at the general rules for parameter passing on the Itanium. But those rules are relaxed for leaf functions (functions which call no other functions). </p>
+<p>Before we start, I need to correct some of the explanation I had given when introducing the calling convention. I used that explanation because it makes for an easier conceptual model, but the reality is slightly different. </p>
+<p>First of all, I said that the <code>alloc</code> function shuffles the registers around and lays out the new local region and output registers. In reality, it is the <code>br.call</code> instruction that moves the registers and the <code>alloc</code> which sets up the register frame. Since the first instruction of a function is <code>alloc</code>, it doesn’t make much difference how the work is distributed between the <code>br.call</code> and the <code>alloc</code> since they come right after each other. The only time you notice the difference is if you happen to break into the debugger immediately between those two instructions. </p>
+<p>More precisely, here’s what the <code>br.call</code> instruction does: </p>
+<ul>
+<li>Copy the current register frame state (and some other stuff)     to the <code>pfs</code> register.</li>
+<li>Rotate the registers so that the first output register is now     <var>r32</var>.</li>
+<li>Create a new register frame as follows:</li>
+<ul>
+<li>input registers = caller’s output registers</li>
+<li>no local registers</li>
+<li>no output registers</li>
+<li>no rotating registers</li>
+</ul>
+<li>Set the <var>rp</var> register to the return address.</li>
+<li>Transfer control to the target.</li>
+</ul>
+<p>In other words, the register stack changes like this: </p>
+<table border="0" cellpadding="3" style="border-collapse: collapse;text-align: center">
+<tr>
+<td>r32</td>
+<td>r33</td>
+<td>r34</td>
+<td>r35</td>
+<td>r36</td>
+<td>r37</td>
+<td>r38</td>
+<td>r39</td>
+<td>r40</td>
+<td>r41</td>
+<td>r42</td>
+<td>r43</td>
+<td colspan="8"></td>
+</tr>
+<tr>
+<td bgcolor="#ffbbff" colspan="4" style="border: solid 1px black"><var>f</var>‘s Input</td>
+<td bgcolor="#C0FF97" colspan="5" style="border: solid 1px black"><var>f</var>‘s Local</td>
+<td bgcolor="#FFBBBB" colspan="3" style="border: solid 1px black"><var>f</var>‘s Output</td>
+<td colspan="8"> Before <var>f</var> does a <code>br.call</code></td>
+</tr>
+<tr>
+<td colspan="20"> </td>
+</tr>
+<tr>
+<td colspan="9"></td>
+<td>r32</td>
+<td>r33</td>
+<td>r34</td>
+</tr>
+<tr>
+<td colspan="9">On entry to <var>g</var> </td>
+<td bgcolor="#FFBBBB" colspan="3" style="border: solid 1px black"><var>g</var>‘s Input</td>
+</tr>
+<tr>
+<td colspan="20"> </td>
+</tr>
+<tr>
+<td colspan="9"></td>
+<td>r32</td>
+<td>r33</td>
+<td>r34</td>
+<td>r35</td>
+<td>r36</td>
+<td>r37</td>
+<td>r38</td>
+<td>r39</td>
+<td>r40</td>
+<td>r41</td>
+<td>r42</td>
+</tr>
+<tr>
+<td colspan="9">After <var>g</var> does an <code>alloc</code> </td>
+<td bgcolor="#FFBBBB" colspan="3" style="border: solid 1px black"><var>g</var>‘s Input</td>
+<td bgcolor="#FFFF99" colspan="4" style="border: solid 1px black"><var>g</var>‘s Local</td>
+<td bgcolor="#ACF3FD" colspan="4" style="border: solid 1px black"><var>g</var>‘s Output</td>
+</tr>
+</table>
+<p>A consequence of this division of labor between <code>br.call</code> and <code>alloc</code> is that leaf functions can take advantage of this default register frame: If a leaf function can do all its work with just </p>
+<ul>
+<li>its input registers</li>
+<li>scratch registers</li>
+<li>the     <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/01/13/58199.aspx">red zone</a></li>
+</ul>
+<p>then it doesn’t need to perform an <code>alloc</code> at all! It can use the default register allocation of “Caller’s output registers become my input registers, and I have no local registers or output registers.” When finished, the function just does a <code>br.ret rp</code> to return to the caller. </p>
+<p>Note that this optimization is available only to leaf functions. If the function calls another function, then the <code>br.call</code> will overwrite the <code>pfs</code> and <code>rp</code> registers, which will make it hard to return to your caller when you’re done. </p>
+<p>The red zone is officially known as the <i>scratch area</i>. The first 16 bytes on the stack are available for use by the currently executed function. If you want values to be preserved across a function call, you need to move them out of the scratch area, because they become the scratch area for the function being called! In other words, the scratch area is not preserved across function calls. </p>
+<p>A more obscure consequence of this division of labor between <code>br.call</code> and <code>alloc</code> is that a function could in principle perform <code>alloc</code> more than once in order to change the size of its local region or the number of output registers. For example, a function might start by saying, “I have five local registers and two output registers,” and then later realize, “Oh, wait, I need to call a function with six parameters. I will issue a new <code>alloc</code> instruction that requests five local registers and <i>six</i> output registers.” Although technically legal, it doesn’t often occur in practice because it’s usually easier just to set up your register state once and stick with it for the duration of the function. </p>
+<p>A more common case where this occurs is when a function has an early exit that can be determined using only leaf-available resources. </p>
+<pre>
+extern HANDLE LogFile;
+
+void Log(char *message, char *file, int line)
+{
+ if (!LogFile) return;
+ ... complicated logging code goes here ...
+}
+</pre>
+<p>If profiling feedback indicates that logging is rarely enabled, then the compiler can avoid setting up all the registers and stack for the complicated logging code, at least until it knows that logging is enabled. </p>
+<pre>
+.Log:
+      addl    r30, -205584, gp ;; // get address of LogFile variable
+      ld8     r30, [r30] ;;       // fetch the value
+      cmp.eq  p6, p0 = r30, r0    // is it zero?
+(p6)  br.ret  rp                  // return if so
+
+  // Okay, we are really logging. Set up our stack.
+      alloc   r35 = ar.pfs, 3, 5, 6, 0 // set up register frame
+      sub     sp = sp, 0x240      // set up stack buffers
+      mov     r36 = ra            // save return address
+
+      ... do complicated logging ...
+
+      mov     rp = r36            // return address
+      mov.i   ar.pfs = r34        // restore pfs
+      br.ret.sptk.many  rp ;;     // return to caller
+</pre>
+<p>The first instruction calculates the effective address of the <code>Log­File</code> variable. We’ll learn more about the <var>gp</var> register later. </p>
+<p>The second instruction loads an 8-byte value from that address, thereby retrieving the value of <code>Log­File</code>. </p>
+<p>The third instruction compares the value against <var>r0</var>, which is a hard-coded zero register. It asks for an equality comparison, putting the answer in the predicate variable <var>p6</var> (and putting the complement of the answer in <var>p0</var>, which effectively throws it away). </p>
+<p>The fourth instruction conditionally returns from the function if the comparison was true. In the common case where logging is not enabled, the function returns at this point. Only if logging is enabled do the <code>alloc</code> and related instructions execute to set up the stack frame and then perform the complicated logging. </p>
+<p>This is an example of an optimization known as <i>shrink-wrapping</i>. Shrink-wrapping occurs when a function does some work with a temporary stack frame, and then expands to a full stack frame only if it is needed. (Shrink-wrapping entails a few extra entries in the unwind exception table because the unwinding needs to take place differently depending on where in the function the exception occurred. I’ll spare you the details.) </p>
+<p>Okay, that’s all for leaf functions and getting to the bottom of the whole <code>br.call</code> / <code>alloc</code> dance. <a href="https://blogs.msdn.microsoft.com/oldnewthing/20150731-00/?p=90771">Next time</a>, we’ll look at function pointers and the funky <var>gp</var> register. Here’s something to whet your appetite: On ia64, a function pointer is not the address of the first instruction in the function’s code. In fact, it’s nowhere near the function’s code. </p>
+
+
+</body>

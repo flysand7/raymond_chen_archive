@@ -1,0 +1,61 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I save a C++/WinRT array_view as a com_array?</h1>  <!-- .entry-meta -->
+
+<p>If you have a Windows Runtime class with a property whose Windows Runtime type is an array, then the C++/WinRT projection expresses the property setter and getter as follows:</p>
+<pre>// Set array
+void IntArray(winrt::array_view&lt;int32_t const&gt; const&amp; value);
+
+// Get array
+winrt::com_array&lt;int32_t&gt; IntArray();
+</pre>
+<p><a href="/code/the-various-patterns-for-passing-c-style-arrays-across-the-windows-runtime-abi-boundary"> We saw earlier</a> that these correspond to the <code>PassArray</code> and <code>ReceiveArray</code> patterns, respectively.</p>
+<p>How would you implement the backing store for this property?</p>
+<p>Well, the first thing to note is that the backing store should <i>not</i> be an <code>array_view</code>, because an <code>array_view</code> is a non-owning view into somebody else’s data. If your setter saved just the <code>array_view</code>, then it would be left with a dangling pointer, because the <code>array_view</code> parameter is valid only for the duration of the call.</p>
+<p>You realize that what you want to do is save a copy of the contents of an <code>array_view</code>. One option is to save it in a <code>com_array</code>, but there is no obvious way to create a <code>com_array</code> that is a copy of the contents of an <code>array_view</code>, seeing as there’s no constructor that takes an <code>array_view</code>.</p>
+<p>You need to use the two-iterator constructor for <code>com_array</code>. This creates a copy of the provided range of data and saves it in a <code>com_array</code>.</p>
+<p>Similarly, to return the <code>com_array</code>, you need to construct the return value in the same way. The <code>com_array</code> is not copyable, so you’ll have to use the two-iterator constructor.</p>
+<pre>struct Class : ClassT&lt;Class&gt;
+{
+private:
+  winrt::com_array&lt;int32_t&gt; int_array_;
+
+public:
+  void IntArray(winrt::array_view&lt;int32_t const&gt; const&amp; value)
+  {
+    <span style="color: blue;">int_array_ = { value.begin(), value.end() };</span>
+  }
+
+  auto IntArray()
+  {
+    <span style="color: blue;">return winrt::com_array
+      { int_array_.begin(), int_array_.end() };</span>
+  }
+};
+</pre>
+<p>We take advantage of <a href="https://en.cppreference.com/w/cpp/language/class_template_argument_deduction"> class template argument deduction (CTAD)</a> to avoid having to repeat the type <code>int32_t</code> when constructing the <code>com_array</code>. The full version would have been</p>
+<pre>    return winrt::com_array&lt;int32_t&gt;
+      { int_array_.begin(), int_array_.end() };
+</pre>
+<p>The <code>com_array</code> is not copyable, but it <i>is</i> movable, so if you want to just give it away, you can <code>std::move</code> it. You don’t want to do that for a property backing store, but maybe it’ll come in handy in other cases.</p>
+<p>If you intend to do something with the backing store beyond simply using it to hold data, you might want to use a more versatile data structure like a <code>std::vector</code>. Fortunately, a <code>com_array</code> can construct from a vector, so you can do this:</p>
+<pre>struct Class : ClassT&lt;Class&gt;
+{
+private:
+  <span style="color: blue;">std::vector&lt;int32_t&gt; int_vector_;</span>
+
+public:
+  void IntArray(winrt::array_view&lt;int32_t const&gt; const&amp; value)
+  {
+    <span style="color: blue;">int_vector_ = { value.begin(), value.end() };</span>
+  }
+
+  auto IntArray()
+  {
+    <span style="color: blue;">return winrt::com_array{ int_vector_ };</span>
+  }
+};
+</pre>
+<p>Here, we take advantage of a deduction guide (introduced in <a href="https://github.com/microsoft/cppwinrt/releases/tag/2.0.200601.2"> version 2.0.200601.2</a>) to avoid having to specialize the <code>winrt::com_array</code>.</p>
+
+
+</body>

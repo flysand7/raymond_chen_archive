@@ -1,0 +1,164 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Does the CLR really call CoInitializeEx on the first call to unmanaged code, even if you don't deal with COM at all and are just calling native code via p/invoke?</h1>  <!-- .entry-meta -->
+
+<p>
+Some time ago,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/08/11/10548975.aspx">
+I called out</a>
+this part of the documentation
+regarding
+managed and unmanaged threading:
+</p>
+<blockquote class="q"><p>
+On the first call to unmanaged code,
+the runtime calls <b>Co­Initialize­Ex</b>
+to initialize the COM apartment as either an MTA or an STA apartment.
+<a href="http://msdn.microsoft.com/en-us/library/5s8ee185%28v=vs.71%29.aspx">
+You can control the type of apartment created</a>
+by setting the
+System.Threading.ApartmentState property on the thread to <b>MTA</b>,
+<b>STA</b>, or <b>Unknown</b>.
+</p></blockquote>
+<p><p>
+Commenter T asks,
+“<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/08/11/10548975.aspx#10549183">Does it do this even if you don’t deal with COM at all
+and call native code through a P/Invoke</a>?”
+</p>
+<p>
+Well, the documentation says it does, and we can confirm with an experiment:
+</p>
+<pre>
+using System.Runtime.InteropServices;
+class Program
+{
+ public static void Main()
+ {
+  var thread = new System.Threading.Thread(
+    () =&gt; {
+   System.Console.WriteLine("about to p/invoke");
+   GetTickCount();
+  });
+  thread.Start();
+  thread.Join();
+ }
+ [DllImport("kernel32.dll")]
+ extern static uint GetTickCount();
+}
+</pre>
+<p>
+Run this program with a breakpoint on
+<code>Co­InitializeEx</code>.
+</p>
+<p>
+First breakpoint is hit with this stack:
+</p>
+<pre>
+rax=00007ffebc529b70 rbx=00000000007c6100 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000001 rdi=0000000000000002
+rip=00007ffebc529b70 rsp=000000000056f038 rbp=000000000056f0b0
+ r8=0000000000000001  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000037 r12=0000000000004000 r13=0000000000000001
+r14=0000000000000001 r15=0000000000000001
+combase!CoInitializeEx
+clr!Thread::SetApartment
+clr!SystemDomain::SetThreadAptState
+clr!SystemDomain::ExecuteMainMethod
+clr!ExecuteEXE
+clr!_CorExeMainInternal
+clr!CorExeMain
+mscoreei!CorExeMain
+MSCOREE!CorExeMain_Exported
+KERNEL32!BaseThreadInitThunk
+ntdll!RtlUserThreadStart
+</pre>
+<p>
+This call is initializing the main thread of the process.
+The flags passed to this first call to
+<code>Co­Initialize­Ex</code> are 0,
+which means that the default threading model of
+<code>COINIT_MULTI­THREADED</code> is used.
+</p>
+<p>
+The next time the breakpoint hits is with this stack:
+</p>
+<pre>
+rax=00000000ffffffff rbx=00000000007d1180 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000001 rdi=00000000007d1180
+rip=00007ffebc529b70 rsp=000000001a6af9a8 rbp=000000001a6afa20
+ r8=000000001a6af948  r9=0000000000000000 r10=00000000007f0340
+r11=00000000007f0328 r12=0000000000004000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+combase!CoInitializeEx
+clr!Thread::SetApartment
+clr!Thread::DoExtraWorkForFinalizer
+clr!WKS::GCHeap::FinalizerThreadWorker
+clr!ManagedThreadBase_DispatchInner
+clr!ManagedThreadBase_DispatchMiddle
+clr!ManagedThreadBase_DispatchOuter
+clr!WKS::GCHeap::FinalizerThreadStart
+clr!Thread::intermediateThreadProc
+KERNEL32!BaseThreadInitThunk
+ntdll!RtlUserThreadStart
+</pre>
+<p>
+From the name <code>Finalizer­Thread­Start</code>,
+this is clearly the finalizer thread.¹
+</p>
+<p>
+Next.
+</p>
+<pre>
+rax=00000000ffffffff rbx=000000000039eb20 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000001 rdi=0000000000000000
+rip=00007ffebc529b70 rsp=000000001a5af3d8 rbp=000000001a5af450
+ r8=0000000000000000  r9=000000001a5af3f0 r10=0000000000000000
+r11=0000000000000286 r12=0000000000004000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+combase!CoInitializeEx
+clr!Thread::SetApartment
+clr!Thread::PrepareApartmentAndContext
+clr!Thread::HasStarted
+clr!ThreadNative::KickOffThread
+clr!Thread::intermediateThreadProc
+KERNEL32!BaseThreadInitThunk
+ntdll!RtlUserThreadStart
+</pre>
+<p>
+Okay, this looks like it’s
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/11/12/10466467.aspx">
+kicking off</a> a new thread.
+I inferred this from the presence on the stack
+of the function which is deviously named
+<code>Kick­Off­Thread</code>.
+</p>
+<p>
+And the flags passed to this call to
+<code>Co­Initialize­Ex</code> are 0,
+which once again means that it defaults to MTA.
+</p>
+<p>
+There, we have confirmed experimentally that, at least in this case,
+the implementation matches the documentation.
+</p>
+<p>
+That the implementation behaves this way is not surprising.
+After all, the CLR does not have insight into the
+<code>Get­Tick­Count</code> function.
+It does not know <i>a priori</i> whether that function will
+create any COM objects.
+After all, we could have been p/invoking to
+<code>SHGet­Desktop­Folder</code>, which does use COM.
+Given that the CLR cannot tell whether a native function is going
+to use COM or not, it has to initialize COM just in case.
+</p>
+<p>
+¹
+Or somebody who is trying to mislead us into thinking that it is
+the finalizer thread.
+I tend to discount this theory because
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/01/31/10495737.aspx">
+as a general rule, code is not intentionally written to be
+impossible to understand</a>.</p>
+
+
+</p></body>

@@ -1,0 +1,146 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I obtain the computer manufacturer's name via C++?</h1>  <!-- .entry-meta -->
+
+<p>
+The way to get the computer manufacturer and other information
+is to
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/12/18/9233149.aspx">
+ask WMI</a>.
+WMI is much easier to use via scripting, but maybe you want to do it
+from C++.
+Fortunately,
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa389762(v=vs.85).aspx">
+MSDN takes you through it step by step</a>
+and even puts it together into
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa390418(v=vs.85).aspx">
+a sample program</a>.
+</p>
+<p>
+But I’m going to write the code myself anyway.
+</p>
+<p>
+Today’s Little Program extracts the computer name,
+manufacturer, and model from WMI.
+Remember that Little Programs do little or no error checking.
+</p>
+<p>
+And the smart pointer library we’ll use is
+(rolls dice) <code>_com_ptr_t</code>!
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;oleauto.h&gt;
+#include &lt;wbemidl.h&gt;
+#include &lt;comdef.h&gt;
+_COM_SMARTPTR_TYPEDEF(IWbemLocator, __uuidof(IWbemLocator));
+_COM_SMARTPTR_TYPEDEF(IWbemServices, __uuidof(IWbemServices));
+_COM_SMARTPTR_TYPEDEF(IWbemClassObject, __uuidof(IWbemClassObject));
+_COM_SMARTPTR_TYPEDEF(IEnumWbemClassObject, __uuidof(IEnumWbemClassObject));
+// <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize class incorporated by reference</a>
+</pre>
+<p>
+Those include files and macros set things up so we can use
+<code>_com_ptr_t</code> to access WBEM interfaces.
+</p>
+<pre>
+_bstr_t GetProperty(IWbemClassObject *pobj, PCWSTR pszProperty)
+{
+  _variant_t var;
+  pobj-&gt;Get(pszProperty, 0, &amp;var, nullptr, nullptr);
+  return var;
+}
+void PrintProperty(IWbemClassObject *pobj, PCWSTR pszProperty)
+{
+ printf("%ls = %ls\n", pszProperty,
+  static_cast&lt;PWSTR&gt;(GetProperty(pobj, pszProperty)));
+}
+</pre>
+<p>
+The first helper function retrieves a string property from a WBEM object.
+The second one prints it.
+(Exercise: Why do we need the <code>static_cast</code>?)
+</p>
+<pre>
+int __cdecl main(int, char**)
+{
+ CCoInitialize init;
+ IWbemLocatorPtr spLocator;
+ CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_ALL,
+  IID_PPV_ARGS(&amp;spLocator));
+ IWbemServicesPtr spServices;
+ spLocator-&gt;ConnectServer(_bstr_t(L"root\\cimv2"),
+  nullptr, nullptr, 0, 0, nullptr, nullptr, &amp;spServices);
+ CoSetProxyBlanket(spServices, RPC_C_AUTHN_DEFAULT,
+  RPC_C_AUTHZ_DEFAULT, COLE_DEFAULT_PRINCIPAL,
+  RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE,
+  0, EOAC_NONE);
+ IEnumWbemClassObjectPtr spEnum;
+ spServices-&gt;ExecQuery(_bstr_t(L"WQL"),
+  _bstr_t(L"select * from Win32_ComputerSystem"),
+   WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+   nullptr, &amp;spEnum);
+ IWbemClassObjectPtr spObject;
+ ULONG cActual;
+ while (spEnum-&gt;Next(WBEM_INFINITE, 1, &amp;spObject, &amp;cActual)
+                                    == WBEM_S_NO_ERROR) {
+  PrintProperty(spObject, L"Name");
+  PrintProperty(spObject, L"Manufacturer");
+  PrintProperty(spObject, L"Model");
+ }
+ return 0;
+}
+</pre>
+<p>
+And here is the actual guts of the program.
+</p>
+<p>
+We initialize COM but we
+do not call
+<code>Co­Initialize­Security</code>
+because
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa390885(v=vs.85).aspx">
+the checklist notes that</a>
+the call sets the default security for the entire process,
+which would be
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/12/02/9931183.aspx">
+a global solution to a local problem</a>.
+Now, in this case, we are in control of the process,
+but I’m doing it this way because I know people are going to
+copy/paste the code (hopefully after adding some error checking),
+and the local solution is more appropriate in the general case.
+</p>
+<p>
+The next step in the cookbook is
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa389749(v=vs.85).aspx">
+creating a connection to a WMI namespace</a>.
+We create a <code>WbemLocator</code> and connect it to the desired
+namespace.
+</p>
+<p>
+Step three in the cookbook is
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa393619(v=vs.85).aspx">
+setting the security context on the interface</a>,
+which is done with the amusingly-named function
+<code>Co­Set­Proxy­Blanket</code>.
+</p>
+<p>
+Once we have a connection to the server,
+we can ask it for all (<code>*</code>) the
+information from <code>Win32_Computer­System</code>.
+</p>
+<p>
+We know that there is only one computer in the query,
+but I’m going to write a loop anyway,
+because somebody who copies this code may issue a query that
+contains multiple results.
+</p>
+<p>
+For each object, we print its Name, Manufacturer, and Model.
+</p>
+<p>
+And that’s it.</p>
+
+
+</body>

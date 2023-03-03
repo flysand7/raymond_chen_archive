@@ -1,0 +1,37 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why are there four functions for parsing strings into GUIDs, and why are they in three different DLLs?</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, we discussed <a href="http://blogs.msdn.com/b/oldnewthing/archive/2015/10/15/10647906.aspx">the differences among various functions that take a string and produce a GUID-like thing</a>. Let’s look at that table. </p>
+<table border="1" cellpadding="4" style="border-collapse: collapse">
+<tr>
+<th>Function</th>
+<th>Exported by</th>
+</tr>
+<tr>
+<td valign="baseline"><code>Uuid­From­String</code></td>
+<td valign="baseline">rpcrt4.dll</td>
+</tr>
+<tr>
+<td valign="baseline"><code>IID­From­String</code></td>
+<td valign="baseline">ole32.dll</td>
+</tr>
+<tr>
+<td valign="baseline"><code>CLSID­From­String</code></td>
+<td valign="baseline">ole32.dll</td>
+</tr>
+<tr>
+<td valign="baseline"><code>GUID­From­String</code></td>
+<td valign="baseline">shell32.dll</td>
+</tr>
+</table>
+<p>Why are there four such functions, and more importantly, why are they in three different DLLs? </p>
+<p>As you might expect, the answer comes from history. </p>
+<p>The first two functions on the scene are the ones in the middle of the table. <code>IID­From­String</code> and <code>CLSID­From­String</code> come from the original 32-bit OLE library. They differ in their intended use. The second one is for parsing strings that represent OLE objects. It so happens that you are allowed to do this either by specifying the raw GUID as a string, or by specifying the programmatic ID for the class. That’s why <code>CLSID­From­String</code> does the extra work of looking in <code>HKEY_CLASSES_ROOT</code> to convert the string to a CLSID. </p>
+<p>On the other hand, interface IDs have no such alternate notation, so the <code>IID­From­String</code> function accepts only stringized GUIDs. </p>
+<p>At this point in time, OLE was a monolithic DLL. It then became apparent that the monolithic OLE DLL was really doing several things: It managed document linking and embedding (OLE). As part of that work, it also had to manage the component object model (COM). And in the case where the components are in different processes, it needs to perform remote procedure calls (RPC). </p>
+<p>The remote procedure call functionality was useful in its own right, so the OLE team spun it off into its own library, and OLE would be one of many clients of the new library. That new library was called RPCRT4, which I’m guessing stands for “remote procedure call runtime, fourth attempt” (?). </p>
+<p>The remote procedure call library therefore had to have its own parser for stringized GUIDs; it couldn’t call up into OLE because that would be a layering violation. (RPC is the low-level component and OLE is the high-level component.) And besides, the components which were using the raw RPC layer were doing so because they explicitly didn’t want OLE. Having the string parsing function in OLE would force components to load OLE, which ruined the point of splitting RPC into its own library. For want a string-parsing function the kingdom was lost. </p>
+<p>The last function on the scene is <code>GUID­From­String</code>. This was written by the shell team back in the days of <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/07/05/173226.aspx">OLE Chicken</a>. (not to be confused with <a href="http://allrecipes.com/recipe/234180/chicken-ole/">Chicken Ole</a>). The shell needed only a limited subset of OLE in order to function. To avoid the performance impact of loading all of OLE (and allocating a whopping 32KB of memory), it contained a miniature copy of OLE; just enough to let the shell do what it needed. And one of the things in that miniature copy of OLE was a function to parse strings into GUIDs. </p>
+
+
+</body>

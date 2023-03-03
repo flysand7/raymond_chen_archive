@@ -1,0 +1,143 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The SuperH-3, part 12: Calling convention and function prologues/epilogues</h1>  <!-- .entry-meta -->
+
+<p>The calling convention used by Windows CE for the SH-3 processor looks very much like the calling convention for other RISC architectures on Windows.</p>
+<p>The short version is that the first four parameters (assuming they are all 32-bit integers) are passed in registers <var>r4</var> through <var>r7</var>, and the rest go onto the stack after a 16-byte gap. The 16-byte gap is the home space for the register parameters, and even if a function accepts fewer than four parameters, you must still provide a full 16 bytes of home space.</p>
+<p>More strictly, the first 16 bytes of parameters are passed in registers <var>r4</var> through <var>r7</var>. If a parameter is a floating point type, then how it gets passed depends on how the parameter is declared in the function prototype.</p>
+<ul>
+<li>If the floating point type is prototyped as non-variadic, then it goes into the corresponding register <var>fr4</var> through <var>fr7</var>, and the integer register goes unused.</li>
+<li>If the floating point type is prototyped as variadic, then it stays in the integer register.</li>
+<li>If the function has no prototype, then the floating point type goes into both the floating point register and the integer register.</li>
+</ul>
+<p>The reason for this rule is the same as before. Variadic parameters go into integer registers because the callee doesn’t know what type they are upon function entry. To make things easier, variadic parameters are always passed in integer registers, so that the callee can just spill them into the home space and treat them all as stack-based parameters. And unprototyped functions pass the floating point values in both floating point and integer registers because it doesn’t know whether the function is going to treat them as variadic or non-variadic, so it has to cover both bases.</p>
+<p>Unlike <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180417-00/?p=98525"> the Windows calling convention for the MIPS R4000</a>, the Windows calling convention for the SH-3 does not require 64-bit values to be 8-byte aligned. For example:</p>
+<pre>void f(int a, __int64 b, int c);
+</pre>
+<table border="0" cellpadding="3" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<th style="border: solid 1px black;">MIPS</th>
+<th style="border: solid 1px black;">Contents</th>
+<td rowspan="5"> </td>
+<th style="border: solid 1px black;">SH-3</th>
+<th style="border: solid 1px black;">Contents</th>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><var>a0</var></td>
+<td style="border: solid 1px black;"><var>a</var></td>
+<td style="border: solid 1px black;"><var>r4</var></td>
+<td style="border: solid 1px black;"><var>a</var></td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><var>a1</var></td>
+<td style="border: solid 1px black;">unused</td>
+<td style="border: solid 1px black;"><var>r5</var></td>
+<td rowspan="2" style="border: solid 1px black;"><var>b</var></td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><var>a2</var></td>
+<td rowspan="2" style="border: solid 1px black;"><var>b</var></td>
+<td style="border: solid 1px black;"><var>r6</var></td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><var>a3</var></td>
+<td style="border: solid 1px black;"><var>r7</var></td>
+<td style="border: solid 1px black;"><var>c</var></td>
+</tr>
+<tr>
+<td style="border: solid 1px black;">on stack</td>
+<td style="border: solid 1px black;"><var>c</var></td>
+</tr>
+</tbody>
+</table>
+<p>On entry to the function, the return address is provided in the <var>pr</var> register, and on exit the function’s return value is placed in the <var>r0</var> register. However, if the function’s return value is larger than 32 bits, then a secret first parameter is passed which is a pointer to a buffer to receive the return value. The parameters are caller-clean; the function must return with the stack pointer at the same value it had when control entered.</p>
+<p>If the concept of home space offends you, you can think of it as a <a href="https://blogs.msdn.microsoft.com/oldnewthing/20190111-00/?p=100685"> 16-byte red zone that sits above the stack pointer</a>.</p>
+<p>The stack for a typical function looks like this:</p>
+<table border="0" cellpadding="3" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td align="center">⋮</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">param 6</td>
+<td>(if function accepts more than 4 parameters)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">param 5</td>
+<td>(if function accepts more than 4 parameters)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">param 4 home space</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">param 3 home space</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">param 2 home space</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">param 1 home space</td>
+<td>← stack pointer at function entry</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">
+
+
+</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">saved return address</td>
+<td>← stack pointer after saving registers</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">
+
+
+</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">
+
+
+
+</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">param 4 home space</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">param 3 home space</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">param 2 home space</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black;">param 1 home space</td>
+<td>← stack pointer after prologue complete</td>
+</tr>
+</tbody>
+</table>
+<p>The function typically starts by pushing onto the stack any nonvolatile registers, as well as its return address. This takes advantage of the pre-decrement addressing mode. In practice, the Microsoft C compiler allocates nonvolatile registers starting at <var>r8</var> and increasing, and preserves them on the stack in that order, followed by the return address.</p>
+<p>In this example, the function has four registers to save, plus the return address.</p>
+<pre>function_start:
+    MOV.L   r8, @-r15   ; push r8
+    MOV.L   r9, @-r15   ; push r9
+    MOV.L   r10, @-r15  ; push r10
+    MOV.L   r11, @-r15  ; push r11
+    STS.L   pr, @-r15   ; push pr
+</pre>
+<p>At some point (perhaps not immediately), the function will adjust its stack pointer to create space for its local variables and outbound parameters. If the function has a small stack frame, it can use the immediate form of the <code>SUB</code> instruction. Otherwise, it’s probably going to load a constant into a register and use that as the input to the two-register form of the <code>SUB</code> instruction.</p>
+<p>If the function has a large stack frame, it will be difficult to access variables far away from <var>r15</var> due to the limited reach of the <i>register indirect with displacement</i> addressing mode. To help with this problem, the compiler might park the frame pointer register <var>r14</var> in the middle of the frame, or at least close to a frequently-used variable, so that it can reach more local variables in a single instruction.</p>
+<p>At the exit of the function, the operations performed in the prologue are reversed: The stack pointer is adjusted to point to the saved return address, and the saved registers are popped off the stack. Finally, the function returns with a <code>rts</code>.</p>
+<pre>    LDS.L   @r15+, pr   ; pop pr
+    MOV.L   @r15+, r11  ; pop r11
+    MOV.L   @r15+, r10  ; pop r10
+    MOV.L   @r15+, r9   ; pop r9
+    RTS                 ; return
+    MOV.L   @r15+, r8   ; pop r8 (in the delay slot)
+</pre>
+<p>Lightweight leaf functions are those which call no other functions and which can accomplish their task using only volatile registers and the 16 bytes of home space. Such functions may not modify the <var>pr</var> register or any nonvolatile registers (which includes the stack pointer).</p>
+<p>Next time, we’ll look at some code patterns you’ll see in the compiler-generated code, y’know, the stuff that goes <i>inside</i> the function. <a href="https://devblogs.microsoft.com/oldnewthing/20190821-00/?p=102794"> We’ll start with misaligned data</a>.</p>
+
+
+</body>

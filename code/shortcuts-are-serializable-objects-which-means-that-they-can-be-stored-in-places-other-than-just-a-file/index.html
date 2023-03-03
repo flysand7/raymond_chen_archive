@@ -1,0 +1,131 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Shortcuts are serializable objects, which means that they can be stored in places other than just a file</h1>  <!-- .entry-meta -->
+
+<p>
+It’s true that the vast majority of the time,
+people consider the shell shortcut object as synonymous with the
+<code>.lnk</code> file it is normally saved into,
+shortcuts need not spend their time in a file.
+You can put a shortcut anywhere you can save a hunk of bytes.
+Here’s a program that creates a shortcut to the file name passed
+on the command line (make sure it’s a full path),
+and then serializes the shortcut to a blob of bytes
+(in the form of a <code>HGLOBAL</code>).
+Once that’s done, it reconstitutes the bytes back into a
+shortcut object and sucks information out of it.
+</p>
+<pre>
+#define UNICODE
+#define _UNICODE
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;tchar.h&gt;
+#include &lt;atlbase.h&gt;
+HGLOBAL CreateShellLinkInMemory(PCWSTR pszFile)
+{
+ BOOL fSuccess = FALSE;
+ HGLOBAL hglob = GlobalAlloc(GMEM_MOVEABLE, 0);
+ if (hglob) {
+  CComPtr&lt;IStream&gt; spstm;
+  if (SUCCEEDED(CreateStreamOnHGlobal(hglob, FALSE, &amp;spstm))) {
+   CComPtr&lt;IShellLink&gt; spsl;
+   if (SUCCEEDED(spsl.CoCreateInstance(CLSID_ShellLink))) {
+    if (SUCCEEDED(spsl-&gt;SetPath(pszFile))) {
+     CComQIPtr&lt;IPersistStream&gt; spps(spsl);
+     fSuccess = spps &amp;&amp; SUCCEEDED(spps-&gt;Save(spstm, TRUE));
+    }
+   }
+  }
+ }
+ if (fSuccess) return hglob;
+ if (hglob) GlobalFree(hglob);
+ return NULL;
+}
+</pre>
+<p>
+After creating the shortcut object, we serialize it into
+a stream backed by a chunk of memory we record in a <code>HGLOBAL</code>.
+The shortcut object itself is no longer anywhere to be seen.
+It’s been dehydrated into a pile of dust like in that old
+<i>Star Trek</i> episode.
+</p>
+<p>
+But this time, we know how to bring it back.
+</p>
+<pre>
+IShellLink *CreateShellLinkFromMemory(HGLOBAL hglob)
+{
+ IShellLink *pslReturn = NULL;
+ CComPtr&lt;IStream&gt; spstm;
+ if (SUCCEEDED(CreateStreamOnHGlobal(hglob, FALSE, &amp;spstm))) {
+  CComPtr&lt;IShellLink&gt; spsl;
+  if (SUCCEEDED(spsl.CoCreateInstance(CLSID_ShellLink))) {
+   CComQIPtr&lt;IPersistStream&gt; spps(spsl);
+   if (spps &amp;&amp; SUCCEEDED(spps-&gt;Load(spstm))) {
+    pslReturn = spsl.Detach();
+   }
+  }
+ }
+ return pslReturn;
+}
+</pre>
+<p>
+We create a new shortcut object and tell it to restore itself
+from the chunk of memory we squirreled away.
+Bingo, the shortcut is back, ready for action.
+</p>
+<pre>
+int __cdecl wmain(int argc, WCHAR **argv)
+{
+ if (SUCCEEDED(CoInitialize(NULL))) {
+  HGLOBAL hglob = CreateShellLinkInMemory(argv[1]);
+  if (hglob) {
+   CComPtr&lt;IShellLink&gt; spsl;
+   spsl.Attach(CreateShellLinkFromMemory(hglob));
+   if (spsl) {
+    WCHAR szTarget[MAX_PATH];
+    if (spsl-&gt;GetPath(szTarget, MAX_PATH, NULL, 0) == S_OK) {
+     wprintf(L"Welcome back, shortcut to %s\n", szTarget);
+    }
+   }
+   GlobalFree(hglob);
+  }
+  CoUninitialize();
+ }
+ return 0;
+}
+</pre>
+<p>
+Since shortcuts can be stored anywhere,
+you can’t
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/05/28/9645162.aspx#9647906">
+rely on the file name to distinguish between shortcuts to files
+and shortcuts to folders</a>
+because there may not be a file name at all!
+(What’s the file name for our <code>HGLOBAL</code>?)
+Even if you decide that the convention applies only to shortcuts
+saved in a file,
+you’ve created an additional burden on people who manipulate shortcut files:
+They have to check whether the target is a file or folder before
+choosing the file name,
+and if the target of the shortcut changes, they may have to rename the file
+as well.
+This is a real problem for the standard file property sheet:
+If you change the shortcut target from the <i>Shortcut</i> page,
+this might change the underlying file name.
+If you had also made changes to the <i>Security</i> page,
+it will try to update the security attributes on the old file name,
+even though the <i>Shortcut</i> page had renamed it.
+Oops, none of the other property sheet pages work, because they
+are now operating on a file that no longer exists!
+</p>
+<p>
+<b>Exercise</b>:
+Under what conditions would it be useful to store a shortcut
+in memory rather than in a file?
+(<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/02/24/10133280.aspx#10133664">Answer</a>.)</p>
+
+
+</body>

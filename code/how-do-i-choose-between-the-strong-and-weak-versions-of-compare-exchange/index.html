@@ -1,0 +1,38 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I choose between the strong and weak versions of compare-exchange?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we left with the question of when you should prefer the strong version of compare-exchange as opposed to the weak version. </p>
+<p>It comes down to whether spurious failures are acceptable and how expensive they are. </p>
+<p>In the example given in the presentation, the cost of a spurious failure is very low: </p>
+<pre>
+    do { new_n-&gt;next = old_h; }
+    while (!head.compare_exchange_strong(old_h, new_n));
+</pre>
+<p>Recovering from a spurious failure is just updating a single variable and retrying the operation. Removing the nested loop embedded in the strong compare-exchange simplifies the outer loop. </p>
+<p>On the other hand, if recovering from the failure requires a lot of work, such as throwing away an object and constructing a new one, then you probably want to pay for the extra retries inside the strong compare-exchange operation in order to avoid an expensive recovery iteration. </p>
+<p>And of course if there is no iteration at all, then a spurious failure could be fatal. Consider <a href="https://devblogs.microsoft.com/oldnewthing/">the lock-free singleton construction pattern</a>: </p>
+<pre>
+std::atomic&lt;Widget*&gt; cachedWidget;
+
+Widget* GetSingletonWidget()
+{
+ Widget* widget = cachedWidget;
+ if (!widget) {
+  widget = new(std::nothrow) Widget();
+  if (widget) {
+   Widget* previousWidget = nullptr;
+   if (!cachedWidget.compare_exchange_strong(previousWidget, widget)) {
+    // lost the race - destroy the redundant widget
+    delete widget;
+    widget = previousWidget;
+   }
+  }
+ }
+ return widget;
+}
+</pre>
+<p>If we were to switch to <code>compare_</code><code>exchange_</code><code>weak</code>, then a spurious failure would mean that the value of <code>cachedWidget</code> was <code>nullptr</code>, but we failed to exchange anyway. This means that we would think that we lost the race against another thread and return the <code>previousWidget</code> as the singleton. But in the case of a spurious failure, the <code>previousWidget</code> will still be <code>nullptr</code>, causing the code to create a Widget, think it was redundant, throw away the created Widget, and then return <code>nullptr</code>. This is bad news for the <code>Get­Singleton­Widget</code> function. </p>
+<p>Choosing between the strong and weak versions of compare-exchange requires you to understand what your algorithm does in the case of a spurious failure. </p>
+
+
+</body>

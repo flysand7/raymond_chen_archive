@@ -1,0 +1,84 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Mundane std::tuple tricks: Selecting via an index sequence, part 2</h1>  <!-- .entry-meta -->
+
+<p><a href="https://devblogs.microsoft.com/oldnewthing/20200623-00/?p=103883"> Last time</a>, we developed the <code>select_</code><code>tuple</code> function which takes a tuple and an index sequence and produces a new tuple that selects the elements based on the index sequence. Here’s what we had:</p>
+<pre>// Don't use this; see discussion.
+template&lt;typename Tuple, std::size_t... Ints&gt;
+auto select_tuple(Tuple&amp;&amp; tuple, std::index_sequence&lt;Ints...&gt;)
+{
+ return std::make_tuple(
+    std::get&lt;Ints&gt;(std::forward&lt;Tuple&gt;(tuple))...);
+}
+</pre>
+<p>The idea is that you can do something like</p>
+<pre>std::tuple&lt;int, char, float&gt; t{ 1, 'x', 2.0 };
+auto t2 = select_tuple(t, std::index_sequence&lt;0, 2&gt;{});
+</pre>
+<p>and the result is that <code>t2</code> is a <code>std::tuple&lt;int, float&gt;{ 1, 2.0 }</code>.</p>
+<p>But there’s a problem with this function.</p>
+<p>Here’s a riddle: When does <code>std::make_tuple&lt;T&gt;()</code> return something that isn’t a <code>std::tuple&lt;T&gt;</code>?</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th><code>std::make_tuple&lt;T&gt;</code></th>
+<th>Produces <code>std::tuple&lt;T&gt;</code></th>
+</tr>
+<tr>
+<td style="text-align: right;"><code>int   </code></td>
+<td rowspan="4" style="text-align: center;"><code>int</code></td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>const int   </code></td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>int&amp;  </code></td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>int&amp;&amp; </code></td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>std::reference_wrapper&lt;      int  &gt;</code></td>
+<td rowspan="4" style="text-align: center;"><code>int&amp;</code></td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>std::reference_wrapper&lt;const int  &gt;</code></td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>std::reference_wrapper&lt;      int&amp; &gt;</code></td>
+</tr>
+<tr>
+<td style="text-align: right;"><code>std::reference_wrapper&lt;      int&amp;&amp;&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Answer: When <code>T</code> is subject to decay or decays to a <code>reference_</code><code>wrapper</code>.</p>
+<p>Decay is a term in the C++ standard that refers to the changes of type that typically occur when something is passed by value to a function:</p>
+<ul>
+<li>References decay to the underlying type.</li>
+<li>cv-qualifiers (<code>const</code> and <code>volatile</code>) are removed.</li>
+<li>Arrays decay to pointers.</li>
+<li>Function decay to function pointers.</li>
+</ul>
+<p>But <code>make_</code><code>tuple</code> adds an additional wrinkle: If the decayed type is a <code>reference_</code><code>wrapper</code>, then the result is the underlying reference.</p>
+<p>We don’t want any of these transformations to occur. If you select a type from a tuple that is a reference, then you want the resulting tuple to have the same reference type.</p>
+<p>So we can’t use <code>make_</code><code>tuple</code>. We’ll specify the desired tuple type explicitly.</p>
+<pre>template&lt;typename Tuple, std::size_t... Ints&gt;
+auto select_tuple(Tuple&amp;&amp; tuple, std::index_sequence&lt;Ints...&gt;)
+{
+ return std::tuple&lt;std::tuple_element_t&lt;Ints, Tuple&gt;...&gt;(
+    std::get&lt;Ints&gt;(std::forward&lt;Tuple&gt;(tuple))...);
+}
+</pre>
+<p>or alternatively</p>
+<pre>template&lt;typename Tuple, std::size_t... Ints&gt;
+std::tuple&lt;std::tuple_element_t&lt;Ints, Tuple&gt;...&gt;
+select_tuple(Tuple&amp;&amp; tuple, std::index_sequence&lt;Ints...&gt;)
+{
+ return { std::get&lt;Ints&gt;(std::forward&lt;Tuple&gt;(tuple))... };
+}
+</pre>
+<p>Okay, now that we have this helper function, we can do a bunch of fancy tuple manipulation.</p>
+<p>Which we’ll do next time.</p>
+
+
+</body>

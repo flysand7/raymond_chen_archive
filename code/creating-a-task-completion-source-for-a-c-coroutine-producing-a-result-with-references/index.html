@@ -1,0 +1,111 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a task completion source for a C++ coroutine: Producing a result with references</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/creating-a-task-completion-source-for-a-c-coroutine-producing-a-result" title="Creating a task completion source for a C++ coroutine: Producing a result"> created a <code>result_holder</code> that can be awaited until it is assigned a result</a>, and I noted that the code was broken.</p>
+<p>One of the reasons that it’s broken is that it doesn’t handle references properly.</p>
+<pre>result_holder&lt;int&amp;&gt; counter; // errors!
+</pre>
+<p>If <code>T</code> is a reference, we run into trouble trying to put it into a union:</p>
+<pre>    union optional
+    {
+        optional() {}
+        ~optional() {}
+
+        T value; // oops
+    } result;
+</pre>
+<p>References may not be members of a union. There’s also the problem that <a href="https://devblogs.microsoft.com/oldnewthing/20200914-00/?p=104218" title="What's up with error C4838: a WinRT type cannot be a member of a union, and how can I work around it?"> certain C++/CX types also cannot be members of a union</a>. So what do you do if <code>T</code> is one of those “forbidden in a union” types?</p>
+<p>A common workaround is to wrap the illegal type inside a legal one: Create a wrapper structure that has a single member, namely the type that can’t go into a union. Then put the structure in the union.</p>
+<pre>    <span style="color: blue;">struct wrapper
+    {
+        T value;
+    };</span>
+
+    union optional
+    {
+        optional() {}
+        ~optional() {}
+
+        <span style="color: blue;">wrapper wrap;</span>
+    } result;
+</pre>
+<p>And now every reference to the wrapped value must go through the wrapper.</p>
+<pre>    ~result_holder_state()
+    {
+        if (ready.load(std::memory_order_relaxed)) {
+            result.<span style="color: blue;">wrap.~wrapper</span>();
+        }
+    }
+
+    ...
+
+    void set_result(node_list&amp; list, T v)
+    {
+        if (!ready.load(std::memory_order_relaxed)) {
+            new (std::addressof(result.<span style="color: blue;">wrap</span>))
+                <span style="color: blue;">wrapper</span>{ std::<span style="color: blue;">forward</span>&lt;T&gt;(v) };
+            ready.store(true, std::memory_order_release);
+            this-&gt;resume_all(list);
+        }
+    }
+    ...
+};
+
+template&lt;typename T&gt;
+struct result_holder
+    : async_helpers::awaitable_sync_object&lt;
+        result_holder_state&lt;T&gt;&gt;
+{
+    ...
+
+    void set_result(T result) const noexcept
+    {
+        this-&gt;action_impl(&amp;state::set_result,
+            std::<span style="color: blue;">forward&lt;T&gt;</span>(result));
+    }
+};
+</pre>
+<p>Note also that we use <code>std::forward</code> instead of <code>std::move</code> to construct the wrapper. Forwarding a reference preserves reference-ness, and forwarding a non-reference moves it. (I always have to go back and work out the cases by hand to convince myself that this is true.)</p>
+<p>Okay, so that’s how we can get the reference into the result holder. But how do we get it back out?</p>
+<pre>    T get_result()
+    {
+        return result.<span style="color: blue;">wrap.value</span>;
+    }
+};
+</pre>
+<p>Now that <code>get_result</code> returns a reference, we have to make sure that the reference doesn’t get decayed to a value as it propagates out of <code>get_result</code> back to the awaiter and ultimately to the caller of <code>co_await</code>:</p>
+<pre>    template&lt;typename State&gt;
+    class awaitable_state
+    {
+        ...
+
+        <span style="color: blue;">decltype(auto)</span> await_resume(
+            impl::node&lt;extra_await_data&gt;&amp; node) noexcept
+        {
+            node.handle = nullptr;
+            return parent().get_result();
+        }
+        ...
+    };
+
+    template&lt;typename State&gt;
+    class awaitable_sync_object
+    {
+        ...
+
+        struct awaiter
+        {
+            ...
+
+            <span style="color: blue;">decltype(auto)</span> await_resume()
+            { return s.await_resume(node); }
+
+            ...
+        }
+    };
+</pre>
+<p>The <code>decltype(auto)</code> specifier allows you to forward a return type perfectly, without incurring the decay that normally occurs if you had used <code>auto</code>.</p>
+<p>Okay, so now we can put a reference in our <code>result_<wbr/>holder</code>. There’s another thing we can’t put in our <code>result_<wbr/>holder</code>: We’ll look at it <a href="https://devblogs.microsoft.com/oldnewthing/20210325-00/?p=105002" title="Creating a task completion source for a C++ coroutine: Producing nothing"> next time</a>.</p>
+
+
+</body>

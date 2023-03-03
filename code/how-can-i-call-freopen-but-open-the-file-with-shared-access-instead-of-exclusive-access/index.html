@@ -1,0 +1,49 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I call freopen but open the file with shared access instead of exclusive access?</h1>  <!-- .entry-meta -->
+
+<p>A customer wants to redirect their program’s <code>stdout</code> to a file. They followed the <a href="https://support.microsoft.com/en-us/help/58667/how-to-redirect-stdout-to-a-file-from-a-visual-c-c-program">sample code</a> which basically boils down to the line </p>
+<pre>
+    FILE* stream = freopen("output.txt", "w", stdout);
+</pre>
+<p>or its security-enhanced alternate version: </p>
+<pre>
+    errno_t err = freopen_s(&amp;stream, "output.txt", "w", stdout);
+</pre>
+<p>The customer reported that this worked exactly as exepcted, but the output file is opened for exclusive access. They want another process to be able to read from the output file while the original process is writing to it, but the exclusive access prevents that. </p>
+<p>The Microsoft-specific function <code>_fsopen</code> lets you specify a custom sharing mode, but there is no corresponding <code>_fsreopen</code> function that augments the <code>freopen</code> function with a sharing mode. </p>
+<p>Is there anything the customer can do? </p>
+<p>The C/C++ runtime library folks suggested using <code>_dup2</code> to remap the file descriptor. Something like this: </p>
+<pre>
+#include &lt;fcntl.h&gt;
+#include &lt;io.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;windows.h&gt;
+
+// All error checking omitted for clarity
+int main()
+{
+  // Open with desired sharing mode
+  HANDLE h = CreateFileW(L"output.txt", GENERIC_WRITE, FILE_SHARE_READ,
+                         nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                         nullptr);
+
+  // Convert to a file descriptor
+  int fd = _open_osfhandle(reinterpret_cast&lt;intptr_t&gt;(h), _O_WRONLY);
+
+
+  // Remap stdout's file descriptor to be a copy of the one we just created
+  _dup2(fd, _fileno(stdout));
+
+  // Don't need our file descriptor any more
+  _close(fd);
+
+
+  printf("Hello, world!\n");
+
+  return 0;
+}
+</pre>
+<p>The customer confirmed that this does exactly what they needed. </p>
+
+
+</body>

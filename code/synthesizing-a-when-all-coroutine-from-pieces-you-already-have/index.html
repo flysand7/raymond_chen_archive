@@ -1,0 +1,99 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Synthesizing a when_all coroutine from pieces you already have</h1>  <!-- .entry-meta -->
+
+<p>C++/WinRT provides a helper function that takes a bunch of awaitable objects and produces an <code>IAsyncAction</code> that completes when all of the awaitable objects have completed.</p>
+<p>It has a very simple definition.</p>
+<pre>template &lt;typename... T&gt;
+Windows::Foundation::IAsyncAction when_all(T... async)
+{
+    (co_await async, ...);
+}
+</pre>
+<p>Let’s take this apart.</p>
+<p>The opening <code>template&lt;typename... T&gt;</code> says that this is a template that takes an arbitrary number of type parameters.</p>
+<p>The function prototype is for a function which takes a parameter list of <code>T... async</code>. This means that you can pass as many parameters as you like, of whatever type you prefer, and they are accepted by value. The parameter list is given the name <code>async</code>.</p>
+<p>The body is <code>(co_await async, ...)</code>. This is a <i>fold expression</i>. If <code>async...</code> represents the parameter list <code>async₁</code>, <code>async₂</code>, <code>async₃</code>, <code>async₄</code>, then</p>
+<pre>(co_await async, ...)
+</pre>
+<p>expands to</p>
+<pre>(co_await async₁, co_await async₂, co_await async₃, co_await async₄)
+</pre>
+<p>Usually, fold expressions are used with operators like <code>+</code> or <code>||</code>:</p>
+<pre>(v + ...)
+</pre>
+<p>expands to</p>
+<pre>(v₁ + v₂ + v₃ + v₄)
+</pre>
+<p>and</p>
+<pre>(is_even(v) || ...)
+</pre>
+<p>expands to</p>
+<pre>(is_even(v₁) || is_even(v₂) || is_even(v₃) || is_even(v₄))
+</pre>
+<p>for example.¹ Here, we’re using the comma operator not for anything interesting; it’s just a way to execute a bunch of stuff.</p>
+<p>The end result of this all is that if you write <code>when_all(x, y, z)</code>, this becomes</p>
+<pre>Windows::Foundation::IAsyncAction when_all(X x, Y y Z z)
+{
+  (co_await x, co_await y, co_await z);
+}
+</pre>
+<p>This produce a coroutine which awaits <code>x</code>, then throws the result away; then awaits <code>y</code>, then throws the result away; and finally awaits <code>z</code>, then throws the result away. And then the coroutine is finished.</p>
+<p><b>Mid-article bonus chatter</b>: There are some flaws in the above function. <a href="/code/rough-edges-in-the-when-all-coroutine-part-1-empty-parameter-list" title="Rough edges in the when_all coroutine, part 1: Empty parameter list"> We’ll look at them next time</a>. <b>End of bonus chatter</b>.</p>
+<p>A customer wanted to know how they could pass a <code>std::vector</code> of <code>IAsyncAction</code> objects to the <code>when_all</code> function.</p>
+<p>It reminds me of <a href="https://www.youtube.com/watch?v=Ijae2WHdc9I"> the old <i>Sesame Street</i> sketch</a> where Grover has no trouble counting blocks, but when asked to count some oranges, Grover freezes up. “I know how to count blocks, but I do not know how to count oranges!”</p>
+<p>I have to confess that as I child, I didn’t get the joke.</p>
+<p>Anyway, we saw how to count blocks (await every object in a parameter list). We just need to count oranges (await every object in a vector).</p>
+<pre>std::vector&lt;IAsyncAction&gt; actions = get_actions();
+for (auto&amp;&amp; action : actions) co_await action;
+</pre>
+<p>We can try to wrap this up in a function:</p>
+<pre>template&lt;typename T&gt;
+IAsyncAction when_all(T const&amp; container)
+{
+  for (auto&amp;&amp; v : container) co_await v;
+}
+</pre>
+<p>This doesn’t work because there is an ambiguity in the case where there is one parameter. Are you trying to await all of the awaitables in a list of length 1? Or is the parameter a container, and you want to await all objects within it?</p>
+<p>I’ll say that if the single parameter has a method named <code>begin</code> whose return type is not <code>void</code>, then it’s a container. (I could try to do better by also accepting a free function <code>begin</code>, but I’m feeling lazy.)</p>
+<pre>template&lt;typename T&gt;
+auto when_all(T&amp;&amp; container) -&gt;
+  std::enable_if_t&lt;sizeof(container.begin()) &gt;= 0, IAsyncAction&gt;
+{
+  for (auto&amp;&amp; v : container) co_await v;
+}
+</pre>
+<p>I’m using <code>sizeof</code> as a way to create a constant <code>true</code> value from a dependent type, so it can be tested with <code>std::enable_if_t</code>. We know that the container’s iterator must be a complete type because we’re going to use it in the <code>for</code> loop.</p>
+<p>We might also want to support a range expressed as two input iterators.²</p>
+<pre>template&lt;typename Iter&gt;
+std::enable_if_t&lt;
+  std::is_convertible_v&lt;
+    typename std::iterator_traits&lt;Iter&gt;::iterator_category,
+    std::input_iterator_tag&gt;, IAsyncAction&gt;
+when_all(Iter begin, Iter end)
+{
+  for (; begin != end; ++begin) co_await *begin;
+}
+</pre>
+<p>In all of these cases, you need to make sure to keep the container or range alive until after the <code>co_await when_all(...)</code> completes.</p>
+<p>Whatever way you come up with to express a collection of awaitable objects, you can write a function that accepts that collection and awaits each object in the collection.</p>
+<p>Go ahead and count oranges.</p>
+<p>¹ More precisely, they expand to</p>
+<pre>(v₁ + (v₂ + (v₃ + v₄)))
+</pre>
+<p>and</p>
+<pre>(is_even(v₁) || (is_even(v₂) || (is_even(v₃) || is_even(v₄))))
+</pre>
+<p>If you want the left-associative version, then you need to put the ellipsis on the left.</p>
+<pre>(... + v)
+(... || is_even(v))
+</pre>
+<p>² For extra flexibility, we could implicitly convert the second argument to match the first.</p>
+<pre>// C++17
+when_all(Iter begin, std::enable_if_t&lt;true, Iter&gt; end)
+
+// C++20
+when_all(Iter begin, std::type_identity_t&lt;Iter&gt; end)
+</pre>
+
+
+</body>

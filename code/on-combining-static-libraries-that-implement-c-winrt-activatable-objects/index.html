@@ -1,0 +1,51 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On combining static libraries that implement C++/WinRT activatable objects</h1>  <!-- .entry-meta -->
+
+<p>In C++/WinRT 2.0, one of the features is <a href="http://web.archive.org/web/20190406142238/https://docs.microsoft.com/en-us/windows/uwp/cpp-and-winrt-apis/news#smarter-and-more-efficient-modulegcpp-for-large-projects-with-multiple-libs"> enigmatically documented</a> as</p>
+<blockquote class="q">
+<p><b>Smarter and more efficient <tt>module.g.cpp</tt> for large projects with multiple libs</b></p>
+<p>The <tt>module.g.cpp</tt> file now also contains two additional composable helpers, named <b>winrt_can_unload_now</b>, and <b>winrt_get_activation_factory</b>. These have been designed for larger projects where a DLL is composed of a number of libs, each with its own runtime classes. In that situation, you need to manually stitch together the DLL’s <b>DllGetActivationFactory</b> and <b>DllCanUnloadNow</b>. These helpers make it much easier for you to do that, by avoiding spurious origination errors. The <tt>cppwinrt.exe</tt> tool’s <tt>-lib</tt> flag may also be used to give each individual lib its own preamble (rather than <tt>winrt_xxx</tt>) so that each lib’s functions may be individually named, and thus combined unambiguously.</p>
+</blockquote>
+<p>What does this all mean?</p>
+<p>A module makes its Windows Runtime objects available to other components by exporting a function with the well-known name <code>Dll­Get­Activation­Factory</code>. In its default configuration, C++/WinRT generates code for the simple case that you have a single self-contained project that implements all of its own objects: It autogenerates a <code>Dll­Get­Activation­Factory</code> function that knows how to produce the objects in the .winmd files you said you were implementing.</p>
+<p>However, it’s possible that you’ve broken a large project into a bunch of libraries, with each library implementing some objects, and you want to link them all together into a single module. That’s where the the <code>-library</code> flag comes into play.</p>
+<p>What you do is have each library pass the <code>-library name</code> flag to <code>cppwinrt.exe</code>. This causes the C++/WinRT compiler to generate a function named <code><span style="border: solid 1px black;">name</span>_get_</code><code>activation_</code><code>factory</code> rather than the default name <code>winrt_</code><code>get_</code><code>activation_</code><code>factory</code>. You can now provide your own implementation of <code>winrt_</code><code>get_</code><code>activation_</code><code>factory</code>.</p>
+<p>In the simplest case, you are just aggregating the information from the various libraries you are consuming:</p>
+<pre>void* __stdcall winrt_get_activation_factory(
+    std::wstring_view const&amp; name)
+{
+  void* factory = library1_get_activation_factory(name);
+  if (!factory) factory = library2_get_activation_factory(name);
+  if (!factory) factory = library3_get_activation_factory(name);
+  if (!factory) factory = library4_get_activation_factory(name);
+  return factory;
+}
+</pre>
+<p>The C++/WinRT library does understand a little bit about WRL (the <a href="https://docs.microsoft.com/cpp/cppcx/wrl/windows-runtime-cpp-template-library-wrl?view=vs-2019"> Windows Runtime C++ Template Library</a>), an older library for implementing Windows Runtime objects. Specifically, it understands enough that if <code>winrt_</code><code>get_</code><code>activation_</code><code>factory</code> returns <code>nullptr</code>, then it asks WRL if it can produce the activation factory before giving up.</p>
+<p>If you’re using some other library for implementing Windows Runtime objects, you can hook that other library into your custom <code>winrt_</code><code>get_</code><code>activation_</code><code>factory</code> function:</p>
+<pre>void* __stdcall winrt_get_activation_factory(
+    std::wstring_view const&amp; name)
+{
+  void* factory = library1_get_activation_factory(name);
+  if (!factory) factory = library2_get_activation_factory(name);
+  if (!factory) factory = library3_get_activation_factory(name);
+  if (!factory) factory = library4_get_activation_factory(name);
+  <span style="color: blue;">if (!factory) factory = OtherLibrary_GetActivationFactory(name);</span>
+  return factory;
+}
+</pre>
+<p>There’s a second function that the <code>-library</code> flag renames: <code>winrt_</code><code>can_</code><code>unload_</code><code>now</code>. You also need to aggregate the various libraries in your implementation of that function:</p>
+<pre>bool __stdcall winrt_can_unload_now() noexcept
+{
+  return library1_can_unload_now() &amp;&amp;
+    library2_can_unload_now() &amp;&amp;
+    library3_can_unload_now() &amp;&amp;
+    library4_can_unload_now();
+}
+</pre>
+<p>Again, C++/WinRT knows enough about WRL to invite it to the party: If all C++/WinRT libraries are okay with unloading, then it also checks that WRL is okay with unloading before allowing the unload to proceed.</p>
+<p>As with <code>winrt_</code><code>get_</code><code>activation_</code><code>factory</code>, you can hook any other library into the custom implementation of <code>winrt_</code><code>can_</code><code>unload_</code><code>now</code>.</p>
+<p>Next time, we’ll look at another trick which this flag enables.</p>
+
+
+</body>

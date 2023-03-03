@@ -1,0 +1,51 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a non-agile delegate in C++/WinRT, part 2: The synchronous coroutine</h1>  <!-- .entry-meta -->
+
+<p>Last time, we saw that you could <a href="/code/creating-a-non-agile-delegate-in-c-winrt-part-1-initial-plunge"> use an <code>ICallback­Context</code> to run code synchronously in another apartment</a> from your delegate, which is important if the code that is calling your delegate is relying on the timing of your return.</p>
+<p>We can also express this in the form of a coroutine that operates synchronously.</p>
+<p>If we make the <code>await_</code><code>suspend</code> invoke the handle synchronously, then the continuation of the coroutine runs synchronously with the code that called <code>co_await</code>.</p>
+<pre>auto resume_synchronous(ICallbackContext* context)
+{
+  struct awaiter : std::experimental::suspend_always
+  {
+    ICallbackContext* context;
+    bool await_suspend(
+        std::experimental::coroutine_handle&lt;&gt; handle)
+    {
+      InvokeInContext(context, handle);
+      return true;
+    }
+  };
+  return awaiter{ context };
+}
+</pre>
+<p>This simplifies the delegate by letting you use <code>co_await</code> to do the dirty work.</p>
+<pre>deviceWatcher.Added(
+    [=, <span style="color: blue;">context = CaptureCurrentApartmentContext()</span>]
+    (auto&amp;&amp; sender, auto&amp;&amp; info) <span style="color: blue;">-&gt; winrt::fire_and_forget</span>
+    {
+        <span style="color: blue;">co_await resume_synchronous(context.Get());</span>
+        viewModel.Append(winrt::make&lt;DeviceItem&gt;(info));
+    });
+</pre>
+<p>Even though there is a <code>co_await</code>, execution continues synchronously because <code>await_</code><code>suspend</code> runs the continuous synchronously.</p>
+<p>Whether <code>co_await</code> resumes synchronously or not¹ is determined by the awaiter. If you <code>co_await</code> something whose awaiter resumes asynchronously, then the <code>co_await</code> will resume asynchronously.</p>
+<pre>deviceWatcher.Added(
+    [=, <span style="color: blue;">context = CaptureCurrentApartmentContext()</span>]
+    (auto&amp;&amp; sender, auto&amp;&amp; info) <span style="color: blue;">-&gt; winrt::fire_and_forget</span>
+    {
+        auto original_context = CaptureCurrentApartmentContext();
+        co_await resume_synchronous(context.Get());
+        viewModel.Append(make&lt;DeviceItem&gt;(info));
+        co_await resume_synchronous(original_context.Get());
+        more_stuff();
+        auto result = co_await GetMoreDataAsync();
+        process_result(result);
+    });
+</pre>
+<p>In the above example, the first two <code>co_await</code>s are synchronous, but the third one (<code>co_await GetMoreDataAsync()</code>) is presumably asynchronous. This means that the delegate will return at the point of the third <code>co_await</code>, and reference parameters (<code>sender</code> and <code>info</code>) are probably not going to be valid when the coroutine resumes.</p>
+<p>¹ Or at all. The built-in awaiter <code>suspend_</code><code>always</code> suspends and never wakes up.</p>
+<p> </p>
+
+
+</body>

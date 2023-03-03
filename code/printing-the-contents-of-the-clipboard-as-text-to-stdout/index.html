@@ -1,0 +1,121 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Printing the contents of the clipboard as text to stdout</h1>  <!-- .entry-meta -->
+
+<p>
+The <code>clip.exe</code> takes its stdin and puts it on the clipboard.
+But how do you get it out?
+That’s today’s Little Program.
+(I guess we could call it
+<code>clop.exe</code>.)
+</p>
+<pre>
+#define UNICODE
+#define _UNICODE
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;tchar.h&gt;
+#include &lt;strsafe.h&gt;
+void WriteToStdOut(const void *pvBuf, DWORD cbBuf)
+{
+ DWORD cbWritten;
+ WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), pvBuf, cbBuf,
+           &amp;cbWritten, nullptr);
+}
+int __cdecl _tmain(int argc, PTSTR *argv)
+{
+ if (OpenClipboard(nullptr)) {
+  HANDLE h = GetClipboardData(CF_UNICODETEXT);
+  if (h) {
+   auto pwchText = static_cast&lt;PCWSTR&gt;(GlobalLock(h));
+   if (pwchText) {
+    SIZE_T cbMemory = GlobalSize(h);
+    // arbitrary limit because I am lazy
+    cbMemory = min(cbMemory, 0x10000000);
+    size_t cbActual;
+    if (SUCCEEDED(StringCbLengthW(pwchText, cbMemory,
+                                  &amp;cbActual))) {
+     if (argc == 2 &amp;&amp; _tcsicmp(argv[1], TEXT("/u")) == 0) {
+      WriteToStdOut(pwchText, cbActual);
+     } else {
+      UINT cp = (argc == 2 &amp;&amp;
+                _tcsicmp(argv[1], TEXT("/a")) == 0) ?
+                     CP_ACP : CP_OEMCP;
+      int cch = WideCharToMultiByte(cp, 0, pwchText,
+               cbActual / 2, nullptr, 0, nullptr, nullptr);
+      if (cch &gt; 0) {
+       auto psz = new(std::nothrow) char[cch];
+       if (psz) {
+        WideCharToMultiByte(cp, 0, pwchText, cbActual / 2,
+                               psz, cch, nullptr, nullptr);
+        WriteToStdOut(psz, cch);
+        delete[] psz;
+       }
+      }
+     }
+    }
+    GlobalUnlock(h);
+   }
+  }
+  CloseClipboard();
+ }
+ return 0;
+}
+</pre>
+<p>
+Okay, what do we have here?
+</p>
+<p>
+We open the clipboard and try to get the Unicode text on it.
+We then look for the null terminator within the first
+0x10000000 bytes.
+Why do I stop at 256<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/06/11/9725386.aspx">MB</a>?
+Because I’m lazy and this lets me avoid worrying about
+integer overflow.
+This is a Little Program, remember.
+</p>
+<p>
+If you pass the <code>/U</code> command line switch,
+then the output is printed to stdout as the Unicode string itself.
+</p>
+<p>
+If you pass the <code>/A</code> command line switch,
+then the output is converted to
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/31/144893.aspx">
+ANSI</a>.
+</p>
+<p>
+Otherwise the output is converted to the
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/08/29/457483.aspx">
+OEM</a> code page.
+</p>
+<p>
+<b>Bonus chatter</b>:
+You can get most of the same program above (no Unicode output)
+in much less code
+if you’re willing to use C#:
+</p>
+<pre>
+class Program {
+  [System.STAThread]
+  public static void Main(string[] args)
+  {
+    string text = System.Windows.Forms.Clipboard.GetText();
+    if (args.Length == 1 &amp;&amp; string.Compare(args[0], "/a", true) == 0) {
+        System.Console.OutputEncoding = System.Text.Encoding.Default;
+        System.Console.Write("changed encoding");
+    }
+   System.Console.Write(text);
+  }
+}
+</pre>
+<p>
+Or perl (ANSI output only):
+</p>
+<pre>
+use Win32::Clipboard;
+print Win32::Clipboard()-&gt;GetText();
+</pre>
+
+
+</body>

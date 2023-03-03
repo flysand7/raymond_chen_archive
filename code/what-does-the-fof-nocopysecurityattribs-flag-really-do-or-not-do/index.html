@@ -1,0 +1,25 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What does the FOF_NOCOPYSECURITYATTRIBS flag really do (or not do)?</h1>  <!-- .entry-meta -->
+
+<p>In the old days, the shell copy engine didn’t pay attention to ACLs. It just let the file system do whatever the default file system behavior was. The result was something like this:</p>
+<ul>
+<li>If you copied a file,     it opened the destination, wrote to it,     and that was it.     Result: The copied file has the security attributes of destination     (specifically, picking up the inheritable attributes from the container). </li>
+<li>If you moved a file within the same drive,     it moved the file with <code>MoveFile</code>,     and that was it.     Result: The file     <a href="http://blogs.msdn.com/oldnewthing/archive/2006/08/24/717181.aspx">     retained its security attributes</a>. </li>
+<li>If you moved a file between drives,     then it was treated as a copy/delete.     Result: The moved file has the security attributes of the destination     (specifically, picking up the inheritable attributes from the container). </li>
+</ul>
+<p> Perfectly logical, right? If a new file is created, then the security attributes are inherited from the container. If an existing file is moved, then its security attributes move with it. And since moving a file across drives was handled as a copy/delete, moving a file across drives behaved like a copy.
+ Users, however, <a href="http://blogs.msdn.com/oldnewthing/archive/2010/04/07/9991494.aspx#9992570"> found this behavior confusing</a>. For example, they would take a file from a private folder like their <i>My Documents</i> folder, and move it to a public location like <i>Common Documents</i>, and… the file would still be private.
+ The <code>FOF_NO­COPY­SECURITY­ATTRIBS</code> flag was introduced in Windows 2000 to address this confusion. If you pass this flag, then when you move a file, even within a drive, the security attributes of the moved file will match the destination directory. (The way the shell implements this flag, by the way, is to move the file like normal, and then reset the security attributes to match the destination. So even though it sounds like a flag that says “don’t do X” would be less work than doing X, it’s actually <i>more</i> work, because we actually do X+Y and then undo the X part. But it’s still far cheaper than copying the file and deleting the original.)
+ Note that omitting the <code>FOF_NO­COPY­SECURITY­ATTRIBS</code> flag does not mean “Always copy security attributes.” If you don’t pass the flag, then the security attributes follow the default file system behavior, which sometimes transfers the security attributes and sometimes doesn’t. In retrospect, the flag might have been better-named something like <code>FOF_SET­SECURITY­ATTRIBS­TO­MATCH­DESTINATION</code>.
+ Now the question is how to summarize all this information in the MSDN documentation for the <code>FOF_NO­COPY­SECURITY­ATTRIBS</code> flag? After receiving this explanation of how the flag works, one customer suggested that the text be changed to read “Do not copy the security attributes of the moved file. The destination file receives the security attributes of its new folder. Note that this flag has no effect on copied files, which will always receive the security attributes of the new folder.”
+ But this proposed version actually can be misinterpreted. Everything starting with “Note that” is intended to be guidance. It isn’t actually part of the specification; rather, it’s sort of “thinking out loud”, taking the actual specification and calling out some of its consequences. But how many people reading the above proposed text would fail to realize that the first two sentences are normative but the third sentence is interpretive? In particular, the interpretation says that the copied file will “always” receive the security attributes of the new folder. Is that really true? Maybe in the future there will be a new flag like <code>COPY_FILE_INCLUDE_SECURITY_ATTRIBUTES</code>, and now the “always” isn’t so “always” any more.</p>
+<p> Anyway, now that you know what the <code>FOF_NO­COPY­SECURITY­ATTRIBS</code> flag does (and doesn’t do), maybe you can answer this customer’s question: </p>
+<blockquote class="q">
+<p> Download a file via Internet Explorer and put it on the desktop. The file will be marked as having come from the Internet Zone. </p>
+<p> Now copy the file with the <code>FOF_NO­COPY­SECURITY­ATTRIBS</code> to some other location. </p>
+<p> The resulting file is still marked as Internet Zone. I expected that <code>FOF_NO­COPY­SECURITY­ATTRIBS</code> would remove the Internet Zone security information. Is this a bug in <code>SHFileOperation</code>? </p>
+</blockquote>
+<p> (This article provides enough information for you to explain why the Internet Zone marker is not removed. The answer to the other half of the customer’s question—actually removing the marker—lies in <a href="http://msdn.microsoft.com/en-us/library/ms537034.aspx"> this COM method</a>.) </p>
+
+
+</body>

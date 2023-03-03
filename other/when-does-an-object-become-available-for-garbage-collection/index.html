@@ -1,0 +1,260 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When does an object become available for garbage collection?</h1>  <!-- .entry-meta -->
+
+<p>
+As we saw last time,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/08/09/10047586.aspx">
+garbage collection is a method for
+simulating an infinite amount of memory
+in a finite amount of memory</a>.
+This simulation is performed by reclaiming memory once the environment
+can determine that the program wouldn’t notice that the memory was
+reclaimed.
+There are a variety of mechanism for determining this.
+In a basic tracing collector,
+this determination is made by taking the objects which the
+program has definite references to, then tracing references from those
+objects, contining transitively until all accessible objects are found.
+But what looks like a definite reference in your code may not actually
+be a definite reference in the virtual machine:
+Just because a variable is in scope doesn’t mean that it is live.
+</p>
+<pre>
+class SomeClass {
+ ...
+ string SomeMethod(string s, bool reformulate)
+ {
+  OtherClass o = new OtherClass(s);
+  string result = Frob(o);
+  if (reformulate) Reformulate();
+  return result;
+ }
+}
+</pre>
+<p>
+For the purpose of this discussion,
+assume that the <code>Frob</code> method does not retain a reference
+to the object <code>o</code> passed as a parameter.
+When does the <code>OtherClass</code> object <code>o</code>
+become eligible for collection?
+A naïve answer would be that it becomes eligible for collection
+at the closing-brace of the <code>SomeMethod</code> method,
+since that’s when the last reference (in the variable <code>o</code>)
+goes out of scope.
+</p>
+<p>
+A less naïve answer would be that it become eligible for collection
+after the return value from <code>Frob</code> is stored to the local
+variable <code>result</code>, because that’s the last line of code which
+uses the variable <code>o</code>.
+</p>
+<p>
+A closer study would show that it becomes eligible for collection
+even sooner:
+Once the call to <code>Frob</code> returns,
+the variable <code>o</code> is no longer accessed,
+so the object could be collected even before the result of the call
+to <code>Frob</code> is stored into the local variable <code>result</code>.
+Optimizing compilers have known this for quite some time,
+and there is a strong likelihood that the variables
+<code>o</code> and <code>result</code>
+will occupy the same memory since their lifetimes do not overlap.
+Under such conditions,
+the code generation for the statement could very well be something
+like this:
+</p>
+<pre>
+  mov ecx, esi        ; load "this" pointer into ecx register
+  mov edx, [ebp-8]    ; load parameter ("o") into edx register
+  call SomeClass.Frob ; call method
+  mov [ebp-8], eax    ; re-use memory for "o" as "result"
+</pre>
+<p>
+But this closer study wasn’t close enough.
+The <code>OtherClass</code> object <code>o</code>
+becomes eligible for collection even before the call to <code>Frob</code>
+returns!
+It is certainly eligible for collection at the point of the <code>ret</code>
+instruction which ends the <code>Frob</code> function:
+At that point,
+the <code>Frob</code> has finished using the object and won’t access
+it again.
+Although somewhat of a technicality, it does illustrate that
+</p>
+<blockquote class="m"><p>
+An object in a block of code
+can become eligible for collection <i>during execution of a function
+it called</i>.
+</p></blockquote>
+<p>
+But let’s dig deeper.
+Suppose that <code>Frob</code> looked like this:
+</p>
+<pre>
+string Frob(OtherClass o)
+{
+ string result = FrobColor(o.GetEffectiveColor());
+}
+</pre>
+<p>
+When does the <code>OtherClass</code> object become eligible for
+collection?
+We saw above that it is certainly eligible for collection as soon as
+<code>FrobColor</code> returns, because the <code>Frob</code>
+method doesn’t use <code>o</code> any more after that point.
+But in fact it is eligible for collection when the call
+to <code>GetEffectiveColor</code> returns—even before the
+<code>FrobColor</code> method is called—because the <code>Frob</code>
+method doesn’t use it once it gets the effective color.
+This illustrates that
+</p>
+<blockquote class="m"><p>
+A parameter to a method can become eligible for collection
+<i>while the method is still executing</i>.
+</p></blockquote>
+<p>
+But wait, is that the earliest the <code>OtherClass</code> object
+becomes eligible for collection?
+Suppose that the <code>OtherClass.GetEffectiveColor</code> method
+went like this:
+</p>
+<pre>
+Color GetEffectiveColor()
+{
+ Color color = this.Color;
+ for (OtherClass o = this.Parent; o != null; o = o.Parent) {
+  color = BlendColors(color, o.Color);
+ }
+ return color;
+}
+</pre>
+<p>
+Notice that the method doesn’t access any members from its <code>this</code>
+pointer after the assignment <code>o = this.Parent</code>.
+As soon as the method retrieves the object’s parent,
+the object isn’t used any more.
+</p>
+<pre>
+  push ebp                    ; establish stack frame
+  mov ebp, esp
+  push esi
+  push edi
+  mov esi, ecx                ; enregister "this"
+  mov edi, [ecx].color        ; color = this.Color // inlined
+  jmp looptest
+loop:
+  mov ecx, edi                ; load first parameter ("color")
+  mov edx, [esi].color        ; load second parameter ("o.Color")
+  call OtherClass.BlendColors ; BlendColors(color, o.Color)
+  mov edi, eax
+looptest:
+  mov esi, [esi].parent       ; o = this.Parent (or o.Parent) // inlined
+  // "this" is now eligible for collection
+  test esi, esi               ; if o == null
+  jnz loop                    ; then rsetart loop
+  mov eax, edi                ; return value
+  pop edi
+  pop esi
+  pop ebp
+  ret
+</pre>
+<p>
+The last thing we ever do with the <code>Other­Class</code>
+object (presented in the <code>Get­Effective­Color</code>
+function by the keyword <code>this</code>)
+is fetch its parent.
+As soon that’s done
+(indicated at the point of the comment, when the line is reached
+for the first time),
+the object becomes eligible for collection.
+This illustrates the perhaps-surprising result that
+</p>
+<blockquote class="m"><p>
+An object can become eligible for collection
+<i>during execution of a method on that very object</i>.
+</p></blockquote>
+<p>
+In other words, it is possible for a method to have its
+<code>this</code> object collected out from under it!
+</p>
+<p>
+A crazy way of thinking of when an object becomes eligible for
+collection is that it happens once
+memory corruption in the object
+would have no effect on the program.
+(Or, if the object has a finalizer, that memory corruption would
+affect only the finalizer.)
+Because if memory corruption would have no effect,
+then that means you never use the values any more,
+which means that the memory may as well have been
+reclaimed out from under you for all you know.
+</p>
+<p>
+A weird real-world analogy:
+The garbage collector can collect your diving board as soon as the
+diver touches it for the last time—even if the diver is still
+in the air!
+</p>
+<p>
+A customer encountered the
+<code>Call­GC­Keep­Alive­When­Using­Native­Resources</code>
+FxCop rule
+and didn’t understand how it was possible for the GC to
+collect an object while one of its methods was still running.
+“Isn’t <code>this</code> part of the root set?”
+</p>
+<p>
+Asking whether any particular value is or is not part of the root
+set is confusing the definition of garbage collection with its
+implementation.
+“Don’t think of GC as tracing roots.
+Think of GC as removing things you aren’t using any more.”
+</p>
+<p>
+The customer responded,
+“Yes, I understand conceptually that it becomes eligible for
+collection, but how does the garbage collector know that?
+How does it know that the <code>this</code> object is not used
+any more?
+Isn’t that determined by tracing from the root set?”
+</p>
+<p>
+Remember, the GC is in cahoots with the JIT.
+The JIT might decide to “help out” the GC by
+reusing the stack slot which previously held an object
+reference,
+leaving no reference on the stack and therefore no reference
+in the root set.
+Even if the reference is left on the stack, the JIT can leave
+some metadata behind that tells the GC, “If you see the instruction
+pointer in this range, then ignore the reference in this slot
+since it’s a dead variable,”
+similar to how in unmanaged code on non-x86 platforms, metadata
+is used to guide structured exception handling.
+(And besides, the <code>this</code> parameter isn’t even passed
+on the stack in the first place.)
+</p>
+<p>
+The customer replied, “Gotcha. Very cool.”
+</p>
+<p>
+Another customer asked,
+“Is there a way to get a reference to the instance being called
+for each frame in the stack? (Static methods excepted, of course.)”
+A different customer asked roughly the same question, but in
+a different context:
+“I want my method to walk up the stack, and if its caller is
+<code>OtherClass.Foo</code>, I want to get the <code>this</code>
+object for <code>OtherClass.Foo</code> so I can query additional
+properties from it.”
+You now know enough to answer these questions yourself.
+</p>
+<p>
+Bonus:
+A different customer asked,
+“The <code>Stack­Frame</code> object lets me get the method that
+is executing in the stack frame,
+but how do I get the parameters passed to that method?”</p>
+
+
+</body>

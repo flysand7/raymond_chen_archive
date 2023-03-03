@@ -1,0 +1,280 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The wonderful world of shell bind context strings</h1>  <!-- .entry-meta -->
+
+<p><a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/05/03/10415778.aspx">Some time ago</a>, we saw how the <code>IBindCtx</code> parameter to <code>IShell­Folder::Parse­Display­Name</code> can be used to modify how the parse takes place. More generally, the <code>IBindCtx</code> parameter to a function is a catch-all <i>miscellaneous options</i> parameter. </p>
+<p>The interesting part of the bind context is all the stuff that has been added to it via <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/ms687254(v=vs.85).aspx">the <code>IBindCtx::Register­Object­Param</code> method</a>. You can attach arbitrary objects to the bind context, using a string to identify each one. </p>
+<p>Some bind context parameters are like Boolean parameters that simply change some default behavior of the operation. For these operations, the object that is associated with the bind context string is not important; the important thing is that there is <i>something</i> associated with it. Traditionally, you just connect a dummy object that implements just <code>IUnknown</code>. </p>
+<p>In the most general case, the object associated with a bind context string implements some operation-specific interface. For example, <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/bb762592(v=vs.85).aspx">the <code>STR_BIND_DELEGATE_CREATE_OBJECT</code> bind context string</a> expects you to associate an object that implements the <code>ICreate­Object</code> interface, because the whole point of the <code>STR_BIND_DELEGATE_CREATE_OBJECT</code> bind context string is to say, “Hey, I want to create objects in a nonstandard way,” so you need to tell it what that nonstandard way is. </p>
+<p>At the other extreme, you may have a chunk of data that you want to associate with the bind context string. Since bind contexts want to associate objects, you need to wrap the data inside a COM object. We saw this earlier when <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/05/03/10415778.aspx">we had to create an object that implemented the <code>IFile­System­Bind­Data</code> interface</a> in order to babysit a <code>WIN32_FIND_DATA</code> structure. </p>
+<p>Rather than having to create a separate interface for each data type (hello, <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/dd378297(v=vs.85).aspx"><code>IObject­With­Folder­Enum­Mode</code></a>), and rather than going to the opposite extreme and just using <code>IStream</code> to pass arbitrary unstructured data, the shell folks decided to take a middle-ground approach: Use a common interface that still has a modicum of type safety, namely, <code>IProperty­Bag</code>. Other nice things about this approach is that there are a lot of pre-existing helper functions for property bags and property variants. Also, you need to attach only one object instead of a whole bunch of tiny little ones. </p>
+<p>Under this new regime (which took hold in Windows 8), the bind context has an associated property bag, and you put your data in that property bag. </p>
+<p>In pictures: </p>
+<table cellpadding="3" style="border-collapse: collapse">
+<tr>
+<td></td>
+<td> </td>
+<td colspan="2"><code>IBindCtx::Register­Object­Param</code></td>
+<td></td>
+<td colspan="2"><code>IProperty­Bag::Write</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black"><code>IBindCtx</code></td>
+<td>→</td>
+<td style="border: solid 1px black">Boolean parameter</td>
+<td style="border: solid 1px black"><code>IUnknown</code></td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">Interface parameter</td>
+<td style="border: solid 1px black">object with custom interface</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td style="border: solid 1px black"><code>STR_PROPERTY­BAG_PARAM</code></td>
+<td style="border: solid 1px black"><code>IPropertyBag</code></td>
+<td>→</td>
+<td style="border: solid 1px black">Property bag <code>DWORD</code> parameter</td>
+<td style="border: solid 1px black"><code>VT_UI4</code></td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">Property bag string parameter</td>
+<td style="border: solid 1px black"><code>VT_BSTR</code></td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td style="border: solid 1px black">Property bag Boolean parameter</td>
+<td style="border: solid 1px black"><a href="https://blogs.msdn.com/b/oldnewthing/archive/2004/12/22/329884.aspx"><code>VT_BOOL</code></a></td>
+</tr>
+</table>
+<p>If you want a Boolean-style parameter to be <code>true</code>, then set it in the bind context with a dummy object that implements <code>IUnknown</code>. If you want a Boolean-style parameter to <code>false</code>, then omit it from the bind context entirely. </p>
+<p>To set an interface-style parameter, set it in the bind context with an object that implements the desired interface. </p>
+<p>To set a property bag-based parameter, set it in the property bag with the appropriate variant type. </p>
+<p>Here are the bind context strings defined up through Windows 8.1 and the way you set them into the bind context. </p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tr>
+<th>Bind context string</th>
+<th>Model</th>
+<th>Operation</th>
+</tr>
+<tr>
+<td><code>STR_AVOID_DRIVE_RESTRICTION_POLICY</code></td>
+<td>Boolean</td>
+<td>Binding</td>
+</tr>
+<tr>
+<td><code>STR_BIND_DELEGATE_CREATE_OBJECT</code></td>
+<td>Interface <code>ICreateObject</code></td>
+<td>Binding</td>
+</tr>
+<tr>
+<td><code>STR_BIND_FOLDER_ENUM_MODE</code></td>
+<td>Interface <code>IObjectWith­FolderEnumMode</code> 
+<td>Parsing</td>
+</td></tr>
+<tr>
+<td><code>STR_BIND_FOLDERS_READ_ONLY</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_BIND_FORCE_FOLDER_SHORTCUT_RESOLVE</code></td>
+<td>Boolean</td>
+<td>Binding</td>
+</tr>
+<tr>
+<td><code>STR_DONT_PARSE_RELATIVE</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_DONT_RESOLVE_LINK</code></td>
+<td>Boolean</td>
+<td>Binding</td>
+</tr>
+<tr>
+<td><code>STR_ENUM_ITEMS_FLAGS</code></td>
+<td>Property bag: <code>VT_UI4</code></td>
+<td>Binding for enumeration</td>
+</tr>
+<tr>
+<td><code>STR_FILE_SYS_FIND_DATA</code></td>
+<td>Interface <code>IFileSys­BindData</code> or <code>IFileSys­BindData2</code></td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_FILE_SYS_BIND_DATA_WIN7_FORMAT</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_GET_ASYNC_HANDLER</code></td>
+<td>Boolean</td>
+<td>GetUIObjectOf</td>
+</tr>
+<tr>
+<td><code>STR_GPS_BEST­EFFORT</code></td>
+<td>Boolean</td>
+<td>Binding for <code>IProperty­Store</code></td>
+</tr>
+<tr>
+<td><code>STR_GPS_DELAY­CREATION</code></td>
+<td>Boolean</td>
+<td>Binding for <code>IProperty­Store</code></td>
+</tr>
+<tr>
+<td><code>STR_GPS_FAST­PROPERTIES­ONLY</code></td>
+<td>Boolean</td>
+<td>Binding for <code>IProperty­Store</code></td>
+</tr>
+<tr>
+<td><code>STR_GPS_HANDLER­PROPERTIES­ONLY</code></td>
+<td>Boolean</td>
+<td>Binding for <code>IProperty­Store</code></td>
+</tr>
+<tr>
+<td><code>STR_GPS_NO_OPLOCK</code></td>
+<td>Boolean</td>
+<td>Binding for <code>IProperty­Store</code></td>
+</tr>
+<tr>
+<td><code>STR_GPS_OPEN­SLOW­ITEM</code></td>
+<td>Boolean</td>
+<td>Binding for <code>IProperty­Store</code></td>
+</tr>
+<tr>
+<td><code>STR_IFILTER_FORCE_TEXT_FILTER_FALLBACK</code></td>
+<td>Boolean</td>
+<td>Binding for <code>IFilter</code></td>
+</tr>
+<tr>
+<td><code>STR_IFILTER_LOAD_DEFINED_FILTER</code></td>
+<td>Boolean</td>
+<td>Binding for <code>IFilter</code></td>
+</tr>
+<tr>
+<td><code>STR_INTERNAL_NAVIGATE</code></td>
+<td>Boolean</td>
+<td>Loading history</td>
+</tr>
+<tr>
+<td><code>STR_INTERNET­FOLDER_PARSE_ONLY_URLMON_BINDABLE</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_ITEM_CACHE_CONTEXT</code></td>
+<td>Interface <code>IBindCtx</code></td>
+<td>Parsing and initiailzing</td>
+</tr>
+<tr>
+<td><code>STR_NO_VALIDATE_FILE­NAME_CHARS</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_ALLOW_INTERNET_SHELL_FOLDERS</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_AND_CREATE_ITEM</code></td>
+<td>Interface <code>IParse­And­Create­Item</code></td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_DONT_REQUIRE_VALIDATED_URLS</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_EXPLICIT_ASSOCIATION_SUCCESSFUL</code></td>
+<td>Property bag: <code>VT_BOOL</code></td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_PARTIAL_IDLIST</code></td>
+<td>Interface <code>IShell­Item</code></td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_PREFER_FOLDER_BROWSING</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_PREFER_WEB_BROWSING</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_PROPERTY­STORE</code></td>
+<td>Interface <code>IProperty­Bag</code></td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_SHELL_PROTOCOL_TO_FILE_OBJECTS</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_SHOW_NET_DIAGNOSTICS_UI</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_SKIP_NET_CACHE</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_TRANSLATE_ALIASES</code></td>
+<td>Boolean</td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_WITH_EXPLICIT_ASSOCAPP</code></td>
+<td>Property bag: <code>VT_BSTR</code></td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_WITH_EXPLICIT_PROGID</code></td>
+<td>Property bag: <code>VT_BSTR</code></td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PARSE_WITH_PROPERTIES</code></td>
+<td>Interface <code>IProperty­Store</code></td>
+<td>Parsing</td>
+</tr>
+<tr>
+<td><code>STR_PROPERTYBAG_PARAM</code></td>
+<td>Interface <code>IProperty­Bag</code></td>
+<td>holds property bag parameters</td>
+</tr>
+<tr>
+<td><code>STR_SKIP_BINDING_CLSID</code></td>
+<td>Interface <code>IPersist</code></td>
+<td>Parsing and binding</td>
+</tr>
+</table>
+<p>There are some oddities in the above table. </p>
+<ul>
+<li>All of the <code>STR_GPS_*</code> values would be more conveniently     expressed as a single <code>VT_UI4</code> property bag-based     value. (Exercise: Why isn’t it?) 
+<li>The <code>STR_ITEM_CACHE_CONTEXT</code> bind context     parameter is itself another bind context!     The idea here is that you, the caller, are enabling caching     during the parse,     and the inner bind context acts as the cache. 
+<li>The <code>STR_PARSE_EXPLICIT_ASSOCIATION_SUCCESSFUL</code>     value is unusual in that it is something set by the parser and passed     back to the caller. 
+<li>As we have been discussing,     <code>STR_PROPERTY­BAG_PARAM</code> is a bind context     string that doesn’t mean anything on its own.     Rather, it provides a property bag into which more parameters can be     stored. </li></li></li></li></ul>
+<p>Next time, I’ll write some helper functions to make all this slightly more manageable. </p>
+
+
+</body>

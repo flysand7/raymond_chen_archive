@@ -1,0 +1,13 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How come my CreateMutex call sometimes fails with Access denied?</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that they had a system where multiple processes share a mutex. Each process calls <code>Create­Mutex</code> to create the mutex or obtain a handle to the existing one. But the customer found that sometimes, the call to <code>Create­Mutex</code> fails, and <code>Get­Last­Error</code> reports that the reason is <code>ERROR_ACCESS_DENIED</code>. What could cause that? </p>
+<p>Specifically, the two processes are a UI process and a service. Both processes use <code>Create­Mutex</code> to create or access the mutex, passing <code>NULL</code> as the security attributes. </p>
+<p>Okay, so issue is that the two processes are running under different identities with different privileges. Even though you think you are creating the mutex in both places with the same security attributes (because you’re passing <code>NULL</code> both times), <a href="https://blogs.msdn.microsoft.com/oldnewthing/20040312-00/?p=40273">the effect of the <code>NULL</code> is different depending on who is calling</a>. </p>
+<p>What’s probably happening is that most of the time, the mutex is created by the UI process first, so the mutex gets the access control list that grants access to the user under which the UI process is running, and to the SYSTEM account, The service is running under the SYSTEM account, so it gets access. </p>
+<p>But once in a while, it’s the service that creates the mutex first. In that case, the access control list on the mutex grants access only to the SYSTEM account, in which case the UI process cannot access the mutex. </p>
+<p>The customer reported that they saw this behavior only on builds 14393 and higher and were wondering what could be causing it. My guess is that something is happening on build 14393 that wakes up the service sooner than it used to, causing the service to be the one to create the mutex, and that’s what’s preventing the UI process from gaining access. </p>
+<p>In these sorts of cases, where two processes with different permissions need to share a securable object, the general principle is to have the high-permission process create the object and set the permission so that the low-permission process can access it. If you let the low-permission process be the one that creates the mutex, then you have a potential squatting attack. </p>
+
+
+</body>

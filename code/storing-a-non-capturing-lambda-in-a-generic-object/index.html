@@ -1,0 +1,148 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Storing a non-capturing lambda in a generic object</h1>  <!-- .entry-meta -->
+
+<p>Suppose you want an object that can store a non-capturing lambda. You don’t want to use <code>std::function</code> because it’s too heavy, for some sense of “heavy”. Perhaps you don’t like the fact that its copy constructor can throw. Or that it sometimes requires two allocations. Or that there’s a virtual function call.</p>
+<p>Fortunately, non-capturing lambdas are convertible to function pointers, so really you are just storing function pointers. Let’s say that the lambda is going to be called with a single integer parameter.</p>
+<pre>struct event_source
+{
+  using handler_t = bool (*)(int);
+
+  handler_t m_handler = nullptr;
+
+  void set_handler(handler_t handler)
+  {
+    m_handler = handler;
+  }
+
+  void raise(int value)
+  {
+    if (m_handler) m_handler(value);
+  }
+};
+</pre>
+<p>Registering a handler with a captureless lambda is straightforward thanks to the implicit conversion to a function pointer:</p>
+<pre>event_source e;
+
+void f()
+{
+  e.set_handler([](int value) { log(value); return true; });
+}
+
+void g()
+{
+  e.raise(42);
+}
+</pre>
+<p>A plain function pointer isn’t that great because it doesn’t have any context. Let’s provide a context parameter so the function can remember its environment.</p>
+<pre>struct event_source
+{
+  using handler_t = bool (*)(int, void*);
+
+  <span style="color: blue;">const void* m_context;</span>
+  handler_t m_handler = nullptr;
+
+  void set_handler(handler_t handler<span style="color: blue;">, const void* context</span>)
+  {
+    m_handler = handler;
+    <span style="color: blue;">m_context = context;</span>
+  }
+
+  void raise(int value)
+  {
+    if (m_handler) {
+      m_handler(value<span style="color: blue;">, const_cast&lt;void*&gt;(m_context)</span>);
+    }
+  }
+};
+</pre>
+<p>So far so good, but one frustration is that the handler has to cast the <code>context</code> parameter back to whatever it originally was:</p>
+<pre>void f(widget* widget)
+{
+  e.set_handler([](int value, void* context)
+    {
+      <span style="color: blue;">auto widget = reinterpret_cast&lt;widget*&gt;(context);</span>
+      ... use the widget and value ...
+      return true;
+    }, widget);
+}
+</pre>
+<p>Wouldn’t it be nice if we could automatically pass the context back through in the same form it was received?</p>
+<pre>struct event_source
+{
+  template&lt;typename T = void&gt;
+  using handler_t = bool (*)(int, T*);
+
+  const void* m_context;
+  <span style="color: blue;">handler_t&lt;&gt;</span> m_handler = nullptr;
+  <span style="color: blue;">bool (*m_adapter)(handler_t&lt;&gt;, int, const void*);</span>
+
+  <span style="color: blue;">template&lt;typename T&gt;</span>
+  void set_handler(<span style="color: blue;">handler_t&lt;T&gt; handler, T* context</span>)
+  {
+    m_handler = <span style="color: blue;">reinterpret_cast&lt;handler_t&amp;lt&gt;&gt;</span>(handler);
+    m_context = context;
+    <span style="color: blue;">m_adapter = [](handler_t&amp;lt&gt; raw_handler,
+                   int value, const void* raw_context)
+    {
+      auto handler = reinterpret_cast&lt;handler_t&lt;T&gt;&gt;(raw_handler);
+      auto context = reinterpret_cast&lt;T*&gt;(raw_context);
+      return handler(value, context);
+    };</span>
+  }
+
+  void raise(int value)
+  {
+    if (m_handler) {
+      <span style="color: blue;">m_adapter(m_handler, value, m_context);</span>
+    }
+  }
+};
+</pre>
+<p>We are basically mimicking what <code>std::function</code> does, but taking advantage of optimizations that are available because of our special restrictions.</p>
+<p>First of all, we know that the handler is just a function pointer, so we don’t need variable-sized storage. As we noted earlier, C++ requires that a function pointer can be cast to any other kind of function pointer, and then recovered by casting back. So we’ll just use <code>handler_t&lt;&gt;</code> as our generic storage.</p>
+<p>Second, function pointers are scalar, hence trivial, so they can be copied and moved by <code>memmove</code> and require no special construction or destruction. This means that the only remaining virtual method of our <code>callable_base</code> is <code>invoke</code>.</p>
+<p>Since there is only one virtual method, we can dispense with the vtable and just record the function pointer directly. This avoids a level of indirection.</p>
+<p>The function pointer we record is the “adapter” which takes the raw storage and raw context, casts them back to the original function pointer type and context type, and then calls the original function pointer with the original context.</p>
+<p>On modern architectures, the “adapter” function is effectively a nop because all pointers are ABI-compatible, but the C++ language is not as permissive as the ABI, so we need the adapter to keep everything honest. In practice, every type will have the same adapter, and the adapter itself will be trivial.</p>
+<p>If you know that the calling convention for your ABI is register-based, you can do some micro-optimizing by moving the <code>handler</code> parameter to the end of the parameter list. That makes the adapter a single <i>jump to register</i> instruction.</p>
+<p>Let’s take this out for a spin:</p>
+<pre>void f()
+{
+  e.set_handler([](int value, const char* context)
+    { log(context, value); return true; }, "hello");
+}
+</pre>
+<p>This fails to compile:</p>
+<pre style="white-space: pre-wrap;">error: no matching member function for call to 'set_handler'
+note: candidate template ignored: could not match 'handler_t&lt;T&gt;' against '(lambda)'
+</pre>
+<p>Although there is a conversion from the captureless lambda to <code>bool (*)(int, const char*)</code>, the conversion is not considered by the template matching machinery.</p>
+<p>We’ll have to help it along.</p>
+<pre>  template&lt;<span style="color: blue;">typename TLambda</span>, typename T&gt;
+  void set_handler(<span style="color: blue;">TLambda&amp;&amp; handler</span>, T* context)
+  {
+    m_handler = reinterpret_cast&lt;handler&lt;&gt;&gt;(
+                  <span style="color: blue;">static_cast&lt;handler_t&lt;T&gt;&gt;</span>(handler));
+    m_context = context;
+    m_adapter = [](handler_t&amp;lt&gt; raw_handler,
+                   int value, const void* raw_context)
+    {
+      auto handler = reinterpret_cast&lt;handler_t&lt;T&gt;&gt;(raw_handler);
+      auto context = reinterpret_cast&lt;T*&gt;(raw_context);
+      return handler(value, context);
+    };
+  }
+</pre>
+<p>Our <code>set_handler</code> accepts anything as its first parameter, but then immediately <code>static_cast</code>s it to a function accepting a matching context.</p>
+<p>This design makes the final parameter (the <code>context</code>) the final arbiter of the signature of the lambda. This is troublesome if the context is <code>nullptr</code>, because the type of <code>nullptr</code> is <code>nullptr_t</code>, which is not a pointer to anything. You’ll have to cast the <code>nullptr_t</code> explicitly to the desired context type.</p>
+<pre>void f()
+{
+  e.set_handler([](int value, const char* context)
+    { log(context, value); return true; },
+    <span style="color: blue;">(const char*)nullptr</span>);
+}
+</pre>
+<p>So there you have it. A “lighter” version of <code>std::function</code> that accepts only function pointers and things convertible to function pointers (which includes captureless lambdas), plus a context parameter, which is basically a special case of <code>std::bind</code>.</p>
+
+
+</body>

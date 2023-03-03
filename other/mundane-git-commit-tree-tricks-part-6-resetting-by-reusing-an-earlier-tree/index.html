@@ -1,0 +1,89 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Mundane git commit-tree tricks, Part 6: Resetting by reusing an earlier tree</h1>  <!-- .entry-meta -->
+
+<p>Suppose you have a branch in which you have been doing a bunch of work, you’ve been merging regularly from the main branch to stay up to date, and you realize that your work should be abandoned, and the branch reset to a state as if it had been freshly-created from the main branch.</p>
+<p>For most people, that would mean simply abandoning the branch and creating a new one.</p>
+<p>Unfortunately, Windows hasn’t quite reached the point where it can use trunk-based development. Thousands of developers working in a branch with three million files means that there would be commits going into the main branch pretty much continuously. Instead, Windows uses a variant of the <a href="https://git-scm.com/book/en/v2/Distributed-Git-Distributed-Workflows"> dictator-lieutenant workflow</a>. Setting up a new lieutenant involves a lot of paperwork,¹ and teams often want to avoid that paperwork by finding an existing no-longer-needed lieutenant and giving it a new purpose.</p>
+<p>When you do that, you want to clean out any changes from the lieutenant that were part of its former purpose, so that the new purpose gets a fresh start, as if it were using a branch new lieutenant.</p>
+<p>This is where <code>git commit-tree</code> once again comes in handy.</p>
+
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid 1px black; width: 4em;">M1</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">M2</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">M3</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">M4</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">M5</td>
+</tr>
+<tr>
+<td> </td>
+<td>↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>↖︎</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 4em;">L1</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">L2</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">L3</td>
+<td>←</td>
+<td style="border: solid 1px black; width: 4em;">L4</td>
+</tr>
+</tbody>
+</table>
+<p>Suppose this is the state of the project at the time the team decides to repurpose its lieutenant. It had been doing some work in that branch (<var>L1</var> through <var>L4</var>) that it wants to abandon and pretend never happened.</p>
+<p>Windows has a policy that official branches may not rewrite history,² so a hard-reset is not permitted.</p>
+<p>Find the most recent commit in the main branch which has been merged into the lieutenant branch. You can look into the lieutenant’s record keeping, or the <code>git merge-base</code> command will tell you. In our case, the commit is <var>M3</var>.</p>
+<p>You can now wipe out all of the work done in commits <var>L1</var> through <var>L4</var> by committing the tree that matches the commit you most recently merged from the main branch.</p>
+<pre>git commit-tree <var>M3</var>^{tree} -p <var>L4</var> -m "Reset to M3"
+</pre>
+<p>This prints a hash that you can fast-forward to.</p>
+<pre>git merge --ff-only 〈hash〉
+</pre>
+<p>This tree-based merge is the trick I referred to <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180316-00/?p=98255"> some time ago</a> in the context of forcing a patch branch to look like a nop. In that diagram, we started with a commit <var>A</var> and cherry-picked a patch <var>P</var> so we could use it to patch the master branch. Meanwhile, we also want a nop to go into the feature branch. We did it with a <code>git revert</code>, but you can also do it in a no-touch way by committing trees.</p>
+<pre>git commit-tree <var>A</var>^{tree} -p <var>P</var> -m "Revert P"
+</pre>
+<p>By doing it this way, you are guaranteed that the trees <var>A</var> and <var>P2</var> are absolutely identical, because we created them that way.</p>
+<p>Note that in both of these cases, if you are already checked out to the branch you want to roll back, you can use a different command sequence:</p>
+<pre>git read-tree 〈hash〉
+git commit -m "Reset to 〈hash〉"
+</pre>
+<p>An alternative that uses more conventional commands (but which temporarily moves your <code>HEAD</code>):</p>
+<pre>git reset --hard 〈hash〉
+git reset --soft @{1}
+git commit -m "Reset to 〈hash〉"
+</pre>
+<p>However you manage to do it, once you get your branch reset, you can submit a pull request back to the main branch with your freshly-reset lieutenant. This should result in a nop change (no files changed), with a payload consisting of <var>L1</var> through <var>L4</var>, plus a massive commit of that wipes out all the custom changes.</p>
+<p>Merging back to the main branch serves a few purposes:</p>
+<ul>
+<li>The emptiness of the pull request validates that your lieutenant branch has been properly reset.</li>
+<li><a href="https://devblogs.microsoft.com/oldnewthing/20130820-00/?p=3453"> Payload</a> tracking tools will report that your (now-abandoned) <var>L1</var> through <var>L4</var> payload has reached the main branch. Putting them all inside a “nothing happened” pull request makes it easier to prove that those changes were indeed abandoned.</li>
+<li>Your next pull request from the lieutenant to the main branch will consist solely of the new work.</li>
+</ul>
+<p>¹ Part of the reason for the paperwork is that a lieutenant doesn’t get just a branch. A lieutenant also gets build resources, artifact retention policy, automated testing resources, a <a href="http://code.flickr.net/2009/12/02/flipping-out/"> feature flag environment</a>, and lots of other goodies. Besides, you need to know some basic information, like who to contact if there is a problem with their branch.</p>
+<p>² I suspect many organizations have similar policies, You need to be able to recover the source code that produced any particular build. You also have to be able to identify all the changes that went into a particular build (say, when investigating a regression). Rewriting history undermines those principles.</p>
+<p><script>
+window.addEventListener("load", function() {
+  var fullFF = getComputedStyle(document.body).fontFamily;
+  var simpleFF = fullFF.replace(/ Emoji/g, "");
+  // break up "style" to prevent wordpress from injecting random junk
+  document.getElementById("p20190513_head").innerHTML =
+`<s` + `tyle>
+body { font-family: ${simpleFF}; }<span data-mce-type="bookmark" style="display: inline-block; width: 0px; overflow: hidden; line-height: 0;" class="mce_SELRES_start">﻿</span>
+.emoji { font-family: ${fullFF}; }
+</s` + `tyle>`;
+});
+</script></p>
+
+
+</body>

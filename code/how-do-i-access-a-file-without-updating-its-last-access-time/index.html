@@ -1,0 +1,103 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I access a file without updating its last-access time?</h1>  <!-- .entry-meta -->
+
+<p>
+The first problem with discussing file last-access time is
+agreeing what you mean by a file’s last-access time.
+</p>
+<p>
+The file system folks have one definition of the file last-access time,
+namely the time the file was most recently opened and either read from
+or written to.
+This is the value retrieved by functions like
+<code>Get­File­Attributes­Ex</code>,
+<code>Get­File­Time</code>,
+and <code>Find­First­File</code>.
+</p>
+<p>
+The problem with this definition is that it doesn’t match the
+intuitive definition of last-access time, which is
+“the last time <i>I</i> accessed the file,”
+emphasis on the <i>I</i>.
+In fact, the intuitive definition of access is more specific:
+It’s
+“the last time I opened, modified, printed, or otherwise performed
+some sort of purposeful action on the file.”
+</p>
+<p>
+This discrepancy between the file system definition and the intuitive
+definition means that a lot of operations trigger a file system access
+but shouldn’t count as an access from the user interface point of view.
+Here are some examples:
+</p>
+<ul>
+<li>Accessing the file to generate a preview or thumbnail image.
+<li>Accessing the file to
+    <a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/02/17/9426787.aspx#9430964">
+    show its property sheet</a>.
+<li>Accessing the file to retrieve its icon.
+<li>Accessing the file to retrieve properties to show in Explorer
+    or some other viewer.
+<li>Accessing the file in order to back it up.
+<li>Accessing the file in order to display its context menu,
+    <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/10/03/10218997.aspx">
+    something you aren’t supposed to be doing in the first place</a>
+    but people
+    <a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/10/05/9903476.aspx#9904013">
+    do it anyway</a>.
+</li></li></li></li></li></li></ul>
+<p>
+Whenever some shell extension violates this rule,
+the shell team gets a bug report from some customer saying,
+“The last-access time shown in Explorer is wrong.
+A document which hasn’t been accessed in months shows a last-access
+time of today.
+After closer investigation, we found that the last-access time updates
+whenever we
+<i>insert seemingly-innocuous operation here</i>.”
+</p>
+<p>
+If you’re writing a program which needs
+to access the file contents but you not want to update
+the last-access time, you can use the <code>Set­File­Time</code>
+function
+<a href="http://msdn.microsoft.com/library/ms724933.aspx">
+with the special value <code>0xFFFFFFFF</code> in both members
+of the <code>FILETIME</code> structure passed
+as the last-access time</a>.
+This magic value means “do not change the last-access time
+even though I’m accessing the file.”
+</p>
+<pre>
+BOOL DoNotUpdateLastAccessTime(HANDLE hFile)
+{
+ static const FILETIME ftLeaveUnchanged = { 0xFFFFFFFF, 0xFFFFFFFF };
+ return SetFileTime(hFile, NULL, &amp;ftLeaveUnchanged, NULL);
+}
+</pre>
+<p>
+As the documentation notes, you have to call this function
+immediately after opening the file.
+</p>
+<p>
+Going back to that linked comment:
+The reason why viewing the Summary tab causes the last-access time
+to be updated is that the Summary tab retrieves its information
+by calling <code>Stg­Open­Storage</code>, and there’s no way to tell
+that function,
+“Hey, when you open the file in order to see if it has any
+document properties, do that
+<code>Do­Not­Update­Last­Access­Time</code>
+thing so you don’t update the last access time.”
+</p>
+<p>
+<b>Bonus chatter</b>:
+Starting in Windows Vista,
+<a href="http://blogs.technet.com/b/filecab/archive/2006/11/07/disabling-last-access-time-in-windows-vista-to-improve-ntfs-performance.aspx">
+maintaining the last-access time is disabled by default</a>.
+In practice, this means that the number of bugs related to
+altering the last-access time accidentally will multiply unchecked,
+because the mechanism for detecting the error is disabled by default.</p>
+
+
+</body>

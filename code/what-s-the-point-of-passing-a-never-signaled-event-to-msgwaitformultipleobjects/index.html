@@ -1,0 +1,54 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What’s the point of passing a never-signaled event to MsgWaitForMultipleObjects?</h1>  <!-- .entry-meta -->
+
+<p>In the Quake source code, there is this variable <code>tevent</code> whose usage is rather strange. </p>
+<pre>
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L49"> 49</a> static HANDLE   tevent;
+</pre>
+<p>It is initialized at program startup to a newly-created unsignaled event. </p>
+<pre>
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L660">660</a>     tevent = CreateEvent(NULL, FALSE, FALSE, NULL);
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L661">661</a>
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L662">662</a>     if (!tevent)
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L663">663</a>         Sys_Error ("Couldn't create event");
+</pre>
+<p>and it is cleaned up a program shutdown: </p>
+<pre>
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L267">267</a>         if (tevent)
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L268">268</a>             CloseHandle (tevent);
+</pre>
+<p>and the only use of it is in this call to <code>Msg­Wait­For­Multiple­Objects</code>: </p>
+<pre>
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L535">535</a>         MsgWaitForMultipleObjects(1, &amp;tevent, FALSE, time, QS_ALLINPUT);
+</pre>
+<p>In true angry developer fashion, this is in a function with the banner </p>
+<pre>
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L520">520</a> =================================================================
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L521">521</a>
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L522">522</a> WINDOWS CRAP
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L523">523</a>
+<a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/QW/client/sys_win.c#L524">524</a> =================================================================
+</pre>
+<p>Anyway, when the <code>bWaitAll</code> parameter is <code>FALSE</code>, the <code>Msg­Wait­For­Multiple­Objects</code> function waits for one of three things to happen: </p>
+<ul>
+<li>One of the handles is signaled,</li>
+<li>The queue is in a state specified by the filter, or</li>
+<li>The timeout elapses.</li>
+</ul>
+<p>Since the code never signals the event, the first case neve occurs, so the only things that will cause <code>Msg­Wait­For­Multiple­Objects</code> to return are the second or third cases. </p>
+<p>The dummy event is not actually necessary. </p>
+<pre>
+MsgWaitForMultipleObjects(0, NULL, FALSE, time, QS_ALLINPUT); 
+</pre>
+<p>If <code>bWaitAll</code> is <code>TRUE</code>, then the <code>Msg­Wait­For­Multiple­Objects</code> function waits for one of two things to happen: </p>
+<ul>
+<li>All of the handles is signaled and     the queue is in a state specified by the filter, or</li>
+<li>The timeout elapses.</li>
+</ul>
+<p>If you pass no handles, then the first part of the first case is vacuously satisfied (due to the magic properties of the empty set), so the things that will cause the function to return are either that the queue is in a required state or the timeout elapses. </p>
+<p>The fact that the handle count can be any value up to <code>MAXIMUM_</code><code>WAIT_</code><code>OBJECTS</code> <i>minus one</i> gives you some <a href="https://blogs.msdn.microsoft.com/larryosterman/2004/06/02/things-you-shouldnt-do-part-4-msgwaitformultipleobjects-is-a-very-tricky-api/">insight into the internal implementation of the <code>Msg­Wait­For­Multiple­Objects</code> function</a>: It takes the handle array you pass, and adds another handle that is signaled when the queue is in the desired state. It then calls the <code>Wait­For­Multiple­Objects</code> with the same <code>bWaitAll</code> parameter. That explains why passing <code>bWaitAll = TRUE</code> requires all the handles to be signaled <i>and</i> the queue to be in the requested state. </p>
+<p>If you don’t want to rely on the magical properties of the empty set, you could instead use a handle that you already know will never be signaled: You can use <code>Get­Current­Process()</code> or <code>Get­Current­Thread()</code>. The current process pseudohandle and current thread pseudohandle will become signaled when the process or thread terminates, but this is code running on that thread in that process. The thread cannot outlive itself. </p>
+<p><b>Bonus chatter 2</b>: <a href="https://blogs.msdn.microsoft.com/oldnewthing/20151111-00/?p=91972">Here’s why</a> I’m <a href="https://github.com/id-Software/Quake/blob/bf4ac424ce754894ac8f1dae6a3981954bc9852d/WinQuake/data/MANUAL.TXT#L1019">in the Quake credits</a>. </p>
+
+
+</body>

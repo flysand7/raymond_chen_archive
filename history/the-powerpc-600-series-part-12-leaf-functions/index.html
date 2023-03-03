@@ -1,0 +1,85 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The PowerPC 600 series, part 12: Leaf functions</h1>  <!-- .entry-meta -->
+
+<p>On Windows NT for the PowerPC, there is a leaf function optimization available provided your function meets these criteria: </p>
+<ul>
+<li>    It calls no other functions. </li>
+<li>    It does not have an exception handler. </li>
+<li>    It does not need any stack space beyond     stack space used by actual inbound parameters,     the eight words of stack used as home space,¹     and the 232-byte red zone. </li>
+<li>    It does not modify any nonvolatile registers. </li>
+</ul>
+<p>If all of these conditions are met, then the function does not need to declare any function unwind codes, and it does not need to set up a stack frame. It can reuse the stack frame of its caller. In order for the system to be able to unwind out of a lightweight leaf function, the leaf function must keep its return address in the <var>lr</var> register throughout the entire life of the function, and it cannot move the stack pointer. </p>
+<p>Conversely, if you fail to declare unwind codes for a function, then the system assumes that it is a lightweight leaf function. </p>
+<p>Here’s a sample function that is a candidate for lightweight leaf status: </p>
+<pre>
+wchar_t* SkipLeadingSpacesAndTabs(wchar_t* s)
+{
+    while (*s == L' ' || *s == L'\t') s++;
+    return s;
+}
+</pre>
+<p>This is how the Microsoft compiler generated the code for it: </p>
+<pre>
+SkipLeadingSpacesAndTabs:
+    lhz     r4,(r3)     ; load wchar_t into r4
+    cmpwi   cr6,r4,0x20 ; Is it a space?
+    beq     cr6,loop    ; Y: skip it
+    cmpwi   cr7,r4,9    ; Is it a tab?
+    bne     cr7,break   ; N: done
+loop:
+    lhzu    r4,2(r3)    ; Skip over current character and load next one
+    cmpwi   cr6,r4,0x20 ; Is it a space?
+    beq     cr6,loop    ; Y: skip it
+    cmpwi   cr7,r4,9    ; Is it a tab?
+    beq     cr7,loop    ; Y: continue
+break:
+    blr                 ; Return to caller, result already in r3
+</pre>
+<p>For some reason, the Microsoft compiler likes to use <var>cr6</var> and <var>cr7</var> as the targets for its comparison instructions. It probably wants to stay far away from <var>cr0</var> and <var>cr1</var>, which are implicitly updated by some instructions. </p>
+<p>Notice that we used the <code>lhzu</code> instruction to advance the <var>r3</var> register and then fetch a halfword from it. This shows how the update version of a load instruction is handy for walking through an array. </p>
+<p>If we wanted to be clever, we could apply the following transformation. First, un-unroll the loop: </p>
+<pre>
+SkipLeadingSpacesAndTabs:
+    lhz     r4,(r3)     ; load wchar_t into r4
+    b       test
+loop:
+    lhzu    r4,2(r3)    ; Skip over current character and load next one
+test:
+    cmpwi   cr6,r4,0x20 ; Is it a space?
+    beq     cr6,loop    ; Y: skip it
+    cmpwi   cr7,r4,9    ; Is it a tab?
+    beq     cr7,loop    ; Y: continue
+break:
+    blr                 ; Return to caller, result already in r3
+</pre>
+<p>This seems like a pessimization, since we introduced a branch. But now I can remove the branch by realizing that I can trick the first iteration’s <code>lhzu</code> to load the first halfword of the string rather than the second: Predecrement the value to counteract the preincrement! </p>
+<pre>
+SkipLeadingSpacesAndTabs:
+    subi    r3,r3,2     ; decrement to counteract the upcoming increment
+loop:
+    lhzu    r4,2(r3)    ; Skip over current character and load next one
+    cmpwi   cr6,r4,0x20 ; Is it a space?
+    beq     cr6,loop    ; Y: skip it
+    cmpwi   cr7,r4,9    ; Is it a tab?
+    beq     cr7,loop    ; Y: continue
+break:
+    blr                 ; Return to caller, result already in r3
+</pre>
+<p>Finally, I can combine the results of the two comparisons so there is only one branch that needs to be predicted:</p>
+<pre>
+SkipLeadingSpacesAndTabs:
+    subi    r3,r3,2     ; decrement to counteract the upcoming increment
+loop:
+    lhzu    r4,2(r3)    ; Skip over current character and load next one
+    cmpwi   cr6,r4,0x20 ; Is it a space?
+    cmpwi   cr7,r4,9    ; Is it a tab?
+    cror    4*cr7+eq,4*cr6+eq,4*cr7+eq ; Is it either?
+    beq     cr7,loop    ; Y: continue
+    blr                 ; Return to caller, result already in r3
+</pre>
+<p>I don’t know whether this performs better than the original code, but it is four instructions shorter, consumes one fewer branch prediction slot, and simply looks cooler. I win on style points, but I could very well lose on real-world performance. </p>
+<p><a href="https://blogs.msdn.microsoft.com/oldnewthing/20180822-00/?p=99545">Next time</a>, we’ll look at common patterns for branches and calls. </p>
+<p>¹ As I noted earlier, you are allowed to use all of the home space even if your function doesn’t have that many parameters. </p>
+
+
+</body>

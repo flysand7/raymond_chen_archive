@@ -1,0 +1,40 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating other types of synchronization objects that can be used with co_await, part 7: The mutex and recursive</h1>  <!-- .entry-meta -->
+
+<p>Our next stop in <a href="/code/creating-other-types-of-synchronization-objects-that-can-be-used-with-co-await-part-3-parallel-resumption" title="Creating other types of synchronization objects that can be used with co_await, part 3: Parallel resumption"> showing off our library for building awaitable synchronization objects</a> are the mutex and recursive mutex.</p>
+<p>The mutex and recursive mutex are strange objects when applied to coroutines, because the traditional mutex and recursive mutex apply to threads, and threads are this implied context that every function has and shares with the functions it calls, even though it may not realize it. But coroutines don’t have that. When one coroutine awaits another coroutine, there is no formal connection between the two, so when you do this:</p>
+<pre>IAsyncAction Outer()
+{
+    co_await some_mutex.lock();
+    co_await Inner();
+}
+
+IAsyncAction Inner()
+{
+    some_mutex.unlock();
+}
+</pre>
+<p>the mutex has no way of knowing that the <code>Outer</code> lock matches the <code>Inner</code> unlock. It just has to trust the caller.</p>
+<p>The lack of coroutine flow identity is particularly troublesome for the recursive mutex, because it has no way of knowing whether a second lock came from the same logical coroutine chain that performed the initial lock.</p>
+<pre>IAsyncAction Outer()
+{
+    co_await some_mutex.lock();
+    co_await Inner();
+    some_mutex.unlock();
+}
+
+IAsyncAction Inner()
+{
+    co_await some_mutex.lock();
+    something();
+    some_mutex.unlock();
+}
+</pre>
+<p>If <code>some_<wbr/>mutex</code> were an asynchronous recursive mutex, it wouldn’t be able to determine whether the call from <code>Inner</code> should be allowed, since it has no access to coroutine identity, nor to the dependency relationships among coroutines.</p>
+<p>Basically, there are no coroutine mutexes or recursive mutexes. Recursive mutexes simply cannot exist, and once you strip away the thread identity features of mutexes, all you have left is an auto-reset event.</p>
+<pre>using awaitable_mutex = awaitable_auto_reset_event;
+</pre>
+<p>But the shared mutex, that’s interesting. We’ll look at that next time.</p>
+
+
+</body>

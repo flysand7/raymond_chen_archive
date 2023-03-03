@@ -1,0 +1,135 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why isn't my transparent static control transparent?</h1>  <!-- .entry-meta -->
+
+<p>
+A customer reported that their application uses transparent
+static controls positioned over a bitmap image control,
+but even though they set the Transparent property on the static
+control, the static control isn’t transparent.
+The customer was kind enough to provide clear steps to illustrate
+the problem:
+</p>
+<ul>
+<li>Open Visual Studio 2005 or 2008.
+<li>From the menu, select <i>File</i>,
+    <i>New File</i>, Visual C++,
+    <i>Resource Template File (RCT)</i>.
+<li>Right-click on the RCT file, select <i>Add Resource</i>,
+    and add a bitmap named <code>IDB_BITMAP1</code>.
+<li>Open the dialog box (<code>IDD_DIALOG1</code>) and add a
+    “Picture Control”, specifying <code>IDC_BITMAP_1</code> as its ID.
+<li>Change the <code>IDC_BITMAP_1</code> type to <i>Bitmap</i>
+    and change the value of the Image property to <code>IDB_BITMAP1</code>.
+<li>Add a “Static Text” control <code>IDC_TEST_STATIC</code> and
+    set its caption to “This is a test”.
+<li>Reposition the static control so it overlaps the
+    <code>IDC_BITMAP_1</code> control.
+<li>On the <code>IDC_TEST_STATIC</code> control,
+    set the <i>Transparent</i> property to <i>True</i>.
+<li>Type Ctrl+T to test the dialog and observe that the
+    static control is not transparent.
+</li></li></li></li></li></li></li></li></li></ul>
+<table border="0" cellpadding="0" cellspacing="0" style="border-width: 2px;border-style: outset;width: 25em">
+<tr style="background: activecaption;color: captiontext;padding: 2px">
+<td><b>Dialog</b></td>
+<td align="right" valign="middle">
+<button style="height:1.5em">
+<font face="Marlett"><!--[if IE]&gt;r&lt;![endif]--></font>
+</button></td>
+</tr>
+<tr style="height: 10em;background: threedface">
+<td colspan="2" valign="top">
+
+</td>
+</tr></table>
+<p>
+The <i>Transparent</i> property in Visual Studio corresponds to
+the <code>WS_EX_TRANSPARENT</code> window style,
+and
+<a href="http://msdn.microsoft.com/library/ff700543.aspx">
+the documentation explains</a>
+that
+</p>
+<blockquote class="q"><p>
+<code>WS_EX_TRANSPARENT</code>:
+The window should not be painted until siblings beneath the window
+(that were created by the same thread) have been painted.
+The window appears transparent because
+the bits of underlying sibling windows have already been painted.
+</p></blockquote>
+<p>
+The observed behavior, therefore, matches the documentation:
+The control underneath (the bitmap control) paints first,
+and then the static control paints on top of it.
+And a static text control paints by filling with the background brush
+and drawing the text on top of it.
+You can customize this behavior by responding to the
+<code>WM_CTL­COLOR­STATIC</code> message:
+</p>
+<pre>
+HBRUSH CTestDlg::<a href="http://msdn.microsoft.com/library/0wwk06hc.aspx">OnCtlColor</a>(CDC* pDC, CWnd* pWnd, UINT nCtlColor)
+{
+ HBRUSH hbr = <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/11/12/55659.aspx">__super</a>::OnCtlColor(pDC, pWnd, nCtlColor);
+ if (pWnd-&gt;GetExStyle() &amp; WS_EX_TRANSPARENT) {
+  pDC-&gt;SetBkMode(TRANSPARENT);
+  hbr = GetStockBrush(<a href="http://blogs.msdn.com/oldnewthing/archive/2004/01/26/62991.aspx">HOLLOW_BRUSH</a>);
+  // <!-- How do I get a radio button control to render its text transparently? -->even better would be to use a pattern brush, if the background is fixed
+ }
+ return hbr;
+}
+</pre>
+<p>
+The customer appreciated the explanation but was puzzled as to
+why the <i>Transparent</i> is available if it doesn’t work.
+“We understand that we can use the <code>WS_EX_TRANSPARENT</code>
+window style to create a transparent window and it will be painted
+after its underlying siblings, but the window style by itself doesn’t
+make the static control transparent.
+But if we have to write the code above,
+why is the <i>Transparent</i> property available in the Properties box?”
+They included a screen shot from Visual Studio where the built-in help
+text for the <i>Transparent</i> property reads
+“Specifies that the control will have a transparent background.”
+</p>
+<p>
+The <code>WS_EX_TRANSPARENT</code> style doesn’t mean
+“transparent”; it means “paint over siblings.”
+The style is called “transparent” not because it makes
+the window transparent but because it makes transparency <i>possible</i>.
+It is one of the steps (but not the only one)
+for making child controls render transparently.
+Another important step is ensuring that the
+control does not erase its background
+in its <code>WM_ERASE­BKGND</code>,
+and that’s the step that the <code>On­Ctl­Color</code>
+override performs.
+</p>
+<p>
+Why is the <i>Transparent</i> property offered for static controls
+when it doesn’t actually work?
+Shouldn’t it be disabled for static controls?
+</p>
+<p>
+The reason why it is offered is that it is a general window style
+that can be set on any control.
+Visual Studio doesn’t know which controls can render transparently
+and which ones don’t,
+or what extra steps are necessary to get
+the ones who can render transparently to actually do so.
+It just exposes the <code>WS_EX_TRANSPARENT</code> style and hopes
+that you know what you’re doing.
+</p>
+<p>
+In retrospect, it was a poor chose of name for the style.
+And the incorrect online help doesn’t make things any better.
+</p>
+<p>
+<b>Bonus chatter</b>:
+Note that the <code>WS_EX_TRANSPARENT</code>
+extended style is overloaded.
+In addition to affecting painting,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/12/30/10110077.aspx">
+it also affects hit-testing</a>.</p>
+
+
+</body>

@@ -1,0 +1,64 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does setting the horizontal scroll bar range for the first time also set the vertical range, and vice versa?</h1>  <!-- .entry-meta -->
+
+<p>A customer observed that if a window has never set any scroll bar parameters, then it reports its scroll bar range as <var>nMin</var> = <var>nMax</var> = 0 in both horizonal and vertical directions. But once you set the (say) horizontal scroll bar range to anything (say, <var>nMin</var> = 0, <var>nMax</var> = 999), then the vertical scroll bar range reports itself as <var>nMin</var> = 0, <var>nMax</var> = 100. Why does changing one scroll bar affect the other? </p>
+<p> For convenience, let’s use the notation [<var>nMin</var>, <var>nMax</var>] to represent a scroll bar range.</p>
+<pre>
+SCROLLINFO si = { sizeof(si), SIF_RANGE };
+GetScrollInfo(hwnd, SB_HORZ, &amp;si); // produces [0, 0]
+GetScrollInfo(hwnd, SB_VERT, &amp;si); // produces [0, 0]
+SetScrollRange(hwnd, SB_HORZ, 0, 999);
+GetScrollInfo(hwnd, SB_HORZ, &amp;si); // produces [0, 999]
+GetScrollInfo(hwnd, SB_VERT, &amp;si); // produces [0, 100]
+</pre>
+<p>This is a case of incomplete virtualization. Every standard scroll bar <a href="https://msdn.microsoft.com/library/windows/desktop/bb787587(v=vs.85).aspx">defaults to a range of [0, 100]</a>. In practice, few windows create scroll bars, so the window manager doesn’t allocate scroll bar information until a window activates its scroll bars. But once a window activates any scroll bar, the window manager allocates scroll bar information for both directions. </p>
+<p>This behavior came from 16-bit Windows, so let’s calculate how much memory 16-bit Windows is saving by using this one weird trick. The scroll bar information for each direction is 8 bytes (four 16-bit values: minimum, maximum, position, and page size), and let’s say that heap overhead is two pointers per allocation. Delay-allocating the scroll bar information in one direction on a 16-bit system means that instead of putting 8 bytes of memory in the main heap allocation for a window, you instead put just 2 bytes of memory in the main heap allocation, but an additional cost of 8 + 2 × 2 = 12 bytes of heap memory if the window actually uses the scroll bar. </p>
+<p>Let’s say that ten percent of the windows in the system use scroll bars, a rather high estimate, I think, especially when you consider dialog boxes which have tons of windows without any scroll bars.¹ With that assumption, the average cost per window drops from 8 bytes to 2 + 10% × 12 = 3.2 bytes per window for a single scroll bar direction, or from 16 bytes to 6.4 bytes for the pair. </p>
+<p>We can save even more memory by putting the horizontal and vertical scroll bar info together in the same allocation, since that reduces the heap overhead, and it means that you need to leave only one forwarding pointer behind to cover two blocks of data. With this additional assumption, the average cost per window drops from 16 bytes to <strike>2 + 10% × 16 = 3.6 bytes</strike> 2 + 10% × 20 = 4 bytes. </p>
+<p>This savings by using combined storage for both directions does mean that the cost for a window that uses only one of the two directions is <strike>2 + 16 = 18 bytes</strike> 2 + 20 = 22 bytes, when it would have been 2 + (2 + 12) = 16 bytes if the two allocations had been separate. Most of the time, a window that has a horizontal scroll bar will also have a vertical scroll bar. (Edit boxes are a notable exception.) If we say that half of the time will a window have only one of the scroll bars, then the tradeoff is a 50% chance of 16 bytes against an 50% chance of 4 + 24 = 28 bytes, for an average cost of 22 bytes per window, which is no better than the 22 bytes per window from combining the two allocations. </p>
+<p>Given that 16-bit Windows had only 64<a href="https://blogs.msdn.microsoft.com/oldnewthing/20090611-00/?p=17933">KB</a>  of memory for all window-related objects, reducing the base memory cost of a window from 102 bytes <a href="https://blogs.msdn.microsoft.com/oldnewthing/20050315-00/?p=36183">to 88 bytes</a> is a huge savings. </p>
+<p>Okay, let’s return to the present. If standard scroll bars default to [0, 100], why does reading the scroll bar range of an uninitialized scroll bar return [0, 0] instead of [0, 100]? </p>
+<p>Actually, reading the scroll bar range of an uninitialized scroll bar doesn’t return a range of [0, 0]. What’s actually happening is that the call to <code>Get­Scroll­Info</code> is failing with the error code <code>ERROR_NO_SCROLL­BARS</code>, and you are reading back the zero values that were already in the <code>SCROLL­INFO</code> structure that you passed in. </p>
+<p>When you call <code>Set­Scroll­Range</code> (or <code>Set­Scroll­Info</code> or <code>Set­Scroll­Pos</code>) the window manager initializes the scroll bar information on demand, and that’s where the default values of [0, 100] are established. Those values then get read out by the subsequent calls to <code>Get­Scroll­Info</code>. </p>
+<p>Basically, Windows pretends that all windows have a scroll bar with a range of [0, 100], but it doesn’t allocate any memory to record that information until you use it. </p>
+<p><b>Exercise</b>: Theoretically, the window manager could also have avoided allocating the memory if you set the range to [0, 100], since that’s the default range. Why doesn’t it bother with this optimization? </p>
+<p>What you’re seeing is that the virtualization is incomplete. When you try to read the scroll range from an uninitialized scroll bar, the <code>Get­Scroll­Info</code> function could have reported a range of [0, 100] instead of simply failing the call. Or possibly report a range of [0, 100] <i>and</i> fail the call, reporting the default range to cover for the programs (like the one above) that ignore the return value. </p>
+<p>My guess is that the original designers of the window manager chose to expose this “uninitialized” state explicitly on the off chance that some program might² want to check whether scroll bars are initialized so that they can perform some super-precise optimization. </p>
+<p>Though in practice I bet nobody does. </p>
+<p>¹ I just ran a quick test on my system. My guesses were waaaaaaay too generous. </p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<thead>
+<tr>
+<th>Window type</th>
+<th>With scroll bars</th>
+<th>Total</th>
+<th>Percent</th>
+</tr>
+</thead>
+<tbody style="border: solid black;border-width: 2px 1px">
+<tr>
+<td>Top-level</td>
+<td align="right">1</td>
+<td align="right">465</td>
+<td align="right">0.21%</td>
+</tr>
+<tr>
+<td>Child</td>
+<td align="right">7</td>
+<td align="right">1034</td>
+<td align="right">0.68%</td>
+</tr>
+</tbody>
+<tfoot>
+<tr>
+<td>Overall</td>
+<td align="right">8</td>
+<td align="right">1499</td>
+<td align="right">0.53%</td>
+</tr>
+</tfoot>
+</table>
+<p>² This design principle dates back to the days when Windows assumed that programmers were super-experts who wanted fine control of everything by default. “Here’s your fine control. Good luck.” </p>
+
+
+</body>

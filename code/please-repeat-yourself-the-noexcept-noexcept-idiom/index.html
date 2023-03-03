@@ -1,0 +1,84 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Please repeat yourself: The <code>noexcept(noexcept(…))</code> idiom</h1>  <!-- .entry-meta -->
+
+<p>Consider the following class:</p>
+<pre>template&lt;typename T&gt;
+struct Holder
+{
+    T value;
+
+    template&lt;typename... Args&gt;
+    Holder(Args&amp;&amp;... args) :
+        value(std::forward&lt;Args&gt;(args)...) {}
+};
+
+template&lt;typename U&gt; Holder(U&amp;&amp;) -&gt;
+    Holder&lt;std::remove_reference_t&lt;U&gt;&gt;
+</pre>
+<p>The idea is that this class holds a value of type <code>T</code>, and it constructs the same way that a <code>T</code> does. (The deduction guide lets you write <code>Holder(42)</code> instead of <code>Holder&lt;int&gt;(42)</code>.)</p>
+<p>Now the question: Is the object nothrow constructible?</p>
+<p>Nothrow constructibility is important for various operations. For example, a prerequisite for the strong exception guarantee for many operations is that the objects involved be nothrow-copyable or nothrow-movable. And internally, the standard library contains optimizations which are activated if the types involved are nothrow-operable.</p>
+<p>Back to the question: Is the object nothrow constructible?</p>
+<p>No, this object’s constructor is potentially-throwing because it lacks a <code>noexcept</code> specifier. This is true even though the construction of the <code>T</code> from the <code>args...</code> may itself be noexcept.</p>
+<p>What we want is for our constructor to be noexcept precisely when the construction of the underlying <code>T</code> is noexcept. How can we do that?</p>
+<p>The <code>noexcept</code> specifier takes an optional compile-time <code>bool</code> parameter which indicates whether the function is non-throwing, and the parameter defaults to <code>true</code>, which is what you’re doing when you write a bare <code>noexcept</code>.</p>
+<p>Here’s the first column of the last table in my discussion of <a href="/code/the-sad-history-of-the-c-throw-exception-specifier"> the sad history of the C++ <code>throw()</code> exception specifier</a>:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th colspan="2">Specifier<br/>
+C++17</th>
+</tr>
+<tr>
+<td rowspan="2" style="vertical-align: middle; width: 2em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">Nonthrowing</span></td>
+<td><code>noexcept</code><br/>
+<code>noexcept(true)</code></td>
+</tr>
+<tr>
+<td><code>throw()</code></td>
+</tr>
+<tr>
+<td rowspan="2" style="vertical-align: middle; width: 2em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">Throwing</span></td>
+<td><code>noexcept(false)</code></td>
+</tr>
+<tr>
+<td><code>throw(something)</code></td>
+</tr>
+</tbody>
+</table>
+<p>So we can make our constructor conditionally-<code>noexcept</code> by putting an appropriate expression inside the parentheses. But what is the correct expression?</p>
+<p>The <code>noexcept</code> keyword has another purpose: You can use it as an operator in an expression, and it evaluates to <code>true</code> if the evaluation of the argument would be considered non-throwing by the compiler. Like <code>sizeof</code>, the argument itself is not evaluated.</p>
+<pre>bool example1 = noexcept(1 + 2); // true
+bool example2 = noexcept(1 / 0); // true
+
+bool example3 = noexcept(
+    std::declval&lt;std::string&gt;().clear()); // true
+bool example4 = noexcept(
+    std::declval&lt;std::string&gt;().resize(0)); // false
+</pre>
+<p>The first example is simple: We can add 1 and 2, and there will not be a C++ exception.</p>
+<p>The second example is a little trickier: The compiler says that dividing by zero will not raise a C++ exception. Now, dividing by zero is actually undefined behavior, but the compiler isn’t performing any division here. It’s just checking whether <code>operator/(int, int)</code> is potentially-throwing, and it is not.</p>
+<p>The third example highlights that the inner expression is not evaluated. We are using the <code>std::declval&lt;T&gt;</code> function which pretends to return a <code>T</code>, although you are not allowed to actually call it. It may be used only in unevaluated contexts.</p>
+<p>The fourth example is a bit interesting: Although resizing a string to zero is functionally equivalent to clearing it, it has a different exception specifier, because the <code>resize()</code> method may throw if asked to make a string bigger and it cannot allocate memory for the bigger string.</p>
+<p>When the <code>noexcept(...)</code> operator is determining whether an expression is potentially-throwing, the compiler looks only at what’s printed on the tin.</p>
+<p>We can now combine these two lesser-used parts of the <code>noexcept</code> keyword. We want our constructor to be conditionally <code>noexcept</code> based on whether the inner <code>value</code>‘s constructor is potentially-throwing given the forwarded <code>args...</code>.</p>
+<p>Whether the <code>T</code> constructor is potentially-throwing given the forwarded <code>args...</code> can be calculated by asking the <code>noexcept(...)</code> operator to pretend to construct it, and report whether the result is potentially-throwing.</p>
+<pre>noexcept(T(std::forward&lt;Args&gt;(args)...))
+</pre>
+<p>The result of that calculation is then fed to the <code>noexcept</code> specifier to tell it whether the <code>Holder</code> constructor, given those arguments, should also be considered potentially-throwing.</p>
+<pre>noexcept(noexcept(T(std::forward&lt;Args&gt;(args)...)))
+</pre>
+<p>The outer <code>noexcept</code> is an exception specifier, but the inner one is a <code>noexcept</code> operator. The C++ language is reluctant to introduce new language keywords for fear of breaking existing code that used those potential keywords as identifiers, so it prefers to reuse existing keywords in new ways.¹</p>
+<pre>    template&lt;typename... Args&gt;
+    Holder(Args&amp;&amp;... args)
+        <span style="color: blue;">noexcept(noexcept(T(std::forward&lt;Args&gt;(args)...)))</span> :
+        value(std::forward&lt;Args&gt;(args)...) {}
+</pre>
+<p>We want our constructor to have the same potentially-throwing behavior as the construction of <code>value</code>, so we use the repetitive <code>noexcept(noexcept(...))</code> idiom to say “I’m noexcept if that guy is”, and “that guy” is itself a repetition of the thing we’re actually going to do one line later.</p>
+<p>The <code>noexcept(noexcept(...))</code> idiom could be <a href="https://en.wikipedia.org/wiki/Don't_repeat_yourself"> pejoratively</a> called the “Please repeat yourself twice” idiom. You have to repeat the keyword <code>noexcept</code>, and you also have to repeat the expression whose potentially-throwing behavior you want to propagate.</p>
+<p><b>Bonus reading</b>: <a href="https://www.modernescpp.com/index.php/c-core-guidelines-the-noexcept-specifier-and-operator"> C++ Core Guidelines: The noexcept Specifier and Operator</a></p>
+<p>¹ We saw this in C++11, which took the long-forgotten <code>auto</code> keyword and gave it a brand new life.²</p>
+<p>² I’m eagerly awaiting the triumphant return of the <code>register</code> keyword, which like <code>auto</code> has been reserved since K&amp;R C, but had been largely abandoned, and which was formally stripped of all meaning in C++17.</p>
+
+
+</body>

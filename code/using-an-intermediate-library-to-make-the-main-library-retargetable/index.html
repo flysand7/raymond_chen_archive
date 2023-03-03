@@ -1,0 +1,23 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using an intermediate library to make the main library retargetable</h1>  <!-- .entry-meta -->
+
+<p>A customer was developing a static library targetting both Windows XP Win32 applications and universal Windows apps. (This was before Windows XP reached end-of-life.) </p>
+<blockquote class="q">
+<p>Our library uses critical sections, but unfortunately there is no version <code>Initialize­Critical­Section</code> that is available to both Windows XP Win32 applications and universal Windows apps. Universal Windows apps must use <code>Initialize­Critical­Section­Ex</code>, but that function is not available to Windows XP Win32 applications. Is there a way to dynamically target both Windows XP Win32 applications and universal Windows apps, pass WACK validation, and still have one library? </p>
+<p>We thought we could use <code>Get­Module­Handle</code> and <code>Get­Proc­Address</code> to detect which platform we are one, but <code>Get­Module­Handle</code> is not allowed in universal Windows apps, so we’re back where we started. </p>
+<p>Are we stuck having two versions of our library, one for Windows XP Win32 applications and one for universal Windows apps? </p>
+</blockquote>
+<p>Runtime dynamic linking (<code>Load­Library</code>, <code>Get­Proc­Address</code>) is not permitted in universal Windows apps, which means that for universal Windows apps, you must have an entry for <code>Initialize­Critical­Section­Ex</code> in your import table. But if that function is in your input table, then it won’t load on Windows XP. </p>
+<p>(You might think that you could have a second library to be used by Windows XP clients that implements the <code>Initialize­Critical­Section­Ex</code> function. Unfortunately, you will run afoul of <a href="http://blogs.msdn.com/b/oldnewthing/archive/2006/07/26/679044.aspx">dllimport</a>.) </p>
+<p>You are going to have to have separate libraries at some point, but you don’t have to have two versions of your library. You could build your library  to call, say, <code>Contoso­Initialize­Critical­Section</code>, and have two helper libraries, one for Windows XP Win32 applications and one for universal Windows apps, each of which implement the <code>Contoso­Initialize­Critical­Section</code> function in a manner appropriate to the target. </p>
+<p>In other words, people targeting Windows XP would link to <code>ContosoCore.dll</code> and <code>ContosoXPSupport.dll</code>. People writing universal Windows apps would link to <code>ContosoCore.dll</code> and <code>ContosoStoreSupport.dll</code>. </p>
+<p>This approach has a few advantages: </p>
+<ul>
+<li>It’s simple, works (because it’s so simple), and     everybody understands it. 
+<li>All the files in your core library need to be compiled only once. </li></li></ul>
+<p>The second clause pays off if your library is large, or if you need to add new operating system targets. </p>
+<p><b>Update</b>: I guess I didn’t make it clear. My suggestion is that <code>Contoso­Core.dll</code> link to the nonexistent <code>Contoso­Support.dll</code>. If your program targets Windows XP, then rename <code>Contoso­XP­Support.dll</code> to <code>Contoso­Support.dll</code>. If your program is a universal Windows app, then rename <code>Contoso­Store­Support.dll</code> to <code>Contoso­Support.dll</code>. </p>
+<p>This technique also works with static libraries. You have a single <code>Contoso­Core.lib</code> which calls a <code>Contoso­Initialize­Critical­Section</code> function. There are two implementations of <code>Contoso­Initialize­Critical­Section</code>, one in <code>Contoso­XP­Support.lib</code> and another in <code>Contoso­Store­Support.lib</code>. Each application chooses which support library to link in. </p>
+
+
+</body>

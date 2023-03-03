@@ -1,0 +1,172 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What possible use are those extra bits in kernel handles? Part 3: New object types</h1>  <!-- .entry-meta -->
+
+<p><p>
+Last time, we saw how
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/08/28/8902173.aspx">
+those extra bits can be used to multiplex <code>HANDLE</code>
+with other values</a>.
+That was a specific case of a more general scenario:
+Expanding the handle namespace to include things that aren’t handles.
+(You can also view today’s example as a generalization of the
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/08/27/8898863.aspx">
+sentinel value problem</a>,
+where we need to generate an arbitrary number of sentinel values dynamically.
+Actually, multiplexing <code>HANDLE</code> with <code>HRESULT</code>
+is also just another special case: We expanded the handle namespace
+to include error codes too.)
+</p>
+<p>
+As I noted in the base article,
+the people who are most interested in this sort of thing are people
+writing low-level class libraries or wrapping kernel objects inside
+a larger framework.
+</p>
+<p>
+Suppose, for example, you are writing a library that manipulates
+kernel objects, but you also have private types of objects (say,
+a handle to a remote computer)
+that you also want this library to be able to manipulate.
+One way of doing this is to wrap everything inside some base class
+that virtualizes away what type of handle you’re working on:
+</p>
+<pre>
+class ExtendedHandle {
+public:
+  virtual ExtendedHandleType GetType() = 0;
+  virtual ~ExtendedHandle() { }
+};</pre></p>
+<p>class KernelExtendedHandle : public ExtendedHandle {
+public:
+  static KernelExtendedHandle *Create(…);
+  ExtendedHandleType GetType() { return KernelHandle; }
+  HANDLE GetHandle() { return Handle; }
+private:
+  KernelExtendedHandle(…);
+  HANDLE Handle;
+};</p>
+<p>class RemoteComputerExtendedHandle : public ExtendedHandle {
+public:
+  static RemoteComputerExtendedHandle *Create(…);
+  ExtendedHandleType GetType() { return RemoteComputer; }
+  LPCTSTR GetComputerName() { … }
+  … other remote computer methods …
+private:
+  RemoteComputerExtendedHandle(…);
+  … stuff necessary for tracking remote computers …
+};
+
+<p>
+Now, your library spends only 1% of its time manipulating these
+private object types;
+most of the time, it’s dealing with regular kernel handles.
+In other words,
+99% of your objects are of type <code>KernelExtendedHandle</code>.
+What used to be just a <code>HANDLE</code> (4 bytes)
+is now a <code>EHANDLE</code> that in turn points to an 8-byte
+structure
+(4 bytes for the vtable and
+4 bytes for the <code>HANDLE</code>).
+Your memory requirements have tripled <i>and</i> you added
+another level of indirection (costing you locality),
+just for that 1% case.
+</p>
+<p>
+But you can do better if you have those extra bits to play with.
+Since 99% of the objects you’re wrapping are just plain old kernel
+handles, you can say that
+if the bottom bit is clear, then it’s just a kernel handle,
+and if the bottom bit is set, then the upper bits tell us what
+we are really operating on.
+</p>
+<pre>
+typedef void *EHANDLE;</pre></p>
+<p>BOOL IsKernelHandle(EHANDLE Handle)
+{
+  return (!((INT_PTR)Handle &amp; 1));
+}</p>
+<p>EHANDLE CreateHandleFromKernelHandle(HANDLE Handle)
+{
+  // if this assertion fires, then somebody tried to
+  // use an invalid kernel handle!
+  assert((!((INT_PTR)Handle &amp; 1));
+  return (EHANDLE)Handle;
+}</p>
+<p>EHANDLE CreateHandleFromExtendedHandle(ExtendedHandle Handle)
+{
+  // if this assertion fires, then somebody allocated
+  // a misaligned ExtendedHandle!
+  assert(!((INT_PTR)Handle &amp; 1));
+  return (EHANDLE)((INT_PTR)Handle | 1));
+}</p>
+<p>ExtendedHandle *GetExtendedHandle(EHANDLE Handle)
+{
+  assert(!IsKernelHandle(Handle));
+  return (ExtendedHandle*)((INT_PTR)Handle &amp; ~1);
+}</p>
+<p>ExtendedHandleType GetType(EHANDLE Handle)
+{
+ if (IsKernelHandle(Handle)) {
+   return KernelHandleType;
+ } else {
+   return GetExtendedHandle(Handle)-&gt;GetType();
+ }
+}</p>
+<p>void ECloseHandle(EHANDLE Handle)
+{
+  if (IsKernelHandle(Handle))
+  {
+    CloseHandle(GetKernelHandle(Handle));
+  } else {
+   delete GetExtendedHandle(Handle);
+  }
+}
+
+<p>
+Now the cost of a wrapped kernel handle is just 4 bytes:
+4 bytes for the <code>EHANDLE</code>, which also doubles
+as the actual kernel handle.
+The cost of wrapped pseudo-handles is the same as before
+(4 bytes for the <code>EHANDLE</code>, plus the size
+of the corresponding <code>XxxExtendedHandle</code> class).
+We used the trick from last time in order to pack 33 bits
+into only 32 bits:
+Since we know that the bottom bit of both kernel <code>HANDLE</code>s
+and <code>ExtendedHandle</code> pointers are zero,
+we can use it as a discriminator.
+</p>
+<p>
+If you are not confident that your <code>ExtendedHandle</code>
+classes all use aligned pointers, you can use a different packing
+mechanism by using your own handle translation table:
+</p>
+<pre>
+ExtendedHandle *ExtendedHandleTable;</pre></p>
+<p>ExtendedHandle *GetExtendedHandle(EHANDLE Handle)
+{
+  assert(!IsKernelHandle(Handle));
+  return ExtendedHandleTable[(INT_PTR)Handle &gt;&gt; 1];
+}
+
+<p>
+Using this technique, the upper 31 bits of an <code>EHANDLE</code>
+which refers to an <code>ExtendedHandle</code> is an index into a
+privately-managed table of <code>ExtendedHandle</code> objects.
+</p>
+<p>
+This <i>secondary handle table</i> technique
+is entirely analogous to
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/02/28/7925962.aspx#7946255">
+the trick which one Posix library uses</a>
+to distinguish “real” process IDs from “virtual” process IDs,
+except that they are relying on undocumented behavior because
+the bottom bits of process IDs are not guaranteed to be zero!
+</p>
+<p>
+So there you have it, three scenarios where you can take advantage
+of knowing that
+the bottom bits of kernel handles are always zero.
+</p></p>
+
+
+</body>

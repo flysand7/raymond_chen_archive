@@ -1,0 +1,48 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When I intentionally create a stack overflow with <code>SendMessage</code>, why do I sometimes not get a stack overflow?</h1>  <!-- .entry-meta -->
+
+<p>Take our <a href="https://blogs.msdn.microsoft.com/oldnewthing/20030723-00/?p=43073">scratch program</a> and make these changes: </p>
+<pre>
+LRESULT CALLBACK
+WndProc(HWND hwnd, UINT uiMsg, WPARAM wParam, LPARAM lParam)
+{
+    switch (uiMsg) {
+    ...
+    <font color="blue">case WM_APP: return SendMessage(hwnd, WM_APP, 0, 0) + 1;</font>
+    }
+
+    return DefWindowProc(hwnd, uiMsg, wParam, lParam);
+}
+
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+    ...
+        ShowWindow(hwnd, nShowCmd);
+
+        <font color="blue">SendMessage(hwnd, WM_APP, 0, 0);
+        MessageBox(hwnd, TEXT("Will this appear?"), TEXT("Hey"), MB_OK);</font>
+
+        while (GetMessage(&amp;msg, NULL, 0, 0)) {
+            ...
+        }
+
+        ...
+}
+</pre>
+<p>This program enters infinite recursion upon receipt of the <code>WM_</code><code>APP</code> message by sending itself another copy of the same message. We add one to the returned value to make sure there’s no tail call elimination. </p>
+<p>After the program creates the window, it starts the death spiral by sending the first <code>WM_</code><code>APP</code> message. And then after the deadly message, it displays a message. </p>
+<p>The question: What happens? Do you see the message? </p>
+<p>When you run the program, you might see the message, or you might crash. It depends on which resource runs out first: The user-mode stack or the kernel-mode stack. </p>
+<p>Sending a message consumes some stack in user-mode, because you’re calling the <code>Send­Message</code> function, and that does some work in user mode before calling into kernel mode to do the actual message sending. </p>
+<p>Upon entry into kernel mode, some more stack is consumed to do the kernel-mode processing, like looking up which thread should be chosen to handle the message and dispatching any active window hooks. In this case, the destination window belongs to the same thread, so the kernel simulates a call into user mode and transitions back to user mode at a function whose job it is to call the window procedure. </p>
+<p>Now we’re back in user mode, and the helper function calls the window procedure, which allocates a stack frame, detects that the message is <code>WM_</code><code>APP</code>, and calls <code>Send­Message</code>, and the process repeats. </p>
+<p>When does this end? </p>
+<p>On entry to kernel mode, the kernel checks how much kernel-mode stack is still available, and if there isn’t enough to send a message, then the kernel says, “Whoa, I’m not going to be able to do this <code>Send­Message</code> thing, so I’m going to fail the call.” The kernel-mode portion of the <code>Send­Message</code> function returns zero, and that causes <code>Send­Message</code> to return zero instead of sending the message. </p>
+<p>On the other hand, there is no such preflight check in user mode. User mode just keeps running until it runs out of stack, at which point a <a href="https://docs.microsoft.com/en-us/windows-hardware/drivers/debugger/debugging-a-stack-overflow"><code>STATUS_</code><code>STACK_</code><code>OVERFLOW</code> exception</a> is raised. Assuming nobody handles this exception, the program crashes. </p>
+<p>It comes down to a race to see which limited resource runs out first. If the kernel-mode stack runs out first, then one of the <code>Send­Message</code> calls will return zero without actually sending the message, at which point the entire call stack unwinds, and then execution resumes at the call to <code>Message­Box</code>. On the other hand, if the user-mode stack runs out first, then you get a stack overflow exception. </p>
+<p>Your program has some control over how much user-mode stack is consumed at each recursion, because some of that stack usage comes from your own window procedure. So if you keep your window procedure’s stack usage low, then you’re more likely to run out of kernel mode stack first. </p>
+<p>But wait, there’s still another wrinkle that introduces a level of unpredictability to the calculations. We’ll dig deeper next time. </p>
+
+
+</body>

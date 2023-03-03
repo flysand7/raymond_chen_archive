@@ -1,0 +1,170 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using the MNS_DRAGDROP style: Dragging out</h1>  <!-- .entry-meta -->
+
+<p>
+Windows 2000 introduced the <code>MNS_DRAG­DROP</code> menu
+style, which permits drag/drop operations in a menu.
+Nobody uses this style, probably because it’s totally undiscoverable
+by the end-user.
+But I’ll write a sample program anyway.
+</p>
+<p>
+Mind you, I knew nothing about the <code>MNS_DRAG­DROP</code>
+menu style until I started writing this entry.
+But I simply read the documentation, which says that if you set this
+style, you will receive <code>WM_MENU­DRAG</code>
+and
+<code>WM_MENU­GET­OBJECT</code>
+messages.
+The
+<code>WM_MENU­DRAG</code> message is sent when the user
+drags a menu item, so let’s go with that first.
+The documentation says that you get information about the item
+that was dragged, and then you return a code that specifies
+whether you want the menu to remain up or whether you want it torn down.
+</p>
+<p>
+Simple enough. Let’s do it.
+</p>
+<p>
+Start with
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/23/54576.aspx">
+the scratch program</a>,
+add
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/09/20/231739.aspx">
+the function <code>Get­UI­Object­Of­File</code></a>
+and
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/12/06/275659.aspx">
+the class <code>CDrop­Source</code></a>,
+and change the calls to
+<code>Co­Initialize</code> and <code>Co­Uninitialize</code>
+into
+<code>Ole­Initialize</code> and <code>Ole­Uninitialize</code>,
+respectively.
+Next, define the menu we’re going to play with:
+</p>
+<pre>
+// resource header file
+#define IDM_MAIN 1
+#define IDC_CLOCK 100
+// resource file
+IDM_MAIN MENU PRELOAD
+BEGIN
+    POPUP "&amp;Test"
+    BEGIN
+        MENUITEM "&amp;Clock", IDC_CLOCK
+    END
+END
+</pre>
+<p>
+Now we can add some new code to our scratch program.
+First, we add a menu to our window and
+enable drag/drop on it:
+</p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ <font color="blue">MENUINFO mi = { sizeof(mi), MIM_STYLE, MNS_DRAGDROP };
+ return SetMenuInfo(GetMenu(hwnd), &amp;mi);</font>
+}
+// InitApp
+ <font color="red">// <strike>wc.lpszMenuName = NULL;</strike></font>
+ <font color="blue">wc.lpszMenuName = MAKEINTRESOURCE(IDM_MAIN);</font>
+</pre>
+<p>
+For both dragging and dropping, we need a way to obtain the
+COM object associated with a menu item,
+so I’ll put them in this common helper function:
+</p>
+<pre>
+HRESULT GetMenuObject(HWND hwnd, HMENU hmenu, UINT uPos,
+                      REFIID riid, void **ppvOut)
+{
+ HRESULT hr = E_NOTIMPL;
+ *ppvOut = NULL;
+ if (hmenu == GetSubMenu(GetMenu(hwnd), 0)) {
+  switch (GetMenuItemID(hmenu, uPos)) {
+  case IDC_CLOCK:
+   hr = GetUIObjectOfFile(hwnd, L"C:\\Windows\\clock.avi",
+                                             riid, ppvOut);
+   break;
+  }
+ }
+ return hr;
+}
+</pre>
+<p>
+If the menu is our “Test” popup menu, then
+we know how to map the menu items to COM objects.
+For now, we have only one item,
+namely <i>Clock</i>,
+which corresponds to
+the <code>C:\Windows\clock.avi</code>¹ file.
+</p>
+<p>
+Now we can hook up a handler to the
+<code>WM_MENU­DRAG</code> message:
+</p>
+<pre>
+#define HANDLE_WM_MENUDRAG(hwnd, wParam, lParam, fn) \
+ (fn)((hwnd), (UINT)(wParam), (HMENU)(lParam))
+LRESULT OnMenuDrag(HWND hwnd, UINT uPos, HMENU hmenu)
+{
+ LRESULT lres = MND_CONTINUE;
+ IDataObject *pdto;
+ if (SUCCEEDED(GetMenuObject(hwnd, hmenu, uPos,
+                                 IID_PPV_ARGS(&amp;pdto)))) {
+  IDropSource *pds = new(std::nothrow) CDropSource();
+  if (pds) {
+   DWORD dwEffect;
+   if (DoDragDrop(pdto, pds, DROPEFFECT_COPY | DROPEFFECT_LINK,
+                  &amp;dwEffect) == DRAGDROP_S_DROP) {
+    lres = MND_ENDMENU;
+   }
+   pds-&gt;Release();
+  }
+  pdto-&gt;Release();
+ }
+ return lres;
+}
+</pre>
+<p>
+This function is where the magic happens,
+but it’s really not all that magical.
+We get the data object for the menu item being dragged
+and tell OLE to do a drag/drop operation with it.
+Just to make things interesting, I’ll say that the
+menu should be dismissed if the user dropped the object somewhere;
+otherwise, the menu remains on the screen.
+</p>
+<p>
+Finally, we hook up the message handler to our window procedure:
+</p>
+<pre>
+HANDLE_MSG(hwnd, WM_MENUDRAG, OnMenuDrag);
+</pre>
+<p>
+And there you have it.
+A program that calls up a menu with drag enabled.
+If you drag the item labeled <i>Clock</i>, then the drag/drop
+operation proceeds as if you were dragging the
+<code>clock.avi</code> file.
+</p>
+<p>
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/12/29/10251523.aspx">
+Next time</a>,
+we’ll look at the drop half of drag and drop.
+</p>
+<p>
+<b>Footnote</b>
+</p>
+<p>
+¹ I hard-coded the <code>clock.avi</code> file
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/12/06/275659.aspx">
+for old time’s sake</a>.
+Yes, I know the file is no longer included with Windows.
+That’ll teach people to use hard-coded paths!</p>
+
+
+</body>

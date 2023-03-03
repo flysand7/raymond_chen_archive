@@ -1,0 +1,102 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The sad history of the C++ <code>throw(…)</code> exception specifier</h1>  <!-- .entry-meta -->
+
+<p>When exceptions were introduced into the C++ language, a corresponding <code>throw(...)</code> dynamic exception specifier was introduced which annotated which exceptions could be throw by a function.</p>
+<pre>// this function might throw an integer or a pointer to char,
+// but nothing else.
+void foo() throw(int, char*);
+</pre>
+<p>This has made a lot of people very angry and <a href="http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2015/p0003r0.html#2.0"> has been widely regarded as a bad move</a>.</p>
+<p>According to the C++98 standard, if a function throws an exception not listed among the types specified in its dynamic exception specifier, the system called the <code>std::unexpected()</code> function, and the default behavior of <code>std::unexpected()</code> is to terminate the program by calling <code>std::terminate()</code>. As a special case, <code>throw()</code> means that the function shouldn’t throw any exceptions at all.</p>
+<p>By C++11, the <code>throw(...)</code> dynamic exception specifier was deprecated, and in C++17, all support for dynamic exception specifiers was removed save for the special case of <code>throw()</code>. At the same time, they changed the penalty for throwing an exception when you said you wouldn’t: the runtime calls <code>std::terminate()</code> directly, rather than passing through <code>std::unexpected()</code>.</p>
+<p>But of course the Microsoft C++ compiler <a href="https://docs.microsoft.com/en-us/cpp/cpp/exception-specifications-throw-cpp"> has to do things a little bit differently</a>.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th colspan="2" rowspan="2">Specifier<br/>
+C++14 and earlier</th>
+<th colspan="3">Disallowed exception thrown</th>
+</tr>
+<tr>
+<th>Standard behavior</th>
+<th>Microsoft behavior</th>
+</tr>
+<tr>
+<td rowspan="2" style="vertical-align: middle; width: 2em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">Nonthrowing</span></td>
+<td><code>noexcept</code><br/>
+<code>noexcept(true)</code></td>
+<td><code>std::</code><code>unexpected</code></td>
+<td><code>std::</code><code>unexpected</code></td>
+</tr>
+<tr>
+<td><code>throw()</code></td>
+<td><code>std::</code><code>unexpected</code></td>
+<td>undefined behavior <span style="color: red;">⇐</span></td>
+</tr>
+<tr>
+<td rowspan="2" style="vertical-align: middle; width: 2em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">Throwing</span></td>
+<td><code>noexcept(false)</code></td>
+<td>exception propagates</td>
+<td>exception propagates</td>
+</tr>
+<tr>
+<td><code>throw(something)</code></td>
+<td><code>std::</code><code>unexpected</code></td>
+<td>exception propagates <span style="color: red;">⇐</span></td>
+</tr>
+</tbody>
+</table>
+<p>The Microsoft C++ compiler treats the <code>throw(...)</code> exception specifier as a promise on the part of the programmer, but there is no enforcement. It trusts you to adhere to your self-imposed contract. If an exception is thrown when the function promised that no exceptions would be thrown, the behavior is undefined. If the function said that some exceptions could be thrown, the compiler doesn’t validate that the actual thrown exception is allowed; it just propagates the exception.</p>
+<p>In practice, what happened is that the compiler performed optimizations on the assumption that no disallowed exception would be thrown. The most common such optimization is that the compiler won’t bother registering unwind codes for things that it “knows” will never require unwinding because there are no points where an exception could be thrown prior to the object’s destruction.</p>
+<pre>void Example()
+{
+   ObjectWithDestructor obj;
+   obj.stuff_that_does_not_throw();
+   // destructor runs here
+}
+</pre>
+<p>If <code>stuff_</code><code>that_</code><code>does_</code><code>not_</code><code>throw</code> is marked as non-throwing, then the compiler can avoid having to register <code>obj</code> for unwinding during exception propagation, since you promised that no exception could escape.</p>
+<p>And then you throw an exception and invalidate all those optimizations. The most common visible effect of this is that an exception propagated out of a function that should never have let an exception escape, and some object destructors failed to run.</p>
+<p>But wait, all is not lost.</p>
+<p>If you enable <code>/std:c++17</code>, then the Microsoft C++ compiler will implement the standard behavior for <code>throw(...)</code>.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th colspan="2" rowspan="2">Specifier<br/>
+C++17</th>
+<th colspan="2">Disallowed exception thrown</th>
+</tr>
+<tr>
+<th>Standard behavior</th>
+<th>Microsoft behavior<br/>
+with <code>/std:c++17</code></th>
+</tr>
+<tr>
+<td rowspan="2" style="vertical-align: middle; width: 2em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">Nonthrowing</span></td>
+<td><code>noexcept</code><br/>
+<code>noexcept(true)</code></td>
+<td><code>std::</code><code>terminate</code></td>
+<td><code>std::</code><code>terminate</code></td>
+</tr>
+<tr>
+<td><code>throw()</code></td>
+<td><code>std::</code><code>terminate</code></td>
+<td><code>std::</code><code>terminate</code></td>
+</tr>
+<tr>
+<td rowspan="2" style="vertical-align: middle; width: 2em;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">Throwing</span></td>
+<td><code>noexcept(false)</code></td>
+<td>exception propagates</td>
+<td>exception propagates</td>
+</tr>
+<tr>
+<td><code>throw(something)</code></td>
+<td>not supported</td>
+<td>not supported</td>
+</tr>
+</tbody>
+</table>
+<p>Yes, it took a long time to get there, but better late than never.</p>
+
+
+</body>

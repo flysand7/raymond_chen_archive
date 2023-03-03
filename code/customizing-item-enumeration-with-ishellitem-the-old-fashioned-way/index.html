@@ -1,0 +1,181 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Customizing item enumeration with IShellItem, the old-fashioned way</h1>  <!-- .entry-meta -->
+
+<p>If you are targeting Windows 8 or higher, you can <a href="http://blogs.msdn.com/b/oldnewthing/archive/2015/01/26/10588645.aspx">use <code>STR_ENUM_ITEMS_FLAGS</code></a> to customize how shell items are enumerated. But what if you need to run on older systems, too? </p>
+<p>In that case, you will need to drop to the lower-level <code>IShell­Folder::Enum­Objects</code> function, <a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/03/17/10508309.aspx">like we did before</a>, and then reconstructe shell items from the low-level <code>IShell­Folder</code> and <code>ITEMID_CHILD</code>. (Note that the term “low-level” is used here only in a relative sense; it’s lower level than <code>IShell­Item</code>.) </p>
+<p>We can wrap that inside a helper class. </p>
+<pre>
+#define UNICODE
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/02/12/71851.aspx">_UNICODE</a>
+#define STRICT
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/24/10387757.aspx">STRICT_TYPED_ITEMIDS</a>
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;atlbase.h&gt;
+CComModule _Module;
+#include &lt;atlcom.h&gt;
+#include &lt;atlalloc.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;tchar.h&gt;
+
+class CEnumItemsWithSHCONTF :
+    public CComObjectRoot,
+    public IEnumShellItems
+{
+public:
+  BEGIN_COM_MAP(CEnumItemsWithSHCONTF)
+    COM_INTERFACE_ENTRY(IEnumShellItems)
+  END_COM_MAP()
+
+  static HRESULT Create(HWND hwnd, SHCONTF shcontf,
+                 IShellItem *psiFolder, REFIID riid, void **ppv);
+
+  STDMETHOD(Next)(ULONG celt, IShellItem **ppsi, ULONG *pceltFetched);
+  STDMETHOD(Skip)(ULONG celt);
+  STDMETHOD(Reset)();
+  STDMETHOD(Clone)(IEnumShellItems **ppesiClone);
+
+private:
+  static HRESULT CreateRef1(CComObject&lt;CEnumItemsWithSHCONTF&gt; **ppObj);
+  HRESULT Initialize(HWND hwnd, SHCONTF shcontf, IShellItem *psiFolder);
+  HRESULT CloneFrom(CEnumItemsWithSHCONTF *pSource);
+private:
+  CComPtr&lt;IShellFolder&gt; m_spsfParent;
+  CComPtr&lt;IEnumIDList&gt; m_speidl;
+};
+
+HRESULT CEnumItemsWithSHCONTF::CreateRef1(
+    CComObject&lt;CEnumItemsWithSHCONTF&gt; **ppObj)
+{
+  CComObject&lt;CEnumItemsWithSHCONTF&gt; *pObj;
+  HRESULT hr = CComObject&lt;CEnumItemsWithSHCONTF&gt;::
+                       CreateInstance(&amp;pObj);
+  *ppObj = CComPtr&lt;CComObject&lt;CEnumItemsWithSHCONTF&gt; &gt;(pObj).Detach();
+  return hr;
+}
+
+HRESULT CEnumItemsWithSHCONTF::Initialize(
+  HWND hwnd, SHCONTF shcontf, IShellItem *psiFolder)
+{
+  HRESULT hr = psiFolder-&gt;BindToHandler(
+    nullptr, BHID_SFObject, IID_PPV_ARGS(&amp;m_spsfParent));
+  if (SUCCEEDED(hr)) {
+    hr = m_spsfParent-&gt;EnumObjects(hwnd, shcontf, &amp;m_speidl);
+  }
+  return hr;
+}
+
+HRESULT CEnumItemsWithSHCONTF::CloneFrom(
+    CEnumItemsWithSHCONTF *pSource)
+{
+  HRESULT hr = pSource-&gt;m_speidl-&gt;Clone(&amp;m_speidl);
+  if (SUCCEEDED(hr)) {
+    m_spsfParent = pSource-&gt;m_spsfParent;
+  }
+  return hr;
+}
+
+HRESULT CEnumItemsWithSHCONTF::Create(
+    HWND hwnd, SHCONTF shcontf,
+    IShellItem *psiFolder, REFIID riid, void **ppv)
+{
+  *ppv = nullptr;
+
+  CComPtr&lt;CComObject&lt;CEnumItemsWithSHCONTF&gt;&gt; spObj;
+  HRESULT hr = CreateRef1(&amp;spObj);
+
+  if (SUCCEEDED(hr)) {
+    hr = spObj-&gt;Initialize(hwnd, shcontf, psiFolder);
+    if (SUCCEEDED(hr)) {
+      hr = spObj-&gt;QueryInterface(riid, ppv);
+    }
+  }
+  return hr;
+}
+
+HRESULT CEnumItemsWithSHCONTF::Next(
+    ULONG celt, IShellItem **ppsi, ULONG *pceltFetched)
+{
+  if (celt != 1 &amp;&amp; pceltFetched == nullptr) {
+    return E_INVALIDARG;
+  }
+
+  for (ULONG i = 0; i &lt; celt; i++) ppsi[i] = nullptr;
+
+  ULONG celtFetched = 0;
+  HRESULT hr = S_OK;
+  while (hr == S_OK &amp;&amp; celtFetched &lt; celt) {
+    CComHeapPtr&lt;ITEMID_CHILD&gt; spidlChild;
+    hr = m_speidl-&gt;Next(1, &amp;spidlChild, nullptr);
+    if (hr == S_OK) {
+      hr = SHCreateItemWithParent(nullptr, m_spsfParent,
+        spidlChild, IID_PPV_ARGS(&amp;ppsi[celtFetched]));
+      if (SUCCEEDED(hr)) celtFetched++;
+    }
+  }
+
+  if (pceltFetched != nullptr) *pceltFetched = celtFetched;
+  if (SUCCEEDED(hr)) {
+    hr = (celtFetched == celt) ? S_OK : S_FALSE;
+  }
+  return hr;
+}
+
+HRESULT CEnumItemsWithSHCONTF::Skip(ULONG celt)
+{
+  return m_speidl-&gt;Skip(celt);
+}
+
+HRESULT CEnumItemsWithSHCONTF::Reset()
+{
+  return m_speidl-&gt;Reset();
+}
+
+HRESULT CEnumItemsWithSHCONTF::Clone(
+    IEnumShellItems **ppesiClone)
+{
+  *ppesiClone = nullptr;
+
+  CComPtr&lt;CComObject&lt;CEnumItemsWithSHCONTF&gt;&gt; spClone;
+  HRESULT hr = CreateRef1(&amp;spClone);
+
+  if (SUCCEEDED(hr)) {
+    hr = spClone-&gt;CloneFrom(this);
+    if (SUCCEEDED(hr)) {
+        *ppesiClone = spClone.Detach();
+    }
+  }
+  return hr;
+}
+</pre>
+<p>The <code>CEnum­Items­With­SHCONTF</code> class does the work of enumerating child items the old-fashioned way, then constructing shell items from the result. Most of this code is boilerplate (including the part to <a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/09/29/475298.aspx">avoid having a live COM object with reference count zero</a>). </p>
+<p>The object has two members, the source folder from which the items are being enumerated and the low-level enumerator itself. We initialize the object by asking for the low-level <code>IEnum­ID­List</code> handler and calling <code>IEnum­ID­List::Enum­Objects</code> with the specific flags we want. When it is time to generate items, we ask the inner enumerator for the next ID list, and construct a shell item around it by comining the ID list with the parent folder. </p>
+<p>The rest is bookkeeping: We keep track of the number of elements fetched so far in order to return it to the caller if requested, and also in order to decide what the return value should be. If all items were retrieved successfully, then return <code>S_OK</code>. If we ran out of items, then return <code>S_FALSE</code>. If something went wrong, we return the error code, possibly with partially-fetched results. </p>
+<p>The other enumerator operations like <code>Reset</code> and <code>Clone</code> are delegated to the inner enumerator. Cloning is a little tricky because we also have to clone ourselves! </p>
+<p>Now we can adapt <a href="http://blogs.msdn.com/b/oldnewthing/archive/2015/01/26/10588645.aspx">our program from last time</a> to use this class instead of <code>BHID_Enum­Items</code>. </p>
+<pre>
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+
+ if (argc &lt; 2) return 0;
+ CComPtr&lt;IShellItem&gt; spsiFolder;
+ SHCreateItemFromParsingName(argv[1], nullptr,
+                             IID_PPV_ARGS(&amp;spsiFolder));
+
+ CComPtr&lt;IEnumShellItems&gt; spesi;
+ <font color="blue">CEnumItemsWithSHCONTF::Create(nullptr, SHCONTF_FOLDERS,
+    spsiFolder, IID_PPV_ARGS(&amp;spesi));</font>
+ for (CComPtr&lt;IShellItem&gt; spsi;
+      spesi-&gt;Next(1, &amp;spsi, nullptr) == S_OK;
+      spsi.Release()) {
+  <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/08/30/10202076.aspx">PrintDisplayName</a>(spsi, SIGDN_NORMALDISPLAY, L"Display Name");
+  PrintDisplayName(spsi, SIGDN_FILESYSPATH, L"File system path");
+  wprintf(L"\n");
+ }
+ return 0;
+}
+</pre>
+
+
+</body>

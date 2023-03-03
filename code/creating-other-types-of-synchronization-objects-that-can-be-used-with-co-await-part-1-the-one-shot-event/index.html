@@ -1,0 +1,60 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating other types of synchronization objects that can be used with co_await, part 1: The one-shot event</h1>  <!-- .entry-meta -->
+
+<p>So far, we’ve been looking at how we could <a href="/code/creating-a-co-await-awaitable-signal-that-can-be-awaited-multiple-times-part-1" title="Creating a co_await awaitable signal that can be awaited multiple times, part 1"> build a one-shot event that can be used with <code>co_await</code></a>. There are other types of synchronizations objects you may want to use with coroutines, so let’s write a library for creating all sorts of awaitable synchronization objects.</p>
+<p>The intended usage is that you define your awaitable synchronization object in terms of state and actions. (The actions are things that alter the state.) Here’s an example for the one-shot event we’ve been using so far:</p>
+<pre>struct awaitable_oneshot_event_state :
+    async_helpers::awaitable_state&lt;awaitable_oneshot_event_state&gt;
+{
+    // Private state: Has the event been signaled?
+    std::atomic&lt;bool&gt; signaled{ false };
+
+    // optional fast path: Return true if wait is satisfied.
+    bool fast_claim(extra_await_data const&amp;) const noexcept
+    {
+        return signaled.load(std::memory_order_acquire);
+    }
+
+    // required slow path: Return true if wait is satisfied.
+    // Called with the lock held.
+    bool claim(extra_await_data const&amp;) const noexcept
+    {
+        return signaled.load(std::memory_order_relaxed);
+    }
+
+    // action: Alter state and resume coroutines.
+    void set(node_list&amp; list)
+    {
+        signaled.store(true, std::memory_order_relaxed);
+        resume_all(list);
+    }
+};
+</pre>
+<p>In our case, we have a single boolean of state which records whether the event has been signaled. The optional <code>fast_claim</code> method provides a fast path that doesn’t take the lock: It peeks at the signaled state and returns <code>true</code> if the event is already signaled, indicating that no waiting needs to be done at all. We need to use acquire semantics on the atomic boolean to ensure that no memory operations on the protected region are advanced ahead of the check of the signal. (Otherwise, we would be reading variables before they were ready.)</p>
+<p>The regular <code>claim</code> method does the same thing, but it is done under the protection of a lock, so it can use relaxed ordering, since the lock will provide the necessary memory barriers. Loads and stores with relaxed ordering typically turn into simple loads and stores with no memory barriers, so this gives you the best performance on most systems.¹</p>
+<p>Our only action is signaling the event. The action is given a list of nodes to which it can add the coroutines it wishes to resume. In our case, we signal the event by setting the <code>signaled</code> state to <code>true</code> (using the efficient relaxed ordering because the ambient lock will protect us), and then asking to resume all the waiters.</p>
+<p>Once you’ve defined your state, you can define your synchronization object which wraps the state. The wrapper makes the synchronization object copyable.</p>
+<pre>struct awaitable_oneshot_event
+    : async_helpers::awaitable_sync_object&lt;awaitable_oneshot_event_state&gt;
+{
+    void set()
+    {
+        action_impl(&amp;state::set);
+    }
+};
+</pre>
+<p>Our only action is setting the event, which we do by asking the <code>action_<wbr/>impl</code> helper method to forward the request into the state. When the action implementation in the state returns, any coroutines that were added to the list are resumed.</p>
+<p>And that’s it, an awaitable synchronization object. Now the hard part is writing the library that makes all of this possible. We’ll do that next time.</p>
+<p>¹ Even when relaxed loads and stores map to plain loads and stores, they are not entirely the same as plain loads and stores, because they cannot be coalesced by the optimizer.</p>
+<pre>std::atomic&lt;int&gt; value;
+
+if (value.load(std::memory_order_relaxed) == 0 ||
+    value.load(std::memory_order_relaxed) == 1) ...
+</pre>
+<p>The above sequence will issue two memory reads. If you want the reads to be coalesced, you need to coalesce them yourself.</p>
+<pre>auto capture = value.load(std::memory_order_relaxed);
+if (capture == 0 || capture == 1) ...
+</pre>
+
+
+</body>

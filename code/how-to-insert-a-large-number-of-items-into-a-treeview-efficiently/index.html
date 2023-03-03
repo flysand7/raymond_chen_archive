@@ -1,0 +1,122 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to insert a large number of items into a treeview efficiently</h1>  <!-- .entry-meta -->
+
+<p>
+Just a quick tip today.
+</p>
+<p>
+If you need to insert a large number of items into a treeview,
+like tens of thousands,
+then it’s much more efficient to insert them “backwards”.
+(I’m ignoring for now the usability question of having a treeview
+that large in the first place.)
+In other words, instead of
+</p>
+<pre>
+for (i = 0; i &lt; array.Count(); i++) {
+ TVINSERTSTRUCT tvis;
+ tvis.hParent = hParentNode;
+ tvis.hInsertAfter = TVIF_LAST;
+ tvis.item.mask = TVIF_TEXT;
+ item.item.pszText = array[i].Text();
+ TreeView_InsertItem(hwndTreeView, &amp;tvis);
+}
+</pre>
+<p>do it this way:</p>
+<pre>
+for (<font color="blue">i = array.Count() - 1; i &gt;= 0; i--</font>) {
+ TVINSERTSTRUCT tvis;
+ tvis.hParent = hParentNode;
+ tvis.hInsertAfter = <font color="blue">TVIF_FIRST</font>;
+ tvis.item.mask = TVIF_TEXT;
+ item.item.pszText = array[i].Text();
+ TreeView_InsertItem(hwndTreeView, &amp;tvis);
+}
+</pre>
+<p>
+Why is backwards-insertion faster?
+</p>
+<p>
+It has to do with the annoying
+<code>hInsert­After</code> parameter.
+To validate that the
+<code>hInsert­After</code> parameter is valid,
+the treeview needs to verify that the
+<code>hInsert­After</code> is a valid child of the
+<code>hParent</code>,
+and this is done by walking the parent’s children
+looking for a match.
+The sooner you find the match, the faster the validation completes.
+(And if you pass
+<code>TVI_LAST</code>,
+then the treeview needs to walk to the end of the child list.)
+</p>
+<p>
+You’d think that you could verify the parent/child relationship
+by just doing a
+<code>Tree­View_Get­Parent(hInsert­After)</code>,
+but that turns out not to be strict enough, because
+<code>hInsert­After</code> might itself not be a valid parameter.
+If <code>hInsert­After</code> is a bogus value,
+then you may crash when you try to read its Parent property.
+That’s if you’re lucky.
+If you’re not lucky,
+then the random memory that
+<code>hInsert­After</code> points to might look just enough
+like a valid <code>HTREEITEM</code> that you end up inserting
+the new node after a completely bogus node,
+and now the treeview has become corrupted.
+</p>
+<p>
+Sure, you got the same problem if you passed a garbage
+<code>HTREEITEM</code> to
+<code>Tree­View_Get­Parent</code>,
+but in that case, it’s just garbage in garbage out.
+Nothing gets corrupted;
+the application just gets a garbage result.
+But in the case of
+<code>Tree­View_Insert­Item</code>,
+the treeview is going to update its internal data structures
+based on the garbage you passed in,
+and that means that the treeview winds up corrupted.
+</p>
+<p>
+To ensure that the value passed in is valid,
+the treeview checks it against the list of valid values for
+<code>hInsert­After</code>.
+And therefore, you get better performance if the valid value
+you pass is the one that it checks first.
+</p>
+<p>
+(As it happens, a <i>lot</i> of programs pass garbage
+for <code>hInsert­After</code>,
+so this defensive validation step is absolutely necessary.)
+</p>
+<p>
+You might say that the treeview could have a one-off optimization
+for the special
+<code>TVI_LAST</code> value by remembering the last child
+so it can be located quickly.
+The question is whether the complexity of adding that optimization
+is worth the cost:
+Any tree rearranging function would have to update the
+cached value, and if you miss a spot,
+then the treeview ends up corrupted.
+That’s a pretty high-risk optimization you’re suggesting there.
+</p>
+<p>
+And think about it this way:
+You’re worrying about a tree where a single node
+has tens of thousands of children,
+something which (I am no longer ignoring) is a horrible user interface.
+That’s like a list box with tens of thousands of items,
+or a dialog box with tens of thousands of checkboxes.
+You’ll probably want to consider a better way of presenting
+the information than in a tree view that goes on for
+hundreds of screens.
+The treeview isn’t optimized for this case because
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2007/07/19/3945339.aspx">
+you don’t optimize for the case where somebody is mis-using your system</a>.</p>
+
+
+</body>

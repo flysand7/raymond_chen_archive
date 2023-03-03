@@ -1,0 +1,134 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why aren't compatibility workarounds disabled when a debugger is attached?</h1>  <!-- .entry-meta -->
+
+<p>
+Ken Hagan wonders
+<a href="http://blogs.msdn.com/oldnewthing/pages/407234.aspx#751847">
+why compatibility workarounds aren’t simply disabled when
+a debugger is attached</a>.
+</p>
+<p>
+As I noted earlier,
+many compatibility workarounds are actually quicker than the code
+that detects whether the workaround would be needed.
+</p>
+<pre>
+BOOL IsZoomed(HWND hwnd)
+{
+  return GetWindowLong(hwnd, GWL_STYLE) &amp; WS_MAXIMIZED;
+}
+</pre>
+<p>
+Now suppose you find a compatibility problem with some applications
+that expect the <code>IsZoomed</code> function to return exactly
+<code>TRUE</code> or <code>FALSE</code>.
+You then change the function to something like this:
+</p>
+<pre>
+BOOL IsZoomed(HWND hwnd)
+{
+  return (GetWindowLong(hwnd, GWL_STYLE) &amp; WS_MAXIMIZED) != 0;
+}
+</pre>
+<p>
+Now, we add code to enable the compatibility workaround only if
+the application is on the list of known applications which need
+this workaround:
+</p>
+<pre>
+BOOL IsZoomed(HWND hwnd)
+{
+  if (GetWindowLong(hwnd, GWL_STYLE) &amp; WS_MAXIMIZED) {
+      if (IsApplicationCompatibilityWorkaroundRequired(ISZOOMED_TRUEFALSE)) {
+          return TRUE;
+      } else {
+          return WS_MAXIMIZED;
+      }
+  } else {
+    return FALSE;
+  }
+}
+</pre>
+<p>
+What was a simple flag test now includes a check to see whether
+an application compatibility workaround is required.
+These checks are not cheap, because the compatibility infrastructure
+needs to look up the currently-running application in the compatibility
+database, check that the version of the application that is running
+is the one the compatibility workaround is needed for
+(which could involve reading the file version resource or
+looking for other identifying clues),
+and then returning either the compatible answer (<code>TRUE</code>)
+or the answer that resulted from the original simple one-line
+function.
+</p>
+<p>
+So not only is the function slower
+(having to do a compatibility check),
+it also looks really stupid.
+</p>
+<p>
+Oh wait, now we also have to stick in a debugger check:
+</p>
+<pre>
+BOOL IsZoomed(HWND hwnd)
+{
+  if (GetWindowLong(hwnd, GWL_STYLE) &amp; WS_MAXIMIZED) {
+      if (!IsDebuggerPresent() &amp;&amp;
+         IsApplicationCompatibilityWorkaroundRequired(ISZOOMED_TRUEFALSE)) {
+          return TRUE;
+      } else {
+          return WS_MAXIMIZED;
+      }
+  } else {
+    return FALSE;
+  }
+}
+</pre>
+<p>
+And then people complain that Windows is slow and bloated:
+A simple one-line function ballooned into ten lines.
+</p>
+<p>
+Another reason why these compatibility workarounds are left
+intact when a debugger is running is that changing program
+behavior based on whether a debugger is attached would prevent
+application
+vendors from debugging one problem because all sorts of new problems
+suddenly got injected.
+</p>
+<p>
+Suppose you support Program X, and you get a report of
+a security vulnerability in your program.
+You run the program under the debugger,
+and when you run the alleged exploit code,
+you find that the program doesn’t behave the same as it does
+when the debugger is not attached.
+Some compatibility workaround that was active when your program
+is run normally is being suppressed, and the change in behavior
+changes your program enough that the alleged security exploit
+doesn’t behave quite the same.
+</p>
+<p>
+When run outside the debugger, the program crashes,
+but when run under the debugger, the program displays a strange
+error message but manages to keep from crashing.
+Congratulations, you introduced a Heisenbug.
+</p>
+<p>
+And then you say, “There’s something wrong with the debugger.
+It must be a bug in Windows.”
+</p>
+<p>
+<b>Pre-emptive Yuhong Bao comment</b>:
+The heap manager
+<a href="http://msdn.microsoft.com/cc266414.aspx">
+switches to an alternate algorithm if it
+detects a debugger</a>,
+and the
+<code>CloseHandle</code> function
+<a href="http://msdn.microsoft.com/ms724211.aspx">
+raises an exception if running under the debugger</a>.</p>
+
+
+</body>

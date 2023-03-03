@@ -1,0 +1,144 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I print the contents of a rich text control?</h1>  <!-- .entry-meta -->
+
+<p>
+For some reason, people are really puzzled by rich edit printing.
+I’m no expert on printing, but even I was able to figure it out.
+The kernel is the <code>EM_FORMATRANGE</code> message.
+Each time you call it, a little bit more of the rich text control
+is printed, and the message returns the index of the first
+unprinted character,
+which you can pass back in to print the next chunk.
+</p>
+<p>
+The rest is just setting up and tearing down.
+</p>
+<pre>
+BOOL PrintRTF(HWND hwnd, HDC hdc)
+{
+ int cxPhysOffset = GetDeviceCaps(hdc, PHYSICALOFFSETX);
+ int cyPhysOffset = GetDeviceCaps(hdc, PHYSICALOFFSETY);
+ int cxPhys = GetDeviceCaps(hdc, PHYSICALWIDTH);
+ int cyPhys = GetDeviceCaps(hdc, PHYSICALHEIGHT);
+ SendMessage(hwnd, EM_SETTARGETDEVICE, (WPARAM)hdc, cxPhys);
+ FORMATRANGE fr;
+ fr.hdc = hdc;
+ fr.hdcTarget = hdc;
+ fr.rc.left = cxPhysOffset;
+ fr.rc.right = cxPhysOffset + cxPhys;
+ fr.rc.top = cyPhysOffset;
+ fr.rc.bottom = cyPhysOffset + cyPhys;
+ SendMessage(hwnd, EM_SETSEL, 0, (LPARAM)-1);
+ SendMessage(hwnd, EM_EXGETSEL, 0, (LPARAM)&amp;fr.chrg);
+ BOOL fSuccess = TRUE;
+ while (fr.chrg.cpMin &lt; fr.chrg.cpMax &amp;&amp; fSuccess) {
+  fSuccess = StartPage(hdc) &gt; 0;
+  if (!fSuccess) break;
+  int cpMin = SendMessage(hwnd, EM_FORMATRANGE, TRUE, (LPARAM)&amp;fr);
+  if (cpMin &lt;= fr.chrg.cpMin) {
+   fSuccess = FALSE;
+   break;
+  }
+  fr.chrg.cpMin = cpMin;
+  fSuccess = EndPage(hdc) &gt; 0;
+ }
+ SendMessage(hwnd, EM_FORMATRANGE, FALSE, 0);
+ return fSuccess;
+}
+</pre>
+<p>
+We start by getting the dimensions of the page and
+telling the rich edit control what we intend to render to
+by using the <code>EM_SETTARGETDEVICE</code> message.
+Next, we need to fill out our <code>FORMATRANGE</code>,
+which we do by specifying the <code>HDC</code> we are
+rendering to, as well as the paper dimensions.
+But what about the character range?
+We are lazy and let the rich edit control take care of it for us:
+We select all the text and then ask the rich edit control to
+tell us what we just selected, which comes back in the form
+of a <code>CHARRANGE</code>, which is exactly what we needed.
+</p>
+<p>
+Next comes the printing loop.
+While there is still text to print (and we haven’t encountered
+an error), we start a new page,
+ask the rich edit control to render that page,
+remember where the next page should begin,
+and end the current page.
+There’s a little sanity check in there to make sure that the
+rich edit control made forward progress; if not, then we’ll
+end up in an infinite loop spewing out blank pages!
+(I have no idea whether this is theoretically possible, but I’m
+going to protect against it just the same.)
+</p>
+<p>
+Once the printing loop is complete, we clean up by sending
+one last <code>EM_FORMATRANGE</code> message to tell the
+rich edit control that we’re all done and it can discard the
+information it cached.
+</p>
+<p>
+We can take all the information we’ve learned over the
+past few days to make a simple “print RTF” program.
+</p>
+<pre>
+int CALLBACK
+_tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
+          LPTSTR lpCmdLine, int nShowCmd)
+{
+ LoadLibrary(TEXT("riched20.dll"));
+ HWND hwndRTF = CreateWindow(RICHEDIT_CLASS, NULL,
+                     ES_MULTILINE | WS_OVERLAPPEDWINDOW,
+                     CW_USEDEFAULT, CW_USEDEFAULT,
+                     CW_USEDEFAULT, CW_USEDEFAULT,
+                     NULL, 0, 0, 0);
+ if (hwndRTF) {
+  SendMessage(hwndRTF, EM_EXLIMITTEXT, 0, -1);
+  if (FillRichEditFromFile(hwndRTF, lpCmdLine)) {
+   PRINTDLG pd = { sizeof(pd) };
+   pd.Flags = PD_RETURNDC | PD_RETURNDEFAULT;
+   if (PrintDlg(&amp;pd)) {
+    DOCINFO di = { sizeof(di) };
+    di.lpszDocName = TEXT("Sample Printout");
+    if (StartDoc(pd.hDC, &amp;di) &gt; 0) {
+     if (PrintRTF(hwndRTF, pd.hDC)) {
+      EndDoc(pd.hDC);
+     } else {
+      AbortDoc(pd.hDC);
+     }
+    }
+    GlobalFree(pd.hDevMode);
+    GlobalFree(pd.hDevNames);
+    DeleteDC(pd.hDC);
+   }
+  }
+  DestroyWindow(hwndRTF);
+ }
+ return 0;
+}
+</pre>
+<p>
+There’s not really much going on here; it’s all just glue and
+necessary typing.
+</p>
+<p>
+We create a rich edit control and fill it with the file
+passed on the command line.
+We then ask the <code>PrintDlg</code> function to give us a
+DC to the user’s default printer.
+We give the document a title, start the document, print the rich
+text into the document, and then end the document (or abort it
+if something went wrong during printing).
+A little cleaning up, and we’re all done.
+A tiny program to print an arbitrary RTF document with
+no fanfare whatsoever.
+</p>
+<p>
+See?
+It’s not so hard.
+Once you find <code>EM_FORMATRANGE</code> the rest is just doing
+the obvious.</p>
+
+
+</body>

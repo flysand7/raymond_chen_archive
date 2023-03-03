@@ -1,0 +1,38 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I get the original shortcut target path with environment variables unexpanded?</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to be able to get the target of a shortcut with environment variables unexpanded. The <code>IShellLink::Get­Path</code> method will expand environment variables. </p>
+<p>The way to get the unexpanded target path is to go for the <code>EXP_SZ_LINK</code> data in the shell link data list. We <a href="https://blogs.msdn.microsoft.com/oldnewthing/20071219-00/?p=24103">briefly encountered the shell link data list a while back</a>. Now we’ll dig in a little more. </p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;stdio.h&gt; // Horrors! Mixing stdio and C++!
+#include &lt;atlbase.h&gt;
+#include &lt;atlalloc.h&gt;
+
+int __cdecl wmain(int argc, wchar_t**argv)
+{
+ <a href="https://devblogs.microsoft.com/oldnewthing/">CCoInitialize</a> init;
+
+ CComPtr&lt;IShellLink&gt; lnk;
+ CoCreateInstance(CLSID_ShellLink, 0,
+                  CLSCTX_ALL, IID_PPV_ARGS(&amp;lnk));
+ CComQIPtr&lt;IPersistFile&gt; pf(lnk);
+ pf-&gt;Load(argv[1], STGM_READ);
+
+ CComQIPtr&lt;IShellLinkDataList&gt; list(lnk);
+ DWORD flags;
+ list-&gt;GetFlags(&amp;flags);
+ if (flags &amp; SLDF_HAS_EXP_SZ) {
+  CHeapPtr&lt;void, CLocalAllocator&gt; rawData;
+  list-&gt;CopyDataBlock(EXP_SZ_LINK_SIG, &amp;rawData);
+  auto linkData = reinterpret_cast&lt;EXP_SZ_LINK *&gt;(static_cast&lt;void *&gt;(rawData));
+  printf("Unexpanded target = %ls\n", linkData-&gt;swzTarget);
+ }
+ return 0;
+}
+</pre>
+<p>After loading the shortcut file, we ask the <code>IShell­Link­Data­List</code> to inspect the shortcut flags. If the <code>SLDF_HAS_EXP_SZ</code> flag is set, then the path to the target contains an environment variable reference. To get the original unexpanded path, ask for the <code>EXP_SZ_LINK_SIG</code> data block. That returns a data block in the form of a <code>EXP_SZ_LINK</code> structure, from which you can extract the unexpanded paths. </p>
+
+
+</body>

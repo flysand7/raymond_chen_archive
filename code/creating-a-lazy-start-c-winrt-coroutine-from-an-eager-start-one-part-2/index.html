@@ -1,0 +1,39 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a lazy-start C++/WinRT coroutine from an eager-start one, part 2</h1>  <!-- .entry-meta -->
+
+<p>Last time, we created a lazy-start C++/WinRT coroutine wrapper around a standard <code>IAsyncAction</code> or <code>IAsyncOperation</code>, which is an eager-start coroutine. We did it by sharing a kernel handle with the coroutine and having the coroutine wait for the handle to be signaled before beginning its work.</p>
+<p>But we can do better, if we are willing to dig down a little bit.</p>
+<p>The trick here is to have the coroutine suspend itself, and then manually resume it.</p>
+<pre>template&lt;typename Make&gt;
+auto MakeLazy(Make make) -&gt; decltype(make())
+{
+    <span style="color: blue;">struct suspender
+    {
+        void resume() { handle(); }
+
+        bool await_ready() { return false; }
+        void await_suspend(std::experimental::coroutine_handle&lt;&gt; h)
+        { handle = h; }
+        void await_resume() { }
+    private:
+        std::experimental::coroutine_handle&lt;&gt; handle;
+    };
+
+    suspender suspend;</span>
+    auto currentTask = [](auto start, auto make, <span style="color: blue;">auto&amp; suspend</span>)
+        -&gt; decltype(make()) {
+        <span style="color: blue;">co_await suspend;</span>
+        co_return co_await make();
+    }(std::move(start), std::move(make), <span style="color: blue;">suspend</span>);
+
+    // Resume the coroutine
+    <span style="color: blue;">suspender.resume();</span>
+    return currentTask;
+}
+</pre>
+<p>The idea here is to create a custom awaitable object which saves the coroutine handle, which can be resumed by an explicit call to the <code>resume()</code> method.</p>
+<p>Recall that what makes a C++ coroutine lazy-start is that it chooses to make its <code>initial_suspend</code> method return a suspending awaiter. <code>IAsyncAction</code> and <code>IAsyncOperation</code> are eager-start, so the C++/WinRT libray’s <code>initial_suspend</code> is <code>suspend_never</code>, thereby allowing the coroutine to begin executing its body. By adding an immediate suspension point as the first thing in the body, we are sort of retroactively changing that <code>suspend_never</code> into a suspension. If you look at <a href="/code/c-coroutines-the-initial-and-final-suspend-and-improving-our-return-value-method"> one of the rewrite steps in the coroutine transformation</a>, you’ll see that the coroutine function body comes immediately after the <code>initial_suspend</code>, so our immediate suspension is functionally equivalent to rewriting the <code>initial_suspend</code>.</p>
+<p>We will expand upon this idea next time, when we work on serializing asynchronous operations in C++/WinRT.</p>
+
+
+</body>

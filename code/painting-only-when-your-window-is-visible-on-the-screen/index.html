@@ -1,0 +1,175 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Painting only when your window is visible on the screen</h1>  <!-- .entry-meta -->
+
+<p>
+        Sometimes you want to perform an activity, such as updating a status window, only
+        as long as the window is not covered by another window.
+    </p>
+<p>
+        The easiest way to determine this is by not actually trying to determine it. For example,
+        here’s how the taskbar clock updates itself:
+    </p>
+<ol>
+<li>
+            It computes how much time will elapse before the next minute ticks over.
+        </li>
+<li>
+            It calls <code>SetTimer</code> with the amount of time it needs to wait.
+        </li>
+<li>
+            When the timer fires, it does an <code>InvalidateRect</code> of itself and the kills
+            the timer.
+        </li>
+<li>
+            The <code>WM_PAINT</code> handler draws the current time, then returns to step 1.
+        </li>
+</ol>
+<p>
+        If the taskbar clock is not visible, because it got auto-hidden or because somebody
+        covered it, Windows will not deliver a <code>WM_PAINT</code> message, so the taskbar
+        clock will simply go idle and consume no CPU time at all. Here’s how we can make
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">our
+        scratch program</a> do the same thing:
+    </p>
+<p>
+        Our scratch program displays the current time. It also puts the time into the title
+        bar so we can see the painting action (or lack thereof) when the window is covered
+        or minimized, by watching the taskbar.
+    </p>
+<pre>void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+    TCHAR szTime[100];
+    if (GetTimeFormat(LOCALE_USER_DEFAULT, 0, NULL, NULL,
+                      szTime, 100)) {
+        SetWindowText(hwnd, szTime);
+        TextOut(pps-&gt;hdc, 0, 0, szTime, lstrlen(szTime));
+    }
+}
+</pre>
+<p>
+        Here is the timer callback that fires once we decide it’s time to update. It merely
+        kills the timer and invalidates the rectangle. The next time the window becomes uncovered,
+        we will get a <code>WM_PAINT</code> message. (And if the window is uncovered right
+        now, then we’ll get one almost immediately.)
+    </p>
+<pre>void CALLBACK
+InvalidateAndKillTimer(HWND hwnd, UINT uMsg,
+                       UINT_PTR idTimer, DWORD dwTime)
+{
+    KillTimer(hwnd, idTimer);
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+</pre>
+<p>
+        Finally, we add some code to our <code>WM_PAINT</code> handler to restart the timer
+        each time we paint a nonempty rectangle.
+    </p>
+<pre>void
+OnPaint(HWND hwnd)
+{
+    PAINTSTRUCT ps;
+    BeginPaint(hwnd, &amp;ps);
+    <font color="blue">if (!IsRectEmpty(&amp;ps.rcPaint)) {
+        // compute time to next update - we update once a second
+        SYSTEMTIME st;
+        GetSystemTime(&amp;st);
+        DWORD dwTimeToNextTick = 1000 - st.wMilliseconds;
+        SetTimer(hwnd, 1, dwTimeToNextTick, InvalidateAndKillTimer);
+    }</font>
+    PaintContent(hwnd,&amp;ps);
+    EndPaint(hwnd, &amp;ps);
+}
+</pre>
+<p>
+        Compile and run this program, and watch it update the time. When you minimize the
+        window or cover it with another window, the time stops updating. If you take the window
+        and drag it to the bottom of the screen so only the caption is visible, it also stops
+        updating: The <code>WM_PAINT</code> message is used to paint the client area, and
+        the client area is no longer on-screen.
+    </p>
+<p>
+        This method also stops updating the clock when you switch to another user or lock
+        the workstation, though you can’t really tell because there’s no taskbar you can consult
+        to verify. But you can use your speakers: Stick a call to <code>MessageBeep(-1);</code> in
+        the <code>PaintContent()</code> function, so you will get an annoying beep each time
+        the time is repainted. When you switch to another user or lock the workstation, the
+        beeping will stop.
+    </p>
+<p>
+        This technique of invalidation can be extended to cover the case where only one section
+        of the screen is interesting: Instead of invalidating the entire client area, invalidate
+        only the area that you want to update, and restart the timer only if that rectangle
+        is part of the update region. Here are the changes we need to make.
+    </p>
+<pre>// The magic updating rectangle
+RECT g_rcTrigger = { 50, 50, 200, 100 };
+</pre>
+<p>
+        When the timer fires, we invalidate only the magic rectangle instead of the entire
+        client area. (As an optimization, I disabled background erasure for reasons you’ll
+        see later.)
+    </p>
+<pre>void CALLBACK
+InvalidateAndKillTimer(HWND hwnd, UINT uMsg,
+                       UINT_PTR idTimer, DWORD dwTime) {
+    KillTimer(hwnd, idTimer);
+    <font color="blue">InvalidateRect(hwnd, &amp;g_rcTrigger, FALSE);</font>
+}
+</pre>
+<p>
+        To make it more obvious where the magic rectangle is, we draw it in the highlight
+        color and put the time inside it. By using the <code>ETO_OPAQUE</code> flag, we draw
+        both the foreground and background simultaneously. Consequently, we don’t need to
+        have it erased for us.
+    </p>
+<pre>void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+    TCHAR szTime[100];
+    if (GetTimeFormat(LOCALE_USER_DEFAULT, 0, NULL, NULL,
+                      szTime, 100)) {
+        SetWindowText(hwnd, szTime);
+        COLORREF clrTextPrev = SetTextColor(pps-&gt;hdc,
+                            GetSysColor(COLOR_HIGHLIGHTTEXT));
+        COLORREF clrBkPrev = SetBkColor(pps-&gt;hdc,
+                                GetSysColor(COLOR_HIGHLIGHT));
+        ExtTextOut(pps-&gt;hdc, g_rcTrigger.left, g_rcTrigger.top,
+                   ETO_CLIPPED | ETO_OPAQUE, &amp;g_rcTrigger,
+                   szTime, lstrlen(szTime), NULL);
+        SetBkColor(pps-&gt;hdc, clrBkPrev);
+        SetTextColor(pps-&gt;hdc, clrTextPrev);
+    }
+}
+</pre>
+<p>
+        Finally, the code in the <code>WM_PAINT</code> handler needs to check the magic rectangle
+        for visibility instead of using the entire client area.
+    </p>
+<pre>void
+OnPaint(HWND hwnd)
+{
+    PAINTSTRUCT ps;
+    BeginPaint(hwnd, &amp;ps);
+    if (<font color="blue">RectVisible(ps.hdc, &amp;g_rcTrigger)</font>) {
+        // compute time to next update - we update once a second
+        SYSTEMTIME st;
+        GetSystemTime(&amp;st);
+        DWORD dwTimeToNextTick = 1000 - st.wMilliseconds;
+        SetTimer(hwnd, 1, dwTimeToNextTick, InvalidateAndKillTimer);
+    }
+    PaintContent(hwnd,&amp;ps);
+    EndPaint(hwnd, &amp;ps);
+}
+</pre>
+<p>
+        Run this program and do various things to cover up or otherwise prevent the highlight
+        box from painting. Observe that once you cover it up, the title stops updating.
+    </p>
+<p>
+        As I noted above, this technique is usually enough for most applications. There’s
+        an even more complicated (and more expensive) method, too, which I’ll cover next week.
+    </p>
+
+
+</body>

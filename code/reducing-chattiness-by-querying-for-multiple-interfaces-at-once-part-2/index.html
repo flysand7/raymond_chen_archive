@@ -1,0 +1,152 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Reducing chattiness by querying for multiple interfaces at once, part 2</h1>  <!-- .entry-meta -->
+
+<p>Last time, we saw how we can <a href="/code/reducing-chattiness-by-querying-for-multiple-interfaces-at-once-part-1" title="Reducing chattiness by querying for multiple interfaces at once, part 1"> use <code>MULTI_QI</code> to get multiple interfaces packed into a single server call</a>. This saves us from having to issue separate <code>Query­Interface</code> calls, avoiding a round-trip call to the server for each interface.</p>
+<p>It was relatively easy for us to do this in our sample because all of the <code>Query­Interface</code> calls were in the same function. But what if they are spread out?</p>
+<pre>// Error checking elided for expository purposes.
+
+void Gadget::DoSomethingWithWidget()
+{
+    // Create a widget.
+    wil::com_ptr&lt;IWidget&gt; widget;
+    CoCreateInstance(CLSID_Widget, nullptr,
+        CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&amp;widget));
+
+    LoadWidgetWithSite(widget.get(), site, m_fileName);
+
+    // Ready to do widget things.
+    widget-&gt;DoSomething();
+}
+
+void LoadWidgetWithSite(IWidget* widget,
+    IUnknown* site, PCWSTR fileName)
+{
+    // Set the site.
+    wil::com_ptr&lt;IObjectWithSite&gt; objectWithSite;
+    widget-&gt;QueryInterface(IID_PPV_ARGS(&amp;objectWithSite));
+    objectWithSite-&gt;SetSite(site);
+
+    // Load it from the file.
+    wil::com_ptr&lt;IPersistFile&gt; persistFile;
+    widget-&gt;QueryInterface(IID_PPV_ARGS(&amp;persistFile));
+    persistFile-&gt;Load(fileName, STGM_READ);
+}
+</pre>
+<p>If we want to take advantage of <code>Co­Create­Instance­Ex</code> and <code>MULTI_QI</code>, it looks like we’ll have to pass those pre-queried interfaces to <code>Load­Widget­With­Site</code>, which makes it more unwieldy:</p>
+<pre>// Error checking elided for expository purposes.
+
+void Gadget::DoSomethingWithWidget()
+{
+    <span style="color: blue;">// Create a widget and prefetch the interfaces.
+    MULTI_QI mqi[3] = {
+        { &amp;__uuidof(IWidget), nullptr, 0 },
+        { &amp;__uuidof(IObjectWithSite), nullptr, 0 },
+        { &amp;__uuidof(IPersistFile), nullptr, 0 },
+    };
+    HRESULT hr = CoCreateInstanceEx(
+        CLSID_Widget, nullptr, CLSCTX_LOCAL_SERVER,
+        nullptr, 3, mqi);
+
+    wil::com_ptr&lt;IWidget&gt; widget;
+    widget.attach(mqi[0].pItf);
+
+    wil::com_ptr&lt;IObjectWithSite&gt; objectWithSite;
+    objectWithSite.attach(mqi[1].pItf);
+
+    wil::com_ptr&lt;IPersistFile&gt; persistFile;
+    persistFile.attach(mqi[2].pItf);
+
+    if (hr != S_OK) {
+        // Failed to get at least one interface.
+        return;
+    }</span>
+
+    LoadWidgetWithSite(widget.get(),
+        <span style="color: blue;">objectWithSite.get()</span>, site,
+        <span style="color: blue;">persistFile.get()</span>, m_fileName);
+
+    // Ready to do widget things.
+    widget-&gt;DoSomething();
+}
+
+void LoadWidgetWithSite(IWidget* widget,
+    <span style="color: blue;">IObjectWithSite* objectWithSite</span>, IUnknown* site,
+    <span style="color: blue;">IPersistFile* persistFile</span>, PCWSTR fileName)
+{
+    // Set the site.
+    objectWithSite-&gt;SetSite(site);
+
+    // Load it from the file.
+    persistFile-&gt;Load(fileName, STGM_READ);
+}
+</pre>
+<p>But it turns out that you don’t have to rewrite all of your methods. All you have to do is prefetch the interfaces and <i>throw them away</i>!</p>
+<pre>// Error checking elided for expository purposes.
+
+void Gadget::DoSomethingWithWidget()
+{
+    // Create a widget and prefetch the interfaces.
+    MULTI_QI mqi[3] = {
+        { &amp;__uuidof(IWidget), nullptr, 0 },
+        { &amp;__uuidof(IObjectWithSite), nullptr, 0 },
+        { &amp;__uuidof(IPersistFile), nullptr, 0 },
+    };
+    HRESULT hr = CoCreateInstanceEx(
+        CLSID_Widget, nullptr, CLSCTX_LOCAL_SERVER,
+        nullptr, 3, mqi);
+
+    wil::com_ptr&lt;IWidget&gt; widget;
+    widget.attach(mqi[0].pItf);
+
+    <span style="color: blue;">if (mqi[1].pItf) mqi[1].pItf-&gt;Release();
+    if (mqi[2].pItf) mqi[2].pItf-&gt;Release();</span>
+
+    if (hr != S_OK) {
+        // Failed to get at least one interface.
+        return;
+    }
+
+    // The rest is the same as the non-MULTI_QI version.
+    LoadWidgetWithSite(widget.get(), site, m_fileName);
+
+    // Ready to do widget things.
+    widget-&gt;DoSomething();
+}
+
+void LoadWidgetWithSite(IWidget* widget,
+    IUnknown* site, PCWSTR fileName)
+{
+    // Set the site.
+    wil::com_ptr&lt;IObjectWithSite&gt; objectWithSite;
+    widget-&gt;QueryInterface(IID_PPV_ARGS(&amp;objectWithSite));
+    objectWithSite-&gt;SetSite(site);
+
+    // Load it from the file.
+    wil::com_ptr&lt;IPersistFile&gt; persistFile;
+    widget-&gt;QueryInterface(IID_PPV_ARGS(&amp;persistFile));
+    persistFile-&gt;Load(fileName, STGM_READ);
+}
+</pre>
+<p>Even though we threw the prefetched interfaces away, they have been cached in the proxy, and future calls to <code>Query­Interface</code> will return the cached value instead of sending a call all the way back out to the server.</p>
+<p>The proxy also caches negative results, so if we had an optional interface, the proxy will remember that a query for that interface failed in the past, so when you ask for it again, it will return the error from the earlier <code>Query­Interface</code> without going to the server.</p>
+<p>The rules for <code>IUnknown</code> regarding interface stability ensure that it is valid to cache the results of earlier <code>Query­Interface</code> calls.¹</p>
+<p>Even the <code>Release</code> calls on the interfaces won’t result in a call out to the server: Only the final <code>Release</code> of a proxy results in a call to the server, and we still have an active reference in <code>widget</code>. (We took advantage of this behavior <a href="/code/com-asynchronous-interfaces-part-8-asynchronous-release-the-problems" title="COM asynchronous interfaces, part 8: Asynchronous release, the problems"> a little while ago</a>.)</p>
+<p>Mind you, the <code>MULTI_QI</code> structure is rather awkward to manage. Maybe we can use some C++ magic to make it easier. We’ll look at that next time.</p>
+<p>¹ You might say that <code>Query­Interface</code> “collapses the wave function” for interface detection. If your object is never asked “Do you support <code>IWidget</code>?” then it can exist in a quantum superposition state of “supports <code>IWidget</code>/doesn’t support <code>IWidget</code>.” But once somebody asks, the object must decide which way it wants to be, and has to stick with that decision for the remainder of its lifetime.</p>
+<p>You can take advantage of the “quantum superposition state” in your objects. For example, your <code>Tool</code> object that might be an <code>IWidget</code>, or it might be an <code>IGadget</code>, depending on how it is configured. The client can reconfigure the Tool all it wants, but once it asks “Did I make a Widget?”, the configuration is locked in. In practice, you see this pattern in the cases where the configuration is done by something like <code>IPersistStream</code>.</p>
+<pre>wil::com_ptr&lt;IPersistStream&gt; persist;
+CoCreateInstance(CLSID_Tool, ..., IID_PPV_ARGS(&amp;persist));
+
+// The tool doesn't know what it is yet.
+
+persist-&gt;Load(stream);
+
+// The tool can delay the decision until somebody finally asks,
+// "Are you a Widget?"
+
+wil::com_ptr&lt;IWidget&gt; widget;
+persist-&gt;QueryInterface(IID_PPV_ARGS(&amp;widget));
+</pre>
+
+
+</body>

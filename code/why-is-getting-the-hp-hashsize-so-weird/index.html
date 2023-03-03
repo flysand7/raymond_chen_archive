@@ -1,0 +1,26 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why is getting the HP_HASHSIZE so weird?</h1>  <!-- .entry-meta -->
+
+<p>A comment on <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/aa379947(v=vs.85).aspx">the documentation page for <code>Crypt­Get­Hash­Param</code></a> notes that the “obvious” way to get the <code>HP_HASH­SIZE</code> is incorrect. </p>
+<pre>
+<i>// Version 1: wrong.
+DWORD size = 0;
+if (CryptGetHashParam(hash, HP_HASHSIZE, nullptr, &amp;size, 0))</i> ...
+
+// Version 2: right.
+DWORD size;
+DWORD bufferSize = sizeof(size);
+if (CryptGetHashParam(hash, HP_HASHSIZE, &amp;size, &amp;bufferSize, 0)) ...
+</pre>
+<p>What’s going on here? I mean, the documentation says that if you want to get the size of a parameter, you pass <code>nullptr</code> for the buffer, and the <code>DWORD*</code> parameter gets the size of the buffer. So if I want to get the hash size, I should pass <code>nullptr</code> for the buffer, and the <code>DWORD*</code> parameter gets the size of the hash. But it doesn’t. It always returns 4. What’s going on? </p>
+<p>What’s going on is that you are working at the wrong level of indirection. The code in version 1 is not asking for the size of the hash. It’s asking for the size of the <code>HP_HASH­SIZE</code>. In other words, you’re asking for the size of the <i>size</i>. Since <code>HP_HASH­SIZE</code> is a <code>DWORD</code>, its size is 4. You then need to follow up with the code in version 2, which allocates a buffer of size 4 and asks for it to be filled in with the <code>HP_HASH­SIZE</code>. </p>
+<p>A third way to get the size of the hash is to ignore <code>HP_HASH­SIZE</code> completely and go straight for the <code>HP_HASH­VAL</code>: </p>
+<pre>
+// Version 3: righter
+DWORD hashSize = 0;
+if (CryptGetHashParam(hash, HP_HASHVAL, nullptr, &amp;hashSize, 0)) ...
+</pre>
+<p>I don’t know why the crypto folks bothered to have a <code>HP_HASH­SIZE</code> parameter. Adding it only created confusion. </p>
+
+
+</body>

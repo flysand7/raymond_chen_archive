@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I conditionally compile based on a preprocessor macro value, while ensuring that the macro is correctly spelled?</h1>  <!-- .entry-meta -->
+
+<p>Continuing on the extremely sporadic topic of <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180628-00/?p=99115">stupid C preprocessor tricks</a>. </p>
+<p>It is common to have preprocessor macros that control compile-time behavior. C++11 has <code>std::enable_if</code> to conditionally remove functions and template specializations from consideration, and C++17 adds <code>if constexpr</code> to allow statements to removed conditionally. Removing variables is a bit trickier, though. You can probably manage it by wrapping the variable inside a class that itself uses <code>std::enable_if</code>, but that’s even more clunky than <code>std::enable_if</code> already is. </p>
+<p>Anyway, for whatever reason, you might want to use the preprocessor’s <code>#if</code> directive to perform your tests. Maybe you are preprocessing something for a purpose other than compilation by a C or C++ compiler. </p>
+<p>But you’re also worried that somebody might misspell your symbol. </p>
+<pre>
+// The FEATURE_BLAH macro is defined either as 0 or 1
+
+#if FEATURE_BLUH
+... do stuff with feature Blah ...
+#endif
+</pre>
+<p>Oops, they misspelled <code>FEATURE_<code></code>BLAH</code>, but the preprocessor doesn’t know that, so it happily says, “Nope, it’s not defined, skip the body of the <code>#if</code>.” </p>
+<p>How do you catch this typo? </p>
+<p>You can use your adversary’s power against him. </p>
+<p>Since undefined symbols are treated as having the value zero, you can use an expression that blows up if the value is zero. </p>
+<pre>
+// The FEATURE_BLAH macro is defined either as 1 (off) or 2 (on)
+
+#define GET_NONZERO_VALUE(x) (0/(x) + (x))
+
+#if GET_NONZERO_VALUE(FEATURE_BLAH) == 2
+... do stuff with feature Blah ...
+#endif
+</pre>
+<p>The <code>GET_<code></code>NONZERO_<code></code>VALUE</code> macro first tries to divide by its parameter. If the parameter is not defined or is defined with the value zero, then that results in a division by zero and you get a compiler error. If the parameter is defined with a nonzero value, then the result of <code>0/(x)</code> is zero, and adding that to <code>x</code> yields <code>x</code>. </p>
+<p>The last wrinkle is using the <code>defined</code> preprocessor pseudo-function to distinguish between an undefined macro and a defined macro whose value is zero. </p>
+<pre>
+// The FEATURE_BLAH macro is defined to 0 or 1
+// The FEATURE_BLAH_OPTION macro is some value
+
+#define GET_FEATURE_VALUE(x) (0/defined(FEATURE_##x) + (FEATURE_##x))
+
+#if GET_FEATURE_VALUE(BLAH)
+#if GET_FEATURE_VALUE(BLAH_OPTION) == 1
+... do stuff with feature Blah and option 1...
+#elif GET_FEATURE_VALUE(BLAH_OPTION) == 2
+... do stuff with feature Blah and option 2...
+#else
+#error Unknown option for FEATURE_BLAH_OPTION.
+#endif
+#endif
+</pre>
+<p>If <code>FEATURE_<code></code>BLAH</code> is not defined, then the <code>defined(FEATURE_<code></code>BLAH)</code> will evaluate to zero, and then you get a divide by zero error in the preprocessor. If it is defined, then <code>defined(FEATURE_<code></code>BLAH)</code> evaluates to 1, and the expression <code>0/1 + FEATURE_<code></code>BLAH</code> reduces to just <code>FEATURE_<code></code>BLAH</code>. </p>
+<p>This is an abuse of the preprocessor, but it may come in handy in a pinch. </p>
+
+
+</body>

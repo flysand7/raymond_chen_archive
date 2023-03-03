@@ -1,0 +1,298 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How were window hooks implemented in 16-bit Windows?</h1>  <!-- .entry-meta -->
+
+<p>
+The mechanism for keeping track of window hooks was very
+different in 16-bit Windows.
+The functions involved were <code>SetWindowsHook</code>,
+<code>UnhookWindowsHook</code>
+and <code>DefHookProc</code>.
+The first two functions still exist today, but the third one has
+been replaced with a macro:
+</p>
+<pre>
+// 16-bit prototype
+DWORD WINAPI DefHookProc(int nCode, WPARAM wParam,
+                         LPARAM lParam, HHOOK FAR *phk);
+// 32-bit macro
+#define DefHookProc(nCode, wParam, lParam, phhk)\
+        CallNextHookEx(*phhk, nCode, wParam, lParam)
+</pre>
+<p>
+Disclaimer: All code below is “reconstructed from memory”.
+The spirit of the code is intact, but the precise details
+may be off.
+</p>
+<p>
+To install a windows hook in 16-bit Windows, you started by
+calling <code>SetWindowsHook</code>:
+</p>
+<pre>
+HHOOK g_hhkPrev;
+g_hhkPrev = SetWindowsHook(WH_WHATEVER, MyHookProc);
+</pre>
+<p>
+The return value from <code>SetWindowsHook</code> must be saved
+in a global variable, which we gave the somewhat provocative
+name <code>g_hhkPrev</code>.
+The hook procedure itself went something like this:
+</p>
+<pre>
+// In Win16, hook procedures returned a DWORD, not an LRESULT.
+DWORD CALLBACK MyHookProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+  if (nCode &gt;= 0) { ... }
+  return DefHookProc(nCode, wParam, lParam, &amp;g_hhkPrev);
+}
+</pre>
+<p>
+And then when you were finished, you removed the hook by
+calling <code>UnhookWindowsHook</code>:
+</p>
+<pre>
+UnhookWindowsHook(WH_WHATEVER, MyhookProc);
+g_hhkPrev = NULL;
+</pre>
+<p>
+Internally, the chain of hook functions was managed as
+a linked list, but instead of using some internal data structure
+to keep track of the hooks, the linked list was managed
+<strong>inside the HHOOK variables themselves</strong>.
+</p>
+<p>
+The internal implementation of <code>SetWindowsHook</code>
+was simply this:
+</p>
+<pre>
+// This array is initialized with a bunch
+// of "do nothing" hook procedures.
+HOOKPROC g_rgHook[NUMHOOKS];
+HHOOK WINAPI SetWindowsHook(int nType, HOOKPROC pfnHookProc)
+{
+ HHOOK hhkPrev = (HHOOK)g_rgHook[nType];
+ g_rgHook[nType] = pfnHookProc;
+ return hhkPrev;
+}
+</pre>
+<p>
+Installing a hook merely set your hook procedure as the head of
+the hook chain, and it returned the previous head.
+Invoking a hook was a simple matter of calling the hook at the
+head of the chain:
+</p>
+<pre>
+DWORD CallHook(int nType, int nCode, WPARAM wParam, LPARAM lParam)
+{
+ return g_rgHook[nType](nCode, wParam, lParam);
+}
+</pre>
+<p>
+Each hook procedure did its work and then sent the call
+down the hook chain by calling <code>DefHookProc</code>,
+passing the <code>HHOOK</code> <strong>by address</strong>.
+</p>
+<pre>
+DWORD WINAPI DefHookProc(int nCode, WPARAM wParam,
+                         LPARAM lParam, HHOOK FAR *phk)
+{
+ HOOKPROC pfnNext = (HOOKPROC)*phk;
+ if (nCode &gt;=0) {
+  return pfnNext(nCode, wParam, lParam);
+ }
+ ... more to come ...
+}
+</pre>
+<p>
+As you can see, it’s all blindingly simple:
+Invoking a hook calls the first hook procedure,
+which then calls <code>DefHookProc</code>, which
+knows that a <code>HHOOK</code>
+is just a <code>HOOKPROC</code>, and it forwards the call down
+the chain by merely calling the next hook procedure directly.
+</p>
+<p>
+The real magic happens when somebody wants to unhook.
+Recall that the rule for hook procedures is that a negative
+hook code should be passed straight to <code>DefHookProc</code>
+(or in modern times, <code>CallNextHookEx</code>).
+This convention allows the hook system to use negative codes
+to manage its own internal bookkeeping.
+In this case, we’re using <code>-1</code> as the
+“unhook this hook procedure” code.
+</p>
+<pre>
+BOOL WINAPI UnhookWindowsHook(int nType, HOOKPROC pfnHookProc)
+{
+ return DefHookProc(-1, 0, (LPARAM)pfnHookProc,
+                    (HHOOK FAR*)&amp;g_rgHook[nType]);
+}
+</pre>
+<p>And then the real magic begins:
+</p>
+<pre>
+DWORD WINAPI DefHookProc(int nCode, WPARAM wParam,
+                         LPARAM lParam, HHOOK FAR *phk)
+{
+ HOOKPROC pfnNext = (HOOKPROC)*phk;
+ if (nCode &gt;=0) {
+  return pfnNext(nCode, wParam, lParam);
+ }
+ switch (nCode) {
+ case -1: // trying to unhook a node
+  if (pfnNext == (HOOKPROC)lParam) { // found it
+   *phk = (HHOOK)pfnNext(-2, 0, 0);
+   return TRUE;
+  }
+  // else keep looking
+  return pfnNext(nCode, wParam, lParam);
+ case -2: // report the next hook procedure
+   return (DWORD)*phk;
+ }
+ return 0;
+}
+</pre>
+<p>
+And there you have it, the entire window hook system in
+two dozen lines of code.
+You have to give 16-bit Windows credit for being small.
+</p>
+<p>
+Let’s walk through hook installation, dispatch, and removal to see
+how this all works.
+Suppose there is one <code>WH_KEYBOARD</code> hook in the system.
+Our variables are therefore set up like this:
+</p>
+<pre>
+// In USER
+g_rgHook[WH_KEYBOARD] = Hook1;
+// In HOOK1.DLL
+HHOOK g_hhkPrev1 = DoNothingHookProc;
+DWORD CALLBACK Hook1(int nCode, WPARAM wParam, LPARAM lParam)
+{
+ if (nCode &gt;= 0) { ... work ... }
+ return DefHookProc(nCode, wParam, lParam, &amp;g_hhkPrev1);
+}
+</pre>
+<p>
+Now suppose you want to install a new hook, <code>Hook2</code>.</p>
+<pre>
+// In HOOK2.DLL
+HHOOK g_hhkPrev2;
+g_hhkPrev = SetWindowsHook(WH_KEYBOARD, Hook2);
+</pre>
+<p>
+The <code>SetWindowsHook</code> function just puts your function
+in as the new “head” hook function and returns the old one.
+</p>
+<pre>
+// In USER
+g_rgHook[WH_KEYBOARD] = Hook2;
+// In HOOK2.DLL
+HHOOK g_hhkPrev2 = Hook1;
+DWORD CALLBACK Hook2(int nCode, WPARAM wParam, LPARAM lParam)
+{
+ if (nCode &gt;= 0) { ... work ... }
+ return DefHookProc(nCode, wParam, lParam, &amp;g_hhkPrev2);
+}
+// In HOOK1.DLL
+HHOOK g_hhkPrev1 = DoNothingHookProc;
+DWORD CALLBACK Hook1(int nCode, WPARAM wParam, LPARAM lParam)
+{
+ if (nCode &gt;= 0) { ... work ... }
+ return DefHookProc(nCode, wParam, lParam, &amp;g_hhkPrev1);
+}
+</pre>
+<p>
+Now suppose the window manager decides it’s time to fire the
+<code>WH_KEYBOARD</code> hook.
+It starts with <code>CallHook</code> which calls
+<code>g_rgHook[WH_KEYBOARD]</code> that takes us to
+<code>Hook2</code>.
+That hook function does its work, then calls
+<code>DefHookProc(..., &amp;g_hhkPrev2)</code>,
+which dispatches the hook to <code>g_hhkPrev2 == Hook1</code>.
+Similarly, the hook travels through <code>Hook1</code>,
+then
+<code>DefHookProc(..., &amp;g_hhkPrev1)</code>,
+where it finally reaches the <code>DoNothingHookProc</code>
+which does nothing and ends the hook chain.
+</p>
+<p>
+Now suppose that <code>HOOK1.DLL</code> decides to uninstall its
+hook. It therefore calls
+<code>UnhookWindowsHook(WH_KEYBOARD, Hook1)</code>.
+This starts off the hook chain with the internal hook code <code>-1</code>
+and <code>&amp;g_rgHook[WH_KEYBOARD]</code> as the first hook pointer.
+This activates the <code>case -1</code> in <code>DefHookProc</code> code
+path, which dereferences its <code>phk</code> parameter and obtains
+<code>g_rgHook[WH_KEYBOARD] == Hook2</code>.
+Since this is not equal to <code>Hook1</code>, the call forwards down
+the chain to <code>Hook2</code>.
+</p>
+<p>
+Like a good hook function, <code>Hook2</code> reacts to the negative
+hook code by handing the call directly to
+<code>DefHookProc(-1, ..., &amp;g_hhkPrev2)</code>.
+This time, <code>*phk == g_hhkPrev2 == Hook1</code>,
+so the test succeeds and we dispatch the hook down the chain
+with a new internal code of <code>-2</code>, which means,
+“Tell me what the next hook procedure is”.
+</p>
+<p>
+This dispatch calls <code>Hook1</code> which (since the notification
+code is negative) immediately passes the call to
+<code>DefHookProc(-2, ..., &amp;g_hhkPrev1)</code>.
+This now triggers the <code>case -2</code> code path, which
+just returns <code>*phk == g_hhkPrev1 == DoNothingHookProc</code>.
+This value is returned to the <code>DefHookProc(-1, ...)</code>
+which stores the result into <code>*phk == g_hhkPrev2</code>;
+the result is that you have <code>g_hhkPrev2 = DoNothingHookProc</code>.
+Finally, <code>DefHookProc</code> returns <code>TRUE</code>
+to indicate that the hook was successfully uninstalled.
+This value is then returned out from all the nested function calls
+to the original caller of <code>UnhookWindowsHook</code>.
+</p>
+<p>
+Observe that at the end of this unhook exercise, we get the desired
+result:
+</p>
+<pre>
+// In USER
+g_rgHook[WH_KEYBOARD] = Hook2; // unchanged
+// In HOOK2.DLL
+g_hhkPrev2 = DoNothingHookProc; // updated!
+DWORD CALLBACK Hook2(int nCode, WPARAM wParam, LPARAM lParam)
+{
+ if (nCode &gt;= 0) { ... work ... }
+ return DefHookProc(nCode, wParam, lParam, &amp;g_hhkPrev2);
+}
+</pre>
+<p>
+And <code>Hook1</code> is out of the hook chain, as we desired.
+</p>
+<p>
+This really isn’t all that complicated.
+All we did was delete a node from a linked list.
+It’s just that this particular linked list cannot be traversed
+by just dereferencing pointers.
+Instead, we have to issue a function call and ask the
+recursive function to perform the work on the “next” node for us.
+That’s what the negative <code>nCode</code> values are for.
+</p>
+<p>
+Every time I work through this exercise,
+I am impressed by how compactly 16-bit Windows was written.
+In just two dozen lines of code, we managed a linked list of
+function calls, including a dispatching system as well as
+arbitrary deletion from the middle
+of the linked list, and all without any memory allocation.
+</p>
+<p>
+(And because I know people are going to try to change the topic:
+Remember, I’m talking about 16-bit Windows, not 32-bit window hooks.)
+</p>
+<p>
+Next time, we’ll look at one way people abused this simple system.</p>
+
+
+</body>

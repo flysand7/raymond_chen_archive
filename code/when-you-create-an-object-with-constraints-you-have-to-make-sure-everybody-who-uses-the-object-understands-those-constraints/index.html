@@ -1,0 +1,163 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When you create an object with constraints, you have to make sure everybody who uses the object understands those constraints</h1>  <!-- .entry-meta -->
+
+<p>
+Here’s a question that came from a customer.
+This particular example involves managed code,
+but don’t let that distract you from the point of the exercise.
+</p>
+<blockquote class="q">
+<p>
+I am trying to create a <code>FileStream</code>
+object using the constructor that takes an <code>IntPtr</code> as input.
+In my .cs file,
+I create the native file handle using <code>CreateFile</code>,
+as shown below.
+</p>
+<pre>
+[DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+internal static extern IntPtr CreateFile(string lpFileName,
+    int dwDesiredAccess, FileShare dwShareMode,
+    IntPtr securityAttrs, FileMode dwCreationDisposition,
+    UInt32 dwFlagsAndAttributes, IntPtr hTemplateFile);
+IntPtr ptr1 = Win32Native.CreateFile(FileName, 0x40000000,
+         System.IO.FileShare.Read | System.IO.FileShare.Write,
+         Win32Native.NULL,
+         System.IO.FileMode.Create,
+         0xa0000000, // FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH
+         Win32Native.NULL);
+</pre>
+<p>
+Then I create the <code>File­Stream</code> object as so:
+</p>
+<pre>
+FileStream fs = new FileStream(ptr1, FileAccess.Write, true, 1, false);
+</pre>
+<p>
+The <code>fs</code> gets created fine. But when I try to do:
+</p>
+<pre>
+fs.Write(msg, 0, msg.Length);
+fs.Flush();
+</pre>
+<p>
+it fails with the error
+“IO operation will not work.
+Most likely the file will become too long
+or the handle was not opened to support synchronous IO operations.”
+</p>
+<pre>
+int hr = System.Runtime.InteropServices.Marshal.GetHRForException(e)
+</pre>
+<p>
+Gives <code>hr</code> as <code>COR_E_IO</code> (<code>0x80131620</code>).
+</p>
+<p>
+The stack trace is as below.
+</p>
+<pre>
+System.IO.IOException: IO operation will not work. Most likely
+    the file will become too long or the handle was not opened
+    to support synchronous IO operations.
+at System.IO.FileStream.WriteCore(Byte[] buffer, Int32 offset, Int32 count)
+at System.IO.FileStream.FlushWrite()
+at System.IO.FileStream.Flush()
+at PInvoke.Program.Main(String[] args)
+</pre>
+<p>
+Can somebody point out what might be going wrong?
+</p>
+</blockquote>
+<p>
+(For those who would prefer to cover their ears and hum when
+the topic of managed code arises,
+change <code>FileStream</code> to
+<code>fdopen</code>.)
+</p>
+<p>
+The comment on the line
+</p>
+<pre>
+         0xa0000000, // FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH
+</pre>
+<p>
+was provided by the customer, and that’s the key to the problem.
+It was right there in the comment, but the customer didn’t understand
+the consequences.
+</p>
+<p>
+As the documentation for <code>Create­File</code> notes,
+the <code>FILE_FLAG_NO_BUFFERING</code>
+flag requires that all I/O operations on the file handle
+be in multiples of the sector size, and that the I/O buffers also
+be aligned on addresses which are multiples of the sector size.
+</p>
+<p>
+Since you created the file handle with very specific
+rules for usage, you have to make sure that everybody who
+uses it actually follows those rules.
+On the other hand,
+the <code>File­Stream</code> object doesn’t know about these rules.
+It just figures you gave it a handle that it can issue normal
+synchronous <code>Read­File</code> and <code>Write­File</code>
+calls on.
+It doesn’t know that you gave it a handle that requires
+special treatment.
+And then the attempt to write to the handle with a plain
+<code>Write­File</code> fails both because the number
+of bytes is not a multiple of the sector size and because
+the I/O buffer is not sector-aligned, and you get the
+I/O exception.
+</p>
+<p>
+The solution to this problem depends on what you are trying to accomplish.
+Why are you passing the
+<code>FILE_FLAG_NO_BUFFERING |
+FILE_FLAG_WRITE_THROUGH</code> flags?
+Are you doing this just because you overheard in the hallway that it’s
+faster?
+Well, yes it may be faster under the right circumstances,
+but in exchange for the increased performance, you also have to follow
+a much stricter set of rules.
+And in the absence of documentation to the contrary,
+you can’t assume that a chunk of code actually adheres to your
+very special rules.
+</p>
+<p>
+Like <i>What if two people did this?</i>,
+this is an illustration of
+another principle that many people forget to consider
+when working with objects they didn’t write:
+<i>When you write your own code, do you do this?</i>
+It’s sort of like the Golden Rule of programming.
+</p>
+<p>
+Suppose you have a function which accepts a file handle
+and whose job is to write some data do that file handle.
+Do you write your function so that it performs all its
+I/O in multiples of the sector size from buffers which are
+aligned in memory in multiples of the sector size,
+on the off chance that somebody gave you a handle that was
+opened with the <code>FILE_FLAG_NO_BUFFERING</code> flag?
+Well, no, you don’t.
+You just call <code>Write­File</code> to write to it,
+and if you want to write 28 bytes, you write 28 bytes.
+Even if you perform internal buffering and your buffer size
+happens to be a multiple of the sector size by accident,
+you still don’t align your I/O buffer to the sector size;
+and when it’s time to flush the final partially-written buffer,
+you have a not-sector-multiple write at the very end anyway.
+</p>
+<p>
+If you don’t handle this case in your code,
+why would you expect others to handle it in their code?
+</p>
+<p>
+We’ve seen this principle before,
+such as when we looked at
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/11/28/9148951.aspx">
+whether the <code>Process.Refresh</code> method
+refreshes an arbitrary application’s windows</a>.</p>
+
+
+</body>

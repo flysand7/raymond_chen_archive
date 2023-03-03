@@ -1,0 +1,27 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Rough edges in the when_all coroutine, part 1: Empty parameter list</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at how we could <a href="/code/synthesizing-a-when-all-coroutine-from-pieces-you-already-have" title="Synthesizing a when_all coroutine from pieces you already have"> write our own <code>when_all</code> coroutine that completes when all of its parameters have completed</a>. It turned out to be very simple, thanks to C++ fold expressions.</p>
+<pre>template &lt;typename... T&gt;
+Windows::Foundation::IAsyncAction when_all(T... async)
+{
+    (co_await async, ...);
+}
+</pre>
+<p>But there’s a problem in the edge case where the caller passes no parameters at all. This may not be something you do intentionally, but it could fall out of some other template metaprogramming algorithm where you discover that there is nothing to do, and the parameter pack expansion is empty. Or maybe it’s the base case of some recursive algorithm.</p>
+<p>In the case where there are no parameters, <code>when_all</code> is vacuously complete (nothing to wait for), but you get a compiler warning:</p>
+<pre>control reaches end of non-void function
+</pre>
+<p>What’s that about?</p>
+<p>If there are no parameters at all, then the fold expression has nothing to <code>co_await</code>, and per the language specification (<b>[tab:temp.fold.empty]</b>), a folded comma operator with no arguments, the result is <code>void()</code>. The effect is therefore this:</p>
+<pre>Windows::Foundation::IAsyncAction when_all()
+{
+    void();
+}
+</pre>
+<p>And now we see the problem. Since there is no <code>co_await</code>, <code>co_return</code> or <code>co_yield</code> anywhere in the body, the function is <i>not a coroutine</i>. It’s just a regular function that returns an <code>IAsync­Action</code>, and it forgot to return one!</p>
+<p>We can fix this by adding a <code>co_return</code>. In the case where the parameter list is nonempty, the <code>co_return</code> is redundant but harmless, because falling off the end of a coroutine which produces a <code>void</code> is equivalent to performing a <code>co_return</code> just before the close-brace. The purpose of the explicit <code>co_return</code> is to ensure correct behavior when the parameter list is empty.</p>
+<p><a href="https://devblogs.microsoft.com/oldnewthing/20200904-00/?p=104172" title="Rough edges in the when_all coroutine, part 2: Overloaded comma operator"> Next time</a>, another edge case.</p>
+
+
+</body>

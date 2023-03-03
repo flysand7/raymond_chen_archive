@@ -1,0 +1,157 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Applications and DLLs don't have privileges; users do</h1>  <!-- .entry-meta -->
+
+<p>
+I can’t believe you people are actually asking for backdoors.
+If an end user can do it, then so can a bad guy.
+</p>
+<p>In response to the requirement that all drivers on 64-bit Windows be signed,
+one commenter suggested
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/03/14/551141.aspx#551242">
+adding a backdoor that permits unsigned drivers</a>,
+using some “obscure registry key”.
+Before somebody can jump up and shouts “security through obscurity!”,
+the commenter adds this parenthetical:
+“(that no application has privileges to do by default)”.
+</p>
+<p>
+What does that parenthetical mean?
+How do you protect a registry key from an application?
+And if applications don’t have privileges to modify a key,
+then who does?
+</p>
+<p>
+The Windows security model is based on identity.
+Applications don’t have privileges.
+Users have privileges.
+If an application is running in your user context, then it can do
+anything you can,
+and that includes setting that “obscure registry key”.
+(This is a variation on
+“<a href="http://blogs.msdn.com/oldnewthing/archive/2005/12/12/502719.aspx">Your debugging code can be a security hole</a>“.)
+Same goes for DLLs.
+There’s no such thing as something
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/06/07/426294.aspx#426645">
+only an individual program/library can read/write to</a>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/06/19/636823.aspx#637022">
+or do</a>.
+You can’t check the “identity of the calling library” because
+you can’t trust the return address.
+Coming up with some other “magic encryption key” like the full path
+to the DLL won’t help either, because a key that anybody can guess
+with 100% accuracy isn’t much of a key.
+</p>
+<p>
+Yes,
+UNIX has setuid,
+but that still doesn’t make applications security principals.
+Even in UNIX, permissions are assigned to users, not to applications.
+</p>
+<p>
+That’s one of the reasons I get so puzzled when I hear people
+say,
+“<a href="http://blogs.msdn.com/oldnewthing/archive/2006/03/21/556505.aspx#558271">Windows should let me do whatever I want with my system</a>“,
+while simultaneously saying,
+“<a href="http://blogs.msdn.com/oldnewthing/archive/2006/03/21/556505.aspx#557618">Windows should have used ACLs to prevent applications from
+doing whatever they want with my system</a>.”
+But when you are running an application,
+<strong>the application is you</strong>.
+If you can do it, then an application can do it
+because the application is you.
+</p>
+<p>
+Some people want to extend the concept of security principal
+to a chunk of code.
+“This registry key can be written to only by this function.”
+But how could you enforce this?
+Once you let untrusted code enter a process,
+you can’t trust any return addresses any more.
+How else could you identify the caller, then?
+</p>
+<p>
+“Well, the DLL when it is created is given a magic cookie
+that it can use to prove its identity by passing that cookie
+to these ‘super-secure functions’.
+For example,
+</p>
+<pre>
+// SECRET.DLL - a DLL that protects a secret registry key
+HANDLE g_hMagicCookie;
+// this function is called by means to be determined;
+// it tells us the magic cookie to use to prove our identity.
+void SetMagicCookie(HANDLE hMagicCookie)
+{
+ g_hMagicCookie = hMagicCookie;
+}
+</pre>
+<p>
+and then the program can use the magic cookie to prove
+that it is the caller.
+For example, you could have
+<code>RegSetValueWithCookie(g_hMagicCookie, hkey, ...)</code>,
+where passing the cookie means ‘It’s me calling, please give
+me access to that thing that only I have access to.”
+</p>
+<p>
+That won’t stop the bad guys for long.
+They just have to figure out where the DLL saves that cookie
+and read it, and bingo, they’re now you.
+</p>
+<pre>
+// bad-guy program
+int CALLBACK WinMain(...)
+{
+ // call some random function from SECRET.DLL
+ // so it gets loaded and the magic cookie gets
+ // initialized.
+ SomeFunctionFromSECRETDLL();
+ // experimentation tells us that SECRET.DLL
+ // keeps its magic cookie at address 0x70131970
+ HANDLE hMagicCookie = *(HANDLE*)0x70131970;
+ RegSetValueWithCookie(hMagicCookie, hkey, ...);
+ return 0;
+}
+</pre>
+<p>
+Ta-da, we now have a program that writes to that
+registry key that <code>SECRET.DLL</code> was trying to protect.
+It does it by merely waiting for <code>SECRET.DLL</code> to receive
+its magic cookie, then stealing that cookie.
+</p>
+<p>
+“Well, sure, but if I combine that with the check-the-return-address
+technique, then that’ll stop them.”
+</p>
+<p>
+No, that doesn’t stop anybody.  All the bad guy has to do is
+change the <code>RegSetValueWithCookie(hMagicCookie, hkey, ...)</code>
+to code that hunts for a trusted address inside <code>SECRET.DLL</code>
+and cooks up a fake stack so that when control reaches
+<code>RegSetValueWithCookie</code>, everything in memory looks just
+like a legitimate call to the function, except that the attacker
+got to pass different parameters.
+</p>
+<p>
+You can come up with whatever technique you want,
+it won’t do any good.
+Once untrusted code has been granted access to a process,
+the entire process is compromised and you cannot trust it.
+Worst case, the attacker just sets a breakpoint on
+<code>RegSetValueWithCookie</code>, waits for the breakpoint
+to hit, then edits the stack to modify the parameters and resumes
+execution.
+</p>
+<p>
+That’s why code is not a security principal.
+</p>
+<p>
+Corollary: Any security policy that says “Applications cannot do X
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/06/07/426294.aspx#426432">
+without permission from the user</a>” is flawed from conception.
+The application running as the user <strong>is the user</strong>.
+It’s one thing to have this rule as a recommendation,
+even a logo requirement,
+but it’s another thing to enforce this rule in the security subsystem.</p>
+
+
+</body>

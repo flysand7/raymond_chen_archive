@@ -1,0 +1,26 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What will be placed in the output parameter if the function fails?</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to know what, if anything, can be said about the value in the output parameter of the <code>Open­Process­Token</code> function if the call fails.</p>
+<p><a href="/code/basic-ground-rules-for-programming-function-parameters-and-how-they-are-used"> According to the ground rules</a>, the contents of output parameters are unspecified on failure. There is a special rule for COM which says that the contents of output parameters on failure must be valid values for their type. For example, if the output parameter is a COM interface pointer, then it must contain a valid value for a COM interface pointer on return, even if the call failed.¹</p>
+<p>However, as a concession to the widespread use of <a href="https://en.cppreference.com/w/cpp/language/raii"> RAII types</a>, the <i>de facto</i> rule is that if the output parameter is a resource that requires management (disposal, release, etc.), then the value on failure is either unchanged or set to a “no resource” value.</p>
+<p>If you use an RAII type, then you are going to pass an empty² RAII object to the function because the function may put a valid object into the RAII object, and you don’t want to leak the old object. Therefore, if the function that fails leaves the RAII object empty or explicitly sets it to empty, the RAII object can be destructed without harm. On the other hand, if the function put garbage in the output parameter, then the RAII type is going to try to clean up a garbage resource, which is unlikely to end well.</p>
+<p>In other words, for types that require cleanup, “empty stays empty” on failure. (On the other hand, if the original object was not empty, it’s not specified whether the result is empty or not.)</p>
+<p>Now, if the output doesn’t require resource management, then this rule doesn’t apply. For example, if the output is a string buffer, the buffer could very well be filled with garbage on failure. You need to free the buffer, and a buffer of garbage can be freed just as easily as a buffer with a valid string in it.</p>
+<p>Examples:</p>
+<pre>BOOL GetSomething(HSOMETHING* result);
+</pre>
+<p>Does the <code>HSOMETHING</code> need to be destroyed in a special way? If so, then on failure, <code>Get­Something</code> will either leave the <code>*result</code> unchanged, or set it to <code>nullptr</code>. If you are using an RAII type to hold the <code>HSOMETHING</code>, then you will have arranged for <code>*result</code> to contain <code>nullptr</code> before calling <code>Get­Something</code>, which means that on failure, <code>*result</code> will still be <code>nullptr</code>.</p>
+<pre>HRESULT GetWidgetName(HWIDGET widget, wchar_t buffer[], size_t size);
+</pre>
+<p>Since <code>wchar_t</code> does not require any special resource management, the <code>buffer</code> could be filled with garbage if <code>Get­Widget­Name</code> fails.</p>
+<pre>HRESULT GetWidgetName(HWIDGET widget, PWSTR* name);
+</pre>
+<p>This case is different. Let’s say that the <code>name</code> needs to be freed with a function like <code>Co­Task­Mem­Free</code>. In that case, the function cannot set <code>*name</code> to a garbage pointer, because that would cause <code>Co­Task­Mem­Free</code> to crash. On failure, <code>*name</code> will be unchanged or set to <code>nullptr</code>.</p>
+<p><b>Bonus chatter</b>: WIL has <a href="https://github.com/microsoft/wil/blob/master/include/wil/token_helpers.h"> a number of helper functions</a> for manipulating tokens.</p>
+<p>¹ For COM interface pointers, the value is typically <code>nullptr</code> on failure. Exceptions are called out in the function documentation if the result is anything else. For example, a function might return <code>E_PENDING</code> and put a provisional answer in the output pointer, with a complete answer provided when the operation completes.</p>
+<p>² The word <i>empty</i> is a term of art which refers to the case where an object of an RAII type is not managing anything.</p>
+<p> </p>
+
+
+</body>

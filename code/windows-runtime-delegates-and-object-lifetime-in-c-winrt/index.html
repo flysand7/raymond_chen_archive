@@ -1,0 +1,60 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Windows Runtime delegates and object lifetime in C++/WinRT</h1>  <!-- .entry-meta -->
+
+<p>In C++/WinRT, there are four ways to create delegates for event handlers:</p>
+<ul>
+<li>As a raw pointer with a method pointer.</li>
+<li>As a strong pointer with a method pointer.</li>
+<li>As a weak pointer with a method pointer.</li>
+<li>As a lambda.</li>
+</ul>
+<pre>// raw pointer with method pointer.
+MyButton.Event({ this, &amp;AwesomePage::Button_Click });
+
+// strong pointer with method pointer.
+MyButton.Event({ get_strong(), &amp;AwesomePage::Button_Click });
+
+// weak pointer with method pointer.
+MyButton.Event({ get_weak(), &amp;AwesomePage::Button_Click });
+
+// lambda.
+MyButton.Event([...](auto&amp;&amp; sender, auto&amp;&amp; args) { ... });
+</pre>
+<p>The first three are all very similar. They call the method on the object. The only difference is how they obtain the object.</p>
+<ul>
+<li>Raw pointer: The method is invoked on the raw pointer.</li>
+<li>Strong pointer: The method is invoked on the strong pointer.</li>
+<li>Weak pointer: The weak pointer is resolved to a strong pointer. If successful, the method is invoked on the strong pointer. If unsuccessful, nothing happens.¹</li>
+</ul>
+<p>The lambda case is the same as always: The lambda is invoked. It is up to the lambda to determine what objects were captured, how they were captured, and what happens when the lambda is invoked.</p>
+<p>The tricky part is deciding which of these mechanisms is most appropriate for your use case.</p>
+<p>Use the strong pointer if you need the object referenced by the strong pointer to remain alive for as long as the event handler is registered. This is not a common scenario; usually, you are keeping the object alive by other means.</p>
+<p>Before discussing the scenarios where you would use the weak or raw pointer, let’s think about the problems these options are trying to solve.</p>
+<p>The underlying problem is the event that is raised after the object has been destructed. Can you guarantee that this will not happen? If you can guarantee it, then you can use a raw pointer. If you cannot guarantee it, then you must use a weak pointer. (If you’re not sure, it is always okay to use a weak pointer.)</p>
+<p>Under what conditions can you guarantee that the event won’t be raised after the object has been destructed? Well, one obvious requirement is that you have to stop the event handler from being invoked. The standard way of doing this is by unregistering the event handler. A less common way is destroying the event source. (It’s less common because it assumes that nobody else has taken a reference to the event source and is thereby keeping it alive!)</p>
+<p>Preventing the event source from calling your handler is completely on you, so let’s assume you remember to do that, and that you do it correctly.</p>
+<p>Even if you remember to unregister the event handler, it’s possible to receive an event after unregistering if the event can be raised from another thread, There’s an unavoidable race condition, because the event may be in flight at the time you unregister the handler. The only way to be sure that you won’t receive any events after unregistering is when the event is always raised from the thread doing the unregistering. This guarantee is available only for objects with thread affinity, and in the cases where the event is raised synchronously in response to the event trigger. In practice, this means that you have this guarantee only for UI objects, such as XAML elements.</p>
+<p>Okay, so now that we understand the scenarios, we can write the guidance.</p>
+<p>If the event source has thread affinity (typical of UI objects), then you have the option of using either the weak pointer or raw pointer version. The raw pointer is more efficient, but it counts on you having done your analysis correctly. And of course when your object is destroyed, you have to remember to stop the event handler from being invoked.</p>
+<p>Use the weak pointer for all the other cases where you are choosing between a weak pointer and a raw pointer, namely if the event source does not have thread affinity, which basically means that the event source is not a UI object.</p>
+<p>When an event handler is created via XAML markup, the resulting delegate is created with a raw pointer and method pointer.</p>
+<pre>&lt;!-- XAML --&gt;
+&lt;Page x:Name="AwesomePage" ...&gt;
+  ...
+  &lt;Button Click="Button_Click" &gt;
+  ...
+&lt;/Page&gt;
+</pre>
+<p>When you write the above XAML, the delegate is created as if you had written</p>
+<pre>thatButton.Click({ this, &amp;AwesomePage::Button_Click });
+</pre>
+<p>The XAML compiler knows that it’s safe to do this because it’s hooking up the handler to a XAML element, which is a UI object with thread affinity. It therefore knows that it can unregister its handlers at destruction without risk of events coming in late.</p>
+<p><b>Additional reading</b>:</p>
+<ul>
+<li><a href="https://docs.microsoft.com/en-us/windows/uwp/cpp-and-winrt-apis/handle-events"> Handle events by using delegates in C++/WinRT</a>.</li>
+<li><a href="https://docs.microsoft.com/en-us/windows/uwp/cpp-and-winrt-apis/weak-references"> Strong and weak references in C++/WinRT</a>.</li>
+</ul>
+<p>¹ Note that the “nothing happens” also means that it doesn’t even return the magic <code>RPC_</code><code>E_</code><code>DISCONNECTED</code> error code to <a href="https://devblogs.microsoft.com/oldnewthing/20190521-00/?p=102505"> tell the event source that the handler is permanently dead</a>.</p>
+
+
+</body>

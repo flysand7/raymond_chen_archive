@@ -1,0 +1,55 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A more direct and mistake-free way of creating a process in a job object</h1>  <!-- .entry-meta -->
+
+<p>The traditional way of putting a process in a job object is</p>
+<ul>
+<li>Create the process suspended.</li>
+<li>Use <code>Assign­Process­To­Job­Object</code> to put the process in a job object.</li>
+<li>Resume the process’s initial thread.</li>
+</ul>
+<p>Creating the process suspended is important, because you don’t want the process to start running before you put it into a job. It could use that head start to do things that the job object was intended to prevent!</p>
+<p>A problem with this approach is that there is a risk of orphaning the process if you crash or are terminated after you create the process suspended, but before you can move the suspended process into a job object.</p>
+<p>I’m assuming that you created the job object as “terminate on last handle close”, so that once the process is in the job, an unexpected crash of your program will result in the closure of the job object handle, which will terminate all the processes in it. The problem is that there is a brief moment in time in which the process is outside the job object, and that’s your danger window.¹</p>
+<p>¹ It sounds like a window so small it may not be worth trying to close, but we’ve gotten reports from customers who are seeing lots of abandoned suspended processes on their servers, and we suspect that they may be hitting exactly this window.</p>
+<p>One solution is to use the <code>PROC_<wbr/>THREAD_<wbr/>ATTRIBUTE_<wbr/>PARENT_<wbr/>PROCESS</code> attribute to specify a process already in the job as the new process’s parent. Since child processes go into the same job as the parent, this creates the new process directly in the job, thereby closing the window. Of course, this means that you need to have an anchor process in the job already, which puts you in a Catch-22 situation: How do you safely get the anchor process into the job?</p>
+<p>But there’s a simpler solution: Windows 10 added the <code>PROC_<wbr/>THREAD_<wbr/>ATTRIBUTE_<wbr/>JOB_<wbr/>LIST</code> attribute so you can specify exactly which jobs you want the process to be assigned to. The process is assigned sequentially to each of the job handles you pass, so make sure you pass the job handles in an order that satisfies the <a href="https://docs.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject"> rules for adding a process to multiple job objects</a>. The assignment happens before the process’s initial thread is allowd to run, so there is no race window where the process can do something bad before the job object limits can take effect.</p>
+<p>Here’s a quick demonstration. As is typical of Little Programs, there is little to no error checking.</p>
+<pre>int main(int, char**)
+{
+  HANDLE job = CreateJobObject(nullptr, nullptr);
+
+  SIZE_T size;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &amp;size);
+  auto p = (PPROC_THREAD_ATTRIBUTE_LIST)new char[size];
+
+  InitializeProcThreadAttributeList(p, 1, 0, &amp;size);
+  UpdateProcThreadAttribute(p, 0,
+    <span style="color: #08f;">PROC_THREAD_ATTRIBUTE_JOB_LIST,
+    &amp;job, sizeof(job),</span>
+    nullptr, nullptr);
+
+  wchar_t cmd[] = L"C:\\Windows\\System32\\cmd.exe";
+  STARTUPINFOEX siex = {};
+  siex.lpAttributeList = p;
+  siex.StartupInfo.cb = sizeof(siex);
+  PROCESS_INFORMATION pi;
+
+  CreateProcessW(cmd, cmd, nullptr, nullptr, FALSE,
+    CREATE_NEW_CONSOLE | EXTENDED_STARTUPINFO_PRESENT,
+    nullptr, nullptr, &amp;siex.StartupInfo, &amp;pi);
+
+  // Verify that the process is indeed in the job object.
+  BOOL isInJob;
+  IsProcessInJob(pi.hProcess, job, &amp;isInJob);
+  assert(isInJob);
+
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  delete[] (char*)p;
+  CloseHandle(job);
+  return 0;
+}
+</pre>
+
+
+</body>

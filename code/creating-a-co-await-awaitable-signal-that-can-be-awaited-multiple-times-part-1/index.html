@@ -1,0 +1,32 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a co_await awaitable signal that can be awaited multiple times, part 1</h1>  <!-- .entry-meta -->
+
+<p><a href="/none/what-does-error-e-illegal-delegate-assignment-mean" title="What does error E_ILLEGAL_DELEGATE_ASSIGNMENT mean?"> C++/WinRT asynchronous activities can be awaited only once</a>. This is consistent with their intended usage pattern, which is for an application to start the activity, <code>co_await</code> the result, and then continue.</p>
+<p>But maybe you want something like a Win32 event, where any number of people can <code>co_await</code> the event, and then once it is signaled, all the awaiters are resumed.</p>
+<p>Well, an easy way to do this is simply to have a Win32 event!</p>
+<pre>struct awaitable_event
+{
+  void set() const noexcept
+  { SetEvent(os_handle()); }
+
+  auto operator co_await() const noexcept
+  { return winrt::resume_on_signal(os_handle()); }
+
+private:
+  HANDLE os_handle() const noexcept
+  { return handle.get(); }
+
+  winrt::handle handle{
+    winrt::check_pointer(CreateEvent(nullptr,
+      /* manual reset */ true, /* initial state */ false,
+      nullptr)) };
+};
+</pre>
+<p>This class is just a wrapper around a Win32 manual-reset event handler. You can call the <code>set</code> method to set the event, and you can <code>co_await</code> it to wait for the event.</p>
+<p>The traditional way of supporting <code>co_await</code> is to implement the trio of methods <code>await_<wbr/>ready</code>, <code>await_<wbr/>suspend</code>, and <code>await_<wbr/>resume</code>. But another way is to <a href="https://devblogs.microsoft.com/oldnewthing/20191218-00/?p=103221" title="C++ coroutines: Defining the co_await operator"> define the <code>co_await</code> operator</a> so it returns an awaiter. We implement our custom <code>co_await</code> operator by propagating the awaiter returned by <code>resume_<wbr/>on_<wbr/>signal</code>. Basically, awaiting the <code>awaitable_<wbr/>event</code> is the same as awaiting a call of <code>resume_<wbr/>on_<wbr/>signal</code> with the hidden handle.</p>
+<p>For simple scenarios, this might be all you need. You can define a global <code>awaitable_<wbr/>event</code> and have as many people as you like <code>co_await</code> it.</p>
+<p>If you want the object not to have static storage duration (say, because it’s a member of another class which is dynamically-allocated), then you will encounter lifetime issues because you can’t destruct the <code>awaitable_<wbr/>event</code> while somebody else is still awaiting it.</p>
+<p>We’ll continue investigating this issue <a href="https://devblogs.microsoft.com/oldnewthing/20210302-00/?p=104918" title="Creating a co_await awaitable signal that can be awaited multiple times, part 2"> next time</a>.</p>
+
+
+</body>

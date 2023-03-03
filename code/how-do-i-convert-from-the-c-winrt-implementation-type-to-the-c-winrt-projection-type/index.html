@@ -1,0 +1,73 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I convert from the C++/WinRT implementation type to the C++/WinRT projection type?</h1>  <!-- .entry-meta -->
+
+<p>Working with C++/WinRT projections is relatively straightforward. Everything is a smart pointer type, and you invoke methods on them in the usual way, and the only methods you can invoke are the ones in the interface definition.</p>
+<p>For concreteness, let’s suppose you have this class interface definition:</p>
+<pre>namespace Sample
+{
+    runtimeclass Class
+    {
+        Class();
+        void DoSomething();
+    };
+};
+</pre>
+<p>And you implemented it like this:</p>
+<pre>namespace winrt::Sample::implementation
+{
+    struct Class : ClassT&lt;Class&gt;
+    {
+        Class();
+        void DoSomething();
+
+        void ImplementationMethod();
+        int implementation_value = 42;
+    };
+}
+</pre>
+<p>Working from the projection side, here’s what you can and cannot do:</p>
+<pre>winrt::Sample::Class c;   // can construct it
+c.DoSomething();          // can invoke interface method
+c.ImplementationMethod(); // not allowed
+c.implementation_value++; // not allowed
+</pre>
+<p>On the other hand, working with C++/WinRT implementations is a bit gnarlier, because you are now straddling two worlds: You have the simple projection world, and you have the ugly implementation world.</p>
+<p>For convenience, I’m going to omit the <code>winrt::</code> namespace qualifier from everything.</p>
+<p>First, we have the object creation patterns:</p>
+<pre>// Create an object from the implementation,
+// returning the projection.
+Sample::Class c =
+    winrt::make&lt;implementation::Class&gt;();
+
+// Create an object from the implementation,
+// returning a com_ptr to the implementation.
+com_ptr&lt;implementation::Class&gt; c =
+    winrt::make_self&lt;implementation::Class&gt;();
+</pre>
+<p>And then we have the object conversion patterns:</p>
+<pre>// Go from the implementation to the projection.
+implementation::Class* p;
+Sample::Class c = *p;
+
+// Go from the implementation's com_ptr to the projection.
+com_ptr&lt;implementation::Class&gt; ptr;
+Sample::Class c = *ptr;
+</pre>
+<p>The implementation class contains conversions to its projected runtime class as well as all of its interfaces. So you just need to dereference the raw pointer or <code>com_ptr</code>, and then let the conversion kick in.</p>
+<p>There’s a gotcha here: You have to make sure not to copy the object by mistake!</p>
+<pre>implementation::Class* p;
+auto o = *p; // bad idea
+if (case1) {
+  Sample::Class c = o;
+} else {
+  IInspectable i = o;
+}
+</pre>
+<p>This code wants to factor out the dereference operator and then perform the conversion later, depending on what case it is in. The problem is that <code>o</code> is going to be a <i>copy</i> of the object, which is going to cause all sorts of problems, because the object is managed by its internal reference count, and copying it into a local is going to cause all sorts of problems: The copy will get a copy of the reference count, which is now incorrect. And the copy is going to destruct when it goes out of scope, regardless of its actual reference count. Fortunately, the debug build will catch this problem with the error</p>
+<pre style="white-space: pre-wrap;">error C2259: 'winrt::<wbr/>Sample::<wbr/>implementation::<wbr/>Class': cannot instantiate abstract class due to following members:
+'void winrt::<wbr/>impl::<wbr/>root_<wbr/>implements&lt;<wbr/>D,<wbr/>winrt::<wbr/>Sample::<wbr/>Class&gt;<wbr/>::use_<wbr/>make_<wbr/>function_<wbr/>to_<wbr/>create_<wbr/>this_<wbr/>object(<wbr/>void)': is abstract
+</pre>
+<p>Next time, we’ll look at the harder job of getting from the projection back to the implementation.</p>
+
+
+</body>

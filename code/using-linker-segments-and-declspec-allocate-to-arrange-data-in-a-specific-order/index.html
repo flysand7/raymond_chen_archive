@@ -1,0 +1,115 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using linker segments and __declspec(allocate(…)) to arrange data in a specific order</h1>  <!-- .entry-meta -->
+
+<p>You can declare a section and then start generating data into it.</p>
+<pre>#pragma section("mydata$a", read, write)  
+__declspec(allocate("mydata$a")) int i = 0;
+
+#pragma section("mydata$b", read, write)  
+__declspec(allocate("mydata$b")) int j = 0;
+</pre>
+<p>The <code>#pragma section</code> directive lets you define a new section and assign attributes. You can then place data into that section with the <code>__declspec(allocate(...))</code> attribute.</p>
+<p>When the linker <a href="http://www.keil.com/support/man/docs/armlink/armlink_chunkpge1406298379992.htm"> combines all the little bits and pieces of data</a>, it does the following:</p>
+<ul>
+<li>It takes the section names and splits them at the first dollar sign. (If there is no dollar sign in the section name, then the entire string is treated as the “before the first dollar sign” portion.)</li>
+<li>The portion before the dollar sign is the name of the section in the generated module.</li>
+<li>The portion after the dollar sign, if any, is used to sort the fragments within a section.</li>
+</ul>
+<p>It is common to take advantage of the “sorts the data fragments alphabetically” step by <a href="https://blogs.msdn.microsoft.com/larryosterman/2004/09/27/when-i-moved-my-code-into-a-library-what-happened-to-my-atl-com-objects/"> generating data into a carefully-named sequence of sections</a> so that they can iterate over all the objects in the middle section:</p>
+<pre>typedef void (*INITIALIZER)();
+
+#pragma section("mydata$a", read)  
+__declspec(allocate("mydata$a")) const INITIALIZER firstInitializer = nullptr;
+
+#define ADD_INITIALIZER_TO_SECTION(fn, s) \
+    __declspec(allocate("mydata$" s)) \
+    const INITIALIZER initializer##fn = fn
+
+#pragma section("mydata$g", read)  
+#pragma section("mydata$m", read)  
+#pragma section("mydata$t", read)  
+
+#define ADD_EARLY_INITIALIZER(fn) ADD_INITIALIZER_TO_SECTION(fn, "g")
+#define ADD_INITIALIZER(fn)       ADD_INITIALIZER_TO_SECTION(fn, "m")
+#define ADD_LATE_INITIALIZER(fn)  ADD_INITIALIZER_TO_SECTION(fn, "t")
+
+#pragma section("mydata$z", read)  
+__declspec(allocate("mydata$z")) INITIALIZER lastInitializer = nullptr;
+
+// In various files
+
+// file1.cpp
+ADD_INITIALIZER(Function1);
+
+// file2.cpp
+ADD_INITIALIZER(Function2);
+ADD_LATE_INITIALIZER(DoThisLater2);
+
+// file3.cpp
+ADD_INITIALIZER(Function3);
+ADD_EARLY_INITIALIZER(DoThisSooner3);
+
+// file4.cpp
+ADD_EARLY_INITIALIZER(DoThisSooner4);
+ADD_LATE_INITIALIZER(DoThisLater4);
+</pre>
+<p>The idea is that anybody who needs to add an initializer declares a function pointer in the <code>mydata$g</code>, <code>mydata$m</code>, or <code>mydata$t</code> section. The linker will collect all of those function pointers from same-named sections together, and then sort the sections, so that the final order of fragments in the <code>mydata</code> section is</p>
+<table border="0" cellpadding="3" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: solid 1px black;"><code>mydata$a</code></td>
+<td style="border: solid 1px black;"><code>firstInitializer</code></td>
+<td style="border: solid 1px black;"><code>main.obj</code></td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black;"><code>mydata$g</code></td>
+<td style="border: solid 1px black;"><code>DoThisSooner3</code></td>
+<td style="border: solid 1px black;"><code>file3.obj</code></td>
+<td rowspan="2" style="border: solid black; border-width: 1px 0px;">unspecified<br/>
+order</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>DoThisSooner4</code></td>
+<td style="border: solid 1px black;"><code>file4.obj</code></td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td rowspan="3" style="border: solid 1px black;"><code>mydata$m</code></td>
+<td style="border: solid 1px black;"><code>Function2</code></td>
+<td style="border: solid 1px black;"><code>file2.obj</code></td>
+<td rowspan="3" style="border: solid black; border-width: 1px 0px;">unspecified<br/>
+order</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>Function1</code></td>
+<td style="border: solid 1px black;"><code>file1.obj</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>Function3</code></td>
+<td style="border: solid 1px black;"><code>file3.obj</code></td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black;"><code>mydata$t</code></td>
+<td style="border: solid 1px black;"><code>DoThisLater2</code></td>
+<td style="border: solid 1px black;"><code>file2.obj</code></td>
+<td rowspan="2" style="border: solid black; border-width: 1px 0px;">unspecified<br/>
+order</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>DoThisLater4</code></td>
+<td style="border: solid 1px black;"><code>file4.obj</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>mydata$z</code></td>
+<td style="border: solid 1px black;"><code>lastInitializer</code></td>
+<td style="border: solid 1px black;"><code>main.obj</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <code>Initialize­All­The­Things</code> function then walks through all the function pointers between <code>first­Initializer</code> and <code>last­Initializer</code> and calls each one.</p>
+<p>The alphabetical ordering rule ensures that the <code>mydata$a</code> fragment comes first, so that <code>first­Initializer</code> has the lowest address. Next comes the <code>mydata$g</code> fragments, which contain the early initializers. Following that are the <code>mydata$m</code> fragments, which are the regular initializers. Next are the <code>mydata$t</code> fragments, which contain the late initializers. And finally the <code>mydata$z</code> fragment, which contains <code>last­Initializer</code>.</p>
+<p>Now that we understand the principle behind section grouping and sorting, we can look at the gotchas <a href="https://devblogs.microsoft.com/oldnewthing/20181108-00/?p=100165"> next time</a>.</p>
+
+
+</body>

@@ -1,0 +1,410 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Stop cherry-picking, start merging, Part 1: The merge conflict</h1>  <!-- .entry-meta -->
+
+<p>Cherry-picking is a common operation in git, and it’s not a good idea. Sometimes it’s a neutral idea, but I haven’t yet found a case where it’s actually good.</p>
+<p>This is the start of a series that will begin by explaining why cherry-picking is bad, continue by explaining why cherry-picking is worse, then try to talk you down from the ledge by showing how to get the same effect as a cherry-pick but with merging, showing how to apply that technique to the case where you need to do a retroactive merge, and wrap up by showing how to apply that technique to the case where you already made the mistake of cherry-picking and want to fix it before something bad or worse happens.</p>
+<p>It’s a tall order, but I’ve been meaning to write this up for a while, and what’s gotta get done gotta get done.</p>
+<p>In order to cherry-pick, you need two branches, one to be the donor and one to be the recipient. Let’s call them the master branch and the feature branch. And for simplicity’s sake, let’s say that the commit being cherry-picked is a one-line change to a single file. Each commit will be annotated with the contents of that one line.</p>
+
+
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td>apple</td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20180312_nwarr">↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180312_swarrd">⋰</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>feature</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td>berry</td>
+</tr>
+</tbody>
+</table>
+<p>For the purpose of illustration, I’m using a dotted line to denote cherry-picks. This dotted line doesn’t really exist in the repo, but I’m drawing it to help express the chronology. (Eventually, I’ll stop drawing dotted lines, too.)</p>
+<p>You have some common ancestor A, and in the commit, the line in question is the word <code>apple</code>. From that common ancestor, the two branches diverge: Commit F1 happens on the feature branch, and commit M1 happens on the master branch. These changes don’t affect the line in question, so it still says <code>apple</code>. You then make some commit F2 in the feature branch that changes the line in question from <code>apple</code> to <code>berry</code>, and you cherry-pick commit F2 into the master branch as M2.</p>
+<p>So far, nothing exciting is happening.</p>
+<p>Time passes, more commits occur, and your commit graph looks like this:</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td>apple</td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>berry</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M3</td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20180312_nwarr">↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180312_swarrd">⋰</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F3</td>
+<td> </td>
+<td>feature</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+</tr>
+</tbody>
+</table>
+<p>You made another commit M3 to the master branch and another commit F3 to the feature branch. Neither of these commits affected the line in question, so the line is still the word <code>berry</code>.</p>
+<p>It’s time to merge back, and since the line in question is the same in both branches, the merge is trivial, and the result in the final merged result is <code>berry</code>.</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td>apple</td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>berry</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M3</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M4</td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20180312_nwarr">↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180312_swarrd">⋰</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180312_swarr">↙︎</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F3</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>feature</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+</tr>
+</tbody>
+</table>
+<p>This is the ideal case.</p>
+<p>It is also relatively uncommon in an active code base.</p>
+<p>Consider this alternate timeline: After the cherry-pick, additional commits M3 to the master branch and F3 to the feature branch are made, but this time commit F3 changes the line in question to <code>cherry</code>. This could be because the person who made the original commit F2 found an improvement (cherries are on sale right now), or maybe they made a larger change that happened to require switching from berries to cherries.</p>
+<p>Whatever the reason, the commit graph now looks like this:</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td>apple</td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>berry</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M3</td>
+<td id="p20180312_larr">←</td>
+<td class="emoji" style="border: solid 1px black; width: 50px; font-size: 120%;">💥</td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20180312_nwarr">↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180312_swarrd">⋰</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180312_swarr">↙︎</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F3</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>feature</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>cherry</td>
+</tr>
+</tbody>
+</table>
+<p>This time, when it’s time to merge the feature branch back into the master branch, there is a merge conflict. The base of the three-way merge contains <code>apple</code>, the incoming feature branch has <code>cherry</code> and the existing master branch has <code>berry</code>.</p>
+<pre>&lt;&lt;&lt;&lt;&lt;&lt;&lt; HEAD (master)
+berry
+||||||| merged common ancestors
+apple
+=======
+cherry
+&gt;&gt;&gt;&gt;&gt;&gt;&gt; feature
+</pre>
+<p>The conflict occurred because the cherry-picked changes were subsequently changed again by one of the branches. We’ve been using dotted lines in our diagrams to emphasize that the cherry-pick relationship is all in our heads, and not actually recorded anywhere in the commit graph.</p>
+<p>You have to hope that whoever resolves this merge conflict remembers the history of this line, or can access the team’s knowledge of this line of code to understand that the correct resolution it to accept the changes in the feature branch rather than the one in the master branch.</p>
+<p>In this case, there haven’t been many changes, and there are only two branches involved, and hopefully there aren’t too many other conflicts in the merge (so that the person resolving the merge hasn’t gotten tired and burnt out), so the chance of a correct resolution are pretty good. But consider this three-branch scenario:</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td>apple</td>
+<td colspan="3"> </td>
+<td>apple</td>
+<td colspan="3"> </td>
+<td>berry</td>
+<td colspan="3"> </td>
+<td>berry</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M3</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20180312_nwarr">↖︎</td>
+<td>apple</td>
+<td colspan="3"> </td>
+<td>apple</td>
+<td id="p20180312_svg01"> </td>
+<td id="p20180312_blank">⋰</td>
+<td style="width: 20px;"> </td>
+<td>apple</td>
+<td> </td>
+<td>cherry</td>
+<td id="p20180312_nwarr">↖︎</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">V1</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">V2</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">V3</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">V4</td>
+<td id="p20180312_larr">←</td>
+<td class="emoji" style="border: solid 1px black; width: 50px; font-size: 120%;">💥</td>
+<td> </td>
+<td>victim</td>
+</tr>
+<tr>
+<td colspan="3"> </td>
+<td id="p20180312_nwarr">↖︎</td>
+<td colspan="3"> </td>
+<td id="p20180312_blank">⋰</td>
+<p><!-- dotted line inbound from two cells above --></p>
+<td colspan="3"> </td>
+<td id="p20180312_swarr">↙︎</td>
+</tr>
+<tr>
+<td colspan="4"> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20180312_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td colspan="3" id="p20180312_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F3</td>
+<td colspan="5"> </td>
+<td>feature</td>
+</tr>
+<tr>
+<td colspan="4"> </td>
+<td>apple</td>
+<td> </td>
+<td>berry</td>
+<td colspan="3"> </td>
+<td>cherry</td>
+</tr>
+</tbody>
+</table>
+<p>Start with a commit A, where the line in question is <code>apple</code>. We create a branch based on commit A, ominously named <code>victim</code>, and add a commit called V1, which doesn’t affect the line in question, so it still is <code>apple</code>. From the victim branch we create our feature branch from commit V1, and then the story is the same: To the feature branch, we add the same commit F1 from before, which doesn’t affect the line in question, so it continues to be <code>apple</code>. Meanwhile, the master branch added a commit M1 which doesn’t affect the line in question.</p>
+<p>We continue as before: The feature branch adds a commit F2 which changes the line in question to <code>berry</code>, and the master branch cherry-picks that commit as <code>M2</code>. The feature branch makes another change F3 which happens to update the line in question from <code>berry</code> to <code>cherry</code>, while the master branch adds a commit M3 that doesn’t change the line in question, so it remains <code>berry</code>.</p>
+<p>All through this, the victim branch is blithely unaware of the cherry-picking disaster being created by the feature and master branches. It commits changes V2 and V3 which have nothing to do with the line in question, so the line is still <code>apple</code>.</p>
+<p>Eventually, the feature branch merges its changes back into the victim branch, producing commit V4, where the line in question is now <code>cherry</code>, thanks to the changes that were made in the feature branch.</p>
+<p>The time bomb has now moved into the victim branch.</p>
+<p>The victim branch decides to take a merge from the master branch, and that is where the conflict is detected, because this is the first time the original change F2 encounters its cherry-picked doppelgänger M2. The poor person stuck with this merge conflict has no idea of the deal with the devil struck by the feature and master branches behind his back. Furthermore, the person stuck with this merge conflict may be exhausted from dealing with all the other (valid) conflicts caused by the merge from the master branch and may not have the mental energy to reverse-engineer how the two branches ended up the way they did and figure out which side is right.</p>
+<p>Basically, when you cherry-pick a commit, you now have two copies of the commit sitting in the graph. Any lines of code affected by that commit must remain untouched in both branches until the two copies of the commit finally merge. If either branch modifies any line touched by the cherry-pick, then that creates a powderkeg that can sit quietly indefinitely. It is at the time somebody tries to merge the two commits together that the explosion occurs, and that point could be in a faraway place not immediately related to the branches involved in the cherry-pick. This means that the person trying to resolve the merge was never part of the cherry-pick madness and may not know who to talk to in order to figure out what happened.</p>
+<p>Okay, that was a long story, and you probably knew most of it already, but believe it or not, as bad as this is, it could get even <i>worse</i>: The explosion might not happen.</p>
+<p>Wait, why is it worse that an explosion doesn’t happen? We’ll pick this up <a href="/other/stop-cherry-picking-start-merging-part-2-the-merge-conflict-that-never-happened-but-should-have" title="Stop cherry-picking, start merging, Part 2: The merge conflict that never happened (but should have)"> next time</a>.</p>
+<p>
+<script>
+window.addEventListener("load", function() {
+  var fullFF = getComputedStyle(document.body).fontFamily;
+  var simpleFF = fullFF.replace(/ Emoji/g, "");
+  // break up "style" to prevent wordpress from injecting random junk
+  document.getElementById("p20180312_head").innerHTML =
+`<s` + `tyle>
+body { font-family: ${simpleFF}; }
+.emoji { font-family: ${fullFF}; }
+.entry-content th { padding: 1px; } /* stylesheet workaround */
+.entry-content td { padding: 1px; } /* stylesheet workaround */
+</s` + `tyle>`;
+}); // wacky comment to prevent wordpress from injecting random junk
+(function() {
+  var svg = {
+    defs: `<svg width="0" height="0">
+ <defs>
+  <marker id="arrowhead" markerWidth="5" markerHeight="5" refX="-2" refY="0"
+    viewBox="-6 -6 12 12" orient="auto">
+    <polygon points="-2,0 -5,5 5,0 -5,-5" fill="black" stroke="black"
+      stroke-dasharray="1 0" />
+  </marker>
+  <path id="larr" d="M20,10 L3,10" stroke="black"
+   marker-end="url(#arrowhead)" />
+  <path id="larr3" d="M98,10 L3,10" stroke="black"
+   marker-end="url(#arrowhead)" />
+  <path id="nwarr" d="M20,20 L3,3" stroke="black"
+   marker-end="url(#arrowhead)" />
+  <path id="swarr" d="M20,2 L3,17" stroke="black"
+   marker-end="url(#arrowhead)" />
+  <path id="swarrd" d="M20,0 L3,17" stroke="black" stroke-dasharray="4 2"
+   marker-end="url(#arrowhead)" />
+ </defs>
+</svg>`,
+    larr: `<svg width="20" height="20"><use href="#larr"/></svg>`,
+    larr3: `<svg width="98" height="20"><use href="#larr3"/></svg>`,
+    nwarr: `<svg width="20" height="20"><use href="#nwarr"/></svg>`,
+    swarrd: `<svg width="20" height="20"><use href="#swarrd"/></svg>`,
+    swarr: `<svg width="20" height="20"><use href="#swarr"/></svg>`,
+    blank: `<svg width="20" height="20"></svg>`,
+    svg01: `<svg width="20" height="20" style="overflow: visible"><path d="M30,5 L-5,65" stroke="black" stroke-dasharray="4 2" marker-end="url(#arrowhead)"/></svg>`
+  };
+  Object.keys(svg).forEach(function (key) {
+    Array.prototype.forEach.call(document.querySelectorAll("#p20180312_" + key),
+      function (e) {
+        e.innerHTML = svg[key];
+      });
+  });
+})();
+</script></p>
+
+
+</body>

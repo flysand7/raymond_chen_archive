@@ -1,0 +1,117 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The history of calling conventions, part 5: amd64</h1>  <!-- .entry-meta -->
+
+<p>The last architecture I’m going to cover in this series is the AMD64 architecture (also known as x86-64).</p>
+<p>The AMD64 takes the traditional x86 and expands the registers to 64 bits, naming them rax, rbx, etc. It also adds eight more general purpose registers, named simply R8 through R15. </p>
+<ul>
+<li>
+<p>The first four parameters to a function are passed in rcx, rdx, r8 and r9. Any further parameters are pushed on the stack. Furthermore, space for the register parameters is reserved on the stack, in case the called function wants to spill them; this is important if the function is variadic. </p>
+<li>
+<p>Parameters that are smaller than 64 bits are <b>not</b> zero-extended; the upper bits are garbage, so remember to zero them explicitly if you need to. Parameters that are larger than 64 bits are passed by address. </p>
+<li>
+<p>The return value is placed in rax. If the return value is larger than 64 bits, then a secret first parameter is passed which contains the address where the return value should be stored. </p>
+<li>
+<p>All registers must be preserved across the call, except for rax, rcx, rdx, r8, r9, r10, and r11, which are scratch. </p>
+<li>
+<p>The callee does <b>not</b> clean the stack. It is the caller’s job to clean the stack. </p>
+<li>
+<p>The stack must be kept 16-byte aligned. Since the “call” instruction pushes an 8-byte return address, this means that every non-leaf function is going to adjust the stack by a value of the form 16n+8 in order to restore 16-byte alignment. </p>
+</li>
+</li></li></li></li></li></ul>
+<p>Here’s a sample: </p>
+<pre>void SomeFunction(int a, int b, int c, int d, int e);
+void CallThatFunction()
+{
+    SomeFunction(1, 2, 3, 4, 5);
+    SomeFunction(6, 7, 8, 9, 10);
+}
+</pre>
+<p>On entry to CallThatFunction, the stack looks like this: </p>
+<table border="0">
+<colgroup>
+<col/>
+<tbody>
+<tr>
+<td>xxxxxxx0</td>
+<td>.. rest of stack ..</td>
+<td></td>
+</tr>
+<tr>
+<td>xxxxxxx8</td>
+<td>return address</td>
+<td>&lt;- RSP</td>
+</tr>
+</tbody>
+</colgroup></table>
+<p>Due to the presence of the return address, the stack is misaligned. CallThatFunction sets up its stack frame, which might go like this: </p>
+<pre>    sub    rsp, 0x28
+</pre>
+<p>Notice that the local stack frame size is 16n+8, so that the result is a realigned stack. </p>
+<table border="0">
+<colgroup>
+<col/>
+<tbody>
+<tr>
+<td>xxxxxxx0</td>
+<td>.. rest of stack ..</td>
+<td></td>
+</tr>
+<tr>
+<td>xxxxxxx8</td>
+<td>return address</td>
+<td></td>
+</tr>
+<tr>
+<td>xxxxxxx0</td>
+<td> </td>
+<td>(arg5)</td>
+</tr>
+<tr>
+<td>xxxxxxx8</td>
+<td> </td>
+<td>(arg4 spill)</td>
+</tr>
+<tr>
+<td>xxxxxxx0</td>
+<td> </td>
+<td>(arg3 spill)</td>
+</tr>
+<tr>
+<td>xxxxxxx8</td>
+<td> </td>
+<td>(arg2 spill)</td>
+</tr>
+<tr>
+<td>xxxxxxx0</td>
+<td> </td>
+<td>(arg1 spill) &lt;- RSP</td>
+</tr>
+</tbody>
+</colgroup></table>
+<p>Now we can set up for the first call: </p>
+<pre>        mov     dword ptr [rsp+0x20], 5     ; output parameter 5
+        mov     r9d, 4                      ; output parameter 4
+        mov     r8d, 3                      ; output parameter 3
+        mov     edx, 2                      ; output parameter 2
+        mov     ecx, 1                      ; output parameter 1
+        call    SomeFunction                ; Go Speed Racer!
+</pre>
+<p>When SomeFunction returns, the stack is <b>not</b> cleaned, so it still looks like it did above. To issue the second call, then, we just shove the new values into the space we already reserved: </p>
+<pre>        mov     dword ptr [rsp+0x20], 10    ; output parameter 5
+        mov     r9d, 9                      ; output parameter 4
+        mov     r8d, 8                      ; output parameter 3
+        mov     edx, 7                      ; output parameter 2
+        mov     ecx, 6                      ; output parameter 1
+        call    SomeFunction                ; Go Speed Racer!
+</pre>
+
+<p>CallThatFunction is now finished and can clean its stack and return. </p>
+<pre>        add     rsp, 0x28
+        ret
+</pre>
+<p>Notice that you see very few “push” instructions in amd64 code, since the paradigm is for the caller to reserve parameter space and keep re-using it. </p>
+<p>
+[<b>Updated 11:00am</b>: Fixed some places where I said “ecx” and “edx” instead of “rcx” and “rdx”; thanks to Mike Dimmick for catching it.]</p>
+
+
+</body>

@@ -1,0 +1,116 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I get the effect of C#’s async void in a C++ coroutine? Part 2: Keeping track of the lifetimes</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/how-do-i-get-the-effect-of-c-s-async-void-in-a-c-coroutine-part-1-why-does-the-obvious-solution-crash"> Last time</a>, we looked at how to write a function that formally returns <code>void</code> that nevertheless performs <code>co_await</code> operations. The function acts like a fire-and-forget, where the remainder of the task runs asynchronously after the first <code>co_await</code> that needs to suspend.</p>
+<p>To recap: We saw that the obvious single-function solution fails because of lifetime issues:</p>
+<pre>// Code in italics is wrong.
+void MyEventHandler(int a, int b)
+{
+  <span style="color: blue;"><i>[=]() -&gt; Concurrency::task&lt;void&gt;</i>
+  {</span>
+    GetReady(a);
+    co_await GetSetAsync(b);
+    Go(a, b);
+  <span style="color: blue;">}();</span>
+}
+</pre>
+<p>The problem is that the lambda is destroyed when the function returns, and then when the task tries to access it, it ends up trying to use a detroyed object, and that doesn’t end well.</p>
+<p>Functions that are converted to coroutines capture the function parameters and their local variables in a frame. The frame consists of the function’s formal parameters and local variables, so we need to transfer the captured things into the frame:</p>
+<pre>void MyClass::MyEventHandler(int a, int b)
+{
+  [](std::shared_ptr&lt;MyClass&gt; self, int a, int b)
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   self-&gt;GetReady(a);
+   co_await self-&gt;GetSetAsync(b);
+   self-&gt;Go(a, b);
+  }(this-&gt;shared_from_this(), a, b);
+}
+</pre>
+<p>However, this forces us to repeat <code>self</code> all the time. What we want is a way to get <code>this</code> to refer to the class whose method we are in, so we won’t have to do this <code>self</code> nonsense. But we also want a captureless lambda, so we won’t have the problem of a task trying to access a destroyed lambda.</p>
+<p>This is a contradiction. If you have a captureless lambda, then it cannot capture <code>this</code>. The problem looks hopeless.</p>
+<p>Until you realize that there’s nobody forcing you to do it all in just one lambda.</p>
+<p>So let’s use two lambdas. One of them captures <code>this</code> so it doesn’t have to carry <code>self</code> around. And then we put that lambda into the frame of the second lambda and invoke it. Then we invoke the second lambda to get the party started.</p>
+<pre>void MyClass::MyEventHandler(int a, int b)
+{
+  auto lambda1 =
+   [=, lifetime = this-&gt;shared_from_this()]()
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   GetReady(a);
+   co_await GetSetAsync(b);
+   Go(a, b);
+  };
+
+  auto lambda2 = [](auto lambda1)
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   co_await lambda1();
+  };
+
+  lambda2(lambda1);
+}
+</pre>
+<p>The first lambda is the one we wish we could use. It captures anything it wants, and can <code>co_await</code> for whatever it likes. To ensure that <code>this</code> doesn’t disappear out from under it, we use the trick of <a href="https://devblogs.microsoft.com/oldnewthing/20190104-00/?p=100635"> capturing an explicit lifetime object into the lambda</a> to keep the parent object alive for the duration of the lambda.</p>
+<p>The second lambda is the one that captures nothing, and is therefore suitable for running as a fire-and-forget coroutine. It accepts the first lambda as its formal parameter, and since formal parameters are part of the frame, this keeps that copy alive for the duration of the task. We then invoke that first lambda with a <code>co_await</code> so that the second lambda’s task will not complete until the first lambda’s task is finished. This keeps the first lambda alive for the duration of the task.</p>
+<p>Finally, we invoke the second lambda, with the first lambda as its parameter, to set things into motion.</p>
+<p>The rest of the work is fine-tuning.</p>
+<p>We pass the first lambda by value, but that is a bit wasteful because the first lambda isn’t used any more once it is passed to the second lambda. Let’s move it rather than copying. Moving also allows the first lambda to capture move-only objects, like RAII types such as <code>std::unique_ptr</code>.</p>
+<pre>void MyClass::MyEventHandler(int a, int b)
+{
+  auto lambda1 =
+   [=, lifetime = this-&gt;shared_from_this()]()
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   GetReady(a);
+   co_await GetSetAsync(b);
+   Go(a, b);
+  };
+
+  auto lambda2 = [](auto lambda1)
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   co_await lambda1();
+  };
+
+  lambda2(<span style="color: blue;">std::move(lambda1)</span>);
+}
+</pre>
+<p>But we can get the same effect as an explicit move by simply passing the second lambda inline, which creates an rvalue reference.</p>
+<pre>void MyClass::MyEventHandler(int a, int b)
+{
+  auto lambda2 = [](auto lambda1)
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   co_await lambda1();
+  };
+
+  lambda2(<span style="color: blue;">[=, lifetime = this-&gt;shared_from_this()]()
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   GetReady(a);
+   co_await GetSetAsync(b);
+   Go(a, b);
+  }</span>);
+}
+</pre>
+<p>And then you can go all the way and make <code>lambda2</code> an immediately-invoked lambda.</p>
+<pre>void MyClass::MyEventHandler(int a, int b)
+{
+  [](auto lambda1)
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   co_await lambda1();
+  }(<span style="color: blue;">[=, lifetime = this-&gt;shared_from_this()]()
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   GetReady(a);
+   co_await GetSetAsync(b);
+   Go(a, b);
+  }</span>);
+}
+</pre>
+<p>Next time, we’ll see what we can do to reduce the boilerplate needed to carry out this pattern.</p>
+
+
+</body>

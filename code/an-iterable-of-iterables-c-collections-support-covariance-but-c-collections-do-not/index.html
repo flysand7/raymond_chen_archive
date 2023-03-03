@@ -1,0 +1,176 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">An iterable of iterables: C# collections support covariance, but C++ collections do not</h1>  <!-- .entry-meta -->
+
+<p>Collections in the C# language support covariance. <a href="https://cpptruths.blogspot.com/2015/11/covariance-and-contravariance-in-c.html"> Collections in the C++ language do not</a>.</p>
+<p>This means, for example, that if a function wants a collection of <code>T</code>, C# lets you pass a collection of things that derive from <code>T</code>, but C++ requires you to pass a collection of exactly <code>T</code>.</p>
+<p>This can be confusing for methods that accept collections of collections. C++ will allow the outer collection to decay, but the objects inside the collection cannot. The Windows Runtime by convention accepts collections of <code>T</code> in the form of an <code>IIterable&lt;T&gt;</code> (which projects into C# as of an <code>IEnumerable&lt;T&gt;</code>), so that you can pass anything that can produce a sequence of <code>T</code> objects. It could be a <code>std::vector&lt;T&gt;</code> or a <code>std::array&lt;T&gt;</code> or even a SQL or LINQ query that produces a sequence of <code>T</code> objects.</p>
+<p>But things get a little weird if you have a collection of collections, because C++ collections don’t support covariance.</p>
+<p>Before we look at covariance, let’s look at simple conversion. Suppose you have to pass an <code>IIterable&lt;Point&gt;</code> to a method like <code>Ink­Manager.</code><code>Select­With­Poly­Line</code> which takes a parameter of type <code>IIterable&lt;Point&gt;</code>.</p>
+<pre>// C#
+var points = new List&lt;Point&gt; {
+        UpperLeftCorner, UpperRightCorner, LowerRightCorner, LowerLeftCorner
+    };
+inkManager.SelectWithPolyline(points);
+
+// C++/CX
+auto points = ref new Vector&lt;Point&gt;({
+      UpperLeftCorner, UpperRightCorner, LowerRightCorner, LowerLeftCorner,
+});
+inkManager-&gt;SelectWithPolyline(points);
+
+// C++/WinRT
+auto points = single_threaded_vector&lt;Point&gt;({
+      UpperLeftCorner, UpperRightCorner, LowerRightCorner, LowerLeftCorner,
+  });
+inkManager.SelectWithPolyline(points);
+</pre>
+<p>This works because <code>List&lt;T&gt;</code> is convertible to <code>IEnumerable&lt;T&gt;</code>, and <code>Vector&lt;T&gt;</code> is convertible to <code>IIterable&lt;T&gt;</code>. The conversion works one level deep.</p>
+<p>Now suppose you are implementing the <code>UIElement.</code><code>Find­Sub­Elements­For­Touch­Targeting</code>:</p>
+<pre>// C#
+virtual override IEnumerable&lt;IEnumerable&lt;Point&gt;&gt; FindSubElementsForTouchTargeting();
+
+// C++/CX
+virtual IIterable&lt;IIterable&lt;Point&gt;^&gt;^ FindSubElementsForTouchTargeting() override;
+
+// C++/WinRT
+IIterable&lt;IIterable&lt;Point&gt;&gt; FindSubElementsForTouchTargeting();
+</pre>
+<p>In C#, this is straightforward. You can have a list of lists:</p>
+<pre>virtual override IEnumerable&lt;IEnumerable&lt;Point&gt;&gt; FindSubElementsForTouchTargeting()
+{
+  var polygon1 = new List&lt;Point&gt; {
+        UpperLeftCorner1, UpperRightCorner1, LowerRightCorner1, LowerLeftCorner1,
+    };
+  var polygon2 = new List&lt;Point&gt; {
+        UpperLeftCorner2, UpperRightCorner2, LowerRightCorner2, LowerLeftCorner2,
+    };
+  var results = new List&lt;List&lt;Point&gt;&gt; { polygon1, polygon2 };
+  return results;
+}
+</pre>
+<p>Thanks to covariance, a <code>List&lt;List&lt;Point&gt;&gt;</code> is compatible with <code>IEnumerable&lt;IEnumerable&lt;Point&gt;&gt;</code> because <code>List&lt;T&gt;</code> is compatible with <code>IEnumeraable&lt;T&gt;</code>, and <code>IEnumeraable&lt;T&gt;</code> is covariant in <code>T</code>.</p>
+<p>C++ is not as lucky. The analogous code in C++/CX would be something like this:</p>
+<pre>virtual override IEnumerable&lt;IEnumerable&lt;Point&gt;&gt; FindSubElementsForTouchTargeting()
+{
+  auto polygon1 = ref new Vector&lt;Point&gt;({
+        UpperLeftCorner1, UpperRightCorner1, LowerRightCorner1, LowerLeftCorner1,
+    });
+  auto polygon2 = ref new Vector&lt;Point&gt;({
+        UpperLeftCorner2, UpperRightCorner2, LowerRightCorner2, LowerLeftCorner2,
+    });
+  auto results = ref new Vector&lt;Vector&lt;Point&gt;&gt;({ polygon1, polygon2 });
+  return results;
+}
+</pre>
+<p>And in C++/WinRT:</p>
+<pre>IIterable&lt;IIterable&lt;Point&gt;&gt; FindSubElementsForTouchTargeting()
+{
+  auto polygon1 = single_threaded_vector&lt;Point&gt;({
+        UpperLeftCorner1, UpperRightCorner1, LowerRightCorner1, LowerLeftCorner1,
+    });
+  auto polygon2 = single_threaded_vector&lt;Point&gt;({
+        UpperLeftCorner2, UpperRightCorner2, LowerRightCorner2, LowerLeftCorner2,
+    });
+  auto results = single_threaded_vector&lt;IVector&lt;Point&gt;&gt;({ polygon1, polygon2 });
+  return results;
+}
+</pre>
+<p>This code doesn’t work because there is no conversion from <code>Vector&lt;Vector&lt;Point&gt;^&gt;^</code> to <code>IIterable&lt;IIterable&lt;Point&gt;^&gt;^</code> (C++/CX) or from <code>IVector&lt;IVector&lt;Point&gt;&gt;</code> to <code>IIterable&lt;IIterable&lt;Point&gt;&gt;</code> (C++/WinRT). The automatic conversion gets you part way there, but it can’t convert the inner portion due to the lack of covariance.</p>
+<table border="0" cellpadding="0" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th colspan="3" style="padding: 3px; border: solid 1px black;">C++/CX</th>
+<th colspan="3" style="padding: 3px; border: solid 1px black;">C++/WinRT</th>
+</tr>
+<tr>
+<td style="padding: 3px 0 0 3px; border-left: solid 1px black; text-align: right;"><tt><span style="color: blue;">Vector</span>&lt;</tt></td>
+<td style="padding: 3px 0 0 0; text-align: right;"><tt>Vector&lt;</tt></td>
+<td style="padding: 3px 3px 0 0; text-align: right;"><tt>Point&gt;^&gt;^</tt></td>
+<td style="padding: 3px 0 0 3px; border-left: solid 1px black; text-align: right;"><tt><span style="color: blue;">IVector</span>&lt;</tt></td>
+<td style="padding: 3px 0 0 0; text-align: right;"><tt>IVector</tt></td>
+<td style="padding: 3px 3px 0 0; border-right: solid 1px black; text-align: right;"><tt>&lt;Point&gt;&gt;</tt></td>
+</tr>
+<tr>
+<td style="padding: 0 0 3px 3px; border-left: solid 1px black; text-align: center;">↓</td>
+<td style="padding: 0 0 3px 0;"> </td>
+<td style="padding: 0 3px 3px 0;"> </td>
+<td style="padding: 0 0 3px 3px; border-left: solid 1px black; text-align: center;">↓</td>
+<td style="padding: 0 0 3px 0;"> </td>
+<td style="padding: 0 3px 3px 0; border-right: solid 1px black;"> </td>
+</tr>
+<tr>
+<td style="padding: 3px 0 0 3px; border-left: solid 1px black; text-align: right;"><tt><span style="color: blue;">IIterable</span>&lt;</tt></td>
+<td style="padding: 3px 0 0 0; text-align: right;"><tt><span style="color: red;">Vector</span>&lt;</tt></td>
+<td style="padding: 3px 3px 0 0; text-align: right;"><tt>Point&gt;^&gt;^</tt></td>
+<td style="padding: 3px 0 0 3px; border-left: solid 1px black; text-align: right;"><tt><span style="color: blue;">IIterable</span>&lt;</tt></td>
+<td style="padding: 3px 0 0 0; text-align: right;"><tt><span style="color: red;">IVector</span></tt></td>
+<td style="padding: 3px 3px 0 0; border-right: solid 1px black; text-align: right;"><tt>&lt;Point&gt;&gt;</tt></td>
+</tr>
+<tr>
+<td style="padding: 0 0 3px 3px; border-left: solid 1px black;"> </td>
+<td style="padding: 0 0 3px 0; text-align: center; position: relative;">
+
+
+</td>
+<td style="padding: 0 3px 3px 0;"> </td>
+<td style="padding: 0 0 3px 3px; border-left: solid 1px black;"> </td>
+<td style="padding: 0 0 3px 0; text-align: center; position: relative;">
+
+
+</td>
+<td style="padding: 0 3px 3px 0; border-right: solid 1px black;"> </td>
+</tr>
+<tr>
+<td style="padding: 3px 0 0 3px; border-left: solid 1px black; border-bottom: solid 1px black; text-align: right;"><tt><span style="color: blue;">IIterable</span>&lt;</tt></td>
+<td style="padding: 3px 0 0 0; border-bottom: solid 1px black; text-align: right;"><tt><span style="color: red;">IIterable</span>&lt;</tt></td>
+<td style="padding: 3px 3px 0 0; border-bottom: solid 1px black; text-align: right;"><tt>Point&gt;^&gt;^</tt></td>
+<td style="padding: 3px 0 0 3px; border-left: solid 1px black; border-bottom: solid 1px black; text-align: right;"><tt><span style="color: blue;">IIterable</span>&lt;</tt></td>
+<td style="padding: 3px 0 0 0; border-bottom: solid 1px black; text-align: right;"><tt><span style="color: red;">IIterable</span>&lt;</tt></td>
+<td style="padding: 3px 3px 0 0; border-right: solid 1px black; border-bottom: solid 1px black; text-align: right;"><tt>&lt;Point&gt;&gt;</tt></td>
+</tr>
+</tbody>
+</table>
+<p>You have to declare the inner portion exactly correctly the first time. The language isn’t going to help you.</p>
+<pre>// C++/CX
+virtual override IEnumerable&lt;IEnumerable&lt;Point&gt;&gt; FindSubElementsForTouchTargeting()
+{
+  auto polygon1 = ref new Vector&lt;Point&gt;({
+        UpperLeftCorner1, UpperRightCorner1, LowerRightCorner1, LowerLeftCorner1,
+    });
+  auto polygon2 = ref new Vector&lt;Point&gt;({
+        UpperLeftCorner2, UpperRightCorner2, LowerRightCorner2, LowerLeftCorner2,
+    });
+  auto results = ref new Vector&lt;<span style="color: blue;">IEnumerable</span>&lt;Point&gt;&gt;({ polygon1, polygon2 });
+  return results;
+}
+</pre>
+<p>And in C++/WinRT:</p>
+<pre>IIterable&lt;IIterable&lt;Point&gt;&gt; FindSubElementsForTouchTargeting()
+{
+  auto polygon1 = single_threaded_vector&lt;Point&gt;({
+        UpperLeftCorner1, UpperRightCorner1, LowerRightCorner1, LowerLeftCorner1,
+    });
+  auto polygon2 = single_threaded_vector&lt;Point&gt;({
+        UpperLeftCorner2, UpperRightCorner2, LowerRightCorner2, LowerLeftCorner2,
+    });
+  auto results = single_threaded_vector&lt;<span style="color: blue;">IIterable</span>&lt;Point&gt;&gt;({ polygon1, polygon2 });
+  return results;
+}
+</pre>
+<p>You do lose the ability to index the <code>results</code> and access the original vectors, since by the time you put them into the <code>results</code>, they have been turned into <code>IIterable</code>s.</p>
+<p>C++/WinRT gives you a little help here. If the iterable of iterables is a parameter to a function, then you can let C++/WinRT auto-generate the outer iterable, at which point the automatic conversions will kick in for the inner objects because the type is being explicitly specified by the parameter.</p>
+<pre>extern void SomeMethod(winrt::param::iterable&lt;
+    IIterable&lt;Point&gt;&gt; const&amp; elementOutlines);
+
+auto polygon1 = single_threaded_vector&lt;Point&gt;({
+      UpperLeftCorner1, UpperRightCorner1, LowerRightCorner1, LowerLeftCorner1,
+  });
+auto polygon2 = single_threaded_vector&lt;Point&gt;({
+      UpperLeftCorner2, UpperRightCorner2, LowerRightCorner2, LowerLeftCorner2,
+  });
+SomeMethod({ polygon1, polygon2 });
+</pre>
+<p>That wasn’t too messy.</p>
+
+
+</body>

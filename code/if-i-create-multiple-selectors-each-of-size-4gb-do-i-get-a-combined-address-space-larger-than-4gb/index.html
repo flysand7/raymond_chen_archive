@@ -1,0 +1,39 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If I create multiple selectors each of size 4GB, do I get a combined address space larger than 4GB?</h1>  <!-- .entry-meta -->
+
+<p>Every so often, someone comes up with the <a href="https://blogs.msdn.microsoft.com/oldnewthing/20130628-00/?p=3963#comment-1063873">clever idea</a> of extending the address space of the x86 processor beyond 4<a href="https://blogs.msdn.microsoft.com/oldnewthing/20090611-00/?p=17933">GB</a> by creating multiple selectors, each of size 4GB. For example, if you created a 4GB selector for code, another 4GB selector for stack, and another 4GB selector for data, and assigned them distinct memory ranges, then you could load up each selector into the corresponding register (CS, SS, DS) and be able to access 12GB of memory. </p>
+<p>Profit! </p>
+<p>Well, except that it doesn’t actually work. </p>
+<p>Segment descriptors on the x86 contain the following pieces of information: </p>
+<ul>
+<li>Various control bits not relevant to this discussion. 
+<li>A segment base address (32 bits). 
+<li>A segment limit (32 bits, encoded as a 20-bit value and an optional scale; details not important). </li></li></li></ul>
+<p>In practice, what happens is that the base address is set to zero and the limit is set to <code>0xFFFFFFFF</code>, which gives each segment a range of 4GB. </p>
+<p>Segments create views into the linear address space. When you access memory by doing, say, <code>mov al, ds:[ebx]</code>, what happens is the following: </p>
+<ul>
+<li>The selector in the <code>ds</code> register is consulted     to obtain its base address and limit.     If <code>ds</code> references an invalid selector,     then a fault occurs. 
+<li>The value in <code>ebx</code> is checked against     the segment limit of the selector held in <code>ds</code>.     If it is greater than the limit, then a fault occurs. 
+<li>The value in <code>ebx</code> is added to the selector’s     base address, producing a linear adddress. 
+<li>That linear address is used to access the underlying memory. </li></li></li></li></ul>
+<p>The mechanism by which linear addresses map to physical addresses is not relevant to the discussion. (This is where page tables come in.) I’m also ignoring expand-down selectors and other details not related to addressing. </p>
+<p>In other words, selectors don’t reference memory direcrly. They are merely a window into the linear address space. If you create a selector whose base address is inside the [base address, base address + offset] range of another selector, then both selectors are accessing the same underlying memory. </p>
+
+
+
+<p>In the above example, we created Selector X with a base address of <code>0x50000000</code> and a limit of <code>0x1FFFFFFF</code>. This gives selector X a reach of [<code>0x50000000</code>, <code>0x6FFFFFFF</code>]: An access to <code>X:0</code> refers to linear address <code>0x50000000</code>, and an access to <code>X:1FFFFFFF</code> refers to linear address <code>0x6FFFFFFF</code>. Higher offsets from selector X are invalid. </p>
+<p>We also created Selector Y with a base address of <code>0x60000000</code> and a limit of <code>0x7FFFFFFF</code>, giving selector Y a reach of [<code>0x60000000</code>, <code>0xDFFFFFFF</code>]. </p>
+<p>Observe that the two selectors overlap. The addresses <code>X:10000000</code> and <code>Y:00000000</code> refer to the same underlying linear address space. Write a value to to <code>X:10000000</code> and you can read it back from <code>Y:00000000</code>. </p>
+<p>Indeed, this behavior on overlap is relied upon constantly. To use the x86 in flat mode, you create a code selector and a data selector, both of which have a base of <code>0x00000000</code>. and a limit of <code>0xFFFFFFFF</code>. You put the code selector in the <code>cs</code> register and the data selector in the <code>ss</code>, <code>ds</code>, and <code>es</code> registers. The fact that the ranges perfectly overlap means that reading data from a code address reads the same bytes that the CPU would have executed. Conversely, the fact that they overlap means that you can generate code by writing to the data segment. </p>
+<p>Okay, you sigh, I can’t give each selector its own 4GB of address space. The fact that the base address of the selector is a 32-bit value means that the best I can do is to create a selector whose base is <code>0xFFFFFFF0</code> and whose limit is <code>0xFFFFFFFF</code>; that at least gives me linear addresses as high as <code>0xFFFFFFF0 + 0xFFFFFFFF</code>, or a smidge under 8GB. Still, 8GB is better than 4GB, right? </p>
+<p>Well, you don’t even get 8GB. </p>
+<blockquote class="q">
+<p><b>3.3.5 32-Bit and 16-Bit Address and Operand Sizes</b> </p>
+<p>With 32-bit address and operand sizes, the maximum linear address or segment offset is FFFFFFFFH (2³² − 1). </p>
+</blockquote>
+<p>“The maximum linear address is FFFFFFFFH.” </p>
+<p>This means that segments whose base + limit is greater than <code>0xFFFFFFFF</code> are illegal. All of your selectors have to fit inside [<code>0x00000000</code>, <code>0xFFFFFFFF</code>]. </p>
+<p>Now, maybe you could pull some super sneaky tricks like keeping all pages mapped not present, and then when a page fault occurs, determining which selector was the source of the faulting linear address and mapping in the appropriate page at fault time, and then setting the trap flag so that the kernel regains control after the instruction has executed, so that you can unmap the page immediately. But faulting at every instruction is going to make things ridiculously slow, and besides, it won’t help you if somebody performs a block memory copy between two different “pseudo address spaces” that happen to have the same linear address. I guess at that point, you would change the selector base addresses so that the source and destination no longer land on the same page, but at this point you are doing so much work at every instruction that you may as well give up trying to execute code natively and just write a p-code interpreter. </p>
+
+
+</body>

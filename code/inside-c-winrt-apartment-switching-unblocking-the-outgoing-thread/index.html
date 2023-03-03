@@ -1,0 +1,95 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Inside C++/WinRT: Apartment switching: Unblocking the outgoing thread</h1>  <!-- .entry-meta -->
+
+<p>Last time, <a href="/code/inside-c-winrt-apartment-switching-the-basic-idea" title="Inside C++/WinRT: Apartment switching: The basic idea"> we built an <code>apartment_context</code> object</a> and used it as part of our coroutine infrastructure so that <code>co_await</code> of Windows Runtime asynchronous operations resume in the same COM context as they started.</p>
+<p>Our implementation of the <code>apartment_<wbr/>context</code> suffers from <a href="/code/c-coroutines-the-problem-of-the-synchronous-apartment-changing-callback" title="C++ coroutines: The problem of the synchronous apartment-changing callback"> the problem of the synchronous apartment-changing callback</a>: The thread being switched <i>from</i> waits synchronously for the thread being switched <i>to</i>. This is a bad thing if the thread being switched <i>from</i> is a UI thread that needs to keep the UI responsive, whereas the thread being switched <i>to</i> is a background thread that is happy to make long blocking calls.</p>
+<p>C++/WinRT addresses this problem by hopping through a background thread in cases where it thinks this will be a problem. In order to detect whether we are in a problem case, <a href="/code/what-do-the-output-values-from-cogetapartmenttype-mean" title="What do the output values from CoGetApartmentType mean?"> we use the <code>Co­Get­Apartment­Type</code> function</a> to determine what kind of apartment we are in.</p>
+<pre>inline std::pair&lt;int32_t, int32_t&gt; get_apartment_type() noexcept
+{
+    int32_t aptType;
+    int32_t aptTypeQualifier;
+    check_hresult(WINRT_IMPL_CoGetApartmentType(&amp;aptType, &amp;aptTypeQualifier));
+    return { aptType, aptTypeQualifier };
+}
+
+inline bool is_sta_thread() noexcept
+{
+    auto type = get_apartment_type();
+    switch (type.first)
+    {
+    case 0: /* APTTYPE_STA */
+    case 3: /* APTTYPE_MAINSTA */
+        return true;
+    case 2: /* APTTYPE_NA */
+        return type.second == 3 /* APTTYPEQUALIFIER_NA_ON_STA */ ||
+            type.second == 5 /* APTTYPEQUALIFIER_NA_ON_MAINSTA */;
+    }
+    return false;
+}
+</pre>
+<p>The code that switches apartments now checks whether it is on a thread that hosts a single-threaded apartment (STA). If so, then instead of resuming the coroutine synchronously via <code>Context­Callback()</code>, it schedules the work to a background thread. That way, it is a background thread that blocks on a potentially long-running coroutine rather than a UI thread.</p>
+<p>First, we rename our old <code>resume_<wbr/>apartment</code> function so it represents the <i>synchronous</i> resumption of the coroutine in another apartment.</p>
+<pre>void <span style="color: #08f;">resume_apartment_sync</span>(
+    com_ptr&lt;IContextCallback&gt; const&amp; context,
+    std::coroutine_handle&lt;&gt; handle)
+{
+    com_callback_args args{};
+    args.data = handle.address();
+
+    check_hresult(
+        context-&gt;ContextCallback(resume_apartment_callback,
+            &amp;args,
+            guid_of&lt;ICallbackWithNoReentrancyToApplicationSTA&gt;(),
+            5, nullptr));
+}
+</pre>
+<p>And then we write a new <code>resume_<wbr/>apartment</code> that resumes either synchronously or asynchronously, depending on the apartment context.</p>
+<pre>inline auto resume_apartment(
+    com_ptr&lt;IContextCallback&gt; const&amp; context,
+    coroutine_handle&lt;&gt; handle)
+{
+    WINRT_ASSERT(context.valid());
+    if (is_sta_thread())
+    {
+        resume_apartment_on_threadpool(context, handle);
+    }
+    else
+    {
+        resume_apartment_sync(context, handle);
+    }
+}
+</pre>
+<p>To resume a coroutine in an apartment from the threadpool, we do it in two steps. First, schedule work on the threadpool. The work consists of synchronously switching to the destination apartment for resuming the coroutine.</p>
+<pre>struct threadpool_resume
+{
+    threadpool_resume(com_ptr&lt;IContextCallback&gt; const&amp; context,
+        coroutine_handle&lt;&gt; handle) :
+        m_context(context), m_handle(handle) { }
+    com_ptr&lt;IContextCallback&gt; m_context;
+    coroutine_handle&lt;&gt; m_handle;
+};
+
+inline void __stdcall fallback_submit_threadpool_callback(
+    void*, void* p) noexcept
+{
+    std::unique_ptr&lt;threadpool_resume&gt;
+        state{ static_cast&lt;threadpool_resume*&gt;(p) };
+    resume_apartment_sync(state-&gt;m_context, state-&gt;m_handle);
+}
+
+inline void resume_apartment_on_threadpool(
+    com_ptr&lt;IContextCallback&gt; const&amp; context,
+    coroutine_handle&lt;&gt; handle)
+{
+    auto state = std::make_unique&lt;threadpool_resume&gt;(context, handle);
+    submit_threadpool_callback(fallback_submit_threadpool_callback,
+                               state.get());
+    state.release();
+}
+</pre>
+<p>The <code>resume_<wbr/>apartment_<wbr/>on_<wbr/>threadpool</code> function captures its parameters into a <code>threadpool_<wbr/>resume</code> structure and uses that pointer as the context pointer for a threadpool callback. The threadpool callback reconstitutes the <code>unique_<wbr/>ptr</code> and uses <code>resume_<wbr/>apartment_<wbr/>sync</code> to resume the coroutine inside the apartment.</p>
+<p>We have avoided the problem of the synchronous apartment-changing callback blocking a UI thread for an extended period of time. We detected the dangerous situation and moved the work to a threadpool thread, which is not a UI thread.</p>
+<p>Next time, we’ll fix another problem with this implementation.</p>
+
+
+</body>

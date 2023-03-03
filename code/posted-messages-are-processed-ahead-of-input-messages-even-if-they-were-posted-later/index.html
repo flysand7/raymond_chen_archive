@@ -1,0 +1,181 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Posted messages are processed ahead of input messages, even if they were posted later</h1>  <!-- .entry-meta -->
+
+<p><p>
+Regardless of 
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/05/30/10422199.aspx">
+which interpretation you use</a>,
+it remains the case that posted messages
+are processed ahead of input messages.
+Under the MSDN interpretation,
+posted messages and input messages all go into the <i>message queue</i>,
+but
+<a href="http://msdn.microsoft.com/library/ms644936">
+posted messages are pulled from the queue before input messages</a>.
+Under the Raymond interpretation,
+posted messages and input messages are kept in separate queues,
+and the message retrieval functions will look first in the posted
+message queue before looking in the input queue.
+</p>
+<p>
+Let’s run an experiment to see posted messages get processed
+ahead of input messages.
+Start with the
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/04/22/410773.aspx">
+new scratch program</a>
+and make these changes:
+</p>
+<pre>
+<font color="blue">#include &lt;strsafe.h&gt;</font></pre></p>
+<p>class RootWindow : public Window
+{
+public:
+ virtual LPCTSTR ClassName() { return TEXT(“Scratch”); }
+ static RootWindow *Create();</p>
+<p> <font color="blue">void AppendText(LPCTSTR psz)
+ {
+    ListBox_SetCurSel(m_hwndChild,
+                      ListBox_AddString(m_hwndChild, psz));
+ }</font></p>
+<p> void AppendFormat(LPCTSTR pszFormat, …)
+ {
+  va_list ap;
+  va_start(ap, pszFormat);
+  TCHAR szMsg[256];
+  StringCchVPrintf(szMsg, ARRAYSIZE(szMsg), pszFormat, ap);
+  AppendText(szMsg);
+  va_end(ap);
+ }</p>
+<p> void LogMessage(const MSG *pmsg)
+ {
+   AppendFormat(TEXT(“%d\t%04x\t%p\t%p”),
+                pmsg-&gt;time,
+                pmsg-&gt;message,
+                pmsg-&gt;wParam,
+                pmsg-&gt;lParam);
+ }</p>
+<p> …
+};</p>
+<p>LRESULT RootWindow::OnCreate()
+{
+ <font color="blue">m_hwndChild = CreateWindow(
+      TEXT(“listbox”), NULL,
+      LBS_HASSTRINGS | LBS_USETABSTOPS |
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL,
+      0, 0, 0,0, GetHWND(), (HMENU)1, g_hinst, 0);</font>
+ return 0;
+}</p>
+<p>int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+   …
+   while (GetMessage(&amp;msg, NULL, 0, 0)) {</p>
+<p> <font color="blue">switch (msg.message) {
+    case WM_KEYDOWN:
+     prw-&gt;AppendText(TEXT(“Sleeping”));
+     UpdateWindow(prw-&gt;GetHWND());
+     Sleep(1000);
+     prw-&gt;AppendText(TEXT(“Posting”));
+     PostMessage(prw-&gt;GetHWND(), WM_USER, 0, 0);
+     break;
+    case WM_KEYUP:
+    case WM_USER:
+     prw-&gt;LogMessage(&amp;msg);
+     break;
+    }</font></p>
+<p>    TranslateMessage(&amp;msg);
+    DispatchMessage(&amp;msg);
+   …
+}
+
+<p>
+This program creates a list box so we can display some output.
+In the message loop, it sniffs at all the queued messages and
+does the following:
+</p>
+<ul>
+<li>If the message is <code>WM_KEY­UP</code> or
+    <code>WM_USER</code>, then it logs the message timestamp
+    and some parameters.
+<li>If the message is <code>WM_KEY­DOWN</code>,
+    then it sleeps without processing messages for one second,
+    and then posts a <code>WM_USER</code> message
+    to the main window (which ignores it).
+</li></li></ul>
+<p>
+Run this program, and then tap the shift key.
+</p>
+<p>
+The window gets a <code>WM_KEY­DOWN</code>
+for the shift key.
+It sleeps for one second (plenty of time for you to release
+the shift key),
+and then posts a <code>WM_USER</code> message.
+</p>
+<p>
+The <code>WM_USER</code> and <code>WM_KEY­UP</code>
+messages arrive, and observe via the log window
+that they arrive <i>out of order</i>.
+<code>WM_USER</code> message arrived first!
+</p>
+<p>
+That’s because of the rule that says that
+posted messages are processed ahead of input messages.
+(Depending on how you want to look at it, you might say
+that posted messages are “called out for preferential treatment”
+in the queue,
+or you might say that posted messages are placed in a different
+queue from input messages, and the posted message queue has
+higher priority.)
+</p>
+<p>
+Observe also that the timestamp on the <code>WM_USER</code>
+message is <i>greater than</i> the timestamp on the
+<code>WM_KEY­UP</code> message,
+because the key went up before the <code>WM_USER</code>
+message was posted.
+<i>Time has gone backward</i>.
+</p>
+<p>
+Make the following change to our program:
+Change the message we post from
+<code>WM_USER</code> to
+<code>WM_KEY­UP</code>:
+</p>
+<pre>
+      PostMessage(hwnd, <font color="blue">WM_KEYUP</font>, 0, 0);
+</pre>
+<p>
+Run the program again, and again tap the shift key.
+Observe that the posted <code>WM_KEY­UP</code> message
+is processed ahead of the <code>WM_KEY­UP</code> input message.
+(You can see the difference because we posted the
+<code>WM_KEY­UP</code> message with <code>wParam</code>
+and <code>lParam</code> both zero,
+whereas the
+<code>WM_KEY­UP</code> input message has information in
+those parameters.)
+</p>
+<p>
+This little demonstration also reinforces some other things we already knew.
+For example, it once again shows that the input manager
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/05/24/10421022.aspx">
+does not wiretap your posted messages</a>.
+If you post a
+<code>WM_KEY­UP</code> message,
+it is treated like a posted message not an input message.
+We saw earlier that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/05/30/423202.aspx">
+posting a keyboard message does not update internal input states</a>.
+The keyboard shift states are not updated to match your prank call message.
+If somebody calls <code>Get­Queue­Status</code>,
+they will not be told that there is input waiting.
+It will not wake a
+<code>Msg­Wait­For­Multiple­Objects</code> function
+that is waiting for <code>QS_INPUT</code>.
+And as we saw here today,
+the message gets processed out of order.
+</p></p>
+
+
+</body>

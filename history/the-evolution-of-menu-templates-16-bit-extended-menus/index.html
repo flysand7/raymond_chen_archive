@@ -1,0 +1,231 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The evolution of menu templates: 16-bit extended menus</h1>  <!-- .entry-meta -->
+
+<p><p>
+Windows 95 introduced a new menu format,
+known as “extended menus”.
+You declare these in a resource file with the <code>MENUEX</code> keyword.
+The 16-bit extended menu is really just a temporary stopping point
+on the way to the 32-bit extended menu,
+since the 16-bit form is
+supported only by the Windows 95 family of operating
+systems.
+It’s sort of the missing link of menu templates.
+</p>
+<p>
+Things start off the same as
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/07/09/8711897.aspx">
+the 16-bit classic menu</a>,
+with a structure I’ve been calling <code>MENUHEADER16</code>:
+</p>
+<pre>
+struct MENUHEADER16 {
+ WORD wVersion;
+ WORD cbHeaderSize;
+ BYTE rgbExtra[cbHeaderSize-4];
+};
+</pre>
+<p>
+The version number for extended menus is one instead of zero,
+and the <code>cbHeaderSize</code> now includes the size of the
+<code>wVersion</code> and <code>cbHeaderSize</code> fields in
+the header size count; therefore, the number of interstitial bytes
+four less than the value specified by the <code>cbHeaderSize</code> member.
+</p>
+<p>
+Due to a bug in Windows 95 (and its descendants),
+the <code>cbHeaderSize</code> is ignored, and its value is assumed
+to be four.
+Fortunately, every version of the 16-bit resource compiler that
+supports 16-bit extended menu templates sets the <code>cbHeaderSize</code>
+to four.
+Consequently, nothing goes wrong in practice.
+And I suspect nobody has noticed this bug in the over fifteen years
+(not twenty-five
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/07/15/8732375.aspx#8733629">
+as I had originally written</a>)
+the code has been in existence.
+</p>
+<p>
+Unlike the classic menu, there is a prefix structure that
+comes before the list of menu items.
+</p>
+<pre>
+struct MENUPREFIX16 {
+ DWORD dwContextHelpID;
+};
+</pre>
+<p>
+New to extended menus is the addition of context help IDs.
+These values can be set and retrieved
+programmatically with the
+<code>GetMenuContextHelpId</code> and
+<code>SetMenuContextHelpId</code> functions.
+</p>
+<p>
+The template then continues with a packed array of structures
+I will call <code>MENUITEMEX16</code>:
+</p>
+<pre>
+struct MENUITEMEX16 {
+ DWORD dwType;
+ DWORD dwState;
+ WORD  wID;
+ BYTE  bFlags;
+ CHAR  szText[]; // null terminated ANSI string
+};
+</pre>
+<p>
+Whereas the members of the classic <code>MENUITEM16</code>
+were designed to be passed to the function
+<code>InsertMenu</code>,
+the members of the extended <code>MENUITEMEX16</code> were
+designed to be passed to the function
+<code>InsertMenuItem</code>.
+The <code>dwType</code>, <code>dwState</code>, and
+<code>wID</code> members correspond to
+the <code>fType</code>, <code>fState</code>, and
+<code>wID</code>
+members of the 16-bit <code>MENUITEMINFO</code> structure.
+Similarly, the <code>szText</code> goes into the
+<code>dwItemData</code> if the item requires a string.
+(If the item doesn’t require a string, then the
+<code>szText</code> should be an empty string; i.e.,
+should consist solely of the null terminator.)
+</p>
+<p>
+Notice that a new feature of extended menus is that pop-up menus
+can have IDs as well as normal menu items.
+</p>
+<p>
+The <code>bFlags</code> describes other information about the
+menu item,
+information that in the classic menu was hidden in spare bits
+in the <code>wFlags</code>.
+But here, the <code>bFlags</code> is where this information is kept.
+The following flags are currently defined:
+</p>
+<table border="0">
+<tr><td><code>0x01</code></td><td>This item is a pop-up submenu</td></tr>
+<tr><td><code>0x80</code></td><td>This item is the last item in the menu</td></tr>
+</table>
+<p>
+If indeed the bottom bit is set, then after the <code>MENUITEMEX16</code>
+comes a description of the submenu, recursively.
+(Note that the submenu does not have
+a <code>MENUHEADER16</code>.)
+</p>
+<p>
+As before, we’ll illustrate this format with an example.
+</p>
+<pre>
+1 MENUEX 1000
+BEGIN
+  POPUP “&amp;File”, 200,,, 1001
+  BEGIN
+    MENUITEM “&amp;Open\tCtrl+O”, 100
+    MENUITEM “”, -1, MFT_SEPARATOR
+    MENUITEM “&amp;Exit\tAlt+X”,  101
+  END
+  POPUP “&amp;View”, 201,,, 1002
+  BEGIN
+    MENUITEM “&amp;Status Bar”, 102,, MFS_CHECKED
+  END
+END
+</pre>
+<p>
+The resulting 16-bit extended menu template begins with the header:
+</p>
+<pre>
+0000  01 00          // wVersion = 1
+0002  04 00          // cbHeaderSize = 4
+</pre>
+<p>
+Since this is the start of a menu, we get a context help ID:
+</p>
+<pre>
+0004  E8 03 00 00    // dwContextHelpID = 1000
+</pre>
+<p>
+After the context help ID come the menu items.
+Our first is a pop-up submenu,
+so the <code>bFlags</code> indicates that a submenu is coming:
+</p>
+<pre>
+0008  00 00 00 00    // dwType = MFT_STRING
+000C  00 00 00 00    // dwState = 0
+0010  C8 00          // wID = 200
+0012  01             // bFlags = “pop-up submenu”
+0013  26 46 69 6C 65 00 // “&amp;File” + null terminator
+</pre>
+<p>
+Since we have a pop-up submenu, we recursively include
+a template for that submenu directly after the menu item template.
+Consequently, we begin with the context help ID:
+</p>
+<pre>
+0019  E9 03 00 00    // dwContextHelpID = 1001
+</pre>
+<p>
+And then the contents of the submenu:
+</p>
+<pre>
+001D  00 00 00 00    // dwType = MFT_STRING
+0021  00 00 00 00    // dwState = 0
+0025  64 00          // wID = 100
+0027  00             // bFlags = 0
+0028  26 4F 70 65 6E 09 43 74 72 6C 2B 4F 00
+                     // “&amp;Open\tCtrl+O” + null terminator</pre></p>
+<p>0035  00 08 00 00     // dwType = MFT_SEPARATOR
+0039  00 00 00 00     // dwState = 0
+003D  FF FF           // wID = -1
+003F  00              // bFlags = 0
+0040  00              // “”</p>
+<p>0041  00 00 00 00     // dwType = MFT_STRING
+0045  00 00 00 00     // dwState = 0
+0049  65 00           // wID = 101
+004B  80              // bFlags = “this is the last menu item”
+004C  26 45 78 69 74 09 41 6C 74 2B 58 00
+                     // “&amp;Exit\tAlt+X” + null terminator
+
+<p>
+When we reach the end of the pop-up submenu, we 
+pop up a level.
+Therefore, the next entries describe more top-level menu items.
+</p>
+<pre>
+0058  00 00 00 00     // dwType = MFT_STRING
+005C  00 00 00 00     // dwState = 0
+0060  C9 00           // wID = 201
+0062  81              // bFlags = “pop-up submenu” |
+                      //          “this is the last menu item”
+0063  26 56 69 65 77 00 // “&amp;View” + null terminator
+</pre>
+<p>
+Ah, no sooner do we pop up than we push back down with
+another submenu.
+And the “last menu item” flag is set,
+which means that once the submenu is finished,
+we are done with the extended menu template.
+</p>
+<pre>
+0069  EA 03 00 00    // dwContextHelpID = 1002</pre></p>
+<p>006D  00 00 00 00    // dwType = MFT_STRING
+0071  08 00 00 00    // dwState = MFS_CHECKED
+0075  66 00          // wID = 102
+0077  80             // bFlags = “this is the last menu item”
+0078  26 53 74 61 74 75 73 20 42 61 72 00
+                     // “&amp;Status Bar” + null terminator
+
+<p>
+After the context help ID, we have the sole menu item for
+this pop-up submenu, so the first item is also the last item.
+</p>
+<p>
+Next time, we’ll wrap up by looking at the final menu template format,
+the 32-bit extended menu.
+I bet you all can’t wait.
+</p></p>
+
+
+</body>

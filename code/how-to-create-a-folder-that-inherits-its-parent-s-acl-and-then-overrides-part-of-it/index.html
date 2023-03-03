@@ -1,0 +1,45 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to create a folder that inherits its parent’s ACL, and then overrides part of it</h1>  <!-- .entry-meta -->
+
+<p>A customer wants to create a folder that inherits its parent’s ACL but then overrides part of it. Specifically, the customer wanted to disallow the creation of subfolders. The customer reported that when they used the <code>SH­Create­Directory</code> function to create the folder, the folder did not inherit any ACLs at all from its parent. The only thing it got was the “deny creation of subfolders” part. </p>
+<p>The customer provided this sample code to demonstrate what they were doing. </p>
+<pre>
+int main()
+{
+  PSECURITY_DESCRIPTOR pSD;
+  ULONG ulSDDL;
+  LPTSTR pszPath = L"C:\\my\\test\\directory";
+  LPTSTR pszDacl = L"D:(D;;0x4;;;WD)";
+
+  if (ConvertStringSecurityDescriptorToSecurityDescriptor(
+    pszDacl, SDDL_REVISION_1, &amp;pSD, &amp;ulSDDL))
+  {
+    wprintf(L"Created security descriptor\n");
+    SECURITY_ATTRIBUTES sa;
+    sa.lpSecurityDescriptor = pSD;
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    if (SUCCEEDED(SHCreateDirectoryEx(nullptr, pszPath, &amp;sa)))
+    {
+        wprintf(L"Created folder %s\n", pszPath);
+    }
+  }
+  return 0;
+}
+</pre>
+<p>Notice the importance of <a href="https://blogs.msdn.microsoft.com/oldnewthing/20131018-00/?p=2893">reduction</a>, simplifying the problem to the smallest program that still demonstrates the issue. This boils the problem down to its essence, thereby allowing the development team to focus on the issue and not have to wade through (and possibly debug) unrelated code. Reduction is also a useful exercise on the part of the person reporting the problem, in order to verify that the problem really is what you think it is, rather than being a side effect of some other part of the program. </p>
+<p>The customer added, “The ACL we are using <code>D:(D;;0x4;;;WD)</code> denies folder creation to everyone. We tried adding flags like <code>P</code>, <code>AI</code>, <code>OICI</code>, <i>etc</i>., but none of them seem to work.” </p>
+<p>The shell takes the security descriptor passed to the <code>SH­Create­Directory­Ex</code> function and passes it through to the <code>Create­Directory</code> function, so any issues you have with the security descriptor are really issues with the <code>Create­Directory</code> function. The shell is just the middle man. </p>
+<p>But even though this wasn’t really the expertise of the shell team, we were able to figure out the problem. </p>
+<p>First off, we have a red herring: The <code>bInherit­Handle</code> member controls handle inheritance, not ACL inheritance. Setting it to <code>TRUE</code> causes the handle to be inherited by child processes. But that has no effect on the ACL. And since the <code>Create­Directory</code> function doesn’t return a handle at all, fiddling with the <code>bInherit­Handle</code> means nothing since there is no handle in the first place. It’s a double red herring. </p>
+<p>When you specify an explicit security descriptor to the <code>Create­Directory</code> function, that establishes the security descriptor on the newly-created object. There is no inheritance from the parent. Inheritance rules are applied at creation only when you create the object with the default security attributes:¹ </p>
+<blockquote class="q"><p><a href="https://msdn.microsoft.com/library/windows/desktop/aa363855(v=vs.85).aspx">If <i>lpSecurityAttributes</i> is <b>NULL</b></a>, the directory gets a default security descriptor. The ACLs in the default security descriptor for a directory are inherited from its parent directory. </p></blockquote>
+<p>Passing an explicit security descriptor overrides the default behvaior. </p>
+<p>If you want a blend of default behavior and custom behavior, then you have a few options available. </p>
+<p>One option is to read the security descriptor of the parent object and propagate the inheritable ACEs to the child in the appropriate manner. This is a complicated endeavor and probably is best left to the experts. It’s not a simple matter of copying them from the parent to the child. You also have to  to adapt the ACEs based on flags like “inherit only” and “container inherit”. </p>
+<p>The second option is to create the directory without an explicit security descriptor and let the experts create it with the default security descriptor, which takes into account all the inheritance rules. And then modify the security descriptor post-creation to include the new ACE you want. Fortunately, <a href="http://msdn.microsoft.com/library/aa379283(v=vs.85).aspx">MSDN has sample code</a> for how to add an ACE to an existing security descriptor. </p>
+<p>The customer  reported that they adapted the code from MSDN and it worked perfectly. </p>
+<p>¹ Inheritance rules are also applied when you use functions like <a href="https://msdn.microsoft.com/library/windows/desktop/aa376326(v=vs.85).aspx"><code>Set­Named­Security­Info</code> and <code>Set­Security­Info</code></a>. </p>
+
+
+</body>

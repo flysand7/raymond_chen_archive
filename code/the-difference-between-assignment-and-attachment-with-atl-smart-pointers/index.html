@@ -1,0 +1,213 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The difference between assignment and attachment with ATL smart pointers</h1>  <!-- .entry-meta -->
+
+<p>
+Last time,
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/11/19/9924950.aspx">
+I presented a puzzle regarding a memory leak</a>.
+Here’s the relevant code fragment:
+</p>
+<pre>
+<font color="red">CComPtr&lt;IStream&gt; pMemoryStream;</font>
+CComPtr&lt;IXmlReader&gt; pReader;
+UINT nDepth = 0;
+//Open read-only input stream
+<font color="red">pMemoryStream = ::SHCreateMemStream(utf8Xml, cbUtf8Xml);</font>
+</pre>
+<p>
+The problem here is assigning the return value of
+<code>SHCreateMemStream</code> to a smart pointer
+instead of attaching it.
+</p>
+<p>
+The <code>SHCreateMemStream</code> function creates a memory stream
+and returns a pointer to it.
+That pointer has a reference count of one,
+in accordance with COM rules that a function
+<a href="http://msdn.microsoft.com/en-us/library/ms692481.aspx">
+which produces a reference calls <code>AddRef</code>,
+and the responsibility is placed upon the recipient
+to call <code>Release</code></a>.
+The assignment operator for <code>CComPtr&lt;T&gt;</code> is a copy operation:
+It <code>AddRef</code>s the pointer and saves it.
+You’re still on the hook for the reference count of the original pointer.
+</p>
+<pre>
+ATLINLINE ATLAPI_(IUnknown*) AtlComPtrAssign(IUnknown** pp, IUnknown* lp)
+{
+        if (lp != NULL)
+                lp-&gt;AddRef();
+        if (*pp)
+                (*pp)-&gt;Release();
+        *pp = lp;
+        return lp;
+}
+template &lt;class T&gt;
+class CComPtr
+{
+public:
+        ...
+        T* operator=(T* lp)
+        {
+                return (T*)AtlComPtrAssign((IUnknown**)&amp;p, lp);
+        }
+</pre>
+<p>
+Observe that assigning a <code>T*</code> to a <code>CComPtr&lt;T&gt;</code>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/04/06/108395.aspx">
+<code>AddRef</code>s the incoming pointer</a>
+and
+<code>Release</code>s the old pointer (if any).
+When the <code>CComPtr&lt;T&gt;</code> is destructed, it will release
+the pointer, undoing the <code>AddRef</code> that was performed by
+the assignment operator.
+In other words, assignment followed by destruction has a net effect
+of zero on the pointer you assigned.
+The operation behaves like a copy.
+</p>
+<p>
+Another way of putting a pointer into a <code>CComPtr&lt;T&gt;</code>
+is with the <code>Attach</code> operator.
+This is a transfer operation:
+</p>
+<pre>
+        void Attach(T* p2)
+        {
+                if (p)
+                        p-&gt;Release();
+                p = p2;
+        }
+</pre>
+<p>
+Observe that there is no <code>AddRef</code> here.
+When the <code>CComPtr&lt;T&gt;</code> is destructed,
+it will perform the <code>Release</code>,
+which doesn’t undo any operation performed by the <code>Attach</code>.
+Instead, it releases the reference count held by the original pointer
+you attached.
+</p>
+<p>
+Let’s put this in a table, since people seem to like tables:
+</p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tr>
+<th>Operation</th>
+<th>Behavior</th>
+<th>Semantics</th>
+</tr>
+<tr>
+<td>Attach()</td>
+<td>Takes ownership</td>
+<td>Transfer semantics</td>
+</tr>
+<tr>
+<td>operator=()</td>
+<td>Creates a new reference</td>
+<td>Copy semantics</td>
+</tr>
+</table>
+<p>
+You use the <code>Attach</code> method when you want to assume
+responsibility for releasing the pointer (ownership transfer).
+You use the assignment operator when you want the original pointer
+to continue to be responsible for its own release (no ownership transfer).
+</p>
+<p>
+There is also a <code>Detach</code> method which is the opposite of
+<code>Attach</code>:
+Detaching a pointer from the <code>CComPtr&lt;T&gt;</code>
+means “I am taking over responsibility for releasing this pointer.”
+The <code>CComPtr&lt;T&gt;</code> gives you its pointer and then forgets
+about it; you’re now on your own.
+</p>
+<p>
+The memory leak in the code fragment above occurs because the
+assignment operator has copy semantics, but we wanted transfer
+semantics,
+since we want the smart pointer to take the responsibility for
+releasing the pointer when it is destructed.
+</p>
+<pre>
+pMemoryStream.Attach(::SHCreateMemStream(utf8Xml, cbUtf8Xml));
+</pre>
+<p>
+The <code>CComPtr&lt;T&gt;::operator=(T*)</code> method
+is definitely one of the more dangerous methods in the
+<code>CComPtr&lt;T&gt;</code> repertoire,
+because it’s so easy to assign a pointer to a smart pointer
+without giving it a moment’s thought.
+(Another dangerous method is the
+<code>T** CComPtr&lt;T&gt;::operator&amp;()</code>,
+but at least that has an assertion to try to catch the bad usages.
+Even nastier is
+<a href="http://blogs.msdn.com/jaredpar/archive/2009/11/04/type-safety-issue-when-assigning-ccomptr-t-instances.aspx">
+the secret QI’ing assignment operator</a>.)
+I have to say that there is merit to
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/04/06/108395.aspx#108407">
+Ben Hutchings’ recommendation</a> simply not to allow a simple pointer
+to be assigned to a smart pointer, precisely because the semantics are
+easily misunderstood.
+(The boost library, for example, follows Ben’s recommendation.)
+</p>
+<p>
+Here’s another exercise based on what you’ve learned:
+</p>
+<blockquote class="q">
+<p>
+Application Verifier told us that we have a memory leak,
+and we traced it back to the
+function <code>GetTextAsInteger</code>.
+</p>
+<pre>
+BSTR GetInnerText(IXMLDOMNode *node)
+{
+    BSTR bstrText = NULL;
+    node-&gt;get_text(&amp;bstrText);
+    return bstrText;
+}
+DWORD GetTextAsInteger(IXMLDOMNode *node)
+{
+    DWORD value = 0;
+    CComVariant innerText = GetInnerText(node);
+    hr = VariantChangeType(&amp;innerText, &amp;innerText, 0, VT_UI4);
+    if (SUCCEEDED(hr))
+    {
+        value = V_UI4(&amp;innerText);
+    }
+    return value;
+}
+</pre>
+<p>
+Obviously, the problem is that we passed the same input and output
+pointers to <code>VariantChangeType</code>,
+causing the output integer to overwrite the input <code>BSTR</code>,
+resulting in the leak of the <code>BSTR</code>.
+But when we fixed the function, we still got the leak:
+</p>
+<pre>
+DWORD GetTextAsInteger(IXMLDOMNode *node)
+{
+    DWORD value = 0;
+    CComVariant innerText = GetInnerText(node);
+    <font color="blue">CComVariant textAsValue;</font>
+    hr = VariantChangeType(&amp;innerText, &amp;<font color="blue">textAsValue</font>, 0, VT_UI4);
+    if (SUCCEEDED(hr))
+    {
+        value = V_UI4(&amp;<font color="blue">textAsValue</font>);
+    }
+    return value;
+}
+</pre>
+<p>
+Is there a leak in the <code>VariantChangeType</code> function itself?
+</p>
+</blockquote>
+<p>
+Hint: It is in fact explicitly documented that the output parameter
+to <code>VariantChangeType</code> can be equal to the input parameter,
+which results in an in-place conversion.
+There was nothing wrong with the original call to
+<code>VariantChangeType</code>.</p>
+
+
+</body>

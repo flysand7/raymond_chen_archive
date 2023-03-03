@@ -1,0 +1,145 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What do HeapLock and HeapUnlock do, and when do I need to call them?</h1>  <!-- .entry-meta -->
+
+<p>
+You never need to call the <code>Heap­Lock</code> and
+<code>Heap­Unlock</code> functions under normal operation.
+Assuming the heap is serialized
+(which is the default),
+all the standard heap functions like
+<code>Heap­Allocate</code> and <code>Heap­Free</code>
+will automatically serialize.
+</p>
+<p>
+In fact, the way they serialize is by calling
+the¹ <code>Heap­Lock</code> and
+<code>Heap­Unlock</code> functions!
+</p>
+<p>
+Nearly all heap operations complete in a single call.
+If your heap is serialized, this means that the heap operation
+takes the heap lock,
+does its work,
+and then releases the heap lock and returns.
+If <i>all</i> heap operations were like this,
+then there would be no need for
+<code>Heap­Lock</code> or
+<code>Heap­Unlock</code>.
+</p>
+<p>
+Unfortunately, there is also the
+<code>Heap­Walk</code> function,
+which does a little bit of work, and then returns
+with a partial result.
+The design for <code>Heap­Walk</code> is that
+the application calls the function repeatedly
+until it either gets all the results it wants, or gets bored and gives up.
+But wait, what if the heap changes while the application is
+trying to walk through it?
+To prevent that from happening,
+the program can call
+<code>Heap­Lock</code> before starting the enumeration,
+and
+<code>Heap­Unlock</code> when it is done.
+During the time the heap is locked,
+other threads which attempt to call a
+<code>Heap­Xxx</code> function with that same heap
+will block until the heap is unlocked.
+</p>
+<p>
+The ability to lock the heap creates a lot of potential for craziness,
+because the heap is a high-traffic area.
+As a result, it is very important that any code which calls
+<code>Heap­Lock</code> do very little while the lock is held.
+Take the lock, do your thing, and get out quickly.
+</p>
+<p>
+But wait, there’s more.
+Holding the heap lock blocks all other threads from
+allocating or freeing memory.
+This puts the heap lock very low in your lock hierarchy.
+Therefore,
+while you hold the heap lock,
+you cannot block on synchronization objects whose owners might
+try to access the heap you just locked.
+Consider the following:
+</p>
+<pre>
+<i>// Code in italics is wrong.
+void BadIdea()
+{
+ HeapLock(GetProcessHeap());
+ SendMessage(...);
+ HeapUnlock(GetProcessHeap());
+}</i>
+</pre>
+<p>
+Sending a message is a big deal.
+The thread that is the target of the message
+may be waiting for the heap lock,
+and now you’ve created a deadlock.
+You won’t proceed until that thread processes the message,
+but that thread can’t process the message until you unlock the heap.
+</p>
+<p>
+You might accidentally do something wrong while hold the heap lock
+if you happen to trigger a delay-loaded DLL,
+in which case your call into that other DLL turns into a call
+to <code>Load­Library</code>, and now you’ve lost control.
+In practice,
+the only thing you should be doing while holding the heap lock
+is calling <code>Heap­Walk</code> and saving the results
+locally, and in a way that doesn’t allocate or free memory
+on the heap you are walking!
+Wait until after you unlock the heap to
+start studying the results you
+collected or transfer the raw data into a more suitable data structure.
+</p>
+<p>
+<b>Bonus chatter</b>
+</p>
+<p>
+Note that if you call
+<code>Heap­Lock</code> or <code>Heap­Unlock</code>
+on a heap that was created without serialization
+(<code>HEAP_NO_SERIALIZATION</code>),
+then the results are undefined.
+That’s because passing the
+<code>HEAP_NO_SERIALIZATION</code> flag means
+“Hey, Heap Manager,
+don’t bother locking this heap.
+I will take responsibility for ensuring that only one thread
+operates on this heap at a time.”
+If you later call
+<code>Heap­Lock</code> on a no-serialization heap,
+the heap manager will say,
+“Wha?
+You said that <i>you</i> would take care of serialization, not me!”
+</p>
+<p>
+It’s like ordering a car and saying,
+“Don’t bother installing door locks.
+I will take responsibility for ensuring the safety of the car.
+(Say, by never letting the car leave a secured facility.)”
+And then a month later, calling OnStar and saying,
+“Hi, can you remotely lock my car for me? Thanks.”
+Dude, you explicitly opted out of door locks.
+</p>
+<p>
+(Amazingly, I encountered one developer who thought that
+calling <code>Heap­Lock</code> on a no-serialization heap
+would cause other heap operations on the heap to be blocked,
+even if they passed the
+<code>HEAP_NO_SERIALIZATION</code> flag to those operations.
+Um, no, the <code>Heap­Lock</code> function cannot lock a
+no-serialization heap because a no-serialization heap <i>doesn’t have
+lock in the first place, at your request</i>.)
+</p>
+<p>
+<b>Nitpicker’s corner</b>
+</p>
+<p>
+¹ s/the/the functional equivalents of/</p>
+
+
+</body>

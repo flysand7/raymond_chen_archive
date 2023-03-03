@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A simple workaround for the fact that <code>std::equal</code> takes its predicate by value</h1>  <!-- .entry-meta -->
+
+<p>The versions of the <code>std::equal</code> function that takes a binary predicate accepts the predicate by value, which means that if you are using a functor, it will be copied, which may be unnecessary or unwanted.</p>
+<p>In my case, the functor had a lot of state, and I didn’t want to copy it.</p>
+<pre>class comparer
+{
+  ...
+
+  template&lt;typename R&gt;
+  bool ranges_equiv(R const&amp; left, R const&amp; right)
+  {
+    using T = typename std::decay_t&lt;decltype(*begin(left))&gt;;
+    return std::equal(
+      begin(left), end(left),
+      begin(right), end(right),
+      equiv&lt;T&gt;);
+  }
+
+  template&lt;typename T&gt;
+  bool equiv(T const&amp; left, T const&amp; right) = delete;
+
+  template&lt;&gt;
+  bool equiv(Doodad const&amp; left, Doodad const&amp; right)
+  {
+    return (!check_names || equiv(left.Name(), right.Name())) &amp;&amp;
+           (!check_children || ranges_equiv(left.Children(), right.Children()));
+  }
+
+  ... other overloads omitted ...
+};
+</pre>
+<p>The idea behind the <code>comparer</code> is that you configure it with information about what you care about and what you don’t, and then you call <code>equiv</code> and let it walk the object hierarchy comparing the things you asked for according to the rules you specified.</p>
+<p>This works great, except that <code>std::equal</code> copies its predicate, and our <code>comparer</code> is somewhat expensive to copy, since it may have lots of configuration <code>std::string</code>s and stuff. What we’re looking for is a version that takes the predicate by reference, so that we can use the same <code>comparer</code> all the way down.</p>
+<p>The workaround is to replace the predicate with something that is cheap to copy.</p>
+<pre>  template&lt;typename R&gt;
+  bool ranges_equiv(R const&amp; left, R const&amp; right)
+  {
+    return std::equal(
+      begin(left), end(left),
+      begin(right), end(right),
+      <span style="color: blue;">[this](auto&amp;&amp; l, auto&amp;&amp; r) { return equiv(l, r); }</span>);
+  }
+</pre>
+<p>Instead of passing a full <code>comparer</code> object, we pass a lambda that captures the <code>comparer</code>‘s <code>this</code> pointer. This lambda is cheap to copy, and it allows us to reuse the same <code>comparer</code> all the way down the object hierarchy.</p>
+<p>This solution looks obvious in retrospect, but I got all hung up trying to create a cheap copyable object, like a nested type called <code>compare_forwarder</code> that kept a <code>std::reference_wrapper</code> to the <code>comparer</code>, before realizing that I was just writing a verbose version of a lambda.</p>
+<p> </p>
+
+
+</body>

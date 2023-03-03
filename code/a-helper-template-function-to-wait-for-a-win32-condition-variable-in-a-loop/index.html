@@ -1,0 +1,45 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A helper template function to wait for a Win32 condition variable in a loop</h1>  <!-- .entry-meta -->
+
+<p>Win32 <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms682052(v=vs.85).aspx">condition variables</a> suffer from the problem of spurious wake-ups, and you will usually wait on a condition variable in a loop. It’s easier than <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180118-00/?p=97825">the case of <code>Wait­On­Address</code></a> because you hold a lock while checking the condition, so you don’t have to worry about race conditions against other threads. (The idea is that anybody who wants to cause a change to the condition needs to acquire the same lock. Therefore holding the lock prevents the condition from changing.) </p>
+<p>The C++ standard library contains an overload to <a href="http://en.cppreference.com/w/cpp/thread/condition_variable/wait">the <code>std::<code></code>condition_<code></code>variable::<code></code>wait</code> method</a> which takes a predicate. If the predicate returns <code>false</code>, then the <code>wait</code> will loop back and wait some more. </p>
+<p>Let’s write that same helper function for Win32 condition variables. </p>
+<pre>
+template&lt;typename TLambda&gt;
+void SleepConditionVariableCSUntil(
+  CONDITION_VARIABLE* conditionVariable,
+  CRITICAL_SECTION*   criticalSection,
+  TLambda&amp;&amp;           is_okay)
+{
+  while (!is_okay()) {
+    SleepConditionVariableCS(conditionVariable, criticalSection, INFINITE);
+  }
+}
+
+template&lt;typename TLambda&gt;
+void SleepConditionVariableSharedSRWUntil(
+  CONDITION_VARIABLE* conditionVariable,
+  SRWLOCK*            srwLock,
+  TLambda&amp;&amp;           is_okay)
+{
+  while (!is_okay()) {
+    SleepConditionVariableSRW(conditionVariable, srwLock, INFINITE,
+                              CONDITION_VARIABLE_LOCKMODE_SHARED);
+  }
+}
+
+template&lt;typename TLambda&gt;
+void SleepConditionVariableExclusiveSRWUntil(
+  CONDITION_VARIABLE* conditionVariable,
+  SRWLOCK*            srwLock,
+  TLambda&amp;&amp;           is_okay)
+{
+  while (!is_okay()) {
+    SleepConditionVariableSRW(conditionVariable, srwLock, INFINITE, 0);
+  }
+}
+</pre>
+<p>I will admit that these helpers aren’t as useful as the one for <code>Wait­On­Address</code> because the loop is very straightforward. It may not be much of a benefit over just writing the loop out manually. </p>
+
+
+</body>

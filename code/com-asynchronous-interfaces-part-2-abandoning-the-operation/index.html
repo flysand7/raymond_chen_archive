@@ -1,0 +1,36 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">COM asynchronous interfaces, part 2: Abandoning the operation</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/com-asynchronous-interfaces-part-1-the-basic-pattern" title="COM asynchronous interfaces, part 1: The basic pattern"> ran a very basic demonstration of COM asynchronous interfaces</a>. Now we’ll start to get fancy.</p>
+<p>Our first fancy thing is creating a fire-and-forget asynchronous call. To do this, you simply abandon the call object after calling the <code>Begin_</code> method. It means that you never find out the answer, or even learn that it failed. But if you were going to ignore the result anyway, then it doesn’t matter.</p>
+<pre>int main(int, char**)
+{
+  winrt::init_apartment(winrt::apartment_type::multi_threaded);
+
+  auto pipe = CreateSlowPipeOnOtherThread();
+
+  winrt::com_ptr&lt;::AsyncIPipeByte&gt; call;
+  auto factory = pipe.as&lt;ICallFactory&gt;();
+  winrt::check_hresult(factory-&gt;CreateCall(
+    __uuidof(::AsyncIPipeByte), nullptr,
+    __uuidof(::AsyncIPipeByte),
+    reinterpret_cast&lt;::IUnknown**&gt;(call.put())));
+
+  <span style="color: blue;">printf("Beginning the Push\n");
+  BYTE buffer[15] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                      11, 12, 13, 14, 15 };
+  winrt::check_hresult(call-&gt;Begin_Push(buffer, 15));
+
+  call = nullptr; // throw it away!
+  printf("Abandoned the call\n");
+
+  Sleep(5000); // just so you can see the other thread</span>
+  return 0;
+}
+</pre>
+<p>After initiating a <code>Push</code> with <code>Begin_<wbr/>Push</code>, we simply release the call object (which happens when we set it to <code>nullptr</code>) and go on with our lives. The call is still running, but we have lost our ability to access its results.</p>
+<p>If you run this program, you can see that the call to <code>Push</code> continues running to completion. Depending on the timing, you may even observe the call become abandoned <i>before</i> the <code>Push</code> method even starts!</p>
+<p>Next time, we’ll abandon the operation only if it takes too long.</p>
+
+
+</body>

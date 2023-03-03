@@ -1,0 +1,93 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The AArch64 processor (aka arm64), part 23: Common patterns</h1>  <!-- .entry-meta -->
+
+<p>Let’s look at some common patterns in compiler-generated code. We’ll start with a simple function call.</p>
+<pre>extern DWORD CreateWidget(WIDGETINFO const* info, int flags, HWIDGET* widget);
+extern WIDGETINFO c_info;
+
+if (CreateWidget(&amp;c_info, WidgetFlags::FailIfExists,
+                 &amp;widget) != NO_ERROR) ...
+
+    mov     w1, #1          ; WidgetFlags::FailIfExists
+    adrp    x0, unrelated_global ; top 52 bits of pointer to c_info
+    add     x0, x0, #0x320  ; lower 12 bits of pointer to c_info
+    add     x2, sp, #0x40   ; x2 -&gt; widget
+    bl      CreateWidget    ; call it
+    cbnz    w0, error       ; branch if nonzero return value
+</pre>
+<p>The parameters are loaded into the <var>x0</var> through <var>x2</var> registers, though not necessarily in that order. In this case, <var>w1</var> is the <var>flags</var> parameter, and it gets a hard-coded constant.</p>
+<p>The <var>info</var> parameter is a pointer to a global, so we use the <code>ADRP</code> + <code>ADD</code> sequence to get its address. Note that the name of the <code>c_info</code> variable appears nowhere in the disassembly. We just have to realize that <code>c_info</code> is <code>0x320</code> bytes after <code>unrelated_global</code>.</p>
+<p>The last parameter is a pointer to a local variable, so we calculate its address by adding the appropriate offset to the stack pointer.</p>
+<p>After the function returns, we branch if it returned a nonzero value in <var>w0</var>, which is the return value register for 32-bit integers.</p>
+<p>If <code>Create­Widget</code> is a naïvely-imported function, then that <code>BL</code> will call the import stub, which looks like this:</p>
+<pre>CreateWidget:
+    adrp        xip0, _imp_ResetDoodad
+    ldr         xip0, [xip0, #0x8E8]
+    br          xip0
+</pre>
+<p>This is an import stub that uses the <var>xip0</var> scratch register to look up the import address entry for <code>_imp_CreateWidget</code> by loading the doubleword that is <code>0x8E8</code> bytes after <code>_imp_ResetDoodad</code>. Again, since we are building the address in two parts, the actual destination variable is not visible in the disassembly.</p>
+<p>If the <code>Create­Widget</code> function had been declared with <code>__declspec(dllimport)</code>, then the compiler would call indirectly through the import address table:</p>
+<pre>    <span style="color: #808080;">mov     w1, #1          ; WidgetFlags::FailIfExists
+    adrp    x0, unrelated_global ; top 52 bits of pointer to c_info
+    add     x0, x0, #0x320  ; lower 12 bits of pointer to c_info
+    add     x2, sp, #0x40   ; x2 -&gt; widget</span>
+
+    adrp    x8, _imp_ResetDoodad
+    ldr     x8, [x8, #0x8E8] ; load CreateWidget function pointer
+    blr     x8              ; call it
+
+    <span style="color: #808080;">cbnz    w0, error       ; branch if nonzero return value</span>
+</pre>
+<p>Virtual method calls also require obtaining the destination function pointer at runtime, this time from the vtable.</p>
+<pre>p-&gt;method(42);
+
+    ; assume x19 holds "p"
+
+    mov     x0, x19         ; x0 = this
+    ldr     x8, [x19]       ; x8 -&gt; vtable
+    mov     w1, #42         ; parameter 1
+    ldr     x8, [x8, #8]    ; load function pointer for p-&gt;method
+    br      x8              ; call it
+</pre>
+<p>If control flow guard is active, then there will be a call to validate the call target before using it.</p>
+<pre>    ldr     x8, [x19]       ; x8 -&gt; vtable
+    ldr     x20, [x8, #8]   ; x20 = function pointer for p-&gt;method
+    adrp    x8, unrelated_symbol+0x4280 ; page that contains __guard_check_icall_fptr
+    ldr     x8, [x8, #0x820] ; x8 -&gt; __guard_check_icall_fptr
+    mov     x15, x20        ; x15 = address to check
+    
+    mov     x0, x19         ; x0 = this
+    mov     w1, #42         ; parameter 1
+    br      x20             ; call the function
+</pre>
+<p>The <code>__guard_<wbr/>check_<wbr/>icall_<wbr/>fptr</code> function uses a nonstandard calling convention: It takes the pointer to be checked in the <var>x15</var> register instead of <var>x0</var>.</p>
+<p>The last interesting code generation is the table-based dispatch for dense switch statements.</p>
+<pre>    ; switch on value in w19
+    cmp     w19, #9         ; beyond end of table?
+    bhi     do_default      ; Y: then go to default case
+    adr     x9, switch_table
+    ldrsw   x8, [x9, w19 uxtw #2] ; load offset from table
+    adr     x9, some_code   ; some code address in the middle of the cases
+    add     x8, x9, x8, lsl #2 ; move forward by this many instructions
+    br      x8              ; and jump there
+</pre>
+<p>First, we reject values which don’t correspond to an entry in our table. In more complex scenarios, the <code>BHI</code> might take us to code that tests some straggler values, or possible even tests a different jump table.</p>
+<p>If the value has an entry in our switch table, we use <code>ADR</code> to get the address of the table, which is stored in the code segment somewhere nearby (probably after the end of the function). Then we use <code>LDRSW</code> to load a signed word from the table, using the value in <var>w19</var> as an unsigned index, shifted left by 2, which makes it a word index.</p>
+<p>Okay, so we now have an offset loaded from the table.</p>
+<p>Next, we set <var>x9</var> to point to some code and use the offset as an instruction count (shift left by 2 since each instruction is 4 bytes) relative to the code address. That produces a new code address which we branch to.</p>
+<p>Depending on how much code exists in each of the cases, the jump table could be a table of bytes, halfwords, or (in this case) words.</p>
+<p>Sometimes the compiler is super-clever, and it puts the jump table close to the code. That way, it doesn’t need to load an anchor code address. <i>The jump table itself serves as the anchor</i>.</p>
+<pre>    ; switch on value in w19
+    cmp     w19, #9         ; beyond end of table?
+    bhi     do_default      ; Y: then go to default case
+    adr     x9, switch_table
+    ldrsw   x8, [x9, w19 uxtw #2] ; load offset from table
+;   don't need to reload x9
+    add     x8, x9, x8, lsl #2 ; move forward by this many instructions relative to table
+    br      x8              ; and jump there
+</pre>
+<p>In principle, the compiler could have a jump table of code pointers rather than a jump table of instruction offsets. Although it costs an extra instruction or two (to add the offset to an anchor code address), it does allow for a smaller table, since each entry is only a word, or possibly as small as a byte. It also makes the code position-independent, which means fewer relocations are needed.</p>
+<p>We’ll wrap up the series with the traditional line-by-line walkthrough of a simple function.</p>
+
+
+</body>

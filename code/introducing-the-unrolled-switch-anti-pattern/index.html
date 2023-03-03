@@ -1,0 +1,207 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Introducing the unrolled-switch anti-pattern</h1>  <!-- .entry-meta -->
+
+<p>
+Over the years, I’ve seen a bunch of coding anti-patterns.
+I figured maybe I’ll share a few.
+</p>
+<p>
+Today, I’ll introduce
+what I’m calling the <i>unrolled-switch</i> anti-pattern,
+also known as
+“<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/04/27/10002865.aspx">Specialization is always faster, right?</a>”
+</p>
+<pre>
+enum Axis
+{
+    XAxis,
+    YAxis,
+    ZAxis,
+};
+// code earlier in the function ensure that
+// "axis" is always a valid axis
+int newPosition;
+switch (axis)
+{
+case XAxis:
+    newPosition = m_position[XAxis] + amount;
+    if (newPosition &lt; m_minPosition[XAxis])
+        newPosition = m_minPosition[XAxis];
+    if (newPosition &gt; m_maxPosition[XAxis])
+        newPosition = m_maxPosition[XAxis];
+    m_position[XAxis] = amount;
+    break;
+case YAxis:
+    newPosition = m_position[YAxis] + amount;
+    if (newPosition &lt; m_minPosition[YAxis])
+        newPosition = m_minPosition[YAxis];
+    if (newPosition &gt; m_maxPosition[YAxis])
+        newPosition = m_maxPosition[YAxis];
+    m_position[YAxis] = amount;
+    break;
+case ZAxis:
+    newPosition = m_position[ZAxis] + amount;
+    if (newPosition &lt; m_minPosition[ZAxis])
+        newPosition = m_minPosition[ZAxis];
+    if (newPosition &gt; m_maxPosition[XAxis])
+        newPosition = m_maxPosition[XAxis];
+    m_position[ZAxis] = amount;
+    break;
+}
+</pre>
+<p>As we all know,
+special-case code is faster than general-purpose code.
+Instead of writing slow general-purpose code:
+</p>
+<pre>
+    newPosition = m_position[axis] + amount;
+    if (newPosition &lt; m_minPosition[axis])
+        newPosition = m_minPosition[axis];
+    if (newPosition &gt; m_maxPosition[axis])
+        newPosition = m_maxPosition[axis];
+    m_position[axis] = amount;
+</pre>
+<p>
+we unroll it into a switch statement, thereby generating
+highly-optimized
+special-purpose code, one for each axis.
+</p>
+<p>
+What makes this anti-pattern particularly frustrating is that you
+cannot tell at a glance whether all the cases really are the same
+(just with different axes).
+</p>
+<p>
+In fact, they aren’t.
+</p>
+<p>
+If you look closely, you’ll see that we check the
+new Z-position against the X-axis maximum rather than the Z-axis
+maximum.
+If you’re reading this code, you now start to wonder,
+“Is this a copy/paste bug, or is there some reason that
+we really do want to check the Z-position against the X-axis minimum?”
+</p>
+<p>
+A variation on the <i>unrolled-switch</i> is the
+<i>unrolled-if</i>, used if the item you want to unroll
+cannot be used in a <i>switch</i> statement:
+</p>
+<pre>
+FruitBasket *BananaBasket;
+FruitBasket *AppleBasket;
+FruitBasket *PearBasket;
+FruitBasket *MangoBasket;
+if (basket == BananaBasket) {
+  if (!BananaBasket-&gt;IsEmpty()) {
+    fruit = BananaBasket-&gt;TakeFruit();
+    if (HaveKnife()) {
+      TakeKnife();
+      fruit-&gt;Peel();
+      fruit-&gt;Slice();
+      fruit-&gt;Eat();
+      ReplaceKnife();
+    } else {
+      BananaBasket-&gt;AddFruit(fruit);
+    }
+  }
+} else if (basket == AppleBasket) {
+  if (!AppleBasket-&gt;IsEmpty()) {
+    fruit = AppleBasket-&gt;TakeFruit();
+    if (HaveKnife()) {
+      TakeKnife();
+      fruit-&gt;Peel();
+      fruit-&gt;Slice();
+      fruit-&gt;Eat();
+      ReplaceKnife();
+    } else {
+      AppleBasket-&gt;AddFruit(fruit);
+    }
+  }
+} else if (basket == PearBasket) {
+  if (!PearBasket-&gt;IsEmpty()) {
+    fruit = PearBasket-&gt;TakeFruit();
+    if (HaveKnife()) {
+      TakeKnife();
+      fruit-&gt;Slice();
+      fruit-&gt;Eat();
+      ReplaceKnife();
+    } else {
+      PearBasket-&gt;AddFruit(fruit);
+    }
+  }
+} else if (basket == MangoBasket) {
+  if (!MangoBasket-&gt;IsEmpty()) {
+    fruit = MangoBasket-&gt;TakeFruit();
+    if (HaveKnife()) {
+      TakeKnife();
+      fruit-&gt;Peel();
+      fruit-&gt;Slice();
+      fruit-&gt;Eat();
+      ReplaceKnife();
+    } else {
+      BananaBasket-&gt;AddFruit(fruit);
+    }
+  }
+}
+</pre>
+<p>
+When I pointed out in an aside to the customer that this could
+be simplified (after fixing the copy/paste errors) to
+</p>
+<pre>
+if (!basket-&gt;IsEmpty()) {
+  fruit = basket-&gt;TakeFruit();
+  if (HaveKnife()) {
+    TakeKnife();
+    fruit-&gt;Peel();
+    fruit-&gt;Slice();
+    fruit-&gt;Eat();
+    ReplaceKnife();
+  } else {
+    basket-&gt;AddFruit(fruit);
+  }
+}
+</pre>
+<p>
+the response was, “Hey, that’s a neat trick.
+I didn’t realize you could do that.”
+</p>
+<p>
+I wonder if this person also programs loops like this:
+</p>
+<pre>
+switch (limit)
+{
+case 0:
+  break;
+case 1:
+  do_something(array[0]);
+  break;
+case 2:
+  for (int i = 0; i &lt; 2; i++) do_something(array[i]);
+  break;
+case 3:
+  for (int i = 0; i &lt; 3; i++) do_something(array[i]);
+  break;
+case 4:
+  for (int i = 0; i &lt; 4; i++) do_something(array[i]);
+  break;
+case 5:
+  for (int i = 0; i &lt; 5; i++) do_something(array[i]);
+  break;
+case 6:
+  for (int i = 0; i &lt; 6; i++) do_something(array[i]);
+  break;
+...
+case 999:
+  for (int i = 0; i &lt; 999; i++) do_something(array[i]);
+  break;
+default:
+  FatalError("Need more cases to handle larger array");
+  break;
+}
+</pre>
+
+
+</body>

@@ -1,0 +1,288 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Processing a ValueSet or PropertySet even in the face of possible mutation, part 4</h1>  <!-- .entry-meta -->
+
+<p>The customer that was trying to apply the conclusions of this series had a scenario where the PropertySet had both an auto-save feature, as well as an explicit-save feature. So they tried refactoring:</p>
+<pre><span style="color: #08f;">std::optional&lt;SomeKindOfDataBuffer&gt; Widget::SaveToBuffer()</span>
+{
+    try {
+        SomeKindOfDataBuffer buffer;
+        auto it = m_propertySet.First();
+        if (it.HasCurrent()) {
+            do {
+                auto current = it.Current();
+                buffer.AddKeyAndValue(current.Key(), current.Value());
+            } while (it.MoveNext());
+        }
+
+        auto guard = m_lock.lock();
+
+        // verify that the collection is still unchanged before returning
+        std::ignore = it.HasCurrent();
+
+        <span style="color: #08f;">return buffer;</span>
+    } catch (winrt::hresult_changed_state const&amp;) {
+        // Abandon the operation.
+        <span style="color: #08f;">return std::nullopt;</span>
+    }
+}
+
+<span style="color: #08f;">void Widget::OnPropertySetChanged()
+{
+    auto buffer = SaveToBuffer();
+    if (buffer) {
+        SaveToAutoSaveLocation(*buffer);
+    }
+}
+
+void Widget::Save()
+{
+    auto buffer = SaveToBuffer();
+    if (!buffer) throw winrt::hresult_changed_state();
+    SaveBuffer(*buffer);
+    return true;
+}</span>
+</pre>
+<p>The code to save the property set to a buffer is factored into a helper function, which we then use in the two code paths.</p>
+<p>Unfortunately, the refactoring reintroduced the bug.</p>
+<p>The purpose of the lock is to prevent a competing auto-save from racing ahead of the current auto-save. But the <code>Save­To­Buffer()</code> releases the lock before returning. The new auto-save code reopens the race condition:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: 1px gray; border-style: none solid solid none;">Thread 1</td>
+<td style="border-bottom: solid 1px gray;">Thread 2</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Insert begins</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">OnPropertySetChanged begins</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">SaveToBuffer begins</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Create the buffer</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Enter the lock</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Check for concurrent mutation</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Release the lock</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Return from SaveToBuffer</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Insert begins</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>OnPropertySetChanged begins</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>SaveToBuffer begins</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Create the buffer</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Enter the lock</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Check for concurrent mutation</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Release the lock</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Return from SaveToBuffer</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>SaveToAutoSaveLocation</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>OnPropertySetChanged returns</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Insert returns</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">SaveToAutoSaveLocation</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">OnPropertySetChanged returns</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Insert returns</td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>Once you release the lock, another thread can come in and mutate the collection and save the changes. And then you get around to saving the changes, and you overwrote the good changes with out-of-date ones.</p>
+<p>Fortunately, we can solve this problem by returning the iterator, too!</p>
+<pre><span style="color: #08f;">std::pair&lt;std::optional&lt;SomeKindOfDataBuffer&gt;,
+          winrt::Iterator&lt;winrt::IKeyValuePair&lt;winrt::hstring,
+                                               winrt::IInspectable&gt;&gt;&gt;</span>
+Widget::SaveToBuffer()
+{
+    <span style="color: #08f;">SomeKindOfDataBuffer buffer;
+    auto it = m_propertySet.First();</span>
+    try {
+        if (it.HasCurrent()) {
+            do {
+                auto current = it.Current();
+                buffer.AddKeyAndValue(current.Key(), current.Value());
+            } while (it.MoveNext());
+        }
+
+        <span style="color: red;">// auto <span style="text-decoration: line-through;">guard = m_lock.lock();</span>
+
+        // <span style="text-decoration: line-through;">verify that the collection is still unchanged before returning</span>
+        // <span style="text-decoration: line-through;">std::ignore = it.HasCurrent();</span></span>
+
+        return <span style="color: #08f;">{ buffer, it</span> };
+    } catch (winrt::hresult_changed_state const&amp;) {
+        // Abandon the operation.
+        return <span style="color: #08f;">{ std::nullopt, it</span> };
+    }
+}
+</pre>
+<p>The two callers can then check the validity of the iterator to determine whether or not to proceed. In the case of auto-save, the check can be performed under the lock.</p>
+<pre>void Widget::OnPropertySetChanged()
+{
+    auto [buffer, it] = SaveToBuffer();
+    if (buffer) {
+        auto guard = m_lock.lock();
+        try {
+            // final check under the lock
+            std::ignore = it.HasCurrent();
+            SaveToAutoSaveLocation(*buffer);
+        } catch (winrt::hresult_changed_state const&amp;) {
+            // Abandon the operation.
+        }
+    }
+}
+
+void Widget::Save()
+{
+    auto [buffer, it] = SaveToBuffer();
+
+    // Verify that the collection wasn't changed
+    // while we were trying to build the buffer.
+    std::ignore = it.HasCurrent();
+
+    SaveBuffer(*buffer);
+}
+</pre>
+<p>An alternative is to make the caller provide the iterator:</p>
+<pre>std::optional&lt;SomeKindOfDataBuffer&gt;
+Widget::SaveToBuffer(
+    <span style="color: #08f;">winrt::Iterator&lt;winrt::IKeyValuePair&lt;winrt::hstring,
+                                         winrt::IInspectable&gt;&gt; it</span>)
+{
+    try {
+        SomeKindOfDataBuffer buffer;
+        <span style="color: red;">// <span style="text-decoration: line-through;">auto it = m_propertySet.First();</span></span>
+        if (it.HasCurrent()) {
+            do {
+                auto current = it.Current();
+                buffer.AddKeyAndValue(current.Key(), current.Value());
+            } while (it.MoveNext());
+        }
+
+        <span style="color: red;">// auto <span style="text-decoration: line-through;">guard = m_lock.lock();</span>
+
+        // <span style="text-decoration: line-through;">verify that the collection is still unchanged before returning</span>
+        // <span style="text-decoration: line-through;">std::ignore = it.HasCurrent();</span></span>
+
+        return <span style="color: #08f;">buffer</span>;
+    } catch (winrt::hresult_changed_state const&amp;) {
+        // Abandon the operation.
+        <span style="color: #08f;">return std::nullopt;</span>
+    }
+}
+
+void Widget::OnPropertySetChanged()
+{
+    <span style="color: #08f;">auto it = m_propertySet.First();</span>
+    auto buffer = SaveToBuffer(it);
+    if (buffer) {
+        auto guard = m_lock.lock();
+        try {
+            // final check under the lock
+            std::ignore = it.HasCurrent();
+            SaveToAutoSaveLocation(*buffer);
+        } catch (winrt::hresult_changed_state const&amp;) {
+            // Abandon the operation.
+        }
+    }
+}
+
+void Widget::Save()
+{
+    <span style="color: #08f;">auto it = m_propertySet.First();</span>
+    auto buffer = SaveToBuffer(it);
+
+    // Verify that the collection wasn't changed
+    // while we were trying to build the buffer.
+    std::ignore = it.HasCurrent();
+
+    SaveBuffer(*buffer);
+}
+</pre>
+<p>But the pattern I am currently a fan of is to make the caller do the exception handling, too:</p>
+<pre>SomeKindOfDataBuffer Widget::SaveToBuffer()
+{
+    SomeKindOfDataBuffer buffer;
+    for (auto [name, value] : m_propertySet)
+        buffer.AddKeyAndValue(name, value);
+    }
+    return buffer;
+}
+
+void Widget::OnPropertySetChanged() try
+{
+    auto it = m_propertySet.First();
+    auto buffer = SaveToBuffer();
+
+    auto guard = m_lock.lock();
+    // final check under the lock
+    std::ignore = it.HasCurrent();
+
+    SaveToAutoSaveLocation(buffer);
+} catch (winrt::hresult_changed_state const&amp;) {
+    // Abandon the operation.
+}
+
+void Widget::Save()
+{
+    auto buffer = SaveToBuffer();
+    SaveBuffer(buffer);
+}
+</pre>
+
+
+</body>

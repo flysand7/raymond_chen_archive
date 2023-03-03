@@ -1,0 +1,33 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Suspicious memory leak in std::basic_string</h1>  <!-- .entry-meta -->
+
+<p>A customer asked for assistance debugging a memory leak. Their memory leak detection tool was reporting a leak in the following call stack: </p>
+<pre>
+ntdll!RtlAllocateHeap
+Contoso!malloc
+Contoso!Allocator&lt;unsigned short&gt;::allocate
+Contoso!std::basic_string&lt;unsigned short,std::char_traits&lt;unsigned short&gt;,Allocator&lt;unsigned short&gt;,_STL70&gt;::_Copy
+Contoso!std::basic_string&lt;unsigned short,std::char_traits&lt;unsigned short&gt;,Allocator&lt;unsigned short&gt;,_STL70&gt;::_Grow
+Contoso!std::basic_string&lt;unsigned short,std::char_traits&lt;unsigned short&gt;,Allocator&lt;unsigned short&gt;,_STL70&gt;::assign
+Contoso!std::basic_string&lt;unsigned short,std::char_traits&lt;unsigned short&gt;,Allocator&lt;unsigned short&gt;,_STL70&gt;::assign
+Contoso!std::basic_string&lt;unsigned short,std::char_traits&lt;unsigned short&gt;,Allocator&lt;unsigned short&gt;,_STL70&gt;::operator=
+Contoso!ConfigurationImpl::validate
+</pre>
+<p>“The <code>Configuration­Impl</code> object itself is not being leaked. Just the string inside it.” </p>
+<p>The Visual C++ team reported that there are no known memory leaks in STL70. However, the code above is using a custom allocator, so they asked to see more of the customer’s code. </p>
+<p>And they found the smoking gun, but it wasn’t in the allocator. It was in the class constructor. </p>
+<pre>
+ConfigurationImpl::ConfigurationImpl()
+{
+    // Initialize all members to zero.
+    memset(this, 0, sizeof(ConfigurationImpl));
+}
+</pre>
+<p><code>basic_string</code>, like all STL objects, is non-POD. A POD type is roughly¹ something that can be declared in C as a plain old <code>struct</code>, such as <code>struct Pod { int x; int y; };</code>. POD types can be treated as a blob of bytes that you can manipulate with <code>memset</code>, <code>memcpy</code>, and such. Non-POD types, on the other hand, are those with things like constructors, destructors, virtual methods, all that fancy C++ stuff. You cannot treat them as just a blob of bytes because they have other fancy behaviors attached, and treating them as a blob of bytes bypasses (and may even damage) those fancy behaviors. </p>
+<p>In this case, using <code>memset</code> to zero out a <code>basic_string</code> wipes out all the work that was performed by the <code>basic_string</code> constructor and results in the dreaded <i>undefined behavior</i>. Maybe undefined behavior manifests itself as a memory leak. Maybe it manifests itself as a crash. Maybe it manifests itself as <a href="https://devblogs.microsoft.com/oldnewthing/">time travel</a>. </p>
+<p>In practical terms, what you have there is memory corruption. When you have memory corruption, crazy things can happen. So don’t corrupt memory. </p>
+<p>The customer thanked us for our assistance and fixed their code. </p>
+<p>¹This is a simplified discussion, so don’t haul out your language-lawyer pitchforks. </p>
+
+
+</body>

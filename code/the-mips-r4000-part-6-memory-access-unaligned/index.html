@@ -1,0 +1,144 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The MIPS R4000, part 6: Memory access (unaligned)</h1>  <!-- .entry-meta -->
+
+<p>Unaligned memory access on the MIPS R4000 is performed with pairs of instructions. </p>
+<pre>
+    LWL     rd, n+3(rs)     ; load word left
+    LWR     rd, n(rs)       ; load word right
+</pre>
+<p>This is easier to explain with a diagram rather than with a formula. </p>
+<table cellpadding="3" class="cp3" style="border-collapse: collapse;text-align: center">
+<tr>
+<td style="width: 1pc"></td>
+<td align="left" colspan="4" style="width: 4pc">n+3(rs)</td>
+<td align="left" colspan="4" style="width: 4pc">n(rs)</td>
+<td style="width: 1px"></td>
+<td style="width: 1pc"></td>
+<td style="width: 1pc"></td>
+<td style="width: 1pc"></td>
+</tr>
+<tr>
+<td style="width: 1pc"></td>
+<td style="width: 1pc">↓</td>
+<td style="width: 1pc"></td>
+<td style="width: 1pc"></td>
+<td style="width: 1px"></td>
+<td style="width: 1pc">↓</td>
+<td style="width: 1pc"></td>
+<td style="width: 1pc"></td>
+<td style="width: 1pc"></td>
+</tr>
+<tr>
+<td style="border: solid black 1px;width: 1pc">AA</td>
+<td style="border: solid black 1px;width: 1pc">BB</td>
+<td style="border: solid black 1px;width: 1pc">CC</td>
+<td style="border: solid black 1px;width: 1pc">DD</td>
+<td style="width: 1px"></td>
+<td style="border: solid black 1px;width: 1pc">EE</td>
+<td style="border: solid black 1px;width: 1pc">FF</td>
+<td style="border: solid black 1px;width: 1pc">GG</td>
+<td style="border: solid black 1px;width: 1pc">HH</td>
+</tr>
+<tr>
+<td colspan="9" style="width: 9pc"> </td>
+</tr>
+<tr>
+<td style="width: 1pc"></td>
+<td style="border: solid black 1px;width: 1pc">11</td>
+<td style="border: solid black 1px;width: 1pc">22</td>
+<td style="border: solid black 1px;width: 1pc">33</td>
+<td style="width: 1px"></td>
+<td style="border: solid black 1px;width: 1pc">44</td>
+<td style="width: 1pc"></td>
+<td align="left" colspan="2" style="width: 2pc">rd</td>
+</tr>
+<tr>
+<td style="width: 1pc"></td>
+<td align="left" colspan="8" style="width: 8pc"><code>LWL rd, n+3(rs)</code></td>
+</tr>
+<tr>
+<td style="width: 1pc"></td>
+<td style="border: solid black 1px;width: 1pc">BB</td>
+<td style="border: solid black 1px;width: 1pc">CC</td>
+<td style="border: solid black 1px;width: 1pc">DD</td>
+<td style="width: 1px"></td>
+<td style="border: solid black 1px;width: 1pc">44</td>
+<td style="width: 1pc"></td>
+<td align="left" colspan="2" style="width: 2pc">rd</td>
+</tr>
+<tr>
+<td style="width: 1pc"></td>
+<td align="left" colspan="8" style="width: 8pc"><code>LWR rd, n(rs)</code></td>
+</tr>
+<tr>
+<td style="width: 1pc"></td>
+<td style="border: solid black 1px;width: 1pc">BB</td>
+<td style="border: solid black 1px;width: 1pc">CC</td>
+<td style="border: solid black 1px;width: 1pc">DD</td>
+<td style="width: 1px"></td>
+<td style="border: solid black 1px;width: 1pc">EE</td>
+<td style="width: 1pc"></td>
+<td align="left" colspan="2" style="width: 2pc">rd</td>
+</tr>
+</table>
+<p>You give the “load word left” instruction the effective address of the most significant byte of the unaligned word you want to load, and it picks out the correct bytes from the enclosing word and merges them into the upper bytes of the destination register. </p>
+<p>The “load word right” works analogously: You give it the effective address of the least significant byte of the unaligned word you want to load, and it picks out the correct bytes from the enclosing word and merges them into the lower bytes of the destination register. </p>
+<p>Since the results are combined via merging, you can issue the <code>LWL</code> and <code>LWR</code> instructions in either order, and together they will load the complete four-byte value.¹ (If the address happened to be aligned, then both instructions will load the complete word.) </p>
+<p>There are corresponding left/right instructions for storing an unaligned word: </p>
+<pre>
+    SWL     rd, n+3(rs)     ; store word left
+    SWR     rd, n(rs)       ; store word right
+</pre>
+<p>These are the counterparts to the load versions. They store the upper and lower part of the word to the corresponding parts of memory. </p>
+<p> For unaligned halfword access, you might be tempted to do this: </p>
+<pre>
+    ; Try to load unaligned word unsigned from rs to rd
+    ; Does this work?
+    LWL     rd, n+3(rs)     ; load word left
+    LWR     rd, n(rs)       ; load word right
+    ANDI    rd, rd, 0xFFFF  ; keep the lower 16 bits
+</pre>
+<p>Unfortunately, this doesn’t work because the <code>n+3(rs)</code> might cross into an invalid page. Consider the case where the halfword is the very last halfword on its page: If you tried to load it as a word, you would need to load the first halfword on the next page (to fill the top 16 bits), and that could crash if the next page were invalid. </p>
+<p>Instead, you need to perform unaligned halfword access by loading two bytes and combining them: </p>
+<pre>
+    ; Load unaligned word signed from rs to rd
+    LB      at, n+1(rs)     ; load high byte
+    LBU     rd, n(rs)       ; load low byte
+    SLL     at, at, 8       ; shift high byte into position
+    OR      rd, rd, at      ; combine the bytes
+</pre>
+<p>If you want to load an unaligned word unsigned, you would change the first instruction from <code>LB</code> to <code>LBU</code>. </p>
+<p>For the same reason as loading, storing an unaligned word is done by storing the bytes separately. </p>
+<pre>
+    ; Store unaligned word to rd from rs
+    SRL     at, rs, 8       ; shift high byte into position
+    SB      at, n+1(rd)     ; store high byte
+    SB      rs, n(rd)       ; store low byte
+</pre>
+<p>The assembler provides pseudo-instructions for these unaligned memory operations: </p>
+<pre>
+    ULW     rs, disp16(rd)  ; unaligned load word
+    USW     rs, disp16(rd)  ; unaligned store word
+    ULH     rs, disp16(rd)  ; unaligned load halfword signed
+    ULHU    rs, disp16(rd)  ; unaligned load halfword unsigned
+    USH     rs, disp16(rd)  ; unaligned store halfword
+
+    ; and again for absolute addressing
+    ULW     rs, global_var  ; unaligned load word
+    USW     rs, global_var  ; unaligned store word
+    ULH     rs, global_var  ; unaligned load halfword signed
+    ULHU    rs, global_var  ; unaligned load halfword unsigned
+    USH     rs, global_var  ; unaligned store halfword
+</pre>
+<p>Mind you, these pseudo-instructions don’t help you when debugging. The debugger shows the underlying real instructions. </p>
+<p>If you’ve been paying attention, you may have noticed that the <code>ULW rd, disp16(rs)</code> pseudo-instruction fails if <var>rs</var> and <var>rd</var> happen to be the same register, because the <code>LWL</code> will damage the base register before it can be used to load the right half. In that case, the assembler uses this alternate version: </p>
+<pre>
+    LWL     at, n+3(rs)     ; load word left into temporary
+    LWR     at, n(rs)       ; load word right into temporary
+    OR      rs, at, at      ; move to final destination
+</pre>
+<p>Okay, next time we’ll look at atomic memory operations. </p>
+<p>¹ In versions of the MIPS architecture with load delay slots, there was a special exception for <code>LWL</code> and <code>LWR</code>: You were allowed to issue them directly after the other, and they would merge correctly, provided they target different bytes of the same destination register or update the entire destination. </p>
+
+
+</body>

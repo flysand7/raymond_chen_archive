@@ -1,0 +1,155 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is __purecall?</h1>  <!-- .entry-meta -->
+
+<p>
+Both C++ and C# have the concept of virtual functions.
+These are functions which always invoke the most heavily
+derived implementation, even if called from a pointer to
+the base class.
+However, the two languages differ on the semantics of
+virtual functions during object construction and destruction.
+</p>
+<p>
+C# objects exist as their final type before construction begins,
+whereas C++ objects change type during the construction process.
+</p>
+<p>
+Here’s an example:
+</p>
+<pre>
+class Base {
+public:
+  Base() { f(); }
+  virtual void f() { cout &lt;&lt; 1; }
+  void g() { f(); }
+};
+class Derived : public Base {
+public:
+  Derived() { f(); }
+  virtual void f() { cout &lt;&lt; 2; }
+};
+</pre>
+<p>
+When a <code>Derived</code> object is constructed,
+the object starts as a <code>Base</code>, then the
+<code>Base::Base</code> constructor is executed.
+Since the object is still a <code>Base</code>,
+the call to <code>f()</code> invokes <code>Base::f</code>
+and not <code>Derived::f</code>.
+After the <code>Base::Base</code> constructor completes,
+the object then becomes a <code>Derived</code> and
+the <code>Derived::Derived</code> constructor is run.
+This time, the call to <code>f()</code> invokes
+<code>Derived::f</code>.
+</p>
+<p>
+In other words, constructing a <code>Derived</code>
+object prints “12”.
+</p>
+<p>
+Similar remarks apply to the destructor.
+The object is destructed in pieces, and a call to
+a virtual function invokes the function corresponding
+to the stage of destruction currently in progress.
+</p>
+<p>
+<strong>This is why some coding guidelines recommend against
+calling virtual functions from a constructor or destructor</strong>.
+Depending on what stage of construction/destruction is taking place,
+the same call to <code>f()</code> can have different effects.
+For example, the function <code>Base::g()</code> above
+will call <code>Base::f</code>
+if called from the <code>Base::Base</code>
+constructor or destructor,
+but will call <code>Derived::f</code>
+if called after the object has been constructed and before
+it is destructed.
+</p>
+<p>
+On the other hand, if this sample were written
+(with suitable syntactic changes) in C#,
+the output would be “22”
+because a C# object is created as its final type.
+Both calls to <code>f()</code> invoke <code>Derived::f</code>,
+since the object is always a <code>Derived</code>.
+Notice that means <strong>a method can be invoked on an object
+before its constructor has run</strong>.
+Something to bear in mind.
+</p>
+<p>
+Sometimes your C++ program may crash with the error
+“R6025 – pure virtual function call”.
+This message comes from a function called __purecall.
+What does it mean?
+</p>
+<p>
+C++ and C# both have the concept of a “pure virtual function”
+(which C# calls “abstract”).
+This is a method which is declared by the base class,
+but for which no implementation is provided.
+In C++ the syntax for this is “=0”:
+</p>
+<pre>
+class Base {
+public:
+  Base() { f(); }
+  virtual void f() <font color="blue">= 0</font>;
+};
+</pre>
+<p>
+If you attempt to create a <code>Derived</code> object,
+the base class will attempt to call <code>Base::f</code>,
+which does not exist since it is a pure virtual function.
+When this happens, the “pure virtual function call” error
+is raised and the program is terminated.
+</p>
+<p>
+Of course, the mistake is rarely as obvious as this.
+Typically, the call to the pure virtual function occurs
+deep inside the call stack of the constructor.
+</p>
+<p>
+This raises the side issue of
+<a href="http://msdn.microsoft.com/library/en-us/vclang/html/_langref_novtable.asp">
+the “novtable” optimization</a>.
+As we noted above, the identity of the object changes
+during construction.  This change of identity is performed
+by swapping the vtables around during construction.
+If you have a base class that is never instantiated
+directly but always via a derived class, and
+<strong>if you have followed the rules against calling
+virtual methods during construction</strong>,
+then you can use the novtable optimization to get rid of
+the vtable swapping during construction of the base class.
+</p>
+<p>
+If you use this optimization, then
+<strong>calling virtual methods during the base class’s
+constructor or destructor will result in undefined behavior</strong>.
+It’s a nice optimization, but it’s your own responsibility to make
+sure you conform to its requirements.
+</p>
+<p>
+<b>Sidebar</b>: Why does C# not do type morphing during construction?
+One reason is that it would result in the possibility,
+given two objects A and B, that
+typeof(A) == typeof(B) yet sizeof(A) != sizeof(B).
+This would happen if A were a fully constructed object and B
+were a partially-constructed object on its way to becoming
+a derived object.
+</p>
+<p>
+Why is this so bad?  Because the garbage collector is really keen
+on knowing the size of each object so it can know how much memory
+to free.  It does this by checking the object’s type.
+If an object’s type did not completely determine its size,
+this would result in the garbage collector having to do extra
+work to figure out exactly how big the object is,
+which means extra code in the constructor and destructor,
+as well as space in the object,
+to keep track of which stage of construction/destruction is
+currently in progress.  And all this for something most coding
+guidelines recommend against anyway.</p>
+
+
+</body>

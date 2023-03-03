@@ -1,0 +1,76 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why an object cannot be its own enumerator</h1>  <!-- .entry-meta -->
+
+<p>I’ve seen people using the following cheat when
+forced to implement an enumerator:</p>
+<pre>
+class MyClass :
+  public IDataObject, public IEnumFORMATETC, ...
+{
+  ...
+  HRESULT EnumFormatEtc(DWORD dwDirection,
+                 IEnumFORMATETC** ppenumOut)
+  {
+    _dwDirection = dwDirection;
+    Reset();
+    *ppenumOut = this;
+    AddRef();
+    return S_OK;
+  }
+};
+</pre>
+<p>
+Why create a separate enumerator object when you can
+just be your own enumerator?  It’s so much easier.
+</p>
+<p>
+And it’s wrong.
+</p>
+<p>
+Consider what happens if two people try to enumerate
+your formats at the same time:  The two enumerators
+are really the same enumerator, so operations on one
+will interfere with the other.
+For example, consider this odd code fragment
+(error checking deleted for expository purposes)
+which looks to see if the data object exposes
+the same data under multiple aspects:
+</p>
+<pre>
+IDataObject *pdto = &lt;MyClass instance&gt;;
+// Obtain two enumerators since we will run
+// each one independently.
+IEnumFORMATETC* penum1;
+IEnumFORMATETC* penum2;
+pdto-&gt;EnumFormatEtc(DATADIR_GET, &amp;penum1);
+pdto-&gt;EnumFormatEtc(DATADIR_GET, &amp;penum2);
+FORMATETC fe1, fe2;
+while (penum1-&gt;Next(1, &amp;fe1, NULL) == S_OK) {
+  penum2-&gt;Reset(); // start a new pass
+  while (penum2-&gt;Next(1, &amp;fe2, NULL) == S_OK) {
+    if (fe1.cfFormat == fe2.cfFormat &amp;&amp;
+        cf1.dwAspect != cf2.dwAspect) {
+        // found it!
+    }
+  }
+}
+penum1-&gt;Release();
+penum2-&gt;Release();
+</pre>
+<p>
+When the code does a <code>penum2-&gt;Reset()</code>, this also
+inadvertently resets the first enumerator.
+The loop runs through penum2 (which therefore also
+runs through penum1), and when it’s done, the enumerator
+is left at the end of the list.
+</p>
+<p>
+Then we loop back and call <code>penum1-&gt;Next()</code>,
+which immediately returns failure since the inner loop
+ran it to completion.
+</p>
+<p>Result: The loop fails to find anything
+because the second enumerator corrupted the first.</p>
+
+
+</body>

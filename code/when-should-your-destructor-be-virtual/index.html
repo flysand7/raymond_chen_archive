@@ -1,0 +1,67 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When should your destructor be virtual?</h1>  <!-- .entry-meta -->
+
+<p>When should your C++ object’s destructor be virtual? </p>
+<p>First of all, what does it mean to have a virtual destructor? </p>
+<p>Well, what does it mean to have a virtual method? </p>
+<p>If a method is virtual, then calling the method on an object always invokes the method as implemented by the most heavily derived class. If the method is not virtual, then the implementation corresponding to the compile-time type of the object pointer. </p>
+<p>For example, consider this: </p>
+<pre>class Sample {
+public:
+ void f();
+ virtual void vf();
+};
+class Derived : public Sample {
+public:
+ void f();
+ void vf();
+}
+void function()
+{
+ Derived d;
+ Sample* p = &amp;d;
+ p-&gt;f();
+ p-&gt;vf();
+}
+</pre>
+<p>The call to <code>p-&gt;f()</code> will result in a call to <code>Sample::f</code> because <code>p</code> is a pointer to a <code>Sample</code>. The actual object is of type <code>Derived</code>, but the pointer is merely a pointer to a <code>Sample</code>. The pointer type is used because <code>f</code> is not virtual. </p>
+<p>On the other hand, the call to The call to <code>p-&gt;vf()</code> will result in a call to <code>Derived::vf</code>, the most heavily derived type, because <code>vf</code> is virtual. </p>
+<p>Okay, you knew that. </p>
+<p>Virtual destructors work exactly the same way. It’s just that you rarely invoke the destructor explicitly. Rather, it’s invoked when an automatic object goes out of scope or when you <code>delete</code> the object. </p>
+<pre>void function()
+{
+ Sample* p = new Derived;
+ delete p;
+}
+</pre>
+<p>Since <code>Sample</code> does not have a virtual destructor, the <code>delete p</code> invokes the destructor of the class of the pointer (<code>Sample::~Sample()</code>), rather than the destructor of the most derived type (<code>Derived::~Derived()</code>). And as you can see, this is the wrong thing to do in the above scenario. </p>
+<p>Armed with this information, you can now answer the question. </p>
+<p>A class must have a virtual destructor if it meets both of the following criteria: </p>
+<ul>
+<li>You do a <code>delete p</code>.
+<li>It is possible that <code>p</code> actually points to a derived class. </li>
+</li></ul>
+<p>Some people say that you need a virtual destructor if and only if you have a virtual method. This is wrong in both directions. </p>
+<p>Example of a case where a class has no virtual methods but still needs a virtual destructor: </p>
+<pre>class Sample { };
+class Derived : public Sample
+{
+ CComPtr&lt;IStream&gt; m_p;
+public:
+ Derived() { CreateStreamOnHGlobal(NULL, TRUE, &amp;m_p); }
+};
+Sample *p = new Derived;
+delete p;
+</pre>
+<p>The <code>delete p</code> will invoke <code>Sample::~Sample</code> instead of <code>Derived::~Derived</code>, resulting in a leak of the stream <code>m_p</code>. </p>
+<p>And here’s an example of a case where a class has virtual methods but does not require a virtual destructor. </p>
+<pre>class Sample { public: virtual void vf(); }
+class Derived : public Sample { public: virtual void vf(); }
+Derived *p = new Derived;
+delete p;
+</pre>
+<p>Since the object deletion occurs from the pointer type that matches the type of the actual object, the correct destructor will be invoked. This pattern happens often in COM objects, which expose several virtual methods corresponding to its interfaces, but where the object itself is destroyed by its own implementation and not from a base calss pointer. (Notice that no COM interfaces contain virtual destructors.) </p>
+<p>The problem with knowing when to make your destructor virtual or not is that you have to know how people will be using your class. If C++ had a “sealed” keyword, then the rule would be simpler: If you do a “<code>delete p</code>” where <code>p</code> is a pointer to an unsealed class, then that class needs have a virtual destructor. (The imaginary “sealed” keyword makes it explicit when a class can act as the base class for another class.) </p>
+
+
+</body>

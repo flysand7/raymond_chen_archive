@@ -1,0 +1,71 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Error 0x80131040 “The located assembly’s manifest definition does not match the assembly reference” when I use a Windows Runtime class written in C# from my C++/WinRT project</h1>  <!-- .entry-meta -->
+
+<p>So you’re writing your C++/WinRT project, and everything is going swimmingly. There’s some code written in C# that you’d rather not port to C++/WinRT, just use as-is. “No problem,” you say. “I can just package the C# code as a Windows Runtime class, and then I can use the inter-language features of the Windows Runtime to allow the C# code to be consumed by C++/WinRT.”</p>
+<p>You add the C# code as a project alongside your C++/WinRT project, you add a reference from the C++/WinRT project to the C# project, and everything builds: It’s a miracle!</p>
+<p>Except that when you actually try to use the C#-written Windows Runtime class, you get error 0x80131040: The located assembly’s manifest definition does not match the assembly reference.</p>
+<p>What’s going on, and more importantly, how do I fix it?</p>
+<p>Here’s what’s going on: Visual Studio checks the <i>Min version</i> of the C# project. This version controls which version of .NET Core and .NET Native are used. In mixed-language scenarios, such as we have here with C++/WinRT and C#, Visual Studio defaults to .NET Core 1.1 and .NET Native 1.4. However, if the minimum version is set to Windows 10 version 1709 (Build 16299) or higher, then Visual Studio copies the .NET Core 2 libraries into the application output folder and tries to run them against .NET Core 1.1.</p>
+<p>That is the version mismatch that’s being reported. The mismatch is not with the version of your C# component. The mismatch is with the version of .NET Core.</p>
+<p>The workaround is to set your C# component’s minimum version to Windows 10 version 1703 (Build 15063) or lower: From your C# project, go to Properties, Library, and under <i>Targeting</i>, set the <i>Min version</i> to <i>Windows 10 Creators Update (10.0; Build 15063)</i> or lower.</p>
+<p>My colleague <a href="https://twitter.com/jplaanstra"> Johan Laanstra</a> found another workaround, which has been <a href="https://github.com/asklar/WinRTComponent/blob/master/README.md"> shared</a> by another colleague <a href="https://twitter.com/alexsklar"> Alexander Sklar</a>:</p>
+<blockquote class="q">
+<ol>
+<li>Right click on the VCXProj file → Manage NuGet Packages.</li>
+<li>Search for <b>Microsoft.Net.Native.Compiler</b>, and install it.</li>
+<li>Then add the following properties to the VCXProj</li>
+</ol>
+<pre>&lt;PropertyGroup&gt;
+  &lt;UseDotNetNativeToolchain Condition="'$(Configuration)'=='Release'"&gt;true&lt;/UseDotNetNativeToolchain&gt;
+  &lt;DotNetNativeVersion&gt;2.2.3&lt;/DotNetNativeVersion&gt;
+&lt;/PropertyGroup&gt;
+</pre>
+</blockquote>
+<p>And it looks like <a href="https://a.rcad.io/">Carcadio Garcia</a> found <a href="https://a.rcad.io/csharp-in-cppwinrt"> a different, lengthier workaround</a>, which I haven’t tried.</p>
+<p><b>Bonus chatter</b>: <a href="https://github.com/tommcdon"> Tom McDonald</a> informed me that Carcadio Garcia’s workaround has not been updated for Visual Studio 16.6, which uses different directories from earlier versions of Visual Studio. Support for Visual Studio 16.6 can be found in <a href="https://github.com/microsoft/react-native-windows/blob/master/packages/microsoft-reactnative-sampleapps/windows/SampleAppCPP/SampleAppCpp.vcxproj"> this sample project</a>. He also shared with me some cute little tables. Here’s one of them:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th><a href="https://www.nuget.org/packages/Microsoft.NETCore.UniversalWindowsPlatform/"> Microsoft.<wbr/>NETCore.<wbr/>Universal­Windows­Platform</a></th>
+<th>Visual Studio</th>
+<th>Dot­Net­Native­Version</th>
+<th>Dot­Net­Native­Shared­Library</th>
+</tr>
+<tr>
+<td>6.2.10 (current)</td>
+<td>16.6</td>
+<td nowrap="nowrap">2.2.8-rel-28605-00</td>
+<td>2.2.27912.00</td>
+</tr>
+<tr>
+<td>6.2.9</td>
+<td>16.5</td>
+<td nowrap="nowrap">2.2.7-rel-27913-00</td>
+<td>2.2.27912.00</td>
+</tr>
+</tbody>
+</table>
+<p>There’s also an issue with where the NuGet packages are kept. They could be kept in the user’s private NuGet package store or in the Visual Studio global package store. The danger of using the user’s private NuGet package store is that the user might not have the package. The danger of using the Visual Studio global package store is that the contents of that store are not contractual and can change at the next update.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>NugetPath</th>
+<th>Visual Studio</th>
+<th>Sample project</th>
+</tr>
+<tr>
+<td>$(ProgramFiles)\<wbr/>Microsoft SDKs\<wbr/>UWP­NuGet­Packages</td>
+<td>≥ 16.6</td>
+<td><a href="https://github.com/tommcdon/NetNativeSamples/blob/Dev16_6_Validation/CPP-CSharp-V2/CPP-CSharp-V2/CPP-CSharp-V2.vcxproj">Sample</a></td>
+</tr>
+<tr>
+<td>$(USERPROFILE)\<wbr/>.nuget\<wbr/>packages</td>
+<td>≤ 16.5</td>
+<td><a href="https://github.com/tommcdon/NetNativeSamples/blob/master/CPP-CSharp-V2/CPP-CSharp-V2/CPP-CSharp-V2.vcxproj">Sample</a></td>
+</tr>
+</tbody>
+</table>
+<p>One trick is to create a blank C# UWP app targeting the matching version of the <a href="https://www.nuget.org/packages/Microsoft.NETCore.UniversalWindowsPlatform/"> Microsoft.<wbr/>NETCore.<wbr/>Universal­Windows­Platform</a> meta-package and build it. That will restore all of the packages into the user’s private package store so that other projects can consume them.</p>
+
+
+</body>

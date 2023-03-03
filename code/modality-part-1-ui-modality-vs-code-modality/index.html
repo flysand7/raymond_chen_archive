@@ -1,0 +1,155 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Modality, part 1: UI-modality vs code-modality</h1>  <!-- .entry-meta -->
+
+<p>
+From the end-users’ point of view, modality occurs when the
+users are locked into completing a task once it is begun,
+with the only escape being to cancel the entire operation.
+Opening a file is an example of a modal operation:
+Once the “Open” command has been selected, users have
+no choice but to select a file for opening (or to cancel
+the operation).  While attempting to open a document,
+the users cannot interact with the existing
+document (for example, scroll it around to look for some
+text that would give a clue as to what file to open next).
+</p>
+<p>
+From a programmer’s point of view, modality can be
+viewed as a function that performs some UI and doesn’t
+return until that UI is complete.
+In other words, modality is
+a nested message loop that continues processing
+messages until some exit condition is reached.
+In our example above, the modality is inherent in
+the <code>GetOpenFileName</code> function, which does not return
+until the user selects a filename or cancels the dialog box.
+</p>
+<p>
+Note that these concepts do not necessarily agree.
+You can create something that is UI-modal—that is,
+does not let the user interact with the main window
+until some other action is complete—while internally
+coding it as a non-modal function.
+</p>
+<p>
+Let’s code up an example of this behavior,
+to drive the point home.
+</p>
+<p>
+As always,
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+start with our scratch program</a>.
+</p>
+<pre>
+#include &lt;commdlg.h&gt;
+HWND g_hwndFR;
+TCHAR g_szFind[80];
+FINDREPLACE g_fr = { sizeof(g_fr) };
+UINT g_uMsgFindMsgString;
+void CreateFindDialogUIModally(HWND hwnd)
+{
+  if (!g_hwndFR) {
+    g_uMsgFindMsgString = RegisterWindowMessage(FINDMSGSTRING);
+    if (g_uMsgFindMsgString) {
+      g_fr.hwndOwner = hwnd;
+      g_fr.hInstance = g_hinst;
+      g_fr.lpstrFindWhat = g_szFind;
+      g_fr.wFindWhatLen = 80;
+      g_hwndFR = FindText(&amp;g_fr);
+    }
+  }
+}
+void OnChar(HWND hwnd, TCHAR ch, int cRepeat)
+{
+  switch (ch) {
+  case ' ': CreateFindDialogUIModally(hwnd); break;
+  }
+}
+void OnFindReplace(HWND hwnd, FINDREPLACE *pfr)
+{
+  if (pfr-&gt;Flags &amp; FR_DIALOGTERM) {
+      DestroyWindow(g_hwndFR);
+      g_hwndFR = NULL;
+  }
+}
+// Add to WndProc
+    HANDLE_MSG(hwnd, WM_CHAR, OnChar);
+    default:
+      if (uiMsg == g_uMsgFindMsgString &amp;&amp; g_uMsgFindMsgString) {
+        OnFindReplace(hwnd, (FINDREPLACE*)lParam);
+      }
+      break;
+// Edit WinMain
+    while (GetMessage(&amp;msg, NULL, 0, 0)) {
+        <font color="blue">if (g_hwndFR &amp;&amp; IsDialogMessage(g_hwndFR, &amp;msg)) {
+        } else {</font>
+          TranslateMessage(&amp;msg);
+          DispatchMessage(&amp;msg);
+        <font color="blue">}</font>
+    }
+</pre>
+<p>
+This is an unexciting example of a modeless dialog;
+in our case, the Find dialog is displayed
+when you hit the space bar.  Observe that you can click
+back to the main window while the Find dialog is up;
+that’s because the Find dialog is modeless.
+As is typical for modeless dialogs, dispatching its
+messages is handled in the main message loop with
+a call to
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/DialogBoxes/DialogBoxReference/DialogBoxFunctions/IsDialogMessage.asp">
+the <code>IsDialogMessage</code> function</a>.
+</p>
+<p>
+We can turn this into a UI-modal dialog very simply:
+</p>
+<pre>
+void CreateFindDialogUIModally(HWND hwnd)
+{
+  if (!g_hwndFR) {
+    g_uMsgFindMsgString = RegisterWindowMessage(FINDMSGSTRING);
+    if (g_uMsgFindMsgString) {
+      g_fr.hwndOwner = hwnd;
+      g_fr.hInstance = g_hinst;
+      g_fr.lpstrFindWhat = g_szFind;
+      g_fr.wFindWhatLen = 80;
+      g_hwndFR = FindText(&amp;g_fr);
+      <font color="blue">if (g_hwndFR) {
+        EnableWindow(hwnd, FALSE);
+      }</font>
+    }
+  }
+}
+void OnFindReplace(HWND hwnd, FINDREPLACE *pfr)
+{
+  if (pfr-&gt;Flags &amp; FR_DIALOGTERM) {
+      <font color="blue">EnableWindow(hwnd, TRUE);</font>
+      DestroyWindow(g_hwndFR);
+      g_hwndFR = NULL;
+  }
+}
+</pre>
+<p>
+Notice that we carefully observed
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/02/27/81155.aspx">
+the rules for enabling and disabling windows</a>.
+</p>
+<p>
+When you run this modified program, everything seems the
+same except that the Find dialog is now modal.  You can’t
+interact with the main window until you close the Find
+dialog.  The Find dialog is modal in the UI sense.
+However, the code is structured in the non-modal manner.
+There is no dialog loop; the main window
+loop dispatches dialog messages as necessary.
+</p>
+<p>
+One typically does not design one’s modal UI in this manner
+because it makes the code harder to structure.
+Observe, for example, that the code to manage the dialog box
+is scattered about and the management of the dialog needs to
+be handled as a state machine since each phase returns back
+to the main message loop.</p>
+
+
+</body>

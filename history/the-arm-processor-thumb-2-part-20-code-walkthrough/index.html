@@ -1,0 +1,110 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The ARM processor (Thumb-2), part 20: Code walkthrough</h1>  <!-- .entry-meta -->
+
+<p>As is traditional, I wrap up the processor overview series with an annotated walkthrough of a simple function. Here’s the function again:</p>
+<pre>extern FILE _iob[];
+
+int fclose(FILE *stream)
+{
+    int result = EOF;
+
+    if (stream-&gt;_flag &amp; _IOSTRG) {
+        stream-&gt;_flag = 0;
+    } else {
+        int index = stream - _iob;
+        _lock_str(index);
+        result = _fclose_lk(stream);
+        _unlock_str(index);
+    }
+
+    return result;
+}
+</pre>
+<p>Let’s dive in.</p>
+<p>This function takes a single pointer parameter, which therefore is passed in the <var>r0</var> register. No parameters are passed on the stack.</p>
+<pre>    push    {r3-r6,r11,lr}
+</pre>
+<p>We start by building our stack frame. From this one instruction we already learn that</p>
+<ul>
+<li>This is not a lightweight leaf function, because we are using the stack. Saving the frame pointer <var>r11</var> and return address <var>lr</var> is therefore required.</li>
+<li>We have one word of local variables and outbound parameters. This is inferred by the inclusion of the otherwise-garbage <var>r3</var> register. We don’t actually care about the value of the <var>r3</var> register. We are pushing it for the side effect of allocating space on the stack.</li>
+<li>We need three additional registers: <var>r4</var>, <var>r5</var>, and <var>r6</var>.</li>
+</ul>
+<pre>    add     r11, sp, #0x10      ; link into stack frame chain
+</pre>
+<p>The next step in the standard prologue is to point the <var>r11</var> register at the place where we saved the previous <var>r11</var> register, in order to maintain the stack frame chain.</p>
+<pre>    mov     r5, r0              ; r5 = stream
+</pre>
+<p>We save the stream pointer in a non-volatile register for safekeeping.</p>
+<pre>;   int result = EOF;
+;   if (stream-&gt;_flag &amp; _IOSTRG) {
+
+    ldr     r3, [r5,#0xC]       ; r3 = stream-&gt;_flag
+    mvn     r6, #0              ; r6 "result" = -1
+    tst     r3, #0x40           ; Q: Is _IOSTRG set?
+    beq     notstring           ; N: Then need to flush for real
+</pre>
+<p>The compiler interleaved the initialization of the <var>result</var> variable (which is evidently being kept in register <var>r6</var>) with the test of the <code>_flags</code> member.</p>
+<p>Initializing <var>result</var> is done by moving <code>~0</code>, which is the same as <code>0xFFFFFFFF</code> or <code>-1</code>.</p>
+<p>Testing the <code>_IOSTRG</code> bit is done by loading the flags into the <var>r3</var> register (a scratch register) and using the <code>TST</code> instruction, which sets the flags based on the result of a bitwise AND operation. If the flag is clear, then the result is zero (“equal”), and the jump is taken. If the flag is set, then we fall through.</p>
+<pre>;   stream-&gt;_flag = 0;
+
+    movs    r3, #0              ; r3 = 0
+    str     r3, [r5,#0xC]       ; stream-&gt;_flag = 0
+    b       done                ; end of "true" branch
+</pre>
+<p>If the flag is clear, then we enter the “true” branch of the <code>if</code> statement, which sets the <code>_flag</code> to zero. We cannot move a constant directly into memory, so we first load the constant in to a scratch register (<var>r3</var>) and store the register to memory.</p>
+<p>Note that we use a <code>MOVS</code> instruction, which sets flags, even though we don’t care about the flags. That’s because the 8-bit immediate <code>MOVS</code> instruction has a compact 16-bit encoding, whereas the corresponding <code>MOV</code> instruction uses a 32-bit encoding, so switching to <code>MOVS</code> reduces code size.</p>
+<pre>notstring:
+;   int index = stream - _iob;
+
+    ldr     r3, =|_iob|         ; r3 = address of _iob
+    subs    r4, r5, r3          ; r4 = stream - iob (byte offset)
+    asrs    r0, r4, #4          ; r0 = r4 / 16 (convert to index)
+</pre>
+<p>We use the literal pool version of the <code>LDR</code> pseudo-instruction to load the address of the <code>_iob</code> array from the literal pool into a scratch register <var>r3</var>. We subtract that from the <var>stream</var> variable, producing the byte offset into the preserved register <var>r4</var>. Shifting that right by 4 is the same as dividing by 16, which produces the index into the <var>r0</var> register.</p>
+<pre>;   _lock_str(index);
+
+    bl      |_lock_str|
+</pre>
+<p>The <var>r0</var> register is exactly where we pass the <var>index</var> parameter to the <code>lock_str</code> function, so we’re all set to call it.</p>
+<pre>;   result = _fclose_lk(stream);
+
+    mov     r0, r5              ; r0 = stream
+    bl      |_fclose_lk|        ; _fclose_lk(stream)
+    mov     r6, r0              ; save result
+</pre>
+<p>Next comes another function call, this time to close the stream. We put the first (and only) parameter into <var>r0</var> and call the function. The result comes back in <var>r0</var>, and we save it in <var>r6</var> so we can return it when we’re done.</p>
+<pre>;   _unlock_str(index);
+
+    asrs    r0, r4, #4          ; r0 = r4 / 16 (convert to index)
+    bl      |_unlock_str|       ; _unlock_str(index)
+</pre>
+<p>To call <code>_unlock_str</code>, we recalculate the index from the byte offset (still in <var>r4</var>, since <var>r4</var> is a preserved register) and put the index into <var>r0</var> so we can call <code>_unlock_str</code>.</p>
+<p>It may seem odd to recalculate the index from the byte offset. Why not just save the index the first time?</p>
+<p>The reason is that <code>mov r0, r4</code> and <code>asrs r0, r4, #4</code> are the same size: They both use 16-bit encoding. Recalculating the value takes the same number of code bytes as copying it, and it avoids having to save the index anywhere, thereby saving two bytes. Thanks to the barrel shifter (which the ARM is very proud of, in case you have forgotten), shifting a register is just as fast as copying it.</p>
+<p>We now fall through to the end of the function.</p>
+<pre>done:
+
+;   return result;
+
+    mov     r0, r6              ; return result (r6)
+</pre>
+<p>The function return value goes into <var>r0</var>, so we copy it there from <var>r6</var>.</p>
+<pre>    pop     {r3-r6,r11,pc}
+</pre>
+<p>For this function, we can pack the the function epilogue into just one instruction: Popping <var>r3</var> cleans up our local variables, popping <var>r4</var> through <var>r6</var> restores the saved registers, popping <var>r11</var> unlinks the current stack frame from the stack frame chain, and popping the inbound return address into <var>pc</var> transfers control to the return address.</p>
+<p>That’s the end of the function, but we’re not done yet!</p>
+<pre>    __debugbreak                ; recover word alignment
+
+    dcd     |_iob|
+</pre>
+<p>We still have the matter of the literal pool we used in the <code>ldr r3, =|_iob|</code> pseudo-instruction. That pseudo-instruction turns into the instruction</p>
+<pre>    ldr     r3, [pc, #...]      ; load register from memory
+</pre>
+<p>where the <code>#...</code> is the offset to the desired literal. When you use the <var>pc</var> register as a base index, the value is rounded down to the nearest multiple of four, and the offset must also be a multiple of four. This means that the value must be at a word-aligned address. The unreachable <code>__debugbreak</code> instruction at the end of the function is just padding so that the <code>|_iob|</code> literal can be placed on a word boundary.</p>
+<p>So there we have it, our whirlwind tour of the ARM processor in Thumb-2 mode. I don’t know about you, but I’m exhausted.</p>
+<p>¹ Commenter Neil Rashbrook notes that stack space reserved by pushing the <var>r3</var> register is never used. It exists only to satisfy the requirement that the stack be 8-byte aligned.</p>
+
+
+</body>

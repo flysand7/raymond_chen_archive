@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a manual-start C++/WinRT coroutine from an eager-start one, part 1</h1>  <!-- .entry-meta -->
+
+<p>C++/WinRT coroutines are eager-start, meaning that they start running as soon as they are created, rather than waiting for you to call a method like <code>Start</code> to get them started. We saw last time that <a href="/code/serializing-asynchronous-operations-in-c" title="Serializing asynchronous operations in C#"> we sometimes want to be able to start a coroutine lazily</a>. We can port the C# solution to C++/WinRT:</p>
+<pre>template&lt;typename Make&gt;
+auto MakeLazy(Make make) -&gt; decltype(make())
+{
+    auto start = winrt::handle(winrt::check_pointer(
+        CreateEvent(nullptr, false, false, nullptr)));
+    auto startHandle = start.get();
+    auto currentTask = [](auto start, auto make)
+        -&gt; decltype(make()) {
+        winrt::apartment_context context;
+        co_await winrt::resume_on_signal(start.get());
+        co_await context;
+        co_return co_await make();
+    }(std::move(start), std::move(make));
+
+    // Resume the coroutine
+    SetEvent(startHandle);
+    return currentTask;
+}
+</pre>
+<p>We create a kernel event, which is a rather convenient awaitable object built into C++/WinRT, save its handle, and transfer ownership into the lambda. We also transfer the maker into the lambda so it can make the eager-started task.</p>
+<p>After creating and starting the lambda task (which has no captures, because <a href="/code/how-do-i-get-the-effect-of-c-s-async-void-in-a-c-coroutine-part-1-why-does-the-obvious-solution-crash"> capturing into a coroutine lambda is a bad idea</a>), the lambda task captures its current context (we’ll see why later) and then waits for the kernel event. This has the effect of a lazy-start coroutine, since it pauses before doing any work.</p>
+<p>Back in the main function, after everything is all settled, we set the event handle, which wakes up the <code>resume_<wbr/>on_<wbr/>signal</code>, and then we return the coroutine that we just started.</p>
+<p>After <code>resume_<wbr/>on_<wbr/>signal</code> resumes, the lambda coroutine awaits the original context in order to resume execution in the same context in which it had started. Whereas <code>co_await</code>ing an <code>IAsyncAction</code> or <code>IAsyncOperation</code> resume in the same COM context in which they started, the <code>resume_<wbr/>on_<wbr/>signal</code> does not offer the same guarantee. We need to <code>co_await context</code> to get back into the original context.</p>
+<p>Once resumed, we can ask the maker to produce the eager-started coroutine, which we then await and propagate.</p>
+<p>Of course, there’s not much point here to creating a lazy-start wrapper around an eager-start coroutine, only to start it immediately. But you can imagine splitting the two steps:</p>
+<pre>template&lt;typename Make&gt;
+auto MakeLazy(Make make) -&gt; <span style="color: blue;">std::pair&lt;HANDLE, decltype(make())&gt;</span>
+{
+    auto start = winrt::handle(winrt::check_pointer(
+        CreateEvent(nullptr, false, false, nullptr)));
+    auto startHandle = start.get();
+    auto currentTask = [](auto start, auto make)
+        -&gt; decltype(make()) {
+        winrt::apartment_context context;
+        co_await winrt::resume_on_signal(start.get());
+        co_await context;
+        co_return co_await make();
+    }(std::move(start), std::move(make));
+    <span style="color: blue;">return { startHandle, currentTask }</span>;
+}
+</pre>
+<p>This gives you a kernel handle, which you can signal to start the task, and it also gives you a task you can <code>co_await</code> to get things started.</p>
+<p>This is a fairly straightforward translation of the C# lazy-start wrapper, but it turns out that we can do something more efficient if we are willing to roll up our sleeves and work with the C++ coroutine infrastructure. We’ll look at that next time.</p>
+
+
+</body>

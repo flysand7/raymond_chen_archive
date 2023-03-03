@@ -1,0 +1,126 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does CreateWindowEx take the extended style parameter as its first parameter instead of its last?</h1>  <!-- .entry-meta -->
+
+<p>Windows 3.0 expanded the <code>Create­Window</code> function by adding a new extended style parameter, resulting in the <code>Create­Window­Ex</code> function. You would expect that the new parameter would go at the end of the parameter list, but that’s not where it ended up. Instead, it became a bonus <i>first</i> parameter.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3">
+<tbody>
+<tr>
+<td>
+<pre>CreateWindow(
+
+   lpszClass,
+   lpszName,
+   dwStyle,
+   x,
+   y,
+   cx,
+   cy,
+   hwndParent,
+   hMenu,
+   hInstance,
+   lpCreateParams
+);
+</pre>
+</td>
+<td>
+<pre>CreateWindowEx(
+   dwExStyle,
+   lpszClass,
+   lpszName,
+   dwStyle,
+   x,
+   y,
+   cx,
+   cy,
+   hwndParent,
+   hMenu,
+   hInstance,
+   lpCreateParams
+);
+</pre>
+</td>
+</tr>
+</tbody>
+</table>
+<p>Why did the extra parameter go at the start rather than at the end?</p>
+<p>If you’re familiar with the <code>__stdcall</code> calling convention, you would know that the parameters are pushed onto the stack from right to left. Adding a new parameter to the front would therefore permit the old function to forward to the new function by inserting an extra parameter on the stack:</p>
+<pre>CreateWindow:
+    pop     eax             ; pop return address
+    push    0               ; dwExStyle
+    push    eax             ; restore return address
+    jmp     CreateWindowEx  ; continue as if CreateWindowEx
+</pre>
+<p>However, this theory doesn’t hold up because Windows 3.0 used the 16-bit Pascal calling convention, which pushes parameters from left to right.</p>
+<p>But you’re close. The calling convention does play a role.</p>
+<p>The other half of the puzzle is the in the <code>lParam</code> of the <code>WM_<code></code>NCCREATE</code> and <code>WM_<code></code>CREATE</code> messages. That parameter is a pointer to a <code>CREATESTRUCT</code> structure, which originally looked like this:</p>
+<pre>struct tagCREATESTRUCT {
+  LPVOID    lpCreateParams;
+  HINSTANCE hInstance;
+  HMENU     hMenu;
+  HWND      hwndParent;
+  int       cy;
+  int       cx;
+  int       y;
+  int       x;
+  LONG      style;
+  LPCSTR    lpszName;
+  LPCSTR    lpszClass;
+} CREATESTRUCT;
+</pre>
+<p>Look familiar?</p>
+<p>It’s the parameter list of the <code>Create­Window</code> function, but <i>backward</i>.</p>
+<p>Why is it backward?</p>
+<p>Since the Pascal calling convention pushes parameters from left to right, it means that the first parameter has the highest address, and the last parameter has the lowest address. If you take all the parameters and treat them as a structure, they end up in reverse order.</p>
+<p>And that’s the missing link.</p>
+<p>Back in the days of 16-bit Windows, the <code>CREATESTRUCT</code> that was passed to the <code>WM_<code></code>NCCREATE</code> and <code>WM_<code></code>CREATE</code> messages was just a pointer to the “structure” on the stack formed by all of the parameters.</p>
+<p>For backward compatibility, the new <code>dwExStyle</code> structure member needs to go to the end, so that old code which understood the old structure would have all the old data at the old offsets.</p>
+<pre>struct tagCREATESTRUCT {
+  LPVOID    lpCreateParams;
+  HINSTANCE hInstance;
+  HMENU     hMenu;
+  HWND      hwndParent;
+  int       cy;
+  int       cx;
+  int       y;
+  int       x;
+  LONG      style;
+  LPCSTR    lpszName;
+  LPCSTR    lpszClass;
+  DWORD     dwExStyle; // Now with extended style support!
+} CREATESTRUCT;
+</pre>
+<p>Backward compatibility dictates that the new structure member goes at the end, which means that the corresponding new parameter must go at the beginning.</p>
+<p>It’s another example of the lengths that 16-bit Windows went in order to run in a very memory-constrained system.</p>
+<p><b>Bonus chatter</b>: This means that converting a classic <code>Create­Window</code> to the new <code>Create­Window­Ex</code> is not a simply matter of inserting a new parameter under the return address. The return address plus all of the existing parameters need to be popped off, the new parameter inserted, and then all the parameters and return address pushed back on. Alternatively, the code could simply have pushed another frame onto the stack:</p>
+<pre>HWND CreateWindow(
+   LPCSTR lpszClass,
+   LPCSTR lpszName,
+   DWORD dwStyle,
+   int x,
+   int y,
+   int cx,
+   int cy,
+   HWND hwndParent,
+   HMENU hMenu,
+   HINSTANCE hInstance,
+   LPVOID lpCreateParams)
+{
+  return CreateWindowEx(
+   0,
+   lpszClass,
+   lpszName,
+   dwStyle,
+   x,
+   y,
+   cx,
+   cy,
+   hwndParent,
+   hMenu,
+   hInstance,
+   lpCreateParams);
+}
+</pre>
+<p>The code chose to do the “pop, insert, push” because the C wrapper function to push a new frame was 59 bytes long, whereas the pop/insert/push mechanism, written in hand-tuned assembly, was faster and consumed <a href="/history/one-byte-used-to-cost-a-dollar"> only 32 bytes</a>.</p>
+
+
+</body>

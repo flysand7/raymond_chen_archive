@@ -1,0 +1,72 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does my overridable Windows Runtime method turn into a protected method, and how can I work around it?</h1>  <!-- .entry-meta -->
+
+<p>If you declare a Windows Runtime class with a method marked <code>overridable</code>, the method is automatically made <code>protected</code>, even if you wanted it to be public.</p>
+<pre>unsealed runtimeclass Base
+{
+    overridable void DoSomething();
+}
+</pre>
+<p>If you look at the generated metadata in ILSpy, you’ll see that it was secretly marked as <code>protected</code>:</p>
+<pre>public class Base : IBase, IBaseOverrides
+{
+    [MethodImpl(MethodImplOptions.InternalCall)]
+    protected virtual extern string DoSomething();
+}
+</pre>
+<p>What’s going on?</p>
+<p>In the Windows Runtime type system, overridable methods <a href="https://github.com/microsoft/xlang/blob/b950b15d53cab2dddc78c65e783ef43042a2e8c9/docs/xplatwinrt/XSPEC01%20-%20Type%20System%20Specification.md#overridable-interfaces"> may only be called from within the class itself</a>. so they are automatically marked as <code>protected</code>. The reason for this is lost to the mists of time, but I have some theories.</p>
+<p>One contributing factor is probably that the way you call an overridable method is different from how you call a regular method. Overridable methods are implement via COM aggregation, so calling an overridable method requires querying the controlling unknown rather than the object in hand, so that the controlling unknown can choose to override the interface. This extra dance isn’t something we want to bother all of the clients with, since they don’t even know or typically care about how the class internally organizes its methods.</p>
+<p>Another factor is that different languages provide different levels of support for accessing overridden methods. For example, in C++, you can explicitly qualify the method with the base class to bypass the derived class:</p>
+<pre>struct Base
+{
+    virtual void Method();
+};
+
+struct Derived
+{
+    void Method() override;
+}
+
+void f(Derived&amp; d)
+{
+    // This bypasses Derived::Method and calls
+    // Base::Method directly.
+    d.Base::Method();
+}
+</pre>
+<p>In JavaScript, you can bypass the most derived class by walking the prototype chain.</p>
+<pre>class Base {
+    constructor() { }
+    method() { console.log("Base!"); }
+}
+
+class Derived extends Base {
+    constructor() { super(); }
+    method() { console.log("Derived!"); }
+}
+
+var d = new Derived();
+// This bypasses Derived.method and calls
+// Base.method directly.
+d.__proto__.__proto__.method.call(d);
+</pre>
+<p>On the other hand, C# doesn’t have the ability to bypass the derived class from outside the class. (From inside the class, you can use the <code>base</code> keyword to access the overridden method.)</p>
+<p>To avoid introducing concepts that cannot be expressed in some languages, the Windows Runtime just removes the problem. Overridable methods are always protected.</p>
+<p>So what do you do if you want to let people call an overridable method?</p>
+<p>The answer is to provide two methods, one overridable and one not. People outside the class call the non-overridable method, and the base class implementation calls back out to the overridable one.</p>
+<pre>unsealed runtimeclass Base
+{
+    void DoSomething();
+    overridable void DoSomethingOverride();
+}
+
+void Base::DoSomething()
+{
+    // This calls the most derived class
+    this-&gt;DoSomethingOverride();
+}
+</pre>
+
+
+</body>

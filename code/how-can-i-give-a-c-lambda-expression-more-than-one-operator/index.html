@@ -1,0 +1,127 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I give a C++ lambda expression more than one <code>operator()</code>?</h1>  <!-- .entry-meta -->
+
+<p>Suppose you have stored a C++ lambda expression into a variable, and you want to call it in different ways. This seems impossible, because when you define the lambda expression, you can provide only one <code>operator()</code>:</p>
+<pre>auto lambda = [captures](int v) { return v + 2; };
+</pre>
+<p>This lambda has only one way of calling it: You pass an integer and it returns an integer.</p>
+<p>But it turns out that you can create a lambda that can be called in multiple ways: Use an <code>auto</code> parameter!</p>
+<pre>auto lambda = [](auto p)
+{
+  if constexpr (std::is_same_v&lt;decltype(p), int&gt;) {
+   return p + 1;
+  } else {
+   return "oops";
+  }
+};
+
+auto result1 = lambda(123); // result1 is 124
+auto result2 = lambda('x'); // result2 is "oops"
+</pre>
+<p>By declaring the parameter as <code>auto</code>, the lambda accepts any single parameter. We then use <code>if constexpr</code> and <code>std::is_same_v</code> to see what type was actually passed, and implement the desired function body for each type.</p>
+<p>Notice that the different branches of the <code>if</code> don’t need to agree on the return type. In our example, passing an integer adds one and produces another integer. But passing anything else returns the string <code>"oops"</code>!</p>
+<p>You can create a bunch of tag types to make it look almost as if your lambda had member functions.</p>
+<pre>struct add_tax_t {};
+constexpr add_tax_t add_tax;
+
+struct apply_discount_t {};
+constexpr apply_discount_t apply_discount;
+
+auto lambda = [total](auto op, auto value) mutable
+{
+  using Op = decltype(op);
+  if constexpr (std::is_same_v&lt;Op, add_tax_t&gt;) {
+   total += total * value; // value is the tax rate
+   return total;
+  } else if constexpr (std::is_same_v&lt;Op, apply_discount_t&gt;) {
+   total -= std::max(value, total); // value is the discount
+   return total;
+  } else {
+   static_assert(!sizeof(Op*), "Don't know what you are asking me to do.");
+  }
+};
+
+lambda(apply_discount, 5.00); // apply $5 discount
+lambda(add_tax, 0.10); // add 10% tax
+</pre>
+<p>So far, all of our “methods” have the same number of parameters, but you can use a parameter pack to permit different numbers of parameters:</p>
+<pre>auto lambda = [total](auto op, auto... args) mutable
+{
+  using Op = decltype(op);
+  using ArgsT = std::tuple&lt;decltype(args)...&gt;;
+  if constexpr (std::is_same_v&lt;Op, add_tax_t&gt;) {
+   auto [tax_rate] = ArgsT(args...);
+   total += total * tax_rate;
+   return total;
+  } else if constexpr (std::is_same_v&lt;Op, apply_discount_t&gt;) {
+   auto [amount, expiration] = ArgsT(args...);
+   if (expiration &lt; now()) {
+     total -= std::max(amount, total);
+   }
+   return total;
+  } else {
+   static_assert(!sizeof(Op*), "Don't know what you are asking me to do.");
+  }
+};
+</pre>
+<p>In this case, the <code>add_<code></code>tax</code> “method” takes a single parameter, whereas the <code>apply_<code></code>discount</code> “method” takes two.</p>
+<p>You could even dispatch based solely on the types and arity.</p>
+<pre>auto lambda = [total](auto... args) mutable
+{
+  using ArgsT = std::tuple&lt;decltype(args)...&gt;;
+  if constexpr (std::is_same_v&lt;ArgsT, std::tuple&lt;int, int&gt;&gt;) {
+   // two integers = add to total
+   auto [a, b] = ArgsT(args...);
+   total += a + b;
+  } else if constexpr (std::is_same_v&lt;ArgsT, std::tuple&lt;&gt;&gt;) {
+   // no parameters = print
+   print(total);
+  } else {
+   static_assert(!sizeof(Op*), "Don't know what you are asking me to do.");
+  }
+};
+</pre>
+<p>This might come in handy if you have a lambda that is used to accumulate something: You can pass the lambda to the function that expects to do the accumulating, and then call the lambda using a secret knock to extract the answer.</p>
+<pre>auto lambda = [limit, total = 0](auto value) mutable
+{
+ using T = decltype(value);
+ if constexpr (std::is_same_v&lt;T, const char*&gt;) {
+  // secret knock: Return total if invoked with const char* 
+  return total;
+ } else {
+  // Otherwise, just add them up until we hit the limit.
+  total += value;
+  return total &lt;= limit;
+ }
+};
+
+auto unused = std::find_if_not(begin, end, std::ref(lambda));
+if (unused != end) print("Limit exceeded.");
+auto total = lambda("total"); // extract the total
+</pre>
+<p>This is basically a complete and utter abuse of the language, and I hope you’re ashamed of yourself.</p>
+<p><b>Bonus chatter</b>: All of this is just a way of defining a <code>struct</code> without having to say the word <code>struct</code>.</p>
+<pre>struct
+{
+ double limit;
+ double total = 0.00;
+
+ auto add_tax(auto tax_rate) { total += total * tax_rate; }
+ auto apply_discount(auto amount) { total -= std::max(amount, total); }
+ auto get_total() const { return total; }
+} lambda{1000.00 /* limit */};
+</pre>
+<p><b>Bonus bonus chatter</b>: Java anonymous classes provide a more straightforward syntax:</p>
+<pre>var lambda = new Object() {
+  int total = 0;
+  public void add(int value) { total += value; }
+  public int get_total() { return total; }
+};
+
+lambda.add(2);
+lambda.add(3);
+var result = lambda.get_total();
+</pre>
+
+
+</body>

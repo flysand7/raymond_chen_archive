@@ -1,0 +1,236 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Developing the method for taking advantage of the fact that the OVERLAPPED associated with asynchronous I/O is passed by address</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/12/17/10106259.aspx">
+You can take advantage of the fact that the
+<code>OVERLAPPED</code> associated with asynchronous I/O is
+passed by address</a>,
+but there was some confusion about how this technique could
+“work” when kernel mode has no idea that you are playing this trick.
+</p>
+<p>
+Whether kernel mode is in on the trick is immaterial since it is not
+part of the trick.
+</p>
+<p>
+Let’s start with a version of the code which does not take advantage
+of the <code>OVERLAPPED</code> structure address in the way
+described in the article.
+This is a technique I found in a book on advanced Windows programming:
+</p>
+<pre>
+#define MAX_OVERLAPPED 10 // let's do 10 I/O's at a time
+// data to associate with each OVERLAPPED
+struct OTHERDATA { ... };
+OVERLAPPED MasterOverlapped[MAX_OVERLAPPED];
+OTHERDATA OtherData[MAX_OVERLAPPED];
+OTHERDATA* FindOtherDataFromOverlapped(OVERLAPPED *lpOverlapped)
+{
+ ptrdiff_t index = lpOverlapped - MasterOverlapped;
+ return &amp;OtherData[index];
+}
+// I/O is issued via
+// ReadFileEx(hFile, lpBuffer, nNumberOfBytesToRead,
+//            &amp;MasterOverlapped[i], CompletionRoutine);
+void CALLBACK CompletionRoutine(
+    DWORD dwErrorCode,
+    DWORD dwNumberOfBytesTransferred,
+    LPOVERLAPPED lpOverlapped)
+{
+ OTHERDATA *lpOtherData =
+                       FindOtherDataFromOverlapped(lpOverlapped);
+ ... do stuff with lpOverlapped and lpOtherData ...
+}
+</pre>
+<p>
+This version of the code uses the address of the
+<code>OVERLAPPED</code> structure to determine the
+location in the <code>MasterOverlapped</code> table
+and uses the corresponding entry in the parallel array
+at <code>OtherData</code> to hold the other data.
+</p>
+<p>
+Let’s make this code worse before we make it better:
+</p>
+<pre>
+OTHERDATA* FindOtherDataFromOverlapped(OVERLAPPED *lpOverlapped)
+{
+ for (int index = 0; index &lt; MAX_OVERLAPPED; index++) {
+  if (&amp;MasterOverlapped[index] == lpOverlapped) {
+   return &amp;OtherData[index];
+  }
+ }
+ FatalError(); // should never be reached
+}
+</pre>
+<p>
+Instead of doing simple pointer arithmetic to recover
+the index, we walk the array testing the pointers.
+This is naturally worse than doing pointer arithmetic, but
+watch what this step allows us to do:
+First, we reorganize the data so that instead of two
+parallel arrays, we have a single array of a compound
+structure.
+</p>
+<pre>
+struct OVERLAPPEDEX
+{
+ OVERLAPPED Overlapped;
+ OTHERDATA OtherData;
+};
+OVERLAPPEDEX Master[MAX_OVERLAPPED];
+OTHERDATA* FindOtherDataFromOverlapped(OVERLAPPED *lpOverlapped)
+{
+ for (int index = 0; index &lt; MAX_OVERLAPPED; index++) {
+  if (&amp;Master[index].Overlapped == lpOverlapped) {
+   return &amp;Master[index].OtherData;
+  }
+ }
+ FatalError(); // should never be reached
+}
+// I/O is issued via
+// ReadFileEx(hFile, lpBuffer, nNumberOfBytesToRead,
+//            &amp;Master[i].Overlapped, CompletionRoutine);
+</pre>
+<p>
+All we did was consolidate the parallel arrays into a single array.
+</p>
+<p>
+Now that it’s an array of compound structures, we don’t need
+to carry two pointers around (one to the <code>OVERLAPPED</code>
+and one to the <code>OTHERDATA</code>).
+We can just use a single <code>OVERLAPPEDEX</code> pointer
+and dereference either the <code>Overlapped</code>
+or the <code>OtherData</code> part.
+</p>
+<pre>
+OVERLAPPEDEX* FindOverlappedExFromOverlapped(
+    OVERLAPPED *lpOverlapped)
+{
+ for (int index = 0; index &lt; MAX_OVERLAPPED; index++) {
+  if (&amp;Master[index].Overlapped == lpOverlapped) {
+   return &amp;Master[index];
+  }
+ }
+ FatalError(); // should never be reached
+}
+void CALLBACK CompletionRoutine(
+    DWORD dwErrorCode,
+    DWORD dwNumberOfBytesTransferred,
+    LPOVERLAPPED lpOverlapped)
+{
+    OVELRAPPEDEX *lpOverlappedEx =
+                    FindOverlappedExFromOverlapped(lpOverlapped);
+    ... do stuff with lpOverlappedEx ...
+}
+</pre>
+<p>
+Finally, we can optimize the
+<code>FindOverlappedExFromOverlapped</code> function
+that we de-optimized earlier.
+Observe that the de-optimized loop is an example of the
+“for/if” anti-pattern.
+</p>
+<p>
+The “for/if” anti-pattern goes like this:
+</p>
+<pre>
+for (int i = 0; i &lt; 100; i++) {
+ if (i == 42) do_something(i);
+}
+</pre>
+<p>
+This can naturally be simplified to
+</p>
+<pre>
+do_something(42);
+</pre>
+<p>
+Our
+<code>FindOverlappedExFromOverlapped</code> function
+is a special case of this anti-pattern.
+It becomes more evident if we do some rewriting.
+Start with
+</p>
+<pre>
+&amp;Master[index].Overlapped == lpOverlapped
+</pre>
+<p>
+Apply <code>CONTAINING_RECORD</code> to both sides.
+</p>
+<pre>
+CONTAINING_RECORD(&amp;Master[index].Overlapped, OVERLAPPEDEX, Overlapped) ==
+    CONTAINING_RECORD(lpOverlapped, OVERLAPPEDEX, Overlapped)
+</pre>
+<p>
+The left-hand side of the comparison simplifies to
+</p>
+<pre>
+    &amp;Master[index]
+</pre>
+<p>
+resulting in
+</p>
+<pre>
+&amp;Master[index] ==
+   CONTAINING_RECORD(lpOverlapped, OVERLAPPEDEX, Overlapped)
+</pre>
+<p>
+Recall that <code>a[b]</code> is equivalent to <code>*(a+b)</code>,
+and therefore <code>&amp;a[b]</code> is equivalent to <code>a+b</code>.
+</p>
+<pre>
+Master + index ==
+   CONTAINING_RECORD(lpOverlapped, OVERLAPPEDEX, Overlapped)
+</pre>
+<p>Now subtract <code>Master</code> from both sides:</p>
+<pre>
+index == CONTAINING_RECORD(lpOverlapped, OVERLAPPEDEX, Overlapped) - Master
+</pre>
+<p>
+We have transformed the test into a clear case of the
+for/if anti-pattern,
+and the function can be simplified to
+</p>
+<pre>
+OVERLAPPEDEX* FindOverlappedExFromOverlapped(
+    OVERLAPPED *lpOverlapped)
+{
+ ptrdiff_t index =
+   CONTAINING_RECORD(lpOverlapped, OVERLAPPEDEX, Overlapped) - Master;
+ return &amp;Master[index];
+}
+</pre>
+<p>
+Again, rewrite <code>&amp;a[b]</code> as <code>a+b</code>:
+</p>
+<pre>
+ return Master + index;
+</pre>
+<p>
+Substitute the value of <code>index</code> computed on the previous
+line:
+</p>
+<pre>
+ return Master +
+   CONTAINING_RECORD(lpOverlapped, OVERLAPPEDEX, Overlapped) - Master;
+</pre>
+<p>
+The two occurrences of <code>Master</code> cancel out, leaving
+</p>
+<pre>
+OVERLAPPEDEX* FindOverlappedExFromOverlapped(
+    OVERLAPPED *lpOverlapped)
+{
+ return CONTAINING_RECORD(lpOverlapped, OVERLAPPEDEX, Overlapped);
+}
+</pre>
+<p>
+And there you have it.
+By a series of purely mechanical transformations,
+we have rediscovered the technique of
+extending the <code>OVERLAPPED</code> structure.</p>
+
+
+</body>

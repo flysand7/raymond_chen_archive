@@ -1,0 +1,161 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What is the process by which the cursor gets set?</h1>  <!-- .entry-meta -->
+
+<p>
+Commenter LittleHelper asked,
+“Why is the cursor associated with the class and not the window?”
+This question makes the implicit assumption that the cursor is
+associated with the class.
+While there is a cursor associated with each window class,
+it is the window that decides what cursor to use.
+</p>
+<p>
+The cursor-setting process is described in the documentation of the
+<code>WM_SETCURSOR</code> message:
+</p>
+<blockquote class="q"><p>
+The <code>DefWindowProc</code> function passes the
+<code>WM_SETCURSOR</code> message to a parent window before processing.
+If the parent window returns <code>TRUE</code>,
+further processing is halted.
+Passing the message to a window’s parent window
+gives the parent window control over the cursor’s setting in a child window.
+The <code>DefWindowProc</code> function also uses this message
+to set the cursor to an arrow if it is not in the client area,
+or to the registered class cursor if it is in the client area.
+</p></blockquote>
+<p>
+That paragraph pretty much captures the entire cursor-setting process.
+all I’m writing from here on out is just restating those few sentences.
+</p>
+<p>
+The <code>WM_SETCURSOR</code> goes to the child window beneath
+the cursor.
+(Obviously it goes to the child window and not the parent,
+because the documentation says that <code>DefWindowProc</code>
+forward the message to its parent.
+if the message went to the parent originally, then there would be nobody
+to forward the message to!)
+At this point, your window procedure can trap the <code>WM_SETCURSOR</code>
+message, set the cursor, and return <code>TRUE</code>.
+Thus, the window gets the first priority on deciding what the cursor is.
+</p>
+<p>
+If you don’t handle the <code>WM_SETCURSOR</code> message,
+then <code>DefWindowProc</code> forwards the message to the parent,
+who in turn gets to decide whether to handle the message or forward
+to its parent in turn.
+One possibility is that one of the ancestor windows will handle
+the message, set the cursor, and return <code>TRUE</code>.
+In that case, the <code>TRUE</code> return value tells
+<code>DefWindowProc</code> that the cursor has been set and no more
+work needs to be done.
+</p>
+<p>
+The other, more likely, possibility is that none of the ancestor
+windows cared to set the cursor.
+At each return to <code>DefWindowProc</code>, the cursor will be
+set to the class cursor for the window that contains the cursor.
+</p>
+<p>
+Here it is in pictures.
+Suppose we have three windows, A, B, and C, where A is the top-level
+window, B a child, and C a grandchild, and none of them do anything
+special in <code>WM_SETCURSOR</code>.
+Suppose further that the mouse is over window C:
+</p>
+<pre>
+SendMessage(hwndC, WM_SETCURSOR, ...)
+ C's window procedure does nothing special
+ DefWindowProc(hwndC, WM_SETCURSOR, ...)
+  DefWindowProc forwards to parent:
+   SendMessage(hwndB, WM_SETCURSOR, ...)
+   B's window procedure does nothing special
+   DefWindowProc(hwndB, WM_SETCURSOR, ...)
+    DefWindowProc forwards to parent:
+     SendMessage(hwndA, WM_SETCURSOR, ...)
+     A's window procedure does nothing special
+      DefWindowProc(hwndA) cannot forward to parent (no parent)
+      DefWindowProc(hwndA) sets the cursor to C's class cursor
+      DefWindowProc(hwndA) returns FALSE
+     A's window procedure returns FALSE
+    SendMessage(hwndA, WM_SETCURSOR, ...) returns FALSE
+    DefWindowProc(hwndB) sets the cursor to C's class cursor
+    DefWindowProc(hwndB) returns FALSE
+   B's window procedure returns FALSE
+  SendMessage(hwndB, WM_SETCURSOR, ...) returns FALSE
+  DefWindowProc(hwndC) sets the cursor to C's class cursor
+  DefWindowProc(hwndC) returns FALSE
+ C's window procedure returns FALSE
+SendMessage(hwndC, WM_SETCURSOR, ...) returns FALSE
+</pre>
+<p>
+Observe that the <code>WM_SETCURSOR</code> started at the
+bottom (window C), bubbled up to the top (window A),
+and then worked its way back down to window C.
+On the way up, it asks each window if it wants to set the cursor,
+and if it makes it all the way to the top with nobody expressing
+an opinion, then on the way down, each window sets the cursor
+to C’s class cursor.
+</p>
+<p>
+Now, of course, any of the windows along the way could have decided,
+“I’m setting the cursor!” and returned <code>TRUE</code>,
+in which case the message processing would have halted immediately.
+</p>
+<p>
+So you see, the window really does decide what the cursor is.
+Yes, there is a cursor associated with the class, but it is used
+only if the window decides to use it.
+If you want to associate a cursor with the window, you can do it
+by handling the <code>WM_SETCURSOR</code> message explicitly
+instead of letting <code>DefWindowProc</code> default to the class
+cursor.
+</p>
+<p>
+LittleHelper’s second question:
+“Many programs call <code>SetCursor</code> on every <code>WM_MOUSEMOVE</code>.
+Is this not recommended?”
+</p>
+<p>
+Although there is no rule forbidding you from using
+<code>WM_MOUSEMOVE</code> to set your cursor, it’s going to lead to some
+problems.
+First, and much less serious, you won’t be able to participate in the
+<code>WM_SETCURSOR</code> negotiations since you aren’t doing
+your cursor setting there.
+But the real problem is that you’re going to get cursor flicker.
+<code>WM_SETCURSOR</code> will get sent to your window to
+determine the cursor.
+Since you didn’t do anything,
+it will probably turn into your class cursor.
+And then you get your <code>WM_MOUSEMOVE</code> and set the cursor
+again.
+Result: Each time the user moves the mouse, the cursor changes to
+the class cursor and then to the final cursor.
+</p>
+<p>
+Let’s watch this happen. Start with the
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make these changes:
+</p>
+<pre>
+void
+OnMouseMove(HWND hwnd, int x, int y, UINT keyFlags)
+{
+ Sleep(10); // just to make the flicker more noticeable
+ SetCursor(LoadCursor(NULL, IDC_CROSS));
+}
+ // Add to WndProc
+ HANDLE_MSG(hwnd, WM_MOUSEMOVE, OnMouseMove);
+</pre>
+<p>
+Run the program and move the mouse over the client area.
+Notice that it flickers between an arrow (the class cursor,
+set during <code>WM_SETCURSOR</code>)
+and the crosshairs
+(set during <code>WM_MOUSEMOVE</code>).</p>
+
+
+</body>

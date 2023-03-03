@@ -1,0 +1,118 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">We've traced the pipe, and it's coming from inside the process!</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/07/07/10183884.aspx">
+We saw last time</a>
+one of the deadlocks you can run into when playing with pipes.
+Today we’ll look at another one:
+</p>
+<blockquote class="q"><p>
+Our program runs a helper process with stdin/stdout/stderr redirected.
+The helper process takes input via stdin and prints the result
+to stdout.
+Sometimes we find that the <code>Write­File</code> from the controlling
+process into the stdin pipe hangs.
+Closer examination reveals that the helper process no longer exists.
+Under these conditions, should the <code>Write­File</code> fail,
+since the reader is no longer available?
+</p></blockquote>
+<p>
+If you attempt to write to a pipe when
+there is nobody around to
+call <code>Read­File</code> to read the data out the other end,
+the call to <code>Write­File</code> should fail with the error
+<code>ERROR_BROKEN_PIPE</code>
+(known in Unix-land as <code>EPIPE</code>).
+What does it mean when the write pends?
+It means that there is still somebody around who can read the data
+out of the pipe,
+but the internal pipe buffer is full,
+so the write call waits for the reader to drain the data.
+</p>
+<p>
+But the helper process no longer exists.
+Maybe it crashed or exited prematurely.
+That means that there is nobody around to read the data out of the pipe.
+Why, then, does the call not return immediately with an error?
+</p>
+<p>
+Because there is still somebody around to read the data out of the pipe.
+</p>
+<blockquote class="m"><p>
+Did you remember to close the controlling process’s copy of the read
+end of the pipe?
+</p></blockquote>
+<p>
+If the controlling process hasn’t closed its copy of the read end
+of the pipe, then the pipe is correct in believing that there is
+still somebody around to read the data out of the pipe,
+namely <i>you</i>.
+You have a handle to the read end of the pipe,
+so the pipe manager cannot declare the pipe dead;
+for all it knows,
+you intended for the controlling process to call
+<code>Read­File</code> to read the data out of the pipe.
+As far as the pipe is concerned,
+you simply haven’t gotten around to it yet,
+so the pipe waits patiently.
+</p>
+<blockquote class="q">
+<p>
+Yes, our code calls <code>Close­Handle</code> on the controlling
+process’s copy of the pipe handles.
+I’ve highlighted it below.
+(Error checking has been elided for simplicity.)
+</p>
+<pre>
+// create the pipe for stdout/stderr
+CreatePipe(&amp;hReadPipeTmp, &amp;hWritePipeTmp, NULL, 0);
+// duplicate the handles with bInheritHandle=FALSE to prevent
+// them from being inherited
+DuplicateHandle(GetCurrentProcess(), hWritePipeTmp,
+                GetCurrentProcess(), &amp;hWritePipe,
+                0, FALSE, DUPLICATE_SAME_ACCESS);
+DuplicateHandle(GetCurrentProcess(), hReadPipeTmp,
+                GetCurrentProcess(), &amp;hReadPipe,
+                0, FALSE, DUPLICATE_SAME_ACCESS);
+// create the pipe for stdin
+CreatePipe(&amp;hHelperReadPipe, &amp;hHelperWritePipe,
+           NULL, 0);
+// disable inheritance on on the write end of the stdin pipe
+SetHandleInformation(hHelperWritePipe, HANDLE_FLAG_INHERIT, 0);
+// prepare to create the process
+... blah blah blah other stuff unrelated to handles ...
+startupInfo.hStdInput = hHelperReadPipe;
+startupInfo.hStdOutput = hWritePipeTmp;
+startupInfo.hStdError = hWritePipeTmp;
+CreateProcess(...);
+// Here is where we close the handles
+<font color="blue">CloseHandle(hReadPipeTmp);
+CloseHandle(hWritePipeTmp);</font>
+// Write the input to the helper process (hangs here sometimes)
+WriteFile(hHelperWritePipe, ...);
+</pre>
+</blockquote>
+<p>
+This is another case of
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/10/14/9906906.aspx">
+getting so excited about doing something
+that you forget to do it</a>.
+(Notice how the comments to that article very quickly descend
+into a discussion of command line quotation marks.)
+</p>
+<p>
+Observe that the handles being closed are <code>hRead­Pipe­Tmp</code>
+and <code>hWrite­Pipe­Tmp</code>, which is a good thing to do,
+but neither has any effect on the
+<code>Write­File</code>.
+The <code>Write­File</code> is writing to
+<code>hHelper­Write­Pipe</code>
+and therefore the handle you need to close is
+<code>hHelper­Read­Pipe</code>.
+Since that handle is still open in the controlling process,
+the pipe manager will not break the pipe,
+because it’s waiting for you to read from it.</p>
+
+
+</body>

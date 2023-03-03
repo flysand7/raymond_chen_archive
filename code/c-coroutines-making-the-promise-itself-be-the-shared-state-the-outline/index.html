@@ -1,0 +1,253 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Making the promise itself be the shared state, the outline</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/c-coroutines-making-the-promise-itself-be-the-shared-state-the-inspiration" title="C++ coroutines: Making the promise itself be the shared state, the inspiration"> got the idea of putting the result holder state directly inside the coroutine state</a>. This time, we’ll set to work on the implementation.</p>
+<p>A restriction we are placing on our <code>simple_task</code> is that it can be <code>co_await</code>ed only once. This enables the return of a move-only object, and avoid potentially-expensive copy operations. It also discourages some inefficient usage patterns, which we’ll discuss later.</p>
+<p>I’ll present the code without some of the annoying bits, and then we’ll spend the next few days filling it in. The code is conceptually simple, but there’s a lot of paperwork. Placeholders are marked with ⟦brackets⟧.</p>
+<pre>namespace async_helpers
+{
+    template&lt;typename T&gt; struct simple_task;
+}
+namespace async_helpers::details
+{
+    template&lt;typename T&gt; struct simple_promise;
+
+    ⟦simple_promise_result_holder definition⟧ 
+   
+    template&lt;typename T&gt;
+    struct simple_promise_base
+    {
+        std::atomic&lt;uint32_t&gt; m_refcount{ 2 };
+        std::mutex m_mutex;
+        std::experimental::coroutine_handle&lt;&gt; m_waiting{ nullptr };
+        simple_promise_result_holder&lt;T&gt; m_holder;
+
+        using Promise = simple_promise&lt;T&gt;;
+        auto as_promise() noexcept
+        {
+            return static_cast&lt;Promise*&gt;(this);
+        }
+
+        ⟦simple_promise_base reference count methods⟧
+
+        auto get_return_object() noexcept
+        {
+            return simple_task&lt;T&gt;(as_promise());
+        }
+
+        std::experimental::suspend_never initial_suspend() noexcept
+        {
+            return {};
+        }
+
+        template&lt;typename...Args&gt;
+        void set_value(Args&amp;&amp;... args)
+        {
+            m_holder.set_value(std::forward&lt;Args&gt;(args)...);
+        }
+
+        void unhandled_exception() noexcept
+        {
+            m_holder.unhandled_exception();
+        }
+
+        auto final_suspend() noexcept
+        {
+            ⟦return an awaiter that decrements the reference count
+             and resumes any awaiting coroutine⟧
+        }
+
+        ⟦awaiter support methods⟧
+
+        auto get_awaiter() noexcept
+        {
+            ⟦return an awaiter that waits for the coroutine
+             to complete⟧
+        }
+    };
+
+    template&lt;typename T&gt;
+    struct simple_promise : simple_promise_base&lt;T&gt;
+    {
+        ⟦implement return_value⟧
+    };
+
+    template&lt;&gt;
+    struct simple_promise&lt;void&gt; : simple_promise_base&lt;void&gt;
+    {
+        ⟦implement return_void⟧
+    };
+
+    // promise_ptr&lt;T&gt; is a reference-counted
+    // pointer to a simple_promise&lt;T&gt;
+    ⟦implement promise_ptr⟧
+}
+
+namespace async_helpers
+{
+    template&lt;typename T&gt;
+    struct simple_task
+    {
+        details::promise_ptr&lt;T&gt; promise;
+        simple_task(details::simple_promise&lt;T&gt;*
+            initial = nullptr) : promise(initial) {}
+
+        void swap(simple_task&amp; other)
+        {
+            std::swap(promise, other.promise);
+        }
+
+        auto operator co_await() const
+        {
+            return promise-&gt;get_awaiter();
+        }
+    };
+
+    template&lt;typename T&gt;
+    void swap(simple_task&lt;T&gt;&amp; left, simple_task&lt;T&gt;&amp; right)
+    {
+        left.swap(right);
+    }
+}
+
+template &lt;typename T, typename... Args&gt;
+struct std::experimental::coroutine_traits&lt;
+    async_helpers::simple_task&lt;T&gt;, Args...&gt;
+{
+    using promise_type =
+        async_helpers::details::simple_promise&lt;T&gt;;
+};
+</pre>
+<p>I put it all out there at one go just to highlight the overall shape. But let’s go through it more slowly.</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_promise_base
+    {
+        std::atomic&lt;uint32_t&gt; m_refcount{ 2 };
+</pre>
+<p>The initial reference count of the promise is two: One reference is held by the coroutine itself because the coroutine keeps its promise alive until it completes. The other reference is held by the <code>simple_task</code> that is the return value of the coroutine function.</p>
+<pre>        std::mutex m_mutex;
+        std::experimental::coroutine_handle&lt;&gt; m_waiting{ nullptr };
+        simple_promise_result_holder&lt;T&gt; m_holder;
+</pre>
+<p>We need a mutex to protect the <code>m_waiting</code> variable so it can be updated atomically with respect to state changes. And of course we have the object that holds the result of the coroutine (successful completion result or an exception).</p>
+<pre>        using Promise = simple_promise&lt;T&gt;;
+        auto as_promise() noexcept
+        {
+            return static_cast&lt;Promise*&gt;(this);
+        }
+</pre>
+<p>The <code>simple_<wbr/>promise_<wbr/>base</code> is a CRTP-like type whose derived type is always a <code>simple_<wbr/>promise&lt;T&gt;</code>. We create a type alias <code>Promise</code> to refer to that full <code>simple_promise</code> type and a helper function to produce a pointer to that type.</p>
+<pre>        ⟦simple_promise_base reference count methods⟧
+</pre>
+<p>Managing the reference counts is a major hassle, so I’ll defer that discussion as well. Neither the result holder nor the reference count is particularly complicated, but they’re rather wordy, and there are some subtle parts that deserve closer discussion.</p>
+<pre>        auto get_return_object() noexcept
+        {
+            return simple_task&lt;T&gt;(as_promise());
+        }
+</pre>
+<p>This produces the <code>simple_<wbr/>task</code> that is the formal return value of the coroutine function. The caller is expected to <code>co_await</code> this <code>simple_<wbr/>task</code> to get the result of the coroutine function.</p>
+<pre>        std::experimental::suspend_never initial_suspend() noexcept
+        {
+            return {};
+        }
+</pre>
+<p>As I noted, this is a hot-start coroutine, so there is nothing to do at the initial suspension.</p>
+<pre>        template&lt;typename...Args&gt;
+        void set_value(Args&amp;&amp;... args)
+        {
+            m_holder.set_value(std::forward&lt;Args&gt;(args)...);
+        }
+
+        void unhandled_exception() noexcept
+        {
+            m_holder.unhandled_exception();
+        }
+</pre>
+<p>These are the methods which store the coroutine result in the result holder. Don’t be scared by the variadic template parameter list for <code>set_<wbr/>value</code>. The actual parameter list to <code>set_<wbr/>value</code> will be either empty (for <code>void</code>) or a single parameter (for non-<code>void</code>). We forward the results into the holder, or if the coroutine function throws an exception, then we capture it as an exception. We’ll look at these more closely when we study the result holder.</p>
+<pre>        auto final_suspend() noexcept
+        {
+            ⟦return an awaiter that decrements the reference count
+             and resumes any awaiting coroutine⟧
+        }
+</pre>
+<p>One of our earlier improvements was to delay resuming any awaiting coroutines until we reach the <code>final_<wbr/>suspend</code>. The additional wrinkle here is that when the coroutine reaches its final suspension point, we decrement the reference count on the promise, which might or might not trigger destruction of the coroutine state. We’ll discuss this some more later.</p>
+<pre>        ⟦awaiter support methods⟧
+
+        auto get_awaiter() noexcept
+        {
+            ⟦return an awaiter that waits for the coroutine
+             to complete⟧
+        }
+    };
+</pre>
+<p>The <code>get_awaiter</code> method produces an awaiter that waits for the coroutine to complete and returns the result (either in the form of a value or an exception). We’ve basically seen this before in our <code>result_<wbr/>holder</code>, but the wrinkles are slightly different due to our ability to process move-only types. We’ll see more about this later.</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_promise : simple_promise_base&lt;T&gt;
+    {
+        ⟦implement return_value⟧
+    };
+
+    template&lt;&gt;
+    struct simple_promise&lt;void&gt; : simple_promise_base&lt;void&gt;
+    {
+        ⟦implement return_void⟧
+    };
+</pre>
+<p>As I noted earlier, it is not legal for a promise to have both <code>return_value</code> and <code>return_void</code>, so we have to split them into separate classes. We’ll look at the implementation later, because there are some annoyances here.</p>
+<pre>    // promise_ptr&lt;T&gt; is a reference-counted
+    // pointer to a simple_promise&lt;T&gt;
+    ⟦implement promise_ptr⟧
+}
+</pre>
+<p>The <code>promise_ptr</code> is a reference-counted pointer to our <code>simple_promise</code>. This class is basically all-annoying with nothing of interest inside it. I’ll defer its implementation to later.</p>
+<pre>namespace async_helpers
+{
+    template&lt;typename T&gt;
+    struct simple_task
+    {
+        simple_task(details::simple_promise&lt;T&gt;*
+            initial = nullptr) : promise(initial) {}
+
+        void swap(simple_task&amp; other)
+        {
+            std::swap(promise, other.promise);
+        }
+
+        auto operator co_await() const
+        {
+            return promise-&gt;get_awaiter();
+        }
+    private:
+        details::promise_ptr&lt;T&gt; promise;
+    };
+
+    template&lt;typename T&gt;
+    void swap(simple_task&lt;T&gt;&amp; left, simple_task&lt;T&gt;&amp; right)
+    {
+        left.swap(right);
+    }
+}
+</pre>
+<p>The <code>simple_task</code> itself is very simple. It wraps a reference-counted pointer to the <code>simple_promise</code> and forwards its <code>co_await</code> operator to the promise’s awaiter. When the <code>simple_task</code> destructs, the reference in the <code>promise_ptr</code> is released, and that takes us one step closer to the end of the coroutine state. (Of course, if you copy the <code>simple_task</code>, then the reference count goes up, and you end up extending the lifetime further.)</p>
+<p>Half of the code is just there to support ADL swap!</p>
+<pre>template &lt;typename T, typename... Args&gt;
+struct std::experimental::coroutine_traits&lt;
+    async_helpers::simple_task&lt;T&gt;, Args...&gt;
+{
+    using promise_type =
+        async_helpers::details::simple_promise&lt;T&gt;;
+};
+</pre>
+<p>Finally, we tell the coroutine infrastructure that if somebody writes</p>
+<pre>async_helpers::simple_task&lt;T&gt; MyCoroutine()
+{
+    ...
+    co_return ...;
+}
+</pre>
+<p>then it should use the <code>simple_promise</code> to assist with the implementation of the coroutine.</p>
+<p>Okay, so that’s it! There’s a lot of paperwork, but the basic idea is that the promise is where all the action is. The coroutine and the task each have a reference to the promise, and that’s how the coroutine and the task communicate with each other.</p>
+<p>Oh wait, I have a lot of code to fill in. We’ll start that next time.</p>
+
+
+</body>

@@ -1,0 +1,109 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Another pattern for using the InitOnce functions</h1>  <!-- .entry-meta -->
+
+<p>In my survey of <a href="https://blogs.msdn.microsoft.com/oldnewthing/20110408-01/?p=10983">patterns for using the InitOnce functions</a>, I omitted the synchronous two-phase initialization. </p>
+<p>The synchronous two-phase initialization is similar to the simple callback-based version in that only one thread gets to attempt an initialization at a time. But instead of doing the initialization in a callback, you do the initialization inline. </p>
+<p>As a refresher, here’s how you do it using <code>Init­Once­Execute­Once</code>: </p>
+<pre>
+BOOL CALLBACK AllocateAndInitializeTheThing(
+    PINIT_ONCE initOnce,
+    PVOID parameter,
+    PVOID *context)
+{
+    *context = new(std::nothrow) Thing();
+    return *context != nullptr;
+}
+
+Thing *GetSingletonThing()
+{
+    static INIT_ONCE initOnce = INIT_ONCE_STATIC_INIT;
+    void *result;
+    if (InitOnceExecuteOnce(&amp;initOnce,
+                            AllocateAndInitializeTheThing,
+                            nullptr, &amp;result)) {
+        return static_cast&lt;Thing*&gt;(result);
+    }
+    return nullptr;
+}
+</pre>
+<p>To use <code>Init­Once­Begin­Initialize</code> in synchronous mode, you basically move the callback function inline: </p>
+<pre>
+Thing *GetSingletonThing()
+{
+    static INIT_ONCE initOnce = INIT_ONCE_STATIC_INIT;
+    void *result;
+    BOOL pending;
+    if (InitOnceBeginInitialize(&amp;initOnce, 0,
+                                &amp;pending, &amp;result)) {
+        if (pending) {
+            // Try to initialize the thing.
+            result = new(std::nothrow) Thing();
+
+            InitOnceComplete(&amp;initOnce,
+                result ? 0 : INIT_ONCE_INIT_FAILED,
+                result);
+        }
+        return static_cast&lt;Thing*&gt;(result);
+    }
+    return nullptr;
+}
+</pre>
+<p>You start by calling <code>Init­Once­Begin­Initialize</code>, and the value stored in the <code>pending</code> parameter tells you whether you need to run the initialization. If it says that you need to initialize, then do your initialization and then report the result back by calling <code>Init­Once­Complete</code>, saying either <code>0</code> to mean that initialization succeeded, or <code>INIT_ONCE_INIT_FAILED</code> to say that it failed. </p>
+<p>If a second thread tries to initialize while an initialization is already in progress, the initial request waits to see what the result of the existing initialization is. If the existing initialization eventually succeeds, then the second initialization is told, “It’s all good. No need to initialize.” If the existing initialization eventually fails, then the second initialization is told, “Not yet initialized. Why don’t you give it a shot?” </p>
+<p>In other words, <code>Init­Once­Execute­Once</code> acts like a wrapper that goes roughly like this: </p>
+<pre>
+BOOL InitOnceExecuteOnce(
+    PINIT_ONCE initOnce,
+    PINIT_ONCE_FN callback,
+    void* parameter,
+    void** context)
+{
+  BOOL pending;
+  BOOL success = InitOnceBeginInitialize(
+                          initOnce, 0, &amp;pending, context)) {
+  if (success) {
+    if (pending) {
+      success = callback(initOnce, parameter, context);
+      InitOnceComplete(initOnce,
+        success ? 0 : INIT_ONCE_INIT_FAILED, *context);
+    }
+  }
+  return success;
+}
+</pre>
+<p>Here’s a comparison table: </p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse">
+<tr>
+<td></td>
+<th>    Init­Once­Execute­Once     </th>
+<th>    Init­Once­Begin­Initialize<br/>    Synchronous mode     </th>
+<th>    Init­Once­Begin­Initialize<br/>    Asynchronous mode     </th>
+</tr>
+<tr>
+<td>How initialized</td>
+<td>Callback</td>
+<td>Inline</td>
+<td>Inline</td>
+</tr>
+<tr>
+<td>Initialization parallelism</td>
+<td>Serialized</td>
+<td>Serialized</td>
+<td>Parallel</td>
+</tr>
+<tr>
+<td>Success reporting</td>
+<td>Callback returns TRUE</td>
+<td>Init­Once­Complete(0)</td>
+<td>Init­Once­Complete(INIT_ONCE_ASYNC)</td>
+</tr>
+<tr>
+<td>Failure reporting</td>
+<td>Callback returns FALSE</td>
+<td>Init­Once­Complete(INIT_ONCE_FAILED)</td>
+<td>Do nothing</td>
+</tr>
+</table>
+
+
+</body>

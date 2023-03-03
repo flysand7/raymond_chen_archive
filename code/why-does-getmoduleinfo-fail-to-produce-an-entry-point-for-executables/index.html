@@ -1,0 +1,19 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does GetModuleInfo fail to produce an entry point for executables?</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to find the entry point for some executables. They tried this two-step plan:</p>
+<ul>
+<li>Load the executable via <code>LoadLibrary</code>. Like, a real <code>LoadLibrary</code>, none of this “as datafile” stuff.</li>
+<li>Call <code>Get­Module­Information</code> and look at the <code>MODULE­INFO.Entry­Point</code></li>
+</ul>
+<p>The customer found that the result is always <code>NULL</code>. What’s going on?</p>
+<p>First of all, it’s not clear what the purpose of the exercise is. You can’t call the entry point, since it’s not the entry point for <i>this</i> process. And the entry point obtained from the current process may not match the entry point when the process is actually run as a process.</p>
+<p>Loading an executable as a library is a pretty dodgy operation. The module can be used to load resources, but you can’t do much else with it. And if all you are after are the resources, you may as well just load it as a datafile.</p>
+<p>What you can do is manually walk the Portable Executable header (either by seeking and reading or by using a memory-mapped file) to get the <code>Address­Of­Entry­Point</code>, which is a relative virtual address. You can then add that to the base address of the module (when it eventually loads) to locate the entry point.</p>
+<p>Okay, fine. But why does <code>Get­Module­Information</code> return <code>NULL</code> for executables?</p>
+<p>Internally, <code>Get­Module­Information</code> walks the loader’s internal list of loaded modules and returns the entry point from the loader entry for said module. If you load an executable via <code>Load­Library</code>, the entry point entry in the loader data structure will not be set.</p>
+<p>The loader doesn’t record the entry point for executable modules because executable modules don’t receive <code>DLL_<wbr/>PROCESS_<wbr/>ATTACH</code> notifications. The entry point for an executable module is the process entry point, not the <code>Dll­Main</code> function. (The loader also doesn’t record the entry point for CLR DLLs since that entry point is a dummy function that crashes on purpose.)</p>
+<p>Basically, the deal is that <code>Get­Module­Information</code> is in <code>PSAPI.DLL</code>, and <code>PSAPI.DLL</code> goes “I’m in ur process steeling ur data”. Not only does the loader have no use for entry points of EXEs and CLR DLLs, it explicitly <i>must not</i> call those entry points, so it sets the entry point to null to mean “Don’t call this guy.” This is a private thing inside the loader. <code>PSAPI.DLL</code> goes in and steals it and says “Hey check out all this good stuff I stole!” You’re basically getting grey market data.</p>
+
+
+</body>

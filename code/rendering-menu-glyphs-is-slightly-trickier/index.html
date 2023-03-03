@@ -1,0 +1,120 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Rendering menu glyphs is slightly trickier</h1>  <!-- .entry-meta -->
+
+<p><p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/08/01/445998.aspx">
+Last time, we saw how to draw themed and unthemed radio buttons</a>,
+and I mentioned that menu glyphs are trickier.
+They’re trickier because they are provided as raw monochrome bitmaps
+instead of fully-formed color-coordinated bitmaps.
+First, let’s do it wrong in order to see what we get.
+Then we’ll try to fix it.
+Start with a clean
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/04/22/410773.aspx">
+new scratch program</a>
+</p>
+<pre>
+class RootWindow : public Window
+{
+ …
+protected:
+ <font color="blue">void PaintContent(PAINTSTRUCT *pps);
+ BOOL WinRegisterClass(WNDCLASS *pwc)
+ {
+  pwc-&gt;hbrBackground = (HBRUSH)(COLOR_MENU + 1);
+  return __super::WinRegisterClass(pwc);
+ }</font>
+ …
+};</pre></p>
+<p><font color="blue">void RootWindow::PaintContent(PAINTSTRUCT *pps)
+{
+ int cxCheck = GetSystemMetrics(SM_CXMENUCHECK);
+ int cyCheck = GetSystemMetrics(SM_CYMENUCHECK);
+ RECT rc = { 0, 0, cxCheck, cyCheck };
+ DrawFrameControl(pps-&gt;hdc, &amp;rc, DFC_MENU, DFCS_MENUCHECK);
+}</font>
+
+<p>
+This naïvely uses
+<a href="http://msdn.microsoft.com/library/en-us/gdi/pantdraw_4b3g.asp">
+the <code>DrawFrameControl</code> function</a>
+to draw the menu check mark directly into the paint DC.
+If you are running with the default Windows XP theme you
+probably won’t notice anything amiss, but switch to the Windows Classic
+theme and you’ll see that the check mark is drawn in black and white
+even though the Classic menu background color is gray.
+</p>
+<p>
+The reason for this is called out in the documentation for
+<code>DrawFrameControl</code>:
+</p>
+<blockquote class="q">
+If uType is either DFC_MENU or DFC_BUTTON and uState is not DFCS_BUTTONPUSH,
+the frame control is a black-on-white mask
+(that is, a black frame control on a white background).
+</blockquote>
+<p>
+All we get from <code>DrawFrameControl</code> is a monochrome mask.
+It is our responsibility to colorize it as necessary.
+To do this, we draw the mask into a monochrome bitmap, and then
+use
+<a href="http://msdn.microsoft.com/library/en-us/gdi/bitmaps_0fzo.asp">
+the <code>BitBlt</code> function</a>
+to colorize it.
+Recall that when blitting from a monochrome bitmap to a color bitmap,
+the color black in the source bitmap
+becomes the destination DC’s text color,
+and the color white in the source bitmap
+becomes the destination DC’s background color.
+</p>
+<pre>
+void RootWindow::PaintContent(PAINTSTRUCT *pps)
+{
+ <font color="blue">HDC hdcMem = CreateCompatibleDC(pps-&gt;hdc);
+ if (hdcMem) {</font>
+  int cxCheck = GetSystemMetrics(SM_CXMENUCHECK);
+  int cyCheck = GetSystemMetrics(SM_CYMENUCHECK);
+  <font color="blue">HBITMAP hbmMono = CreateBitmap(cxCheck, cyCheck, 1, 1, NULL);
+  if (hbmMono) {
+   HBITMAP hbmPrev = SelectBitmap(hdcMem, hbmMono);
+   if (hbmPrev) {</font>
+    RECT rc = { 0, 0, cxCheck, cyCheck };
+    DrawFrameControl(<font color="blue">hdcMem</font>, &amp;rc, DFC_MENU, DFCS_MENUCHECK);
+    <font color="blue">COLORREF clrTextPrev = SetTextColor(pps-&gt;hdc,
+                                     GetSysColor(COLOR_MENUTEXT));
+    COLORREF clrBkPrev = SetBkColor(pps-&gt;hdc,
+                                         GetSysColor(COLOR_MENU));
+    BitBlt(pps-&gt;hdc, 0, 0, cxCheck, cyCheck,
+           hdcMem, 0, 0, SRCCOPY);
+    SetBkColor(pps-&gt;hdc, clrBkPrev);
+    SetTextColor(pps-&gt;hdc, clrTextPrev);
+    SelectBitmap(hdcMem, hbmPrev);
+   }
+   DeleteObject(hbmMono);
+  }
+  DeleteDC(hdcMem);
+ }</font>
+}
+</pre>
+<p>
+The key steps here are
+(1) drawing into a temporary monochrome bitmap to generate the mask,
+(2) setting the text and background colors of the destination DC,
+(3) using <code>BitBlt</code> to do the color mapping.
+The rest of the function is just boring bookkeeping.
+</p>
+<p>
+Observe that the checkmark’s colors now match the system menu colors
+because we set them as the text and background colors for the
+mono-to-color blit.
+</p>
+<p>
+Armed with this knowledge,
+<a href="http://groups-beta.google.com/group/comp.os.ms-windows.programmer.win32/msg/8e548d08f7261932">
+perhaps you can help this person</a>,
+who is trying to draw the menu check marks transparently.
+I can think of two different solutions off the top of my head.
+</p></p>
+
+
+</body>

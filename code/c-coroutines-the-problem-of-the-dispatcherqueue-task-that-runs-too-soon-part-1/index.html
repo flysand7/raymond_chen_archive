@@ -1,0 +1,49 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: The problem of the DispatcherQueue task that runs too soon, part 1</h1>  <!-- .entry-meta -->
+
+<p>I was experiencing occasional crashes in C++/WinRT’s <code>resume_foreground</code> function when it tries to resume execution on a dispatcher queue. Here’s a simplified version of that function:</p>
+<pre>auto resume_foreground(DispatcherQueue const&amp; dispatcher)
+{
+  struct awaitable
+  {
+    DispatcherQueue m_dispatcher;
+    bool m_queued = false;
+
+    bool await_ready()
+    {
+      return false;
+    }
+
+    bool await_suspend(coroutine_handle&lt;&gt; handle)
+    {
+      m_queued = m_dispatcher.TryEnqueue([handle]
+        {
+          handle();
+        });
+      return m_queued;
+    }
+
+    bool await_resume()
+    {
+      return m_queued;
+    }
+  };
+  return awaitable{ dispatcher };
+}
+</pre>
+<p>All you need to know about the <code>Dispatcher­Queue</code> object is that the <code>Try­Enqueue</code> method takes a delegate and schedules it to run on the dispatcher queue’s thread. If it is unable to do so (say, because the thread has already exited), then the function returns <code>false</code>. The return value of the <code>Try­Enqueue</code> method is the result of the <code>co_await</code>.</p>
+<p>Let’s walk through how this function is intended to work.</p>
+<p>The <code>resume_</code><code>foreground</code> method returns an object that acts as its own awaiter. When a <code>co_await</code> occurs, the coroutine first calls <code>await_ready</code>, which returns <code>false</code>, meaning “Go ahead and suspend me.”</p>
+<p>Next, the coroutine calls <code>await_suspend</code>. This method tries to queue the resumption of the coroutine onto the dispatcher thread and remembers whether it succeeded in the <code>m_queued</code> member variable.</p>
+<p>Returning the value of <code>m_queued</code> means that if the continuation was successfully scheduled (<code>true</code>), the coroutine remains suspended until it is resumed when the handle is invoked. On the other hand, if the continuation was not successfully scheduled (<code>false</code>), then the suspension is abandoned, and execution resumes immediately on the same thread.</p>
+<p>Either way, when the coroutine resumes, it is told whether the rescheduling onto the dispatcher thread succeeded.</p>
+<p>Okay, now that you see how it is intended to work, can you spot the defect?</p>
+<p>This code violates one of the rules we gave when we were <a href="/code/c-coroutines-getting-started-with-awaitable-objects"> getting started with awaitable objects</a>: Once you arrange for the <code>handle</code> to be called, you cannot access any member variables because the coroutine may have resumed before <code>async_suspend</code> finishes.</p>
+<p>And that’s what’s happening here: The dispatcher queue is running the lambda even before the <code>async_suspend</code> can save the answer into <code>m_queued</code>. As a result, the code crashes (if you’re lucky) or corrupts memory (if you’re not).</p>
+<p>So we need to make sure the lambda doesn’t race ahead of <code>async_<code></code>suspend</code>.</p>
+<p>Next time, we’ll make our first attempt to fix this.</p>
+<p>(The fact that I call it our <i>first</i> attempt gives you a clue that it may take more than one try.)</p>
+<p> </p>
+
+
+</body>

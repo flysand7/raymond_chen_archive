@@ -1,0 +1,220 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I provide a Windows Runtime ValueSet or PropertySet while non-intrusively monitoring changes to it?</h1>  <!-- .entry-meta -->
+
+<p>We saw last time that the system-provided implementations of ValueSet and PropertySet support IObservableMap, but adding an observer is an intrusive operation because the collection is temporarily made read-only while the handlers are called. If your component is secretly monitoring changes (say because it wants to propagate any changes to a backing store), then the presence of the handler could coincide with a client write operation, causing the client to receive an unexpected error which will probably result in an application fatal exit.</p>
+<p>One solution is to switch to the C++/WinRT multi-threaded collection. This allows write operations to occur concurrently with change notifications.</p>
+<p>We start with a plain fake <code>PropertySet</code> that doesn’t do anything interesting yet.</p>
+<pre>namespace winrt
+{
+    using namespace winrt::Windows::Foundation;
+    using namespace winrt::Windows::Foundation::Collections;
+}
+
+struct MyPropertySet : winrt::implements&lt;MyPropertySet,
+    winrt::IPropertySet,
+    winrt::IMap&lt;winrt::hstring, winrt::IInspectable&gt;,
+    winrt::IIterable&lt;winrt::IKeyValuePair&lt;winrt::hstring, winrt::IInspectable&gt;&gt;,
+    winrt::IObservableMap&lt;winrt::hstring, winrt::IInspectable&gt;&gt;
+{
+    // save some typing
+    using MapChangedEventHandler =
+        winrt::MapChangedEventHandler&lt;winrt::hstring, winrt::IInspectable&gt;;
+
+    winrt::hstring GetRuntimeClassName()
+    {
+        return winrt::hstring(winrt::name_of&lt;winrt::PropertySet&gt;());
+    }
+
+    auto Lookup(winrt::hstring const&amp; key) { return m_propertySet.Lookup(key); }
+    auto Size()                            { return m_propertySet.Size(); }
+    auto HasKey(winrt::hstring const&amp; key) { return m_propertySet.HasKey(key); }
+    auto GetView()                         { return m_propertySet.GetView(); }
+    auto Insert(winrt::hstring const&amp; key, winrt::IInspectable const&amp; value)
+                                           { return m_propertySet.Insert(key, value); }
+    auto Remove(winrt::hstring const&amp; key) { return m_propertySet.Remove(key); }
+    auto Clear()                           { return m_propertySet.Clear(); }
+    auto First()                           { return m_propertySet.First(); }
+    auto MapChanged(MapChangedEventHandler const&amp; handler)
+                                           { return m_propertySet.MapChanged(handler); }
+    auto MapChanged(winrt::event_token const&amp; token)
+                                           { return m_propertySet.MapChanged(token); }
+
+    winrt::IObservableMap&lt;winrt::hstring, winrt::IInspectable&gt; m_propertySet =
+        winrt::multi_threaded_observable_map&lt;winrt::hstring, winrt::IInspectable&gt;();
+};
+</pre>
+<p>All of this work is necessary only because the <code>multi_threaded_<wbr/>observable_<wbr/>map</code> does not implement <code>IProperty­Set</code> in the special case where the key/value pair is <code>hstring, IInspectable</code>. If the multi-threaded observable map had implemented <code>IProperty­Set</code> in that case, then we could just use it directly.</p>
+<p>But since we’re here, we can make it fancy by listening to the <code>MapChanged</code> event on the inner object. And the C++/WinRT implementation of multi-threaded observable maps allows other threads to mutate the collection while the <code>MapChanged</code> event is in progress. This lets us respond to the change without interfering with anything the app is doing.</p>
+<pre>struct MyPropertySet : winrt::implements&lt;MyPropertySet,
+    winrt::IPropertySet,
+    winrt::IMap&lt;winrt::hstring, winrt::IInspectable&gt;,
+    winrt::IIterable&lt;winrt::IKeyValuePair&lt;winrt::hstring, winrt::IInspectable&gt;&gt;,
+    winrt::IObservableMap&lt;winrt::hstring, winrt::IInspectable&gt;&gt;
+{
+    // save some typing
+    using MapChangedEventHandler =
+        winrt::MapChangedEventHandler&lt;winrt::hstring, winrt::IInspectable&gt;;
+
+    winrt::hstring GetRuntimeClassName()
+    {
+        return winrt::hstring(winrt::name_of&lt;winrt::PropertySet&gt;());
+    }
+
+    auto Lookup(winrt::hstring const&amp; key) { return m_propertySet.Lookup(key); }
+    auto Size()                            { return m_propertySet.Size(); }
+    auto HasKey(winrt::hstring const&amp; key) { return m_propertySet.HasKey(key); }
+    auto GetView()                         { return m_propertySet.GetView(); }
+    auto Insert(winrt::hstring const&amp; key, winrt::IInspectable const&amp; value)
+                                           { return m_propertySet.Insert(key, value); }
+    auto Remove(winrt::hstring const&amp; key) { return m_propertySet.Remove(key); }
+    auto Clear()                           { return m_propertySet.Clear(); }
+    auto First()                           { return m_propertySet.First(); }
+    auto MapChanged(MapChangedEventHandler const&amp; handler)
+                                           { return m_propertySet.MapChanged(handler); }
+    auto MapChanged(winrt::event_token const&amp; token)
+                                           { return m_propertySet.MapChanged(token); }
+
+    void OnMapChanged(winrt::IObservableMap&lt;hstring, IInspectable&gt; const&amp;,
+        winrt::IMapChangedEventArgs&lt;hstring&gt; const&amp;)
+    {
+        ⟦ do stuff ⟧
+    }
+
+    MyPropertySet(MyPropertySet const&amp;) = delete;
+    void operator=(MyPropertySet const&amp;) = delete;
+
+    ~MyPropertySet() { m_propertySet.MapChanged(m_changedToken); }
+
+    winrt::IObservableMap&lt;winrt::hstring, winrt::IInspectable&gt; m_propertySet =
+        winrt::multi_threaded_observable_map&lt;winrt::hstring, winrt::IInspectable&gt;();
+
+    <span style="color: blue;">winrt::event_token m_changedToken =
+        m_propertySet.MapChanged({ get_weak(), &amp;MyPropertySet::OnMapChanged });</span>
+};
+</pre>
+<p>There’s a small problem here: If the client takes the <code>M­Property­Set</code> and registers their own <code>MapChanged</code> event handler, then it’s unspecified which handler runs first. Maybe we want to make sure our handler runs first (or last). To do that, we can wrap the event, too.</p>
+<pre>struct MyPropertySet : winrt::implements&lt;MyPropertySet,
+    winrt::IPropertySet,
+    winrt::IMap&lt;winrt::hstring, winrt::IInspectable&gt;,
+    winrt::IIterable&lt;winrt::IKeyValuePair&lt;winrt::hstring, winrt::IInspectable&gt;&gt;,
+    winrt::IObservableMap&lt;winrt::hstring, winrt::IInspectable&gt;&gt;
+{
+    // save some typing0
+    using MapChangedEventHandler =
+        winrt::MapChangedEventHandler&lt;winrt::hstring, winrt::IInspectable&gt;;
+
+    winrt::hstring GetRuntimeClassName()
+    {
+        return winrt::hstring(winrt::name_of&lt;winrt::PropertySet&gt;());
+    }
+
+    auto Lookup(winrt::hstring const&amp; key) { return m_propertySet.Lookup(key); }
+    auto Size()                            { return m_propertySet.Size(); }
+    auto HasKey(winrt::hstring const&amp; key) { return m_propertySet.HasKey(key); }
+    auto GetView()                         { return m_propertySet.GetView(); }
+    auto Insert(winrt::hstring const&amp; key, winrt::IInspectable const&amp; value)
+                                           { return m_propertySet.Insert(key, value); }
+    auto Remove(winrt::hstring const&amp; key) { return m_propertySet.Remove(key); }
+    auto Clear()                           { return m_propertySet.Clear(); }
+    auto First()                           { return m_propertySet.First(); }
+    auto MapChanged(MapChangedEventHandler const&amp; handler)
+                                           { return <span style="color: blue;">m_mapChanged.add</span>(handler); }
+    auto MapChanged(winrt::event_token const&amp; token)
+                                           { return <span style="color: blue;">m_mapChanged.remove</span>(token); }
+
+    void OnMapChanged(winrt::IObservableMap&lt;hstring, IInspectable&gt; const&amp;,
+        winrt::IMapChangedEventArgs&lt;hstring&gt; const&amp; <span style="color: blue;">args</span>)
+    {
+        <span style="color: blue;">⟦ do stuff before notifying clients ⟧
+        m_mapChanged(*this, args);
+        ⟦ do stuff after notifying clients ⟧</span>
+    }
+
+    MyPropertySet(MyPropertySet const&amp;) = delete;
+    void operator=(MyPropertySet const&amp;) = delete;
+
+    ~MyPropertySet() { m_propertySet.MapChanged(m_changedToken); }
+
+    <span style="color: blue;">winrt::event&lt;MapChangedEventHandler&amp;;gt m_mapChanged;</span>
+
+    winrt::IObservableMap&lt;winrt::hstring, winrt::IInspectable&gt; m_propertySet =
+        winrt::multi_threaded_observable_map&lt;winrt::hstring, winrt::IInspectable&gt;();
+
+    winrt::event_token m_changedToken =
+        m_propertySet.MapChanged({ get_weak(), &amp;MyPropertySet::OnMapChanged });
+};
+</pre>
+<p>Instead of letting clients register directly on the inner observable map, we have them register against our own event. That way, there is only one event handler on the inner observable map, namely our own <code>On­Map­Changed</code>. In that method, we can choose whether our work happens before or after notifying the clients.</p>
+<p>Things get complicated if we want to wrap a <code>Value­Set</code>: Although it has the same interface as <code>Property­Set</code>, the <code>Value­Set</code> imposes an additional requirement that the <code>IInspectable</code> be a serializable type. Adding this enforcement to our reimplementation of <code>Value­Set</code> is going to be annoying, but it turns out that we can sidestep the problem entirely: Now that we have our own custom event, we may as well use it for everything.</p>
+<pre>struct MyPropertySet : winrt::implements&lt;MyPropertySet,
+    winrt::IPropertySet,
+    winrt::IMap&lt;winrt::hstring, winrt::IInspectable&gt;,
+    winrt::IIterable&lt;winrt::IKeyValuePair&lt;winrt::hstring, winrt::IInspectable&gt;&gt;,
+    winrt::IObservableMap&lt;winrt::hstring, winrt::IInspectable&gt;&gt;
+{
+    // save some typing
+    using MapChangedEventHandler = winrt::MapChangedEventHandler&lt;winrt::hstring, winrt::IInspectable&gt;;
+
+    winrt::hstring GetRuntimeClassName()
+    {
+        return winrt::hstring(winrt::name_of&lt;winrt::PropertySet&gt;());
+    }
+
+    auto Lookup(winrt::hstring const&amp; key) { return m_propertySet.Lookup(key); }
+    auto Size()                            { return m_propertySet.Size(); }
+    auto HasKey(winrt::hstring const&amp; key) { return m_propertySet.HasKey(key); }
+    auto GetView()                         { return m_propertySet.GetView(); }
+    auto Insert(winrt::hstring const&amp; key, winrt::IInspectable const&amp; value) {
+        <span style="color: blue;">auto result = return m_propertySet.Insert(key, value);
+        ReportChange(CollectionChange::ItemInserted, key);
+        return result;</span>
+    }
+    auto Remove(winrt::hstring const&amp; key) {
+        m_propertySet.Remove(key);
+        <span style="color: blue;">ReportChange(CollectionChange::ItemRemoved, key);</span>
+    }
+    auto Clear() {
+        m_propertySet.Clear();
+        <span style="color: blue;">ReportChange(CollectionChange::Reset);</span>
+    }
+    auto First()                           { return m_propertySet.First(); }
+    auto MapChanged(MapChangedEventHandler const&amp; handler)
+                                           { return m_mapChanged.add(handler); }
+    auto MapChanged(winrt::event_token const&amp; token)
+                                           { return m_mapChanged.remove(token); }
+
+    MyPropertySet(MyPropertySet const&amp;) = delete;
+    void operator=(MyPropertySet const&amp;) = delete;
+
+    ~MyPropertySet() { m_propertySet.MapChanged(m_changedToken); }
+
+    <span style="color: blue;">struct Args : winrt::implements&lt;Args, IMapChangedEventArgs&lt;winrt::hstring&gt;&gt;
+    {
+        Args(winrt::CollectionChange change, winrt::hstring const&amp; key) : m_change(change), m_key(key) {}
+        auto CollectionChange() { return m_change; }
+        auto Key() { return m_key; }
+        winrt::CollectionChange m_change;
+        winrt::hstring m_key;
+    };
+
+    void ReportChange(winrt::CollectionChange change, winrt::hstring key = {})
+    {
+        ⟦ do stuff before notifying clients ⟧
+        m_mapChanged(*this, winrt::make&lt;Args&gt;(change, key));
+        ⟦ do stuff after notifying clients ⟧</span>
+    }
+
+    winrt::event&lt;MapChangedEventHandler&amp;;gt m_mapChanged;
+
+    <span style="color: blue;">winrt::PropertySet m_propertySet;</span>
+
+    <span style="color: red;">// <span style="text-decoration: line-through;">winrt::event_token m_changedToken =
+    //  m_propertySet.MapChanged({ get_weak(), &amp;MyPropertySet::OnMapChanged });</span></span>
+};
+</pre>
+<p>We don’t need to register for the <code>MapChanged</code> event to detect a change to the collection, because we are controlling access to the collection ourselves and therefore know when the mutation has occurred. We can then perform our preprocessing, raise the event for clients, and then do our post-processing.</p>
+<p>And using this pattern solves the <code>ValueSet</code> problem: Since the inner collection really is a <code>ValueSet</code>, we can let the <code>ValueSet</code> do its own validation.</p>
+<p>So far, we’ve just been hand-waving over the “do stuff” parts. Next time, we’ll look into the dangers lurking there.</p>
+
+
+</body>

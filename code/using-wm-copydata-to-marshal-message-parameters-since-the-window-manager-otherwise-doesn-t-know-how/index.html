@@ -1,0 +1,83 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using WM_COPYDATA to marshal message parameters since the window manager otherwise doesn’t know how</h1>  <!-- .entry-meta -->
+
+<p>Miral asks for <a href="http://web.archive.org/web/20090307013746/http://blogs.msdn.com/oldnewthing/archive/2007/09/10/4849069.aspx#4858169"> the recommended way of passing messages across processes if they require custom marshaling</a>.</p>
+<p>There is no one recommended way of doing the custom marshaling, although some are hackier than others.</p>
+<p>Probably the most <i>architecturally beautiful</i> way of doing it is to use a mechanism that <i>does</i> perform automatic marshaling, like COM and MIDL. Okay, it’s not actually automatic, but it does allow you just give MIDL your structures and some information about <a href="https://docs.microsoft.com/en-us/archive/blogs/larryosterman/what-does-size_is-mean-in-an-idl-file" title='What does "size_is" mean in an IDL file?'> how they should be interpreted</a>, and the MIDL compiler autogenerates the marshaler. You can then pass the data back and forth by simply invoking COM methods and letting COM do the work.</p>
+<p><i>Architecturally beautiful</i> often turns into <i>forcing me to learn more than I really wanted to learn</i>, so here’s a more self-contained approach: Take advantage of the <code>WM_<wbr/>COPY­DATA</code> message. This is sort of the poor-man’s marshaler. All it knows how to marshal is a blob of bytes. It’s your responsibility to take what you want to marshal and serialize it into a blob of bytes. <code>WM_<wbr/>COPY­DATA</code> will get the bytes to the other side, and then the recipient needs to deserialize the blob of bytes back into your data. But at least <code>WM_<wbr/>COPY­DATA</code> does the tricky bit of getting the bytes from one side to the other.</p>
+<p>Let’s start with our <a href="https://devblogs.microsoft.com/oldnewthing/20030723-00/?p=43073"> scratch program</a> and have it transfer data to another copy of itself. Make the following changes:</p>
+<pre><span style="color: blue;">#include &lt;strsafe.h&gt;
+
+HWND g_hwndOther;
+
+#define CDSCODE_WINDOWPOS 42 // lpData -&gt; WINDOWPOS
+
+void OnWindowPosChanged(HWND hwnd, LPWINDOWPOS pwp)
+{
+ if (g_hwndOther) {
+  COPYDATASTRUCT cds;
+  cds.dwData = CDSCODE_WINDOWPOS;
+  cds.cbData = sizeof(WINDOWPOS);
+  cds.lpData = pwp;
+  SendMessage(g_hwndOther, WM_COPYDATA,
+           reinterpret_cast&lt;WPARAM&gt;(hwnd),
+           reinterpret_cast&lt;LPARAM&gt;(&amp;cds));
+ }
+ FORWARD_WM_WINDOWPOSCHANGED(hwnd, pwp, DefWindowProc);
+}
+
+void OnCopyData(HWND hwnd, HWND hwndFrom, PCOPYDATASTRUCT pcds)
+{
+ switch (pcds-&gt;dwData) {
+ case CDSCODE_WINDOWPOS:
+  if (pcds-&gt;cbData == sizeof(WINDOWPOS)) {
+   LPWINDOWPOS pwp = static_cast&lt;LPWINDOWPOS&gt;(pcds-&gt;lpData);
+   TCHAR szMessage[256];
+   StringCchPrintf(szMessage, 256,
+    TEXT("From window %p: x=%d, y=%d, cx=%d, cy=%d, flags=%s %s"),
+    hwndFrom, pwp-&gt;x, pwp-&gt;y, pwp-&gt;cx, pwp-&gt;cy,
+    (pwp-&gt;flags &amp; SWP_NOMOVE) ? TEXT("nomove") : TEXT("move"),
+    (pwp-&gt;flags &amp; SWP_NOSIZE) ? TEXT("nosize") : TEXT("size"));
+   SetWindowText(hwnd, szMessage);
+  }
+  break;
+ }
+}</span>
+
+// WndProc
+
+<span style="color: blue;">    HANDLE_MSG(hwnd, WM_WINDOWPOSCHANGED, OnWindowPosChanged);
+    HANDLE_MSG(hwnd, WM_COPYDATA, OnCopyData);</span>
+
+// WinMain
+    <span style="color: blue;">// If there is another window called "Scratch", then it becomes
+    // our recipient.
+    g_hwndOther = FindWindow(TEXT("Scratch"), TEXT("Scratch"));</span>
+
+    hwnd = CreateWindow(
+        "Scratch",                      /* Class Name */
+        <span style="color: blue;">g_hwndOther ? TEXT("Sender") : TEXT("Scratch"),</span>
+        WS_OVERLAPPEDWINDOW,            /* Style */
+        CW_USEDEFAULT, CW_USEDEFAULT,   /* Position */
+        CW_USEDEFAULT, CW_USEDEFAULT,   /* Size */
+        NULL,                           /* Parent */
+        NULL,                           /* No menu */
+        hinst,                          /* Instance */
+        0);                             /* No special parameters */
+
+</pre>
+<p>Just to make it easier to tell the two windows apart, I call the one sending the message “Sender”. (Note that my method for finding the other window is pretty rudimentary, because that’s not the point of the example.)</p>
+<p>Whenever the sender window receives a <code>WM_<wbr/>WINDOW­POS­CHANGED</code> message, it sends a copy of the <code>WINDOW­POS</code> structure to the recipient, which then displays it in its own title bar. Things to observe:</p>
+<ul>
+<li>The value you put into <code>dwData</code> can be anything you like. It’s just another <code>DWORD</code> of data. Traditionally, it’s used like a “message number”, used to communicate what type of data is being sent. In our case, we choose 42 to mean “The <code>lpData</code> points to a <code>WINDOW­POS</code> structure.”</li>
+<li>The <code>cbData</code> is the number of bytes you want to send, and <code>lpData</code> points to the buffer. In our case, the number of bytes is always the same, but variable-sized data is also fine.</li>
+<li>The <code>lpData</code> can point anywhere, as long as the memory is valid for the lifetime of the <code>Send­Message</code> call. In this case, I just point it at the data given to me by the window manager. Of course, if you allocated memory to put into <code>lpData</code>, then the responsibility for freeing it also belongs to you.</li>
+<li>For safety’s sake, I validate that when I get a <code>CDS­CODE_<wbr/>WINDOW­POS</code> request, the associated data really is the size of a <code>WINDOW­POS</code> structure. This helps protect against a rogue caller who tries to crash the application by sending a <code>CDS­CODE_<wbr/>WINDOW­POS</code> with a size less than <code>sizeof(WINDOW­POS)</code>, thereby triggering a buffer overflow. (Exercise: Under what other conditions can the size be incorrect? How would you fix that?)</li>
+<li>The <code>WM_<wbr/>COPY­DATA</code> copies data in only one direction. It does not provide a way to pass information back to the sender. (Exercise: How would you pass information back?)</li>
+<li>The <code>hwndFrom</code> parameter is a courtesy parameter, like <code>dwData</code>. There is currently no attempt to verify that the window really is that of the sender. (In practice, all that could really be verified is that the window belongs to the thread that is doing the sending, but right now, not even that level of validation is performed.)</li>
+</ul>
+<p>The <code>WM_<wbr/>COPY­DATA</code> message is suitable for small-to-medium-sized amounts of memory. Though if the amount of memory is so small that it fits into a <code>WPARAM</code> and <code>LPARAM</code>, then even <code>WM_<wbr/>COPY­DATA</code> is overkill.</p>
+<p>If you’re going to be passing large chunks of memory, then you may want to consider <a href="https://devblogs.microsoft.com/oldnewthing/20031211-00/?p=41543" title="How do I pass a lot of data to a process when it starts up?"> using a shared memory handle instead</a>. The shared memory handle also has the benefit of being shared, which means that the recipient can modify the shared memory block, and the sender can see the changes. (Yes, this is one answer to the second exercise, but see if you can find another answer that tays within the spirit of the exercise.)</p>
+
+
+</body>

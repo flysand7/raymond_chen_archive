@@ -1,0 +1,69 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does the assignment operator in C# evaluate left to right instead of right to left?</h1>  <!-- .entry-meta -->
+
+<p>When I noted some time ago that <a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/08/14/10549885.aspx">the compound assignment operator is guaranteed to evaluate its left hand side before the right hand side</a>, there was much commenting about why the language chose that model instead of the more “obvious” evaluation order of right-then-left. </p>
+<p>In other words, instead of rewriting <code>E1 += E2</code> as <code>E1 = E1 + E2</code>, rewrite it as </p>
+<pre>
+    temp = E2;
+    E1 = E1 + temp;
+</pre>
+<p>(Or as</p>
+<pre>
+    ((System.Func&lt;T2, T1&gt;)((e2) =&gt; E1 = E1 + e2))(E2)
+</pre>
+
+<p> if you want to keep it as a single statement.) </p>
+<p>Thank goodness you can’t overload the <code>+=</code> operator, because it would require that the operator overload for <code>+=</code> <i>be declared backward</i>: </p>
+<pre>
+operator+=(T1 y, T2 x)
+{
+ return x = x + y;
+}
+</pre>
+<p>in order to ensure that the right hand side is evaluated first. (Because function parameters are evaluated left to right.) </p>
+<p> (We’ll come back to the rewrite rules later.) </p>
+<p>One reason for the existing rule is that it keeps the rules simple. In C#, all expressions are evaluated left to right, and they are combined according to associativity. Changing the rules for assignment operators complicates the rules, and complicated rules create confusion. (See, for example, pretty much every article I’ve written about Win32 programming titled “<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/06/23/431876.aspx">Why does</a>…?”) </p>
+<p>In particular, for compound assignment, it means that <code>E1 += E2</code> and <code>E1 = E1 + E2</code> are <i>no longer equivalent</i> if <code>E1</code> and <code>E2</code> have interacting side effects. Collapsing <code>x = x + y</code> into <code>x += y</code> would no longer be something you could do without having to think really hard first. Like hoisting closed-over variables, this would create another case where something that at first appears to be purely an issue of style turns into a correctness issue. </p>
+<p>One argument for making a special rule is that <a href="https://blogs.msdn.microsoft.com/oldnewthing/20140814-00/?p=243#comment-1144583">any code which relied on <code>E1</code> being evaluated before <code>E2</code> is probably broken already and at best is working by sheer luck</a>. After all, this is the rationale behind changing the variable lifetime rules for <a href="https://blogs.msdn.microsoft.com/ericlippert/2009/11/12/closing-over-the-loop-variable-considered-harmful/">closures that involve the loop variable</a>. </p>
+<p>But it's not as cut-and-dried that anybody who relied on order of evaluation was "already broken". </p>
+<p>Consider a byte code interpreter for a virtual machine. Let's say that the <code>Poke</code> opcode is followed by a 16-bit unsigned integer (the address to poke) and an 8-bit unsigned integer (the value to poke). </p>
+<pre>
+  // switch on opcode
+  switch (NextUnsigned8())
+  {
+  ...
+  case Opcode.PokeByte:
+    memory[NextUnsigned16()] = NextUnsigned8();
+    break;
+  ...
+  }
+</pre>
+<p>The C# order of evaluation guarantees that the left hand side is evaluated before the right hand side. Therefore, the 16-bit unsigned integer is read first, and that value is used to determine which element of the <code>memory</code> array is being assigned. Then the 8-bit unsigned integer is read next, and that value is stored into the array element. </p>
+<p>Therefore, this code is perfectly well defined and does what the author intended. Changing the order of evaluation for the assignment operator (and compound assignment operators) would break this code. </p>
+<p>You can't say that this code is "already broken" because it's not. It does exactly what it intended, and it does it correctly, and what it gets is guaranteed by the language standard. </p>
+<p>Okay, you could have come up with something similar for capturing the loop variable: Some code which captures the loop variable and wants to capture the shared variable. So maybe it's not fair showing code which relies on the feature correctly, because one could argue that any such code is contrived, or at least too subtle for its own good. </p>
+<p>But as it happens, most people implicitly expect that everything is evaluated left to right. You can see <a href="http://stackoverflow.com/questions/linked/949433">many instances of this</a> <a href="http://stackoverflow.com/questions/23990968/please-explain-the-output-of-following-c-code">on StackOverflow</a>. They don't actually verbalize this assumption, but it is implicit in their attempt to explain the situation. </p>
+<p>The C# language tries to avoid undefined behavior, so given that it must define a particular order of evaluation, and given that everywhere else in the language, left-to-right evaluation is used, and given that naïve programmers expect left-to-right evaluation here too, it makes sense that the evaluation order here also be left-to-right. It may not be the best style, but it at least offers no surprises. </p>
+<p>With the right-to-left rule, you get a different surprise: </p>
+<pre>
+ x.value += Calculate();
+ x[index] += Calculate();
+</pre>
+<p>If <code>x</code> is <code>null</code>, or if <code>index</code> is out of bounds, the corresponding exception is not raised until after the <code>Calculate</code> has occurred. Some people may find this surprising. </p>
+<p>Okay, so maybe can still salvage this by changing the rewrite rule so that <code>E1</code> is still evaluated before <code>E2</code>, but only to the extent where the value to be modified is identified (an lvalue, in C terminology). Then we evaluate <code>E2</code>, and only then do we combine it with the value of <code>E1</code>. In other words, the rewrite rule is that <code>E1 += E2</code> becomes </p>
+<pre>
+    System.CompoundAssignment.AddInPlace(ref T1 E1, T2 E2)
+</pre>
+<p>where </p>
+<pre>
+T1 AddInPlace&lt;T1, T2&gt;(ref T1 x, T2 y)
+{
+  return x = x + y;
+}
+</pre>
+<p>This still preserves most of the left-to-right evaluation, but delays the fetch of the initial value until as late as possible. I can see some sense to this rule, but it does come at a relatively high cost to language complexity. It's going to be one of those things that "nobody really understands". </p>
+<p><b>Bonus chatter</b>: Java also follows that "always evaluate left to right" rule. Dunno if that makes you more or less angry. See, for example, <b>Example 15.26-2-2: <a href="http://docs.oracle.com/javase/specs/jls/se8/html/jls-15.html#d5e30252">Value of Left-Hand Side Of Compound Assignment Is Saved Before Evaluation Of Right-Hand Side</a></b>. However, for some reason, Java has a special exception for direct (non-compound) assignment to an array element. In the case of <code>x[index] = y</code>, <a href="http://docs.oracle.com/javase/specs/jls/se8/html/jls-15.html#jls-15.26.2-400-E">the range check on the index occurs after the right-hand side is evaluated</a>. Again, this may make you more or less angry. You decide. </p>
+<p>I have a second bonus chatter, but writing it up got rather long, so I'll turn it into a separate post. </p>
+
+
+</body>

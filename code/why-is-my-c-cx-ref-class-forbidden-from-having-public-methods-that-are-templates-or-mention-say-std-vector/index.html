@@ -1,0 +1,82 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why is my C++/CX ref class forbidden from having public methods that are templates or mention, say, std::vector?</h1>  <!-- .entry-meta -->
+
+<p>A customer had a class implement in C++/CX¹ and they tried to add a public method:</p>
+<pre>ref class MyClass
+{
+public:
+  // 1
+  std::vector&lt;int&gt; GetValues();
+
+  // 2
+  void SetValues(std::vector&lt;int&gt; values);
+
+  // 3
+  template&lt;typename T&gt; T GetValue();
+};
+</pre>
+<p>But this generated errors:</p>
+<pre style="white-space: pre-wrap;">// 1
+error C3986: 'SetValue': signature of public member contains native type 'std::vector&lt;int,std::allocator&lt;_Ty&gt;&gt;'
+
+// 2
+error C3986: 'GetValues': signature of public member contains native type 'std::vector&lt;int,std::allocator&lt;_Ty&gt;&gt;'
+
+// 3
+error C2900: 'T MyClass::GetValue(void)': member function templates in WinRT classes must be 'private', 'internal' or 'protected private'
+</pre>
+<p>That last error message is the big clue.</p>
+<p>The C++/CX nonstandard language extension introduces the <code>ref</code> keyword which is used to mark a class as participating in the Windows Runtime. These classes are automatically reference-counted, and you access instances of them as if they were pointers, but using <code>^</code> instead of <code>*</code>.</p>
+<p>One of the things that happens when you use this extension is that there are <a href="https://docs.microsoft.com/en-us/cpp/cppcx/namespaces-and-type-visibility-c-cx?view=msvc-170"> new member access control keywords</a>, and existing keywords change their meanings. C++/CX uses these member access control keywords to control member access both for C++ code inside the same module, as well for the Windows Runtime metadata that allows the classes to be used from other languages that support the Windows Runtime, like C# and JavaScript.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Keyword</th>
+<th>In metadata</th>
+<th>In C++</th>
+</tr>
+<tr>
+<td><code>public</code></td>
+<td>public</td>
+<td>public</td>
+</tr>
+<tr>
+<td><code>public protected</code><br/>
+<code>protected public</code></td>
+<td>protected</td>
+<td>public</td>
+</tr>
+<tr>
+<td><code>protected</code></td>
+<td>protected</td>
+<td>protected</td>
+</tr>
+<tr>
+<td><code>private public</code><br/>
+<code>public private</code><br/>
+<code>internal</code></td>
+<td>(none)</td>
+<td>public</td>
+</tr>
+<tr>
+<td><code>private protected</code><br/>
+<code>protected private</code></td>
+<td>(none)</td>
+<td>protected</td>
+</tr>
+<tr>
+<td><code>private</code></td>
+<td>(none)</td>
+<td>private</td>
+</tr>
+</tbody>
+</table>
+<p>The access control keyword <code>public private</code> is deprecated, and since it is part of the already-deprecated C++/CX extension, that makes it double-deprecated.</p>
+<p>If you use an access control keyword that puts the member into Windows Runtime metadata, then that member must conform to Windows Runtime rules. One of those rules is that the types used in the method signature must be expressible in the Windows Runtime. This means that you can use <code>public enum class</code>, <code>value struct</code>, or <code>ref class</code>, as well as a handful of primitive types like integers, floating point values, and <code>Platform::String^</code>.</p>
+<p>The <code>std::vector</code> is not one of the allowed types in the Windows Runtime. After all, how would C# or JavaScript access a <code>std::vector</code>? That thing is C++-only and has no cross-language ABI. Indeed, it doesn’t even have a consistent ABI within the C++ language: different compilers, different versions of the same compiler, or even different compiler options within the same version of the same compiler, can have different ABI interfaces to <code>std::vector</code>.</p>
+<p>If you intend your Windows Runtime member to be accessible outside your module, then you need to express the member in terms that can be represented in the Windows Runtime.</p>
+<p>On the other hand, if you just want the member to be accessible to other part of your module, you can switch to one of the member access keywords that excludes the member from Windows Runtime metadata. That frees you from the restriction of having to conform to Windows Runtime rules.</p>
+<p>¹ The nonstandard C++/CX extension is no longer the recommended mechanism for using the Windows Runtime from C++. For one thing, the C++/CX extension is supported only in C++14 and C++17 modes. You won’t be able to use it with C++20 or later, so your C++/CX code won’t be able to take advantage of any new language features like concepts. (You can get coroutine support by adding the <code>/await</code> switch.) I encourage you to stop using C++/CX and switch to C++/WinRT.</p>
+
+
+</body>

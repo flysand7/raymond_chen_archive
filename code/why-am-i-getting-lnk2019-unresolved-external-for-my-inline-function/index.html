@@ -1,0 +1,132 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why am I getting LNK2019 unresolved external for my inline function?</h1>  <!-- .entry-meta -->
+
+<p><p>
+More than once, I’ve seen somebody confused by how inline functions work.
+</p>
+<blockquote class="m">
+<p>
+I have implemented a few inline functions in one of my cpp files,
+and I want to use it from other cpp files,
+so I declare them as <code>extern</code>.
+But sometimes I will get linker error 2019 (unresolved external)
+for the inline functions.
+</p>
+<pre>
+// a.cpp
+inline bool foo() { return false; }</pre></blockquote></p>
+<p>// b.cpp
+extern bool foo();</p>
+<p>bool bar() { return foo(); }
+
+
+<p>
+Yup, that’s right.
+The C++ language says in section 3.2(3) [C++03, C++11],
+and repeats in section 7.1.2(4) [C++03, C++11],
+</p>
+<blockquote class="q">
+An inline function shall be defined
+in every translation unit in which it is used.
+</blockquote>
+<p>
+(A <i>translation unit</i> is the technical term for what
+we intuitively can think of as a single cpp file and all the
+files that it <code>#include</code>s.)
+</p>
+<p>
+By putting the definition of <code>foo</code> in a cpp file,
+you make its definition visible only to that cpp file and
+no other cpp file.
+When you compile <code>b.cpp</code>,
+sees that you declared it as a normal external function,
+so it generates a call to it like a normal external function.
+On the other hand, when you compile <code>a.cpp</code>,
+the compiler sees that <code>foo</code> is an inline function,
+so it says,
+“I don’t need to generate any code yet.
+Inline functions generate code at the point they are invoked,
+not at the point they are defined.”
+</p>
+<p>
+Result:
+<code>b.cpp</code> asks for a definition of <code>foo</code>,
+but nobody provides it,
+because the two declarations were inconsistent.
+This is a violation of
+7.1.2(4) [C++03, C++11]
+which says
+“If a function with external linkage is
+declared inline in one translation unit,
+it shall be declared inline in all translation units in which it appears;
+no diagnostic is required.”
+The magic phrase <i>no diagnostic is required</i> means that the compiler
+is not even required to report the error.
+(You’re lucky that it did!)
+</p>
+<p>
+This rule makes sense when you think about the classical model of
+compiling:
+The compiler logically
+takes the source code and sends it through the
+preprocessor.
+The result (the <i>translation unit</i>)
+then goes into the compiler proper,
+which learns about structures and classes and functions,
+and it generates code based on what it sees in that
+translation unit.
+The compiler does not have access to other translation units,
+so when compiling <code>a.cpp</code> it can’t peek into
+<code>b.cpp</code> and say,
+“Hm, it looks like somebody is going to be calling <code>foo</code>
+as a non-inline function,
+so let me also generate a non-inline version of it.”
+And similarly,
+when the compiler is generating code for the
+<code>bar</code> function,
+it doesn’t peek into <code>a.cpp</code> and say,
+“Hm, it looks like <code>foo</code> is actually an inline
+function.
+Let me go steal its definition from that other file.”
+</p>
+<p>
+The solution is to
+<a href="http://www.parashift.com/c++-faq-lite/inline-functions.html#faq-9.6">
+move the definition of the inline function into the header file</a>.
+</p>
+<p>
+Now you can solve this problem:
+</p>
+<blockquote class="m">
+<p>
+I’m getting error LNK2019 for my <code>Get­Value</code> method.
+Can somebody explain why?
+</p>
+<pre>
+// Widget.h
+class Widget
+{
+public:
+ Widget(int initialValue) : value_(initialValue) { }
+ void SetValue(int value);
+ inline int GetValue();
+private:
+ int value_;
+};</pre></blockquote></p>
+<p>// Widget.cpp
+#include &lt;widget.h&gt;</p>
+<p>inline int Widget::GetValue()
+{
+ return value_;
+}</p>
+<p>// Other.cpp</p>
+<p>void something()
+{
+ Widget widget(42);
+ printf(“%d”, widget.GetValue());
+}
+
+</p>
+
+
+</body>

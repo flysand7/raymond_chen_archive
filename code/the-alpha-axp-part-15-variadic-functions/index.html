@@ -1,0 +1,100 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Alpha AXP, part 15: Variadic functions</h1>  <!-- .entry-meta -->
+
+<p>As noted in <a href="https://blogs.msdn.microsoft.com/oldnewthing/20170807-00/?p=96766">the initial plunge</a>, the first six integer parameters are passed in registers, and the first six floating point parameters are passed in a different set of registers. So <a href="https://blogs.msdn.microsoft.com/oldnewthing/20170807-00/?p=96766#comment-1305835">how does the callee known at function entry which registers to spill, and in what order</a>?¹ </p>
+<p>Answer: It doesn’t. So it just spills everything. </p>
+<p>First, a detail on the calling convention: The first six parameters are passed in registers, and if you pass a parameter in an integer register, then the corresponding floating point register is unused, and vice versa. In other words: </p>
+<ul>
+<li>    The first parameter is passed in either <var>a0</var> or <var>f16</var>. </li>
+<li>    The second parameter is passed in either <var>a1</var> or <var>f17</var>. </li>
+<li>…</li>
+<li>    The sixth parameter is passed in either <var>a5</var> or <var>f21</var>. </li>
+</ul>
+<p>On entry to a variadic function, the function spills all the integer parameter registers onto the stack first, and then spills the floating point parameter registers onto the stack next. The result is a stack that looks like this: </p>
+<table border="0" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<td align="center">⋮</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">param 10</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">param 9</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">param 8</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">param 7</td>
+<td>← stack pointer on function entry</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">integer param 6 (<var>a5</var>)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">integer param 5 (<var>a4</var>)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">integer param 4 (<var>a3</var>)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">integer param 3 (<var>a2</var>)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">integer param 2 (<var>a1</var>)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">integer param 1 (<var>a0</var>)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">floating point param 6 (<var>f21</var>)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">floating point param 5 (<var>f20</var>)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">floating point param 4 (<var>f19</var>)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">floating point param 3 (<var>f18</var>)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">floating point param 2 (<var>f17</var>)</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">floating point param 1 (<var>f16</var>)</td>
+<td>← stack pointer after spilling</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">local variable</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">local variable</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">local variable</td>
+</tr>
+<tr>
+<td align="center" style="border: solid 1px black">local variable</td>
+<td>← stack pointer after prologue complete</td>
+</tr>
+</table>
+<p>The <code>va_list</code> type is a structure: </p>
+<pre>
+typedef struct __va_list
+{
+  char* base;
+  size_t offset;
+} va_list;
+</pre>
+<p>The <code>va_start</code> macro initializes <code>base</code> to point to “integer param 1” and <code>offset</code> to 8 × the number of non-variadic parameters. </p>
+<p>If you invoke the <code>va_arg</code> macro with a non-floating point type as the second parameter, then it operates in an unsurprising manner: It retrieves the data from <code>base + offset</code> and then increases the <code>offset</code> by the size of the data (rounded up to the nearest multiple of eight). </p>
+<p>But invoking the <code>va_arg</code> macro with a floating point type as the second parameter is weirder: If the <code>offset</code> is less than 48, then it retrieves the data from <code>base + offset - 48</code>, resulting in a “reach-back” into the parallel array of spilled floating point registers. If the <code>offset</code> is greater than or equal to 48, then it retrieves the data from <code>base + offset</code> as usual. Regardless of where the data is read from, the <code>offset</code> increases by the size of the data (rounded up to the nearest multiple of eight). </p>
+<p>The implementations of the <code>va_start</code> and <code>va_arg</code> macros take advantage of special-purpose compiler intrinsics that did a lot of the magic. </p>
+<p>There are a few optimizations possible here. For one thing, the compiler doesn’t need to spill non-variadic parameters, though it does need to reserve space for them on the stack so that the <code>va_arg</code> macro continues to work.² Furthermore, if the compiler can observe that <code>va_arg</code> is never invoked with a floating point type, then it doesn’t need to spill the floating point registers at all. (Similarly, if <code>va_arg</code> is always invoked with floating point types, then the integer registers don’t need to be spilled.) </p>
+<p>I don’t remember whether the Microsoft compiler actually implemented any of these optimizations. </p>
+<p>¹ It turns out that this question is not Alpha-specific. It applies to any architecture that passes variadic parameters differently depending on their type. </p>
+<p>² If the compiler can observe that <code>va_arg</code> is never invoked with a floating point type, then it doesn’t even need to reserve space for the non-variadic parameters. It can just point the <code>base</code> at where the first integer parameter would have been, even though it now points into the local variables. Those local variables will never be read as parameters because the initial <code>offset</code> skips over them. </p>
+
+
+</body>

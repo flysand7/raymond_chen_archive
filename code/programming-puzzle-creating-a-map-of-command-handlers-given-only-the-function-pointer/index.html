@@ -1,0 +1,274 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Programming puzzle: Creating a map of command handlers given only the function pointer</h1>  <!-- .entry-meta -->
+
+<p>Suppose you have some sort of communication protocol that sends packets of binary-encoded information. There is some information at the start of the packet that describe what command is being sent, and the rest of the bytes in the packet describes the parameters to the command.</p>
+<p>The puzzle is to come up with a generic dispatcher that accepts command / handler pairs and does the work of extracting the command parameters from the packet and calling the handler.</p>
+<p>You are given this class:</p>
+<pre>class Packet
+{
+public:
+ int32_t ReadInt32();
+ uint32_t ReadUInt32();
+ int8_t ReadInt8();
+ std::string ReadString();
+ ... and so on ...
+};
+</pre>
+<p>The <code>Read</code> methods parse the next bytes in the packet and produces a corresponding object. Sometimes the object is simple, like an integer. Sometimes it’s complicated, like a string. Don’t worry about the details of the parsing; the <code>Packet</code> object will do it.</p>
+<p>The puzzle is to implement the <code>Dispatcher</code> class:</p>
+<pre>class Dispatcher
+{
+public:
+  void AddHandler(uint32_t command, <i>??? SOMETHING ???</i>);
+  void DispatchCommand(uint32_t command, Packet&amp; packet);
+};
+</pre>
+<p>The intended usage is like this:</p>
+<pre>// Some handler functions
+void HandleFoo(int32_t, int32_t);
+void HandleBar(int32_t);
+void HandleBaz(int32_t, std::string);
+
+// Command 0 is the "Foo" command that takes
+// two 32-bit integers.
+dispatcher.AddHandler(0, HandleFoo);
+
+// Command 1 is the "Bar" command that takes
+// one 32-bit integer.
+dispatcher.AddHandler(1, HandleBar);
+
+// Command 4 is the "Baz" command that takes
+// a 32-bit integer and a string.
+dispatcher.AddHandler(4, HandleBaz);
+
+// We received a packet. Dispatch it to a handler.
+dispatcher.DispatchCommand(command, packet);
+</pre>
+<p>The <code>Dispatch­Command</code> method looks up the <code>commandId</code> and executes the corresponding handler. In this case, the effect would be as if the <code>Dispatch­Command</code> were written like this:</p>
+<pre>void DispatchCommand(uint32_t command, Packet&amp; packet)
+{
+ switch (command) {
+ case 0:
+  {
+   auto param1 = packet.ReadInt32();
+   auto param2 = packet.ReadInt32();
+   HandleFoo(param1, param2);
+   break;
+  }
+ case 1:
+  {
+   auto param1 = packet.ReadInt32();
+   HandleBar(param1);
+   break;
+  }
+ case 4:
+  {
+   auto param1 = packet.ReadInt32();
+   auto param2 = packet.ReadString();
+   HandleFoo(param1, param2);
+   break;
+  }
+
+ default: std::terminate();
+ }
+}
+</pre>
+<p>For the purpose of the puzzle, we won’t worry too much about the case where an invalid command is received. The puzzle is really about the dispatching of valid commands.</p>
+<p>Okay, let’s roll up our sleeves. One way to attack this problem is to do it in a way similar to how we implemented message crackers for Windows messages: Write a custom dispatcher for each function signature.</p>
+<pre>class Dispatcher
+{
+ std::map&lt;uint32_t, std::function&lt;void(Packet&amp;)&gt;&gt; commandMap;
+
+public:
+ void AddHandler(uint32_t command, void (*func)(int32_t, int32_t))
+ {
+  commandMap.emplace(command, [func](Packet&amp; packet) {
+   auto param1 = packet.ReadInt32();
+   auto param2 = packet.ReadInt32();
+   func(param1, param2);
+  });
+ }
+
+ void AddHandler(uint32_t command, void (*func)(int32_t))
+ {
+  commandMap.emplace(command, [func](Packet&amp; packet) {
+   auto param1 = packet.ReadInt32();
+   func(param1);
+  });
+ }
+
+ void AddHandler(uint32_t command, void (*func)(int32_t, std::string))
+ {
+  commandMap.emplace(command, [func](Packet&amp; packet) {
+   auto param1 = packet.ReadInt32();
+   auto param2 = packet.ReadString();
+   func(param1, param2);
+  });
+ }
+
+ ... and so on ...
+
+ void DispatchCommand(uint32_t command, Packet&amp; packet)
+ {
+  auto it = commandMap.find(command);
+  if (it == commandMap.end()) std::terminate();
+  it-&gt;second(packet);
+ }
+};
+</pre>
+<p>We write a version of <code>Add­Handler</code> for each function signature we care about, and adding a handler consists of creating a lambda which which extracts the relevant parameters from the packet and then calls the handler. These lambdas are captured into a <code>std::function</code> and saved in the map for future lookup.</p>
+<p>The problem with this technique is that it’s tedious writing all the lambdas, and the <code>Dispatcher</code> class needs to know up front all of the possible function signatures, so it can had an appropriate <code>Add­Handler</code> overload. What would be better is if the compiler could write the lambdas automatically based on the parameters to the function. This avoids having to write out all the lambdas, and it means that the <code>Dispatcher</code> can handle arbitrary function signatures, not just the ones that were hard-coded into it.</p>
+<p>First, we write some helper functions so we can invoke the <code>Read</code> methods more template-y-like.</p>
+<pre>template&lt;typename T&gt; T Read(Packet&amp; packet) = delete;
+
+template&lt;&gt; int32_t Read&lt;int32_t&gt;(Packet&amp; packet)
+    { return packet.ReadInt32(); }
+
+template&lt;&gt; uint32_t Read&lt;uint32_t&gt;(Packet&amp; packet)
+    { return packet.ReadUInt32(); }
+
+template&lt;&gt; int8_t Read&lt;int8_t&gt;(Packet&amp; packet)
+    { return packet.ReadInt8(); }
+
+template&lt;&gt; std::string Read&lt;std::string&gt;(Packet&amp; packet)
+    { return packet.ReadString(); }
+
+... and so on ...
+</pre>
+<p>If somebody needs to read a different kind of thing from a packet, they can add their own specialization of the <code>Read</code> function template. They don’t need to come back to you to ask you to change your <code>Dispatcher</code> class.</p>
+<p>Now the hard part: Autogenerating the lambdas.</p>
+<p>We want a local variable for each parameter. The template parameter pack syntax doesn’t let us create a variable number of variables, but we can fake it by putting all the variables into a tuple.</p>
+<pre>template &lt;typename... Args&gt;
+void AddHandler(uint32_t command, void(*func)(Args...))
+{
+  commandMap.emplace(command, [func](Packet&amp; packet) {
+    auto args = std::make_tuple(Read&lt;Args&gt;(packet)...);
+    std::apply(func, args);
+  };
+}
+</pre>
+<p>The idea here is that we create a tuple, each of whose components is the next parameter read from the packet. The templatized <code>Read</code> method extracts the parameter from the packet. We take all those parameters, bundle them up into a tuple, and then <code>std::apply</code> the function to the tuple, which calls the function with the tuple as arguments.</p>
+<p>Unfortunately, this doesn’t work because it relies on left-to-right order of evaluation of parameters, which C++ does not guarantee. (And in practice, it often isn’t.)</p>
+<p>We need to build up the tuple one component at a time.</p>
+<pre>template&lt;typename First, typename... Rest&gt;
+std::tuple&lt;First, Rest...&gt;
+read_tuple(Packet&amp; packet)
+{
+  auto first = std::make_tuple(Read&lt;First&gt;(packet));
+  return std::tuple_cat(first, read_tuple&lt;Rest&gt;(packet));
+}
+
+std::tuple&lt;&gt; read_tuple(Packet&amp; packet)
+{
+  return std::tuple&lt;&gt;();
+}
+
+template &lt;typename... Args&gt;
+void AddHandler(uint32_t command, void(*func)(Args...))
+{
+  commandMap.emplace(command, [func](Packet&amp; packet) {
+    auto args = read_tuple(packet);
+    std::apply(func, args);
+  };
+}
+</pre>
+<p>We use the standard template metaprogramming technique of employing recursion to process each template parameter one at a time. You must resist the temptation to simplify</p>
+<pre>  auto first = std::make_tuple(Read&lt;First&gt;(packet));
+  return std::tuple_cat(first, read_tuple&lt;Rest&gt;(packet));
+</pre>
+<p>to</p>
+<pre>  return std::tuple_cat(std::make_tuple(Read&lt;First&gt;(packet)),
+                        read_tuple&lt;Rest&gt;(packet));
+</pre>
+<p>because that reintroduces the order-of-evaluation problem the <code>read_</code><code>tuple</code> function was intended to solve!</p>
+<p>The attempted solution doesn’t compile because you can’t do this sort of recursive template stuff with functions. (I’m not sure why.) So we’ll have to wrap it inside a templatized helper class.</p>
+<pre>template&lt;typename... Args&gt;
+struct tuple_reader;
+
+template&lt;&gt;
+struct tuple_reader&lt;&gt;
+{
+  static std::tuple&lt;&gt; read(Packet&amp;) { return {}; }
+};
+
+template&lt;typename First, typename... Rest&gt;
+struct tuple_reader&lt;First, Rest...&gt;
+{
+  static std::tuple&lt;First, Rest...&gt; read(Packet&amp; packet)
+  {
+    auto first = std::make_tuple(Read&lt;First&gt;(packet));
+    return std::tuple_cat(first,
+                 tuple_reader&lt;Rest...&gt;::read(packet));
+  }
+};
+
+template &lt;typename... Args&gt;
+void AddHandler(uint32_t command, void(*func)(Args...))
+{
+  commandMap.emplace(command, [func](Packet&amp; packet) {
+    auto args = tuple_reader&lt;Args...&gt;::read(packet);
+    std::apply(func, args);
+  };
+}
+</pre>
+<p>We start by defining our <code>tuple_</code><code>reader</code> helper template class as one with a variable number of template parameters.</p>
+<p>Next comes the base case: There are no parameters at all. In that case, we return an empty tuple.</p>
+<p>Otherwise, we have the recursive case: We peel off the first template parameter and use it to <code>Read</code> the corresponding actual parameter from the packet. Then we recursively call ourselves to read the remaining parameters from the packet. And finally, we combine our actual parameter with the tuple produced by the remaining parameters, resulting in the complete tuple.</p>
+<p>The <code>std::</code><code>tuple_</code><code>cat</code> function requires tuples, so we take our first parameter and put it in a one-element tuple, so that we can concatenate the second tuple to it.</p>
+<p>Now I’m going to pull a sneaky trick and combine the forward declaration with the recursion base case:</p>
+<pre><span style="color: red;">// Delete 
+//
+// <span style="text-decoration: line-through;">template&lt;typename... Args&gt;</span>
+// <span style="text-decoration: line-through;">struct tuple_reader;</span>
+//
+// <span style="text-decoration: line-through;">template&lt;&gt;</span>
+// <span style="text-decoration: line-through;">struct tuple_reader&lt;&gt;</span>
+// <span style="text-decoration: line-through;">{</span>
+//   <span style="text-decoration: line-through;">static std::tuple&lt;&gt; read(Packet&amp;) { return {}; }</span>
+// <span style="text-decoration: line-through;">};</span></span>
+
+template&lt;typename... Args&gt;
+struct tuple_reader
+{
+  static std::tuple&lt;&gt; read(Packet&amp;) { return {}; }
+};
+</pre>
+<p>This trick works because the only thing that will match the template instantiation is the zero-parameter case. If there is one or more parameter, then the <code>First, Rest...</code> version will be the one chosen by the compiler.</p>
+<p>We’re almost there. If one of the parameters is non-copyable, the above solution won’t work because the <code>first</code> is passed by copy to <code>std::tuple_</code><code>cat</code>, and the <code>args</code> is passed by copy to <code>std::apply</code>.</p>
+<p>Even if the parameters are all copyable, the <code>std::move</code> is helpful because it avoids unnecessary copies. For example, if a very large string was passed in the packet, we don’t want to make a copy of the large string just so we can pass it to the handler function. We just want to let the handler function use the string we already read.</p>
+<p>To fix that, we do some judicious <code>std::move</code>ing.</p>
+<pre>template&lt;typename... Args&gt;
+struct tuple_reader
+{
+  static std::tuple&lt;&gt; read(Packet&amp;) { return {}; }
+};
+
+template&lt;typename First, typename... Rest&gt;
+struct tuple_reader&lt;First, Rest...&gt;
+{
+  static std::tuple&lt;First, Rest...&gt; read(Packet&amp; packet)
+  {
+    auto first = std::make_tuple(Read&lt;First&gt;(packet));
+    return std::tuple_cat(<span style="color: blue;">std::move(first)</span>, // moved
+                 tuple_reader&lt;Rest...&gt;::read(packet));
+  }
+};
+
+template &lt;typename... Args&gt;
+void AddHandler(uint32_t command, void(*func)(Args...))
+{
+  commandMap.emplace(command, [func](Packet&amp; packet) {
+    auto args = tuple_reader&lt;Args...&gt;::read(packet);
+    std::apply(func, <span style="color: blue;">std::move(args)</span>); // moved
+  };
+}
+</pre>
+<p>The <code>Add­Handler</code> method could be condensed slightly, which also saves us the trouble of having to <code>std::move</code> the tuple explicitly.</p>
+<pre>    std::apply(func, tuple_reader&lt;Args...&gt;::read(packet));
+</pre>
+<p><b>Exercise 1</b>: Change the <code>tuple_</code><code>reader</code> so it evaluates the template parameters from right to left.</p>
+<p><b>Exercise 2</b>: Suppose the <code>Packet</code> has methods for sending a response to the caller. In that case, the handler should receive a <code>Packet&amp;</code> as its first parameter, before the other optional parameters. Extend the above solution to support that.</p>
+<p><b>Exercise 3</b>: (Harder.) Extend the above solution to support passing an arbitrary function object as a handler, such as a lambda or <code>std::function</code>.</p>
+
+
+</body>

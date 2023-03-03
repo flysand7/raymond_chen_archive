@@ -1,0 +1,38 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Cancelling a Windows Runtime asynchronous operation, part 3: C++/CX with PPL, coroutine style</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/cancelling-a-windows-runtime-asynchronous-operation-part-2-c-cx-with-ppl-explicit-continuation-style"> how task cancellation is projected in C++/CX with PPL and explicit continuations</a>. But how about C++/CX with PPL and coroutines?</p>
+<pre>auto picker = ref new FileOpenPicker();
+picker-&gt;FileTypeFilter.Append(L".txt");
+
+<span style="color: blue;">cancellation_token_source cts;
+call&lt;bool&gt; do_cancel([cts](bool) { cts.cancel(); });
+timer&lt;bool&gt; delayed_cancel(3000U, false, &amp;do_cancel);
+delayed_cancel.start();</span>
+
+StorageFile^ file;
+try {
+    file = co_await create_task(picker-&gt;PickSingleFileAsync(), cts.get_token());
+} <span style="color: blue;">catch (task_canceled const&amp;)</span> {
+    file = nullptr;
+}
+
+if (file != nullptr) {
+    DoSomething(file);
+}
+</pre>
+<p>Notice that coroutines save us a lot of the hassle of setting up the <code>call</code> and <code>timer</code> because the objects live in the coroutine frame, which continues to exist until the coroutine completes.</p>
+<p>Again, the task throws a <code>task_canceled</code> upon cancellation. This time, it’s because of the <code>await_resume</code> for the task awaiter, which you can find in <code>pplawait.h</code>:</p>
+<pre>template &lt;typename _Ty&gt;
+struct _Ppltask_awaiter {
+    ...
+
+    decltype(auto) await_resume() {
+        <span style="color: blue;">return _Task.get();</span>
+    }
+};
+</pre>
+<p>But wait, the PPL library also supports awaiting on raw <code>IAsyncAction^</code> and <code>IAsyncOperation^</code> objects. Next time, we’ll look at what happens in that case.</p>
+
+
+</body>

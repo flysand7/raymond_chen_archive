@@ -1,0 +1,84 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Expressing fire-and-forget coroutines more explicitly, -or- How to turn any coroutine into fire-and-forget</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/winrt-fire-and-forget-was-too-forgetful">Last time</a>, we looked at how to mark a coroutine as fire-and-forget, meaning that the caller does not get any information about when the coroutine completes. This is fine as far as it goes, but it may not be what you want. </p>
+<p>Fire-and-forget-ness is frequently a property of the call site, not the function itself. A particular coroutine could be called with a continuation in one case, but as fire-and-forget in other cases. There should be a way to capture the desired behavior at the call site because it’s the caller’s choice whether they want to wait for the result or to proceed without it. </p>
+<pre>
+using winrt::Windows::Foundation;
+
+IAsyncAction DoSomethingAsync()
+{
+  co_await blah();
+  co_await blah();
+  co_await blah();
+}
+
+// This caller cares about when the coroutine completes.
+IAsyncAction DoSomethingAndThenSomethingElseAsync()
+{
+  co_await DoSomethingAsync();
+  DoSomethingElse();
+}
+
+// This caller doesn't care
+void StartDoingSomethingAndSomethingElse()
+{
+  // Don't co_await this; just let it go.
+  DoSomethingAsync();
+
+  // This runs while the DoSomethingAsync is still in progress.
+  DoSomethingElse();
+}
+</pre>
+<p>Calling <code>Do­Something­Async</code> and throwing away the <code>IAsync­Action</code> is dangerous: If an unhandled exception occurs in the task, there is nobody around to observe it, and you’re back to where you were with the <a href="https://devblogs.microsoft.com/oldnewthing/20190320-00/?p=102345">overly forgetful <code>winrt::fire_</code><code>and_</code><code>forget</code></a>. </p>
+<p>On the other hand, we don’t want to write two versions of <code>Do­Something­Async</code>, one which returns an <code>IAsync­Action</code> and another which returns a <code>winrt::</code><code>fire_</code><code>and_</code><code>forget</code>. We should be able to convert any <code>IAsync­Action</code> into a <code>winrt::</code><code>fire_</code><code>and_</code><code>forget</code>. </p>
+<pre>
+template&lt;typename T&gt;
+winrt::fire_and_forget no_await(T t)
+{
+ co_await t;
+}
+</pre>
+<p>Now you can declare at the call site that you don’t care about the completion (aside from ensuring that it doesn’t trigger any unhandled exceptions). </p>
+<pre>
+IAsyncAction DoSomethingAndThenSomethingElseAsync()
+{
+  co_await DoSomethingAsync();
+
+  // This doesn't run until the DoSomethingAsync completes.
+  DoSomethingElse();
+}
+
+// This caller doesn't care
+void StartDoingSomethingAndSomethingElse()
+{
+  // This starts and we don't want for it to complete.
+  no_await(DoSomethingAsync());
+
+  // This runs while the DoSomethingAsync is still in progress.
+  DoSomethingElse();
+}
+</pre>
+<p>This helper is useful when employed <a href="https://devblogs.microsoft.com/oldnewthing/20190118-00/?p=100735">in conjunction with <code>invoke_</code><code>async_</code><code>lambda</code></a>. </p>
+<pre>
+void OnClick()
+{
+ no_await(invoke_async_lambda([=]() -&gt; IAsyncAction
+ {
+   ... do stuff, including co_await ...
+ }));
+}
+</pre>
+<p>The combination is useful enough that you might want a helper that does both. </p>
+<pre>
+template&lt;typename T&gt;
+winrt::fire_and_forget no_await_lambda(T t)
+{
+ co_await t();
+}
+</pre>
+<p>Recall that the subtlety of <code>invoke_</code><code>async_</code><code>lambda</code> is that it copies the lambda into its frame, so that its lifetime will extend until the coroutine completes. But <code>no_</code><code>await</code> already copies the lambda into its frame, so the make work of <code>invoke_</code><code>async_</code><code>lambda</code> is already taken care of! All that’s left is to <code>co_</code><code>await</code> it into a <code>winrt::</code><code>fire_</code><code>and_</code><code>forget</code>. </p>
+<p>Next time, we’ll try to unify <code>no_</code><code>await</code> and <code>no_</code><code>await_</code><code>lambda</code>, mostly because I think the name <code>no_</code><code>await</code> is really cute and I don’t want to give it up. </p>
+
+
+</body>

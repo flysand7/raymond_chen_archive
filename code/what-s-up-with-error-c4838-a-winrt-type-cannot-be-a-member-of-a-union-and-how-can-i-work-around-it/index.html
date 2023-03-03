@@ -1,0 +1,28 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What’s up with error C4838: a WinRT type cannot be a member of a union, and how can I work around it?</h1>  <!-- .entry-meta -->
+
+<p>If you try to put a Windows Runtime type inside a <code>std::optional</code> from C++/CX, you get this error:</p>
+<pre style="white-space: pre-wrap;">std::optional&lt;::Windows::Foundation::Rect&gt; optRect;
+
+error C2848: 'std::_Optional_destruct_base&lt;_Ty,true&gt;::Value': A WinRT type cannot be a member of a union
+</pre>
+<p>Why can’t a WinRT type be a member of a union?</p>
+<p>The C++/CX language extension was written back when the latest C++ standard was C++03, and in C++03, unions could not (among other things) contain objects that had a nontrivial destructor.</p>
+<p>Windows Runtime types usually have destructors: Reference types use hat pointers which release the underlying ABI object at destruction. And structures might contain <code>String^</code>, which also entails a nontrivial destructor.</p>
+<p>C++/CX just gives up and says, “Nope, not gonna do that.” It doesn’t bother to check whether the structure in question actually has a nontrivial destructor; it just assumes that it does, and the compiler won’t let you put it into a union. C++/CX won’t even let you put a Windows Runtime enum in a union!</p>
+<p>Fortunately, C++/WinRT doesn’t have this problem. C++/WinRT is standard C++, and the compiler can see that the <code>Rect</code> structure is just a bunch of <code>float</code>s with no special destructor. Furthermore, C++/WinRT can take advantage of advances in the C++ language, such as permitting objects with destructors in unions.</p>
+<pre>// compiles just fine
+std::optional&lt;winrt::Windows::Foundation::Rect&gt; optRect;
+</pre>
+<p>Just one of many reasons why C++/CX is deprecated in favor of C++/WinRT.</p>
+<p><b>Bonus chatter</b>: If you really need to put a C++/CX <code>Rect</code> into a union, you can wrap it inside another structure first.</p>
+<pre>struct RectStruct
+{
+  ::Windows::Foundation::Rect rect;
+};
+
+std::optional&lt;RectStruct&gt; optRect;
+</pre>
+
+
+</body>

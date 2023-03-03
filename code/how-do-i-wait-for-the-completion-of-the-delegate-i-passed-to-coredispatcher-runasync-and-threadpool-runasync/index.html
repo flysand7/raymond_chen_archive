@@ -1,0 +1,279 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I wait for the completion of the delegate I passed to <code>Core­Dispatcher.</code><code>Run­Async</code> and <code>Thread­Pool.</code><code>Run­Async</code>?</h1>  <!-- .entry-meta -->
+
+<p><!-- backref: When do CoreDispatcher.RunAsync and ThreadPool.RunAsync actions complete? -->As we saw last time, The the <code>Core­Dispatcher::</code><code>Run­Async</code> and <code>Thread­Pool::</code><code>Run­Async</code> methods complete when the delegate returns, which is not the same as when the delegate <i>completes</i>. How can you wait until the delegate completes? </p>
+<p>We’ll have to track the delegate completion ourselves. </p>
+<p>One way is to signal the completion with a custom <code>Task­Completion­Source</code>. There’s a <a href="https://github.com/Microsoft/Windows-task-snippets/blob/master/tasks/UI-thread-task-await-from-background-thread.md">task snippet</a> that demonstrates this. Here’s a simplified version: </p>
+<pre>
+using System;
+using System.Threading.Tasks;
+using Windows.UI.Core;
+
+public static class DispatcherTaskExtensions
+{
+    public static async Task&lt;T&gt; RunTaskAsync&lt;T&gt;(
+        this CoreDispatcher dispatcher, 
+        Func&lt;Task&lt;T&gt;&gt; func)
+    {
+        var tcs = new TaskCompletionSource&lt;T&gt;();
+        await dispatcher.RunAsync(CoreDispatcherPriority.Normal,
+            async () =&gt;
+            {
+                tcs.SetResult(await func());
+            });
+        return await tcs.Task;
+    }
+
+    public static async Task RunTaskAsync(this CoreDispatcher dispatcher,
+        Func&lt;Task&gt; func) =&gt; 
+        await RunTaskAsync(dispatcher,
+                           async () =&gt; { await func(); return false; });
+}
+</pre>
+<p>The idea is that you pass an async lambda, and the <code>Run­Task­Async</code> extension method wraps it inside another lambda that awaits the async lambda, thereby waiting until the task completes. Upon completion, it uses a <code>Task­Completion­Source</code> to indicate to the caller that everything is all finished. </p>
+<p>As a courtesy, the returned task matches the return type of the original async lambda, so that if the async lambda completes with a value, that is also the completed value of the returned task. </p>
+<p>An alternative approach is to make the wrapper lambda synchronous, so that the outer <code>await</code> of <code>Run­Async</code> completes when the wrapper lambda is done. We can then await the async lambda’s result from the calling thread. </p>
+<pre>
+public static class DispatcherTaskExtensions
+{
+    static public async Task&lt;T&gt; RunTaskAsync&lt;T&gt;(
+        this CoreDispatcher dispatcher,
+        Func&lt;Task&lt;T&gt;&gt; func)
+    {
+        Task&lt;T&gt; result = null;
+        await dispatcher.RunAsync(CoreDispatcherPriority.Normal,
+                                  () =&gt; result = func());
+        return await result;
+    }
+
+    static public async Task RunTaskAsync&lt;T&gt;(
+        this CoreDispatcher dispatcher,
+        Func&lt;Task&gt; func)
+    {
+        Task result = null;
+        await dispatcher.RunAsync(CoreDispatcherPriority.Normal,
+                                  () =&gt; result = func());
+        await result;
+    }
+}
+</pre>
+<p>The idea behind this second version is that we invoke the async lambda on the dispatcher thread, and then wait on the task from the calling thread. </p>
+<p>Both of these versions elide exception-handling for expository simplicity. </p>
+<p>You can imagine for yourself analogous versions for running an async lambda on a background thread: You use <code>Thread­Pool.</code><code>Run­Async</code> instead of <code>Core­Dispatcher.</code><code>Run­Async</code>, but the rest is basically the same. </p>
+<p>Suppose you have a function that is called on the UI thread, and it performs long computations as part of its processing, and you want to update the UI partway through the computation. The single-threaded version looks like this: </p>
+<pre>
+public sealed partial class MyPage : Page
+{
+  void Button_Click()
+  {
+    // Get the control's value.
+    var v = SomeControl.Value;
+
+    // Do the computation.
+    var result1 = Compute1(v);
+    var other = await ContactWebServiceAsync();
+    var result2 = Compute2(result1, other);
+
+    // Provide an interim update.
+    TextBlock1.Text = result1;
+    TextBlock2.Text = result2;
+
+    // Back to more computations.
+    var extra = await GetExtraDataAsync();
+    var result3 = Compute3(result1, result2, extra);
+
+    // Show final results.
+    TextBlock3.Text = result3;
+  }
+}
+</pre>
+<p>Unfortunately, this code performs the long computations on the UI thread, so your app stops responding while the computations are taking place. You really want to do the computations on a background thread, and return to the UI thread only to provide UI updates. </p>
+<p>The original code without <code>Run­Task­Async</code> consumes a level of nesting each time you want to switch threads. </p>
+<pre>
+public sealed partial class MyPage : Page
+{
+  void Button_Click()
+  {
+    // Get the control's value from the UI thread.
+    var v = SomeControl.Value;
+
+    // Do the computation on a background thread.
+    await ThreadPool.RunAsync(async (item) =&gt;
+    {
+      var result1 = Compute1(v);
+      var other = await ContactWebServiceAsync();
+      var result2 = Compute2(result1, other);
+
+      // Back to the UI thread to provide an interim update.
+      await Dispatcher.RunAsync(CoreDispatcherPriority.Normal,
+                                async () =&gt;
+      {
+        TextBlock1.Text = result1;
+        TextBlock2.Text = result2;
+
+        // Back to the background thread to do more computations.
+        await ThreadPool.RunAsync(async (item) =&gt;
+        {
+          var extra = await GetExtraDataAsync();
+          var result3 = Compute3(result1, result2, extra);
+
+          // And back to the UI thread one last time.
+          await Dispatcher.RunAsync(CoreDispatcherPriority.Normal,
+                                    async () =&gt;
+          {
+            TextBlock3.Text = result3;
+          };
+        });
+      });
+    });
+  }
+}
+</pre>
+<p>This is painful enough for straight-line code, but you can imagine how much more complicated it gets if you have loops or other nonlinear control flow. </p>
+<p> To avoid the nesting, you can bounce back to the originating thread. </p>
+<pre>
+public sealed partial class MyPage : Page
+{
+  void Button_Click()
+  {
+    // Get the control's value from the UI thread.
+    var v = SomeControl.Value;
+
+    // Do the computation on a background thread.
+    await ThreadPoolHelper.RunTaskAsync(async () =&gt;
+    {
+      var result1 = Compute1(v);
+      var other = await ContactWebServiceAsync();
+      var result2 = Compute2(result1, other);
+    });
+
+    // Provide an interim update.
+    TextBlock1.Text = result1;
+    TextBlock2.Text = result2;
+
+    // Back to the background thread to do more computations.
+    await ThreadPoolHelper.RunTaskAsync(async () =&gt;
+    {
+      var extra = await GetExtraDataAsync();
+      var result3 = Compute3(result1, result2, extra);
+    });
+
+    // Provide a final update.
+    TextBlock3.Text = result3;
+  }
+}
+</pre>
+<p>Let’s ignore for the moment that this code doesn’t compile. </p>
+<p>The thread which started the entire sequence ends up orchestrating the subsequent thread switches. Each <code>await</code>ed <code>Run­Task­Async</code> returns back to that thread, which can do some work before kicking off another <code>Run­Task­Async</code>. </p>
+<p>This gets rid of the nesting, but it still isn’t great. Control keeps returning to the original thread, even if the intent was to go directly from the second thread to a third. For example, perhaps you wanted to display the interim update in a different thread’s window. </p>
+<pre>
+public sealed partial class MyPage : Page
+{
+  void Button_Click()
+  {
+    ...
+
+    // Do the computation on a background thread.
+    await ThreadPoolHelper.RunTaskAsync(async () =&gt;
+    {
+      var result1 = Compute1(v);
+      var other = await ContactWebServiceAsync();
+      var result2 = Compute2(result1, other);
+    });
+
+    <font color="blue">// Provide an interim update in a secondary window.
+    await otherDispatcher.RunAsync(CoreDispatcherPriority.Normal,
+                                   () =&gt;
+    {
+        TextBlock1.Text = result1;
+        TextBlock2.Text = result2;
+    });</font>
+
+    // Back to the background thread to do more computations.
+    ...
+  }
+}
+</pre>
+<p>We returned to the original thread even though all it’s going to do is ask another thread to do some more work. That’s two thread switches when we wanted needed only one. </p>
+<p>The next problem is addressing the fact that the code doesn’t compile because the <code>result1</code>, <code>result2</code>, and <code>result3</code> variables all belong to the lambda and are not visible to the outer function. </p>
+<p>One option is to hoist the variables out of the async lambda so that they can be shared with the calling method. Furthermore, the compiler requires you to initialize the variables because it cannot prove that the async lambda will definitely assign values to the variables prior to use. (The compiler doesn’t know what <code>Run­Task­Async</code> does. For all the compiler knows, the method ignores its lambda parameter!) </p>
+<pre>
+public sealed partial class MyPage : Page
+{
+  void Button_Click()
+  {
+    // Get the control's value from the UI thread.
+    var v = SomeControl.Value;
+
+    <font color="blue">string result1 = null;
+    string result2 = null;</font>
+
+    // Do the computation on a background thread.
+    await ThreadPoolHelper.RunTaskAsync(async () =&gt;
+    {
+      result1 = Compute1(v);
+      var other = await ContactWebServiceAsync();
+      result2 = Compute2(result1, other);
+    });
+
+    // Provide an interim update.
+    TextBlock1.Text = result1;
+    TextBlock2.Text = result2;
+
+    <font color="blue">string result3 = null;</font>
+
+    // Back to the background thread to do more calculations.
+    await ThreadPoolHelper.RunTaskAsync(async () =&gt;
+    {
+      var extra = await GetExtraDataAsync();
+      result3 = Compute3(result1, result2, extra);
+    });
+
+    // Provide a final update.
+    TextBlock3.Text = result3;
+  }
+}
+</pre>
+<p>Hoisting and preinitializing the shared variables is awkward at best, and impossible in the general case, because the variables might be anonymous types, which therefore cannot be declared with an explicit type. </p>
+<p>We can take advantage of the fact that <code>Run­Task­Async</code> forwards the inner task’s result as its own result, so we can return the things we want to make available to the caller. In the case where it’s only one thing (as with <code>result3</code>), we can return it directly. Otherwise, we’ll have to wrap it in another object, like an anonymous type, and then extract the values from the wrapper on the receiving side. </p>
+<pre>
+public sealed partial class MyPage : Page
+{
+  void Button_Click()
+  {
+    // Get the control's value from the UI thread.
+    var v = SomeControl.Value;
+
+    // Do the computation on a background thread.
+    <font color="blue">var (result1, result2) =</font>
+      await ThreadPoolHelper.RunTaskAsync(async () =&gt;
+      {
+        <font color="blue">var innerResult1</font> = Compute1(v);
+        var other = await ContactWebServiceAsync();
+        <font color="blue">var innerResult2</font> = Compute2(<font color="blue">innerResult1</font>, other);
+
+        <font color="blue">return (result1, result2);</font>
+      });
+
+    // Provide an interim update.
+    TextBlock1.Text = result1;
+    TextBlock2.Text = result2;
+
+    // Back to the background thread to do more calculations.
+    <font color="blue">var result3 =</font> await ThreadPoolHelper.RunTaskAsync(async () =&gt;
+    {
+      var extra = await GetExtraDataAsync();
+      <font color="blue">return</font> Compute3(result1, result2, extra);
+    });
+
+    // Provide a final update.
+    TextBlock3.Text = result3;
+  }
+}
+</pre>
+<p>This is cumbersome and error-prone because of the manual packing and unpacking, especially since the code that unpacks the values is far away from the code that packs them. Woe unto you if you get the tuple elements backward! Matching them up is made even more frustrating because you can’t name the variables inside the lambda the same as the ones outside the lambda. Variables in a lambda are not allowed to shadow variables outside it. </p>
+<p>And of course neither option really helps if you want to put the variables into a <code>using</code> statement. </p>
+<p>Fortunately, all is not lost. Next time, we’ll develop an alternative that allows you to write code in a much more natural way. </p>
+
+
+</body>

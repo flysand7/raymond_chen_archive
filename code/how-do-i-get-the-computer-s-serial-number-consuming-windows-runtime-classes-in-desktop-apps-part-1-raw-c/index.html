@@ -1,0 +1,47 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I get the computer’s serial number? Consuming Windows Runtime classes in desktop apps, part 1: Raw C++</h1>  <!-- .entry-meta -->
+
+<p>Getting the computer’s serial number used to be an arduous task of <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms724379(v=vs.85).aspx">getting the system firmware table</a>, and then manually parsing the SMBIOS information looking for the serial number. </p>
+<p>Windows 8 introduced the <code>Windows.</code><code>System.</code><code>Profile.</code><code>System­Manufacturers.</code><code>SmbiosInformation</code> runtime class which parses out the serial number for you. </p>
+<p><a href="http://tvtropes.org/pmwiki/pmwiki.php/Main/TheEasyWayOrTheHardWay">We can do this the easy way or the hard way</a>. Let’s do it the hard way. </p>
+<p>From Visual Studio, create a new C++ Console Application that goes like this: </p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;wrl/client.h&gt;
+#include &lt;wrl/wrappers/corewrappers.h&gt;
+#include &lt;windows.system.profile.systemmanufacturers.h&gt;
+#include &lt;roapi.h&gt;
+#include &lt;stdio.h&gt; // Horrors! Mixing C and C++!
+
+namespace WRL = Microsoft::WRL;
+namespace spsm = ABI::Windows::System::Profile::SystemManufacturers;
+
+using Microsoft::WRL::Wrappers::HString;
+using Microsoft::WRL::Wrappers::HStringReference;
+
+int __cdecl wmain(int, wchar_t**)
+{
+    <a href="https://devblogs.microsoft.com/oldnewthing/">CCoInitialize</a> init;
+
+    WRL::ComPtr&lt;spsm::ISmbiosInformationStatics&gt; statics;
+    HString serialNumber;
+    RoGetActivationFactory(HStringReference(
+        RuntimeClass_Windows_System_Profile_SystemManufacturers_SmbiosInformation)
+                             .Get(), IID_PPV_ARGS(&amp;statics));
+    statics-&gt;get_SerialNumber(serialNumber.GetAddressOf());
+    wprintf(L"Serial number = %ls\n", serialNumber.GetRawBuffer(nullptr));
+
+    return 0;
+}
+</pre>
+<p>Before building, right-click the Project in Visual Studio and select <i>Properties</i>. From the dialog, make the following change: </p>
+<ul>
+<li>Configuration Properties, Linker, Inputs, Additional Dependencies: add <code>windowsapp.lib</code>. </li>
+</ul>
+<p>Okay, now you can build and run the program, and it’ll tell you your system’s serial number as recorded in the SMBIOS. </p>
+<p>And fortunately you didn’t have to go parsing the system firmware table yourself. </p>
+<p>This series repeats the above exercise in desktop apps in various languages, each one getting easier than the previous one. Next up is C++/CX. </p>
+<p>(The secret goal of this series is to capture how you need to configure your project to get it to build.) </p>
+
+
+</body>

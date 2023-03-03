@@ -1,0 +1,88 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Controversial extension methods: <code>CastTo&lt;T&gt;</code> and <code>As&lt;T&gt;</code></h1>  <!-- .entry-meta -->
+
+<p>You’ve probably had to do this in C#. You get an object, you need to cast it to some type <code>T</code> and then fetch a property that is returned as an <code>object</code>, so you have to cast <i>that</i> to some other type <code>U</code>, so you can read the destination property.</p>
+<p>For example, you have a <code>ComboBoxItem</code>, and you put some extra data in the <code>Tag</code>.</p>
+<pre>void AddComboBoxItem(Thing thing)
+{
+    var item = new ComboBoxItem { Content = thing.Name, Tag = thing };
+    someComboBox.Items.Append(item);
+}
+
+void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+{
+    var thing = (Thing)((ComboBoxItem)((ComboBox)sender).SelectedItem)?.Tag;
+    ...
+}
+</pre>
+<p>In this case, when the selection changes, we ask the <code>ComboBox</code> for its currently-selected item, cast it to a <code>Combo­Box­Item</code>, then get the <code>Tag</code> from it, then cast the <code>Tag</code> to the <code>Thing</code> that we were after in the first place.</p>
+<p>In order to parse that expression, your eyes have to bounce back and forth because the casts are on the left, but the method calls and property accesses are on the right.</p>
+<pre>    //             6           4           2       1         3          5
+    var thing = (Thing)((ComboBoxItem)((ComboBox)sender).SelectedItem)?.Tag;
+</pre>
+<p>You also have to pay attention to the parentheses, or what’s more likely to be the case, you simply trust that the parentheses are in the right place.</p>
+<p>Enter the controversial extension method <code>CastTo&lt;T&gt;</code>.</p>
+<pre>namespace ObjectExtensions
+{
+    static class ExtensionMethods
+    {
+        public static T CastTo&lt;T&gt;(this object o) =&gt; (T)o;
+    }
+}
+</pre>
+<p>With this extension method, you can write your code as a straightforward left-to-right sequence.</p>
+<pre>void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+{
+    var thing = sender.CastTo&lt;ComboBox&gt;().SelectedItem.CastTo&lt;ComboBoxItem&gt;()?.Tag.CastTo&lt;Thing&gt;();
+    ...
+}
+</pre>
+<p>You can break up the long line for readability, and the fact that there are no large spans of parentheses makes the line breaks easier to place.</p>
+<pre>void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+{
+    var thing = sender
+        .CastTo&lt;ComboBox&gt;()
+        .SelectedItem
+        .CastTo&lt;ComboBoxItem&gt;()
+        ?.Tag
+        .CastTo&lt;Thing&gt;();
+
+    ...
+}
+</pre>
+<p>Some people use the <code>as</code> operator instead of a cast, not because they actually care about the failure case (in which the result of the <code>as</code> is <code>null</code>), but because it lets them write things left-to-right.</p>
+<pre>void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+{
+    //             1         2              3               4         5       6
+    var thing = ((sender as ComboBox).SelectedItem as ComboBoxItem)?.Tag as Thing
+    ...
+}
+</pre>
+<p>This lets you read from left to right, but you still have to mind your parentheses. It looks a little prettier, but it also <a href="/code/if-there-is-no-difference-between-two-options-choose-the-one-that-is-easier-to-debug"> makes debugging harder</a>.</p>
+<p>You can write a similar extension method for <code>as</code>.</p>
+<pre>namespace ObjectExtensions
+{
+    static class ExtensionMethods
+    {
+        public static T CastTo&lt;T&gt;(this object o) =&gt; (T)o;
+        public static T As&lt;T&gt;(this object o) where T : class =&gt; o as T;
+    }
+}
+</pre>
+<p>This lets you change the above to</p>
+<pre>void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+{
+    var thing = sender
+        .As&lt;ComboBox&gt;()
+        .SelectedItem
+        .As&lt;ComboBoxItem&gt;()
+        ?.Tag
+        .As&lt;Thing&gt;();
+    ...
+}
+</pre>
+<p>I suspect that like my crazy <a href="https://devblogs.microsoft.com/oldnewthing/20190328-00/?p=102368"> thread-switching tasks</a>, people are going to think either that this is a really cool trick, or it’s an offense against nature.</p>
+<p> </p>
+
+
+</body>

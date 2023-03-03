@@ -1,0 +1,103 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Writing a marshal-by-value marshaler, part 1</h1>  <!-- .entry-meta -->
+
+<p>Last time, we created <a href="/code/the-skeleton-marshaler-that-does-default-marshaling" title="The skeleton marshaler that does default marshaling"> a skeleton marshaler that does default marshaling</a>. By itself, it’s not very interesting, but we can use it as a starting point for implementing a marshal-by-value object.</p>
+<p>Marshaling by value is suitable for immutable objects, or at least objects which are logically immutable. The object may internally perform caching to avoid redundant computation, but the external behavior is as if the object were immutable. (Marshaling mutable objects by value can result in surprises when the client calls a mutating method, which causes the original object and its by-value-marshaled copy to fall out of sync.)</p>
+<p>Even if your object is immutable, you will need to use the default marshal by reference if you rely on object identity. Marshaling by value creates a clone of the object, which will not be reference-identical with the original.</p>
+<p>Okay, so you’ve decided that you want to marshal by value. For simplicity, let’s say that the value in question is just a 32-bit integer.</p>
+<pre>bool ShouldMarshalByValue(DWORD dwDestContext)
+{
+    return dwDestContext == MSHCTX_CROSSCTX || dwDestContext == MSHCTX_INPROC ||
+           dwDestContext == MSHCTX_LOCAL || dwDestContext == MSHCTX_NOSHAREDMEM;
+}
+</pre>
+<p>We choose to use marshal by value for in-process marshaling as well as cross-process marshaling, but not for cross-machine marshaling because our unmarshaler may not be installed on the other machine.</p>
+<p>First up is <code>Get­Unmarshal­Class</code>.</p>
+<pre>    STDMETHODIMP GetUnmarshalClass(
+        REFIID riid, void* pv, DWORD dwDestContext,
+        void* pvDestContext, DWORD mshlflags,
+        CLSID *clsid)
+    {
+        <span style="color: blue;">if (ShouldMarshalByValue(dwDestContext)) {
+            *clsid = CLSID_MyClass;
+            return S_OK;
+        }</span>
+
+        ComPtr&lt;IMarshal&gt; marshal;
+        RETURN_IF_FAILED(CoGetStandardMarshal(riid, CastToUnknown(), dwDestContext,
+                                              pvDestContext, mshlflags, &amp;marshal));
+        RETURN_IF_FAILED(marshal-&gt;GetUnmarshalClass(riid, pv, dwDestContext,
+                                              pvDestContext, mshlflags, clsid));
+        return S_OK;
+    }
+</pre>
+<p>If we decide to marshal by value, then we return the CLSID of the unmarshaler. Here, as is common, the object is its own unmarshaler, so we just ask for another instance of ourselves to be created.</p>
+<p>Next comes <code>Get­Marshal­Size­Max</code>. This one is easy because we don’t have any variable-sized data.</p>
+<pre>    STDMETHODIMP GetMarshalSizeMax(
+        REFIID riid, void* pv, DWORD dwDestContext,
+        void* pvDestContext, DWORD mshlflags,
+        LPDWORD size)
+    {
+        <span style="color: blue;">if (ShouldMarshalByValue(dwDestContext)) {
+            *size = sizeof(m_value);
+            return S_OK;
+        }</span>
+
+        ComPtr&lt;IMarshal&gt; marshal;
+        RETURN_IF_FAILED(CoGetStandardMarshal(riid, CastToUnknown(), dwDestContext,
+                                              pvDestContext, mshlflags, &amp;marshal));
+        RETURN_IF_FAILED(marshal-&gt;GetMarshalSizeMax(riid, pv, dwDestContext,
+                                              pvDestContext, mshlflags, size));
+        return S_OK;
+    }
+</pre>
+<p>Marshaling the interface consists of just saving the 32-bit integer to the stream.</p>
+<pre>    STDMETHODIMP MarshalInterface(
+        IStream* pstm,
+        REFIID riid, void* pv, DWORD dwDestContext,
+        void* pvDestContext, DWORD mshlflags)
+    {
+        <span style="color: blue;">if (ShouldMarshalByValue(dwDestContext)) {
+            RETURN_IF_FAILED(pstm-&gt;Write(&amp;m_value, sizeof(m_value), nullptr));
+            return S_OK;
+        }</span>
+
+        ComPtr&lt;IMarshal&gt; marshal;
+        RETURN_IF_FAILED(CoGetStandardMarshal(riid, CastToUnknown(), dwDestContext,
+                                              pvDestContext, mshlflags, &amp;marshal));
+        RETURN_IF_FAILED(marshal-&gt;MarshalInterface(pstm, riid, pv, dwDestContext,
+                                              pvDestContext, mshlflags));
+        return S_OK;
+    }
+</pre>
+<p>Note that in all of the above cases, we delegate any unwanted destination contexts to the standard marshaler. This is the recommended behavior, so that the system can add new destination contexts in the future. <a href="https://docs.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-cogetstandardmarshal"> The documentation for <code>Co­Get­Standard­Marshal</code></a> calls this out as a neat idea, but <a href="https://docs.microsoft.com/en-us/windows/win32/api/objidl/nf-objidl-imarshal-getunmarshalclass"> the documentation for <code>IMarshal::<wbr/>Get­Unmarshal­Class</code></a> calls it out as an imperative.</p>
+<p>That takes care of the marshaling. Now comes the unmarshaling:</p>
+<pre>    STDMETHODIMP UnmarshalInterface(IStream* pstm, REFIID riid, void** ppv)
+    {
+        <span style="color: blue;">*ppv = nullptr;
+        ULONG actual;
+        RETURN_IF_FAILED(pstm-&gt;Read(&amp;m_value, sizeof(m_value), &amp;actual));
+        RETURN_HR_IF(E_FAIL, actual != sizeof(m_value));
+        return QueryInterface(riid, ppv);</span>
+    }
+</pre>
+<p>We set up this object to be its own unmarshaler, so the unmarshaler reads the 32-bit integer from the stream into its internal state, and then returns the requested interface of itself. In the general case, the unmarshaler is permitted to create a new object or even reuse an existing one.</p>
+<p><b>Exercise</b>: Why don’t we need to check <code>Should­Marshal­By­Value</code> first?</p>
+<p>The last group of functions is the cleanup functions.</p>
+<pre>    STDMETHODIMP ReleaseMarshalData(IStream* pstm)
+    {
+        <span style="color: blue;">RETURN_IF_FAILED(pstm-&gt;Seek({ sizeof(m_value), 0 }, STREAM_SEEK_CUR, nullptr));
+        return S_OK;</span>
+    }
+
+    STDMETHODIMP DisconnectObject(DWORD dwReserved)
+    {
+        return E_UNEXPECTED;
+    }
+</pre>
+<p>We have no special state in our marshal data to clean up, so all we have to do is seek over it. The <code>Release­Marshal­Data</code> is expected to exit with the stream pointer pointing just past the marshal data. The reason for this is that serializing a data structure is inherently recursive, and COM needs to be able to move on to the next object to be released.</p>
+<p>We’ll take a digression into stream management before returning to the marshal-by-value marshaler.</p>
+<p><b>Answer to exercise</b>: In the cases where <code>Should­Marshal­By­Value</code> is false, we delegate to the standard marshaler. The fact that our custom marshaler is active at all means that we must be in the case where <code>Should­Marshal­By­Value</code> is true.</p>
+
+
+</body>

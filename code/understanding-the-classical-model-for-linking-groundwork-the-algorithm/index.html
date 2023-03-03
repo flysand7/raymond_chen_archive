@@ -1,0 +1,211 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Understanding the classical model for linking, groundwork: The algorithm</h1>  <!-- .entry-meta -->
+
+<p><p>
+The classical model for linking goes like this:
+</p>
+<p>
+Each OBJ file contains two lists of symbols.
+</p>
+<ol>
+<li>Provided symbols:
+    These are symbols the OBJ contains definitions for.
+<li>Needed symbols:
+    These are symbols the OBJ would like the definitions for.
+</li></li></ol>
+<p>
+(The official terms for these are <i>exported</i> and
+<i>imported</i>,
+but I will use
+<i>provided</i> and <i>needed</i> to avoid confusion with
+the concepts of exported and imported functions in DLLs,
+and because <i>provided</i> and <i>needed</i> more clearly
+captures what the two lists are for.)
+</p>
+<p><p>
+Naturally, there is other bookkeeping information in there.
+For example, for provided symbols, not only is the name given,
+but also additional information on locating the definition.
+Similarly, for needed symbols, in addition to the name,
+there is also information about what should be done once its
+definition has been located.
+</p>
+<p>
+Collectively, provided and needed symbols are known as
+<i>symbols with external linkage</i>,
+or just <i>externals</i> for short.
+(Of course, by giving them the name
+<i>symbols with external linkage</i>,
+you would expect there to be things known as
+<i>symbols with internal linkage</i>,
+and you’d be right.)
+</p>
+<p>
+For example, consider this file:
+</p>
+<pre>
+// inventory.c</pre></p>
+<p>extern int InStock(int id);</p>
+<p>int GetNextInStock()
+{
+  static int Current = 0;
+  while (!InStock(++Current)) { }
+  return Current;
+}
+
+<p>
+This very simple OBJ file has one provided symbol,
+<code>Get­Next­In­Stock</code>:
+That is the object defined in this file that can be used by other files.
+It also has one needed symbol,
+<code>In­Stock</code>:
+That is the object required by this file in order to work,
+but which the file itself did not provide a definition for.
+It’s hoping that somebody else will define it.
+There’s also a symbol with internal linkage:
+<i>Current</i>,
+but that’s not important to the discussion,
+so I will ignore it from now on.
+</p>
+<p>
+OBJ files can hang around on their own,
+or they can be bundled together into a LIB file.
+</p>
+<p>
+When you ask the linker to generate a module,
+you hand it a list of OBJ files and a list of LIB files.
+The linker’s goal is to <i>resolve</i> all of the
+<i>needed symbols</i>
+by matching them up to a <i>provided symbol</i>.
+Eventually, everything needed will be provided,
+and you have yourself a module.
+</p>
+<p>
+To do this, the linker keeps track of which symbols in the module
+are resolved and which are unresolved.
+</p>
+<ul>
+<li>A resolved symbol is one for which a provided symbol has been
+    located and added to the module.
+    Under the classical model, a symbol can be resolved only once.
+    (Otherwise, the linker wouldn’t know which one to use!)
+<li>An unresolved symbol is one that is needed by the module,
+    but for which no provider has yet been identified.
+</li></li></ul>
+<p>
+Whenever the linker adds an OBJ file to the module,
+it goes through the list of provided and needed symbols
+and updates the list of symbols in the module.
+The algorithm for updating this list of symbols is obvious
+if you’ve been paying attention, because it is a simple matter
+of preserving the invariants described above.
+</p>
+<p>
+For each <i>provided</i> symbol in an OBJ file added to a module:
+</p>
+<ul>
+<li>If the symbol is already in the module marked as <i>resolved</i>,
+    then
+    <a href="http://msdn.microsoft.com/library/72zdcz6f.aspx">
+    raise an error</a>
+    complaining that an object has multiple
+    definitions.
+<li>If the symbol is already in the module
+    marked as <i>unresolved</i>, then change its marking to <i>resolved</i>.
+<li>Otherwise, the symbol is not already in the module.
+    Add it and mark it as <i>resolved</i>.
+</li></li></li></ul>
+<p>
+For each <i>needed</i> symbol in an OBJ file added to a module:
+</p>
+<ul>
+<li>If the symbol is already in the module marked as <i>resolved</i>,
+    then leave it marked as <i>resolved</i>.
+<li>If the symbol is already in the module marked as <i>unresolved</i>,
+    then leave it marked as <i>unresolved</i>.
+<li>Otherwise, the symbol is not already in the module.
+    Add it and mark it as <i>unresolved</i>.
+</li></li></li></ul>
+<p>
+The algorithm the linker uses to resolve symbols goes like this:
+<ul>
+<li>Initial conditions:
+    Add all the explicitly-provided OBJ files to the module.
+<li>While there is an unresolved symbol:
+    <ul>
+<li>Look through all the LIBs
+        for the first OBJ to provide the symbol.
+    <li>If found: Add that OBJ to the module.
+    <li>If not found:
+        <a href="http://msdn.microsoft.com/en-us/library/f6xx1b1z.aspx">
+        Raise an error</a> complaining of an unresolved external.
+        (If the linker has the information available,
+        it may provide
+        <a href="http://msdn.microsoft.com/en-us/library/799kze2z.aspx">
+        additional details</a>.)
+    </li></li></li></ul>
+</li></li></ul>
+<p>
+That’s all there is to linking and unresolved externals.
+At least, that’s all there is to the classical model.
+</p>
+<p>
+Next time, we’ll start looking at the consequences of the rules
+for classical linking.
+</p>
+<p>
+<b>Sidebar</b>:
+Modern linkers introduce lots of non-classical behavior.
+For example,
+the rule
+</p>
+<ul>
+<li>If the symbol is already in the module marked as <i>resolved</i>,
+    then
+    <a href="http://msdn.microsoft.com/library/72zdcz6f.aspx">
+    raise an error</a>
+    complaining that an object has multiple
+    definitions.
+</li></ul>
+<p>
+has been replaced with the rules
+</p>
+<ul>
+<li>If the symbol is already in the module marked as <i>resolved</i>:
+<ul>
+<li>
+    If both the original symbol and the new symbol are marked
+    <code>__declspec(<a href="http://msdn.microsoft.com/en-us/library/5tkz6s71.aspx">selectany</a>)</code>,
+    then do not raise an error.
+    Pick one arbitrarily and discard the other.
+<li>Otherwise,
+    <a href="http://msdn.microsoft.com/library/72zdcz6f.aspx">
+    raise an error</a>
+    complaining that an object has multiple
+    definitions.
+</li></li></ul>
+</li></ul>
+<p>
+Another example of non-classical behavior is
+dead code removal.
+If you pass
+<a href="http://msdn.microsoft.com/en-us/library/bxwfs976.aspx">
+the
+<code>/OPT:REF</code> linker flag</a>,
+then after all externals have been resolved,
+the linker goes through and starts discarding functions and data
+that are never referenced,
+taking advantage of another non-classical feature
+(<a href="http://msdn.microsoft.com/en-us/library/xsa71f43.aspx">packed functions</a>)
+to know where each function begins and ends.
+</p>
+<p>
+But I’m going to stick with the classical model,
+because you need to understand classical linking
+before you can study non-classical behavior.
+Sort of how in physics, you need to learn your classical mechanics
+before you study relativity.
+</p></p>
+
+
+</p></p></body>

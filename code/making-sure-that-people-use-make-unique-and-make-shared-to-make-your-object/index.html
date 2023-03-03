@@ -1,0 +1,153 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Making sure that people use <code>make_unique</code> and <code>make_shared</code> to make your object</h1>  <!-- .entry-meta -->
+
+<p>Normally, the way you prevent people from constructor your object in an objectionable way is by making the constructor private and offering a factory method. That way, the only way to create the object is through the factory.</p>
+<pre>class Widget
+{
+public:
+    template&lt;typename...Args&gt;
+    static auto Create(Args&amp;&amp;... args)
+    { return Widget(std::forward&lt;Args&gt;(args)...); }
+
+private:
+    Widget();
+    Widget(int);
+    Widget(int, int);
+
+    // Deny copy construction
+    Widget(Widget const&amp;) = delete;
+};
+</pre>
+<p>However, this trick doesn’t work with <code>make_<wbr/>unique</code> <code>make_<wbr/>shared</code> because they require that the construct be public, so that they can create the object that is being managed.</p>
+<p>For <code>make_<wbr/>unique</code>, you can work around it by <code>new</code>‘ing the object yourself and putting it directly into a <code>unique_<wbr/>ptr</code>:</p>
+<pre>class Widget
+{
+public:
+    template&lt;typename...Args&gt;
+    static auto Create(Args&amp;&amp;... args)
+    { return std::unique_ptr&lt;Widget&gt;
+        (std::forward&lt;Args&gt;(args)...); }
+private:
+    Widget();
+    Widget(int);
+    Widget(int, int);
+
+    // Deny copy construction
+    Widget(Widget const&amp;) = delete;
+};
+</pre>
+<p>You can also do this to bypass <code>make_<wbr/>shared</code>, but it’s not quite the same because you lose the special optimization in <code>make_<wbr/>shared</code> that allocates the object and its control block inside the same memory allocation.</p>
+<p>Since we generally like the “combined allocation” optimization, we are forced to make the constructor public. To avoid unwanted use of the constructor, we can make it impossible to invoke, using a trick we learned some time ago: <a href="/code/c-11-braced-initialization-made-the-impossible-possible-and-how-to-fix-it-so-it-stays-impossible"> Require an additional parameter of an inaccessible marker type</a>.</p>
+<pre>class Widget : <!-- backref: My class derives from std::enable_shared_from_this, but shared_from_this() doesn't work -->public std::enable_shared_from_this&lt;Widget&gt;
+{
+private:
+    struct secret { explicit secret() = default; };
+public:
+    template&lt;typename...Args&gt;
+    static auto Create(Args&amp;&amp;... args)
+    { return std::make_shared&lt;Widget&gt;
+        (secret{}, std::forward&lt;Args&gt;(args)...); }
+
+    // public but unusable from outside the class
+    Widget(secret);
+    Widget(secret, int);
+    Widget(secret, int, int);
+
+    // Deny copy construction
+    Widget(Widget const&amp;) = delete;
+};
+</pre>
+<p>The public constructors take an instance of a private type called <code>secret</code>. The constructor of this private type is explicit so users can’t use the <code>{}</code> trick to construct the object without naming it.</p>
+<p>We can capture this pattern in a helper class:</p>
+<pre>template&lt;typename T&gt;
+struct require_make_shared :
+    public std::enable_shared_from_this&lt;T&gt;
+{
+protected:
+    struct use_the_create_method {
+        explicit use_the_create_method() = default;
+    };
+
+public:
+    template&lt;typename...Args&gt;
+    static auto create(Args&amp;&amp;... args)
+    {
+        return std::make_shared&lt;T&gt;
+            (use_the_create_method{},
+             std::forward&lt;Args&gt;(args)...);
+    }
+
+    // Deny copy construction
+    require_make_shared(require_make_shared const&amp;) = delete;
+};
+
+class Widget : public require_make_shared&lt;Widget&gt;
+{
+public:
+    Widget(use_the_create_method);
+    Widget(use_the_create_method, int);
+    Widget(use_the_create_method, int, int);
+};
+
+void test()
+{
+    auto v1 = Widget::create(); // okay
+    auto v2 = std::make_shared&lt;Widget&gt;(); // nope
+    auto v3 = std::make_unique&lt;Widget&gt;(); // nope
+    Widget v4; // nope
+}
+</pre>
+<p>We name the marker type <code>use_<wbr/>the_<wbr/>create_<wbr/>method</code> as another example of compiler error message metaprogramming: If somebody tries to create one of these things directly, they get an error message that includes the phrase “<code>use_<wbr/>the_<wbr/>create_<wbr/>method</code>“, and that might clue them in that they need to use the <code>create()</code> method.</p>
+<p>Notice that if you forget to derive publicly from <code>require_<wbr/>make_<wbr/>shared</code>, then you can’t even <code>create</code> one!</p>
+<pre>class Widget : /* private */ require_make_shared&lt;Widget&gt;
+{
+public:
+    Widget(use_the_create_method);
+    Widget(use_the_create_method, int);
+    Widget(use_the_create_method, int, int);
+};
+
+void test()
+{
+    auto v1 = Widget::create(); // nope
+}
+</pre>
+<p>This is probably good enough to protect against simple mistakes. To protect against fancier mistakes, you could add a static assertion:</p>
+<pre>template&lt;typename T&gt;
+struct require_make_shared :
+    public std::enable_shared_from_this&lt;T&gt;
+{
+protected:
+    struct use_the_create_method {
+        explicit use_the_create_method() = default;
+    };
+
+public:
+    template&lt;typename...Args&gt;
+    static auto create(Args&amp;&amp;... args)
+    {
+        <span style="color: blue;">static_assert(std::is_convertible_v&lt;
+            T*, require_make_shared*&gt;,
+            "Must derive publicly from require_make_shared");</span>
+        return std::make_shared&lt;T&gt;
+            (use_the_create_method{},
+             std::forward&lt;Args&gt;(args)...);
+    }
+
+    // Deny copy construction
+    require_make_shared(require_make_shared const&amp;) = delete;
+};
+
+class Widget : /* private */ require_make_shared&lt;Widget&gt;
+{
+public:
+    <span style="color: blue;">auto create()
+    { return require_make_shared::create(); } // assertion failure</span>
+    Widget(use_the_create_method);
+    Widget(use_the_create_method, int);
+    Widget(use_the_create_method, int, int);
+};
+</pre>
+
+
+</body>

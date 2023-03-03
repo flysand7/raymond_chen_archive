@@ -1,0 +1,110 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you have to cast, you can't afford it</h1>  <!-- .entry-meta -->
+
+<p>
+A customer reported a crash inside a function we’ll call
+<code>XyzConnect</code>:
+</p>
+<pre>
+DWORD XyzConnect(
+    __in DWORD ConnectionType,
+    __in PCWSTR Server,
+    __in PCWSTR Target,
+    __out void **Handle);
+...
+// HACK - Create a dummy structure to pass to the XyzConnect
+// function to avoid AV within the function.
+int dummy = 0;
+if ( NO_ERROR != ( XyzConnect( 0, L"", L"", (PVOID*)&amp;dummy ) )
+{
+    TRACE( L"XyzConnect failed." );
+    return FALSE;
+}
+...
+</pre>
+<p>
+The title of today’s entry gives the answer away.
+(The title is also an exaggeration, but it’s a pun on
+the saying
+<a href="http://www.phrases.org.uk/bulletin_board/53/messages/626.html">
+<i>If you have to ask, you can’t afford it</i></a>.)
+</p>
+<p>
+The last parameter to the <code>XyzConnect</code> function is
+declared as a <code>void**</code>: A pointer to a generic pointer.
+Note that it is not itself a generic pointer, however.
+A generic pointer can point to anything, possibly unaligned.
+But this is an aligned pointer to a generic pointer.
+Therefore, the memory for the generic pointer must be aligned
+in a manner appropriate to its type.
+</p>
+<p>
+But this caller didn’t pass a pointer to a pointer;
+the caller passed a pointer to an <code>int</code>,
+and an <code>int</code> has different alignment requirements
+from a pointer on 64-bit systems.
+(You might conclude that this decision was the stupidest decision
+on the face of the planet, but that’s a different argument for
+a different time. For example, I can think of decisions far stupider.)
+</p>
+<p>
+When the <code>XyzConnect</code> function tries to dereference this
+purported <code>void **</code> pointer,
+it encounters an alignment fault, because it does not in fact
+point to a <code>void *</code> as the type claims,
+but rather points to a <code>DWORD</code>.
+A <code>DWORD</code> requires only 32-bit alignment,
+so you have a 50% chance that the <code>DWORD*</code>
+is not suitably aligned to be a <code>void*</code>.
+</p>
+<p>
+Mind you, you also have a 100% chance of a buffer overflow,
+because a <code>DWORD</code> is only four bytes,
+whereas a <code>void*</code> is eight bytes.
+The function is going to write eight bytes
+into your four-byte buffer.
+</p>
+<p>
+When this question was posed, one person suggested changing
+the <code>DWORD</code> to a <code>__int64</code>,
+since the <code>__int64</code> is an 8-byte value, which is
+big enough to hold a pointer on both 32-bit and 64-bit Windows.
+Then again, it’s overkill on 32-bit systems, since you allocated
+eight bytes when you only needed four.
+Another suggestion was to use <code>DWORD_PTR</code>,
+since that type changes in size to match
+the size of a <code>void*</code>.
+</p>
+<p>
+Well, yeah, but here’s another type that matches the size
+of a <code>void*</code>: It’s called <code>void*</code>.
+</p>
+<p>
+Just declare <code>void *dummy</code> and get rid of the cast.
+And get rid of the comment while you’re at it.
+If you do it right, you don’t need the cast or the hack.
+</p>
+<pre>
+void *handle = 0;
+if ( NO_ERROR != ( XyzConnect( 0, L"", L"", &amp;handle ) )
+{
+    TRACE( L"XyzConnect failed." );
+    return FALSE;
+}
+</pre>
+<p>
+A large number of porting problems can be traced to incorrect casts.
+The original author probably
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/01/15/58973.aspx">
+inserted the cast to “shut up the compiler”</a>
+but the compiler was trying to tell you something.
+</p>
+<p>
+Any time you see a function cast or see a cast to/from something
+other than <code>void*</code> or <code>BYTE*</code>,
+then you should be suspicious,
+because there’s a chance somebody is simply trying to shut up
+the compiler.</p>
+
+
+</body>

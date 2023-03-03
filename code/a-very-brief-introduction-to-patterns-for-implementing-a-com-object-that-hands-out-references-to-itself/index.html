@@ -1,0 +1,223 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A very brief introduction to patterns for implementing a COM object that hands out references to itself</h1>  <!-- .entry-meta -->
+
+<p>A common scenario for a COM object is that it needs to register itself as a callback or otherwise hand out references to itself. There are a few patterns for this.</p>
+<p>One of the first things you have to decide is whether the reference to the main object should be strong (keep the main object alive) or weak (not be considered for deciding whether the main object should be kept alive).</p>
+<p>Let’s look at the weak pattern first.</p>
+<p>If you don’t want the callback registration to keep the object alive, then you typically give the callback object a weak reference to the main object. When the callback object is invoked, it converts the weak reference to a strong reference and calls the main object. Since the reference is weak, the existence of the callback object has no effect on the lifetime of the main object.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2"> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">Callback</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2"> </td>
+<td> </td>
+<td style="border: solid 1px black;">IUnknown</td>
+<td style="border: solid 1px black;">ICallback</td>
+<td>←</td>
+<td>event source</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">Widget</td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black; border-bottom: none;">refcount</td>
+</tr>
+<tr>
+<td>client</td>
+<td>→</td>
+<td style="border: solid 1px black;">IUnknown</td>
+<td style="border: solid 1px black;">IWidget</td>
+<td>←</td>
+<td colspan="2" style="border: solid 1px black; border-top: none;">weak reference</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">refcount</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" rowspan="4" style="border: solid 1px black;">state data</td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>In this model, the only reference counts on the main Widget object come from the client. When the client releases their last reference, the main Widget destructs, and the main Widget object unregisters the callback from the event source, thereby causing the Callback object to destruct as well.</p>
+<p>Another pattern is to factor the <i>state data</i> into a shared object:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">Widget</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">Callback</td>
+</tr>
+<tr>
+<td>client</td>
+<td>→</td>
+<td style="border: solid 1px black;">IUnknown</td>
+<td style="border: solid 1px black;">IWidget</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">IUnknown</td>
+<td style="border: solid 1px black;">ICallback</td>
+<td>←</td>
+<td>event source</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black; border-bottom: none;">refcount</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black; border-bottom: none;">refcount</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black; border-top: none;">shared_ptr</td>
+<td>→</td>
+<td rowspan="4" style="border: solid 1px black; width: 19ex;">state data</td>
+<td>←</td>
+<td colspan="2" style="border: solid 1px black; border-top: none;">some_ptr</td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>If the <code>some_ptr</code> is a weak reference, then we have the same pattern as before. But if you make it a <code>shared_ptr</code>, then the callback will keep the state alive. This might be useful if the Callback is used to signal the completion of some sort of activity, and you need to keep the state data alive until the activity is complete, but you might want the destruction of the Widget to issue a Cancel request to the event source to accelerate the completion of the activity.</p>
+<p>In the strong pattern, the callback registration keeps the main object alive. The usual way of doing this is to just upgrade our first diagram to use a strong reference from the Callback object to the main object.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2"> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">Callback</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2"> </td>
+<td> </td>
+<td style="border: solid 1px black;">IUnknown</td>
+<td style="border: solid 1px black;">ICallback</td>
+<td>←</td>
+<td>event source</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">Widget</td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black; border-bottom: none;">refcount</td>
+</tr>
+<tr>
+<td>client</td>
+<td>→</td>
+<td style="border: solid 1px black;">IUnknown</td>
+<td style="border: solid 1px black;">IWidget</td>
+<td>←</td>
+<td colspan="2" style="border: solid 1px black; border-top: none;"><span style="color: blue; background-color: #fdfd96;">strong</span> reference</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">refcount</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" rowspan="4" style="border: solid 1px black;">state data</td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>You might then realize that there’s no point creating a separate callback object: The main object can be its own callback.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">Widget</td>
+</tr>
+<tr>
+<td>client</td>
+<td>→</td>
+<td rowspan="2" style="border: solid 1px black;" valign="baseline">IUnknown</td>
+<td style="border: solid 1px black;">IWidget</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">ICallback</td>
+<td>←</td>
+<td>event source</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" style="border: solid 1px black;">refcount</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td colspan="2" rowspan="4" style="border: solid 1px black;">state data</td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>This is a very common pattern, but it does introduce a few problems compared to the separate-callback-object pattern.</p>
+<p>One problem is that the client can <code>Query­Interface</code> for <code>ICallback</code> and use that to manipulate the Widget in ways that weren’t intended, since it can invoke the callback from the client and feed it fake data. (Conversely, the event source can <code>Query­Object</code> for <code>IWidget</code>, but that is unlikely to occur in practice, since the event source doesn’t care about widgets.) With the separate callback, the <code>QueryInterface</code> method main object responds only to <code>IWidget</code>, and the <code>QueryInterface</code> method callback object responds only to <code>ICallback</code>. The client has no way to access the callback object, and the event source has no way to access the main object.</p>
+<p>A second problem is if the main object needs to register for multiple event sources, all of which use the same <code>ICallback</code> interface. There is only one <code>ICallback</code> in the main object, so it has no choice but to pass the same <code>ICallback</code> to both event sources, even though we may want the two callbacks to do different things. Again, the separate callback object avoids this problem because each callback object can do something different when it is called.</p>
+<p>But there’s still a solution to this problem without having to go back to the separate callback objects. We’ll look at this trick next time, and fleshing out the idea will give us a tour through a lot of C++ features, so it might be interesting even if you don’t care about COM.</p>
+
+
+</body>

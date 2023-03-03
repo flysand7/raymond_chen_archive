@@ -1,0 +1,30 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why do I get a _BLOCK_TYPE_IS_VALID debug assertion failure when I try to delete a WIC pixel buffer?</h1>  <!-- .entry-meta -->
+
+<p>A customer had a problem deleting a WIC pixel buffer. Fortunately, they were able to reduce it to a few lines of code. </p>
+<pre>
+<i>// Code in italics is wrong.
+UINT sourceBufferSize = 0;
+BYTE* sourceBuffer = nullptr;
+
+// The next line succeeds.
+bitmapLock-&gt;GetDataPointer(&amp;sourceBufferSize, &amp;sourceBuffer));
+
+// Omitted code that performs some tasks on the pixels
+
+if (sourceBuffer != nullptr)
+{
+    delete sourceBuffer;
+}</i>
+</pre>
+<p>“The problem is that when we try to delete the <code>source­Buffer</code>, we get an error from the Visual C++ Debug Library: </p>
+
+<p>“We’re not sure what the problem is. Does this mean that we don’t need to delete the pixel buffer, and it will be automatically deleted when we release the <code>IWICBitmapLock</code>? I tried leaving the buffer alone, and it doesn’t seem to result in a memory leak, but we want to be sure that’s the right thing.” </p>
+<p>The answer is obvious if you are an operating system person: The operating system doesn’t know anything about your language runtime’s memory allocation strategy. It doesn’t try to guess what version of the C++ runtime you’re using, and even if it tried to guess, what would it do when faced with a C++ runtime from the future? As far as the operating system is concerned, the <code>delete</code> operator is just some function that is private to your program. It could be called <code>flubber</code> for all the operating system knows. How can the operating system know how to allocate memory so it can be <code>flubber</code>ed? </p>
+<p>Anyway, the deal is that the pointer you get back from the <code>Get­Data­Pointer</code> method is a pointer to memory that is not owned by you. The lock gives you access to the memory, but all you can do is access the memory. You cannot free it because it was never yours. </p>
+<p>The same logic applies to GDI bitmaps. When you create a GDI bitmap, you get an <code>HBITMAP</code>, which represents the bitmap. You can ask GDI to tell you where it put the bitmap pixels by calling <code>Get­Object</code>: a pointer to the bits will be returned in the <code>bmBits</code> member, and you can use that pointer to read or write the pixels of the bitmap. But you can’t free the memory. The memory belongs to the <code>HBITMAP</code>. </p>
+<p>The <code>IWIC­Bitmap</code> works in a similar way. When you create a WIC bitmap, it allocates some memory to hold the pixels, and that memory belongs to the bitmap. You can call <code>IWIC­Bitmap::Lock</code>, to get an object represented by the <code>IWIC­Bitmap­Lock</code> interface. From the lock object, you can ask for a pointer to the memory that holds the pixels, at which point you can read or write the pixels. That pointer is valid only for the duration of the lock. After you release the lock, the WIC bitmap is permitted to move the memory to somewhere else. (For example, this might happen as part of atlas compaction.) </p>
+<p>This is all spelled out and even demonstrated in the sample code that accompanies <a href="https://msdn.microsoft.com/library/windows/desktop/ee690162(v=vs.85).aspx">the <code>IWIC­Bitmap­Lock::Get­Data­Pointer</code> method</a>. </p>
+
+
+</body>

@@ -1,0 +1,207 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Avoiding deadlocks when cancelling a thread pool callback, part 1: External callback data</h1>  <!-- .entry-meta -->
+
+<p>We saw last time how to use the thread pool cleanup functions to manage the lifetime of the context data. But if the callback function tries to call into the thread that is calling <code>Wait­For­Threadpool­Timer­Callbacks</code>, then you have a deadlock. The callback cannot proceed until <code>Wait­For­Threadpool­Timer­Callbacks</code> returns, but <code>Wait­For­Threadpool­Timer­Callbacks</code> won’t return until the callback completes. </p>
+<p>You can find yourself in this situation without realizing it. The callback function might send a message to a window that is owned by the waiting thread. Or it could invokes a method on an apartment-threaded object that belongs to the waiting thread. Or it could attempt to enter a critical section that is held by the waiting thread.¹ In many cases, the waiting thread is cleaning up an object in its destructor, so you don’t even control the locks that may be held at that point. </p>
+<p>This is where <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms682581(v=vs.85).aspx"><code>Disassociate­Current­Thread­From­Callback</code></a> enters the picture. The <code>Disassociate­Current­Thread­From­Callback</code> function tells the thread pool, “For the purpose of waiting until all callbacks are complete, consider this callback to be complete even though it’s still running.” You can think of this as the <code>Reply­Message</code> of the thread pool. This means that functions like <code>Wait­For­Threadpool­Xxx­Callbacks</code> will return, but other functions like <code>Xxx­When­Callback­Returns</code> won’t be fooled. They will wait for the callback to return for real before setting the event or leaving the critical section or whatever. </p>
+<p>Let’s figure out how to take advantage of this. </p>
+<p>We make the context data for the callback function a thread-safe reference-counted object. Typical examples are a COM pointer to an agile object, and a reference to a <code>std::shared_ptr</code>.² The first thing the callback function does is to increment the reference count on the object and save it in an RAII object. For a COM pointer, it would be creating a COM smart pointer around it (say, converting it to a <code>WRL::ComPtr</code>). For a <code>std::shared_ptr</code> it would be copying the <code>std::shared_ptr</code> to a local variable. </p>
+<p>Once the context data has been safely referenced, you call <code>Disassociate­Current­Thread­From­Callback</code> to release the waiting thread, if any. </p>
+<p>At this point, you can do your work with the captured strong reference (the <code>WRL::ComPtr</code> or the local copy of the <code>std::shared_ptr</code>) and stop using the inbound context parameter, because it is no longer valid; the waiting thread may have destroyed it. </p>
+<p>When your callback function completes, the RAII type will release the reference to the context data, and if that was the last reference, it will destroy the context data. </p>
+<p>We start with this helper class.</p>
+<pre>
+struct TpTimerDeleter
+{
+ void operator()(PTP_TIMER timer)
+ {
+  SetThreadpoolTimer(timer, nullptr, 0, 0);
+  WaitForThreadpoolTimerCallbacks(timer, true);
+  CloseThreadpoolTimer(timer);
+ }
+};
+</pre>
+<p>This deleter class performs the standard synchronous shutdown of a thread pool timer, as noted in <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms682040(v=vs.85).aspx">the documentation</a>. </p>
+<p>Here’s how we use it to build a thread pool callback that doesn’t deadlock at cancellation. We’ll start with one based on <code>WRL::ComPtr</code>: </p>
+<pre>
+class ObjectWithTimer
+{
+public:
+ StartTimer();
+ StopTimer();
+
+private:
+ static void CALLBACK TimerCallback(
+  PTP_CALLBACK_INSTANCE instance,
+  void* context, PTP_TIMER timer);
+
+ <font color="blue">WRL::ComPtr&lt;AgileContextData&gt; contextData;</font> // ComPtr-specific code
+ std::unique_ptr&lt;TP_TIMER, TpTimerDeleter&gt; timer;
+};
+</pre>
+<p>Having a <code>std::unique_ptr</code> automatically makes the class non-copyable. We’ll see soon why it’s okay to let the object be movable. </p>
+<p><b>Exercise</b>: Why did I declare the <code>timer</code> member after the <code>contextData</code> member? (Normally, I don’t answer the exercises in the main body of the article, but this is an important detail, so I’ll answer it at the end.) </p>
+<pre>
+void ObjectWithTimer::StartTimer()
+{
+ // Error checking elided for expository purposes.
+ timer = CreateThreadpoolTimer(
+    TimerCallback,
+    <font color="blue">contextData.Get(),</font> // ComPtr-specific code
+    nullptr);
+
+ SetThreadpoolTimer(timer, ...);
+}
+</pre>
+<p>The <code>StartTimer</code> method assumes that the <code>contextData</code> method has been initialized (presumably by methods not shown) and that the timer has not already been started. It creates the timer with the raw COM pointer as the reference data. This is a non-refcounted pointer, so we have to make sure it remains valid for as long as the callback is potentially-callable. Once we create the timer, we start it by calling <code>Set­Threadpool­Timer</code> and passing the timer parameters (not shown here). </p>
+<p>The context parameter passed to the callback is the thing we have to worry about if the <code>Object­With­Timer</code> gets moved. In this case, it’s okay to move the <code>Object­With­Timer</code> because the context parameter doesn’t point to the <code>Object­With­Timer</code>; it is a raw COM pointer to an object that won’t move. Therefore, the <code>Object­With­Timer</code> is movable. </p>
+<pre>
+void ObjectWithTimer::TimerCallback(PTP_CALLBACK_INSTANCE instance,
+  void* context, PTP_TIMER timer)
+{
+ // ComPtr-specific code
+ <font color="blue">WRL::ComPtr&lt;AgileContextData&gt; contextData{
+    reinterpret_cast&lt;AgileContextData*&gt;(context) };</font>
+
+ context = nullptr;
+
+ DisassociateCurrentThreadFromCallback(instance);
+
+ ... do stuff with contextData ...
+}
+</pre>
+<p>The callback function starts by taking our weak pointer and converting it to a strong pointer. We designed our code so that the raw COM pointer is valid for as long as the callback is potentially-callable, so we know that it is valid here. We put it inside a <code>WRL::ComPtr</code> to make it a strong reference. </p>
+<p>And then here’s the interesting part: We call <code>Disassociate­Current­Thread­From­Callback</code> to tell the thread pool to release anybody who is waiting for the callback to complete. The callback <i>is still running</i>, but anybody who is waiting for it to complete is free to proceed anyway. We can do this because we have captured the information from the <code>context</code> parameter, and the main object can free it. (To ensure we don’t access the <code>context</code> parameter by mistake, we also set <code>context</code> to <code>nullptr</code>.) </p>
+<p>We then perform our callback operation with the strong reference in <code>contextData</code>. This can call back into the main thread because the main thread is no longer stuck in <code>Wait­For­Threadpool­Timer­Callbacks</code>, It will eventually return to its event dispatch loop, or release its locks, or whatever it is that needs to happen for the thread pool thread to be able to communicate with the main thread. </p>
+<p>The other half of the dance comes when we want to stop the timer. </p>
+<pre>
+void ObjectWithTimer::StopTimer()
+{
+ timer.reset();
+ <font color="blue">contextData.Reset();</font> // ComPtr-specific code
+}
+</pre>
+<p>To stop the timer, we let the <code>TpTimerDeleter</code> do the heavy lifting of checking if we have a timer and if so, shutting it down cleanly. </p>
+<p>Once that’s done, we can safely release our reference to the context data. If the callback is running, it will have its own reference. </p>
+<p>For simplicity, this code doesn’t try to save the thread pool timer object for future use. One of the features of the thread pool functions is that object creation preallocates all resources. Once you’ve created the thread pool timer successfully, all other operations will always succeed (assuming they are used correctly, of course). Therefore, what we could’ve done is allocate the <code>PTP_TIMER</code> at construction (throwing if not possible), and the have the <code>Start­Timer</code> and <code>Stop­Timer</code> methods merely reconfigure the timer and (in the case of <code>Stop­Timer</code>) wait for the callbacks to drain. </p>
+<p>Note that in order to avoid the deadlock, we have to accept that the callback may run <i>after the timer has been stopped</i>. When you have a deadlock, something has to give, and we choose to break the deadlock by letting the callback complete asynchronously. If you need to know when the callback is definitely finished, you could add an event that gets signaled when the COM object is destructed, so that the caller knows when everything is finally finished. </p>
+<p>Adapting the above code to <code>std::shared_ptr</code> is not too difficult. The tricky part is that we cannot pass a raw pointer to the context data as our reference data, because raw C++ objects are not reference-counted. Instead, we pass a pointer to the <code>std::shared_ptr</code>, which is the thing with the reference count. </p>
+<pre>
+class ObjectWithTimer
+{
+public:
+ <font color="blue">// Make object non-movable
+ ObjectWithTimer(ObjectWithTimer&amp;&amp;) = delete;
+ ObjectWithTimer operator=(ObjectWithTimer&amp;&amp;) = delete;</font>
+
+ StartTimer();
+ StopTimer();
+
+private:
+ static void CALLBACK TimerCallback(
+  PTP_CALLBACK_INSTANCE instance,
+  void* context, PTP_TIMER timer);
+
+ <font color="blue">std::shared_ptr&lt;AgileContextData&gt; contextData;</font> // shared_ptr-specific code
+ std::unique_ptr&lt;TP_TIMER, TpTimerDeleter&gt; timer;
+};
+
+void ObjectWithTimer::StartTimer()
+{
+  // Error checking elided for expository purposes.
+  timer = CreateThreadpoolTimer(
+    TimerCallback,
+    <font color="blue">std::addressof(contextData),</font> // shared_ptr-specific code
+    nullptr);
+
+  // Start the timer
+  SetThreadpoolTimer(timer, ...);
+}
+
+void ObjectWithTimer::TimerCallback(PTP_CALLBACK_INSTANCE instance,
+  void* context, PTP_TIMER timer)
+{
+ // Capture the context with a strong reference
+ <font color="blue">// shared_ptr-specific code
+ std::shared_ptr&lt;AgileContextData&gt; contextData{
+    *reinterpret_cast&lt;
+      std::shared_ptr&lt;AgileContextData&gt;*&gt;(context) };</font>
+
+ context = nullptr;
+
+ DisassociateCurrentThreadFromCallback(instance);
+
+ ... do stuff with contextData ...
+}
+
+void ObjectWithTimer::StopTimer()
+{
+  timer.reset();
+  <font color="blue">contextData.reset();</font> // shared_ptr-specific code
+}
+</pre>
+<p>The principle is the same here as before, but the implementation is made more complicated by the fact that the <code>std::shared_ptr</code> is not necessarily (and in fact usually isn’t) the size of a pointer, so it doesn’t fit in the context pointer. We have to pass a pointer to the <code>std::shared_ptr</code>. </p>
+<p> <b>Exercise</b>: We could have written <code>&amp;contextData</code> instead of <code>std::addressof(contextData)</code>. Why did I use <code>std::addressof(contextData)</code>? </p>
+<p>The fact that a <code>std::shared_ptr</code> doesn’t fit in a pointer means that the <code>std::shared_ptr</code> cannot move, because it is still being referenced by the context pointer passed to the thread pool callback. We can make the <code>Object­With­Timer</code> object movable by putting the <code>std::shared_ptr</code> inside a <code>std::unique_ptr</code>, and passing the raw pointer to the <code>std::shared_ptr</code>. The <code>std::unique_ptr</code> will transfer the pointer to the moved-to object, and the <code>std::shared_ptr</code> itself doesn’t move. </p>
+<pre>
+class ObjectWithTimer
+{
+public:
+ <font color="blue">// Make object movable again
+ // <strike>ObjectWithTimer(ObjectWithTimer&amp;&amp;) = delete;</strike>
+ // <strike>ObjectWithTimer operator=(ObjectWithTimer&amp;&amp;) = delete;</strike></font>
+
+ StartTimer();
+ StopTimer();
+
+private:
+ static void CALLBACK TimerCallback(
+  PTP_CALLBACK_INSTANCE instance,
+  void* context, PTP_TIMER timer);
+
+ <font color="blue">std::unique_ptr&lt;
+   shared_ptr&lt;AgileContextData&gt;&gt; contextData;</font> // unique_ptr-specific code
+ std::unique_ptr&lt;TP_TIMER, TpTimerDeleter&gt; timer;
+};
+
+void ObjectWithTimer::StartTimer()
+{
+  // Error checking elided for expository purposes.
+  timer = CreateThreadpoolTimer(
+    TimerCallback,
+    <font color="blue">contextData.get(),</font> // unique_ptr-specific code
+    nullptr);
+
+  // Start the timer
+  SetThreadpoolTimer(timer, ...);
+}
+
+void ObjectWithTimer::TimerCallback(PTP_CALLBACK_INSTANCE instance,
+  void* context, PTP_TIMER timer)
+{
+ // Capture the context with a strong reference
+ <font color="blue">// no change here
+ std::shared_ptr&lt;AgileContextData&gt; contextData{
+    *reinterpret_cast&lt;
+      std::shared_ptr&lt;AgileContextData&gt;*&gt;(context) };</font>
+
+ context = nullptr;
+
+ DisassociateCurrentThreadFromCallback(instance);
+
+ ... do stuff with contextData ...
+}
+
+void ObjectWithTimer::StopTimer()
+{
+  timer.reset();
+  <font color="blue">contextData.reset();</font> // no change here
+}
+</pre>
+<p>The idea in all the cases is that we keep a reference-counted object in the <code>contextData</code> and provide the callback a way to convert its context parameter to a strong reference. Since we are careful always to keep the context parameter valid as long as the callback is potentially-callable, this conversion is straightforward: Just create your own strong reference from the raw pointer. </p>
+<p>Often, the context for the callback is the containing object itself, rather than some external data. We’ll explore that scenario next time, because this article is too long as it is. </p>
+<p>¹ The critical section case is easy to imagine: You might have a critical section that protects access to object state. The waiting thread owns the critical section because it’s trying to clean up the object’s thread pool timer. The callback is trying to acquire the critical section because it wants to access the object’s state as part of the callback operation. </p>
+<p>² <a href="https://www.youtube.com/watch?v=lkgszkPnV8g#t=20m10s">Be careful with the <code>std::shared_ptr</code></a>. Copying a <code>std::shared_ptr</code> is thread-safe, but mutating it is not, so you should initialize your <code>std::shared_ptr</code> with the context structure and not modify the <code>std::shared_ptr</code> until you are sure that no other threads are accessing it. </p>
+
+
+</body>

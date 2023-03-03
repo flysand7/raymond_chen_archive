@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Cancelling a Windows Runtime asynchronous operation, part 5: C++/WinRT</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/cancelling-a-windows-runtime-asynchronous-operation-part-4-c-cx-with-ppl-coroutine-style-with-raw-iasyncaction-and-iasyncoperation"> how task cancellation is projected in C++/CX with PPL and <code>co_await</code> with <code>IAsyncAction^</code> and <code>IAsyncOperation^</code> objects</a>. Our next investigation is C++/WinRT.</p>
+<pre>FileOpenPicker openPicker;
+openPicker.FileTypeFilter().Append(L".txt");
+auto pickerOp = openPicker.PickSingleFileAsync();
+<span style="color: blue;">([](auto op) -&gt; fire_and_forget { co_await resume_after(3s); op.Cancel(); })(pickerOp);</span>
+
+StorageFile file{ nullptr };
+try
+{
+    file = co_await pickerOp;
+}
+catch (<span style="color: blue;">hresult_canceled const&amp;</span>)
+{
+    file = nullptr;
+}
+catch (<span style="color: blue;">hresult_illegal_method_call const&amp;</span>)
+{
+    file = nullptr;
+}
+
+if (file != nullptr)
+{
+    DoSomething(file);
+}
+</pre>
+<p>Canceling the operation after a delay is slightly tricky because we need to pass the <code>pickerOp</code> as a parameter to a captureless lambda, rather than capturing it into the lambda. We discussed the reason for this <a href="https://devblogs.microsoft.com/oldnewthing/20190117-00/?p=100725"> some time ago</a>.</p>
+<p>The exception that comes out of awaiting for a canceled task is sometimes an <code>hresult_<wbr/>canceled</code>, and sometimes an <code>hresult_<wbr/>illegal_<wbr/>method_call</code>. The reason is that C++/WinRT defers to the <code>IAsyncAction</code>/<wbr/><code>IAsyncOperation</code> to decide what exception to raise.¹</p>
+<p>In other words, C++/WinRT just takes the ABI result and propagates it. It doesn’t try to impose its will upon the result.</p>
+<p>You can see this in the <code>await_<wbr/>resume</code> for asynchronous operations:</p>
+<pre>template &lt;typename Async&gt;
+struct await_adapter
+{
+    ...
+
+    auto await_resume() const
+    {
+        return async.GetResults();
+    }
+};
+</pre>
+<p>Whatever exception comes out of <code>Get­Results()</code> is the exception that comes out of the <code>co_await</code>.</p>
+<p>Next time, we’ll look at what happens if the <code>IAsyncAction</code> or <code>IAsyncOperation</code> was implemented by the C++/WinRT library itself.</p>
+<p><b>Bonus chatter</b>: This entire article is already obsolete. We’ll learn more about it when this series wraps up.</p>
+<p>¹ Therefore, in principle, it could be <i>utterly anything</i> since it’s up to the ABI to generate the <code>HRESULT</code> that turns into an exception at the projection.</p>
+
+
+</body>

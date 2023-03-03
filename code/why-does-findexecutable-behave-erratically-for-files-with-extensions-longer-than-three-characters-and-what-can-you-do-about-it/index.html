@@ -1,0 +1,34 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does FindExecutable behave erratically for files with extensions longer than three characters? (And what can you do about it?)</h1>  <!-- .entry-meta -->
+
+<p>The <code>Find­Executable</code> function looks up the executable responsible for launching a particular file. This is a dubious undertaking, because it assumes that the thing that launches a file is an executable. There are other things capable of launching a file, such as <a href="http://blogs.msdn.com/b/oldnewthing/archive/2007/02/26/1763683.aspx">a DDE command</a>, <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/09/20/231739.aspx">a context menu shell extension</a>, or a <a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/05/03/10006065.aspx">custom drop target</a>. What should <code>Find­Executable</code> return in those cases? </p>
+<p>Okay, so if <code>Find­Executable</code> is based upon a flawed assumption, why does it even exist? </p>
+<p>Because at the time it was originally introduced, the assumption was valid. </p>
+<p>The <code>Find­Executable</code> function comes from 16-bit Windows, and back in those days, there were no context menu shell extensions or custom drop targets. (There was DDE, but that’s okay, because programs still have to register an executable to be used in the fallback case when nobody responds to the DDE message.) </p>
+<p>In the port to 32-bit Windows, the <code>Find­Executable</code> function remains, but it works only in the case where files were registered in the 16-bit way; that is, with a command line executable. It so happens that most file types are still registered that way, so the <code>Find­Executable</code> function basically still works. </p>
+<p>Since the <code>Find­Executable</code> function is basically a throwback to 16-bit Windows, there is another attempt to accommodate the 16-bit world that is not as obvious: The <code>Find­Executable</code> function takes the thing you pass and converts it into a short file name before trying to look up the handler. </p>
+<p>The effect of the conversion to a short file name depends on a bunch of things. </p>
+<p>If the volume does not have short file name autogeneration enabled, then the conversion to a short file name has no effect. But if the volume does have short file name autogeneration enabled, then the net effect is that the extension gets truncated to three characters. <code>foo.abcde</code> becomes <code>foo~1.abc</code>. And then <code>Find­Executable</code> looks up and returns the handler for the <code>.abc</code> extension instead of the <code>.abcde</code> extension. </p>
+<p>Back in the days before long file names, all file extensions were truncated to 3 characters. <a href="http://blogs.msdn.com/b/oldnewthing/archive/2007/12/17/6785519.aspx">if you asked for <code>foo.abcde</code>, you got <code>foo.abc</code></a>. The <code>Find­Executable</code> function tries to maintain this compatibility with older applications. Newer applications shouldn’t be using <code>Find­Executable</code> anyway, seeing as the handler for a file type may not even be an executable. </p>
+<p><b>I accept that the concept of finding the executable associated with a file is flawed in the face of handlers that do not take the form of an executable, but I still want to get the executable associated with a file, if possible, with the understanding that the answer may be incorrect.</b> </p>
+<p>You can use the <code>Assoc­Query­String</code> function to get the executable associated with the default verb of a file extension, if one exists. </p>
+<pre>
+HRESULT FindExecutableAssociatedWithFileExtension(
+    _In_ PCWSTR extension,
+    _Out_ PWSTR resultBuffer,
+    _In_ DWORD bufferLength)
+{
+ return AssocQueryString(ASSOCF_INIT_INGORENUNKNOWN,
+                         ASSOCSTR_EXECUTABLE,
+                         fullPath,
+                         nullptr,
+                         resultBuffer,
+                         &amp;bufferLength);
+}
+</pre>
+<p>The <code>ASSOCF_INIT_UNKNOWN</code> flag says that if the file extension has no handler, don’t return the “Open unknown file” handler. </p>
+<p>This is not exactly the same as <code>Find­Executable</code> because that function has special-case code for when you pass in, for example, <code>excel.exe</code>. In those cases, the <code>Find­Executable</code> function just returns the file itself, since executables are their own handlers. </p>
+<p>The <code>ASSOCF_INIT_UNKNOWN</code> flag was added in Windows 7. What do you do for older versions of Windows? Well, you’re in luck. Older versions of Windows didn’t have the “Open unknown file” handler, so if there is no registered handler, the call will simply fail. (Indeed, the introduction of the “Open unknown file” handler is what most likely prompted the creation of the <code>ASSOCF_INIT_UNKNOWN</code> flag in the first place.) As a second mark of good fortune, the flag is ignored by older versions of Windows, so you can go ahead and pass the flag unconditionally: On versions of Windows that support it, it does what you want. And on versions of Windows that don’t support it, they already behave the way you want by default. </p>
+
+
+</body>

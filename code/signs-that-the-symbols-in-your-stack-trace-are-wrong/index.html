@@ -1,0 +1,129 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Signs that the symbols in your stack trace are wrong</h1>  <!-- .entry-meta -->
+
+<p>
+One of the things programmers send to each other when they
+are trying to collaborate on a debugging problem is stack traces.
+Usually something along the lines of
+“My program does X, then Y, then Z, and then it crashes.
+Here is a stack trace.
+Can you tell me what’s wrong?”
+</p>
+<p>
+It helps if you at least glance at the stack trace before
+you send it, because there are often signs that the stack
+trace you’re about to send is completely useless because
+the symbols are wrong.
+Here’s an example:
+</p>
+<blockquote class="q">
+<p>
+We are testing our program and it gradually grinds to a halt.
+When we connect a debugger, we find that all of our threads,
+no matter what they are doing, eventually wind up
+hung in <code>kernel32!EnumResourceLanguagesA</code>.
+Can someone explain why that function is hanging,
+and why it seems all roads lead to it?
+</p>
+<pre>
+   0  Id: 12a4.1468 Suspend: 1 Teb: 000006fb`fffdc000 Unfrozen
+kernel32!EnumResourceLanguagesA+0xbea00
+kernel32!EnumResourceLanguagesA+0x2b480
+bogosoft!CObjMarker::RequestBlockForFetch+0xf0
+...
+   1  Id: 12a4.1370 Suspend: 1 Teb: 000006fb`fffda000 Unfrozen
+kernel32!EnumResourceLanguagesA+0xbea00
+kernel32!EnumResourceLanguagesA+0x2b480
+bsnetlib!CSubsystem::CancelMain+0x90
+   2  Id: 12a4.1230 Suspend: 1 Teb: 000006fb`fffd8000 Unfrozen
+NETAPI32!I_NetGetDCList+0x117e0
+kernel32!EnumResourceLanguagesA+0x393a0
+ntdll!LdrResFindResource+0x58b20
+...
+   3  Id: 12a4.cc0 Suspend: 1 Teb: 000006fb`fffd6000 Unfrozen
+kernel32!EnumResourceLanguagesA+0xa80
+bsnetlib!BSFAsyncWait+0x190
+...
+  4  Id: 12a4.1208 Suspend: 1 Teb: 000006fb`fffd4000 Unfrozen
+kernel32!EnumResourceLanguagesA+0xbea00
+kernel32!EnumResourceLanguagesA+0x2b480
+bogosoft!TObjList&lt;DistObj&gt;::Get+0xb0
+  5  Id: 12a4.1538 Suspend: 1 Teb: 000006fb`fffae000 Unfrozen
+kernel32!EnumResourceLanguagesA+0xbf3d0
+kernel32!EnumResourceLanguagesA+0x2c800
+bsnetlib!Tcp::ReadSync+0x340
+...
+   6  Id: 12a4.16e0 Suspend: 1 Teb: 000006fb`fffac000 Unfrozen
+ntdll!LdrResFindResource+0x61808
+ntdll!LdrResFindResource+0x1822a0
+kernel32!EnumResourceLanguagesA+0x393a0
+ntdll!LdrResFindResource+0x58b20
+...
+</pre>
+</blockquote>
+<p>
+This stack trace looks suspicious for a variety of reasons.
+</p>
+<p>
+First of all,
+look at that offset
+<code>EnumResourceLanguagesA+<u>0xbea00</u></code>.
+It’s unlikely that the
+<code>EnumResourceLanguagesA</code>
+function (or any other function)
+is over 750KB in size, as this offset suggests.
+</p>
+<p>
+Second, it’s unlikely that the <code>EnumResourceLanguagesA</code>
+function (or any other function, aside from obvious cases
+like tree walking) is recursive.
+And it’s certainly unlikely that a huge function will also be
+recursive.
+</p>
+<p>
+Third, it seems unlikely that the <code>EnumResourceLanguagesA</code>
+function would call,
+<code>NETAPI32!I_NetGetDCList</code>.
+What does enumerating resource languages have to do with getting
+a DC list?
+</p>
+<p>
+Fourth, look at those functions that are allegedly
+callers of <code>EnumResourceLanguagesA</code>:
+<code>bogosoft!CObjMarker::RequestBlockForFetch</code>,
+<code>bsnetlib!CSubsystem::CancelMain</code>,
+<code>bsnetlib!Tcp::ReadSync</code>.
+Why would any of these functions want to enumerate resource
+languages?
+</p>
+<p>
+These symbols are obvious wrong.
+The huge offsets are present because the debugger has access only
+to exported functions,
+and it’s merely showing you the name of the nearest symbol,
+even though it has nothing to do with the actual function.
+It’s just using the nearest signpost it can come up with.
+It’s like if somebody gave you directions to the movie theater like this:
+“Go to city hall downtown and then go north for 35 miles.”
+This doesn’t mean that the movie theater is in the downtown district
+or that the downtown district is 35 miles long.
+It’s just that the person who’s giving you directions can’t come
+up with a better landmark than city hall.
+</p>
+<p>
+This is just another case of the principle that
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/07/10/661389.aspx">
+you have to know what’s right before you can see what’s wrong</a>.
+If you have no experience with good stack traces,
+you don’t know how to recognize a bad one.
+</p>
+<p>
+Oh, and even though the functions in question are in
+<code>kernel32</code>,
+you can still get symbols for that DLL
+with the help of the
+<a href="http://support.microsoft.com/kb/311503">
+Microsoft Symbol Server</a>.</p>
+
+
+</body>

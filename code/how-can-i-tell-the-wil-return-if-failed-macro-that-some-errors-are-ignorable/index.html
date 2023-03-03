@@ -1,0 +1,55 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I tell the WIL <code>RETURN_<wbr/>IF_<wbr/>FAILED</code> macro that some errors are ignorable?</h1>  <!-- .entry-meta -->
+
+<p>The WIL <code>RETURN_<wbr>IF_<wbr>FAILED</wbr></wbr></code> macro evaluates its argument, and if it is a COM failure <code>HRESULT</code>, then it returns immediately from the function with that <code>HRESULT</code>. There is also a <code>RETURN_<wbr/>IF_<wbr/>FAILED_<wbr/>EXPECTED</code> macro that behaves the same, except that any failures are not recorded in the error log. The <code>EXPECTED</code> version is for the case where a function fails, but you don’t want it cluttering your error log.</p>
+<p>But one case that’s not covered is “Call this function, and return immediately if the call fails, except that certain errors should be ignored and allow execution to continue.” How do you do that?</p>
+<p>You can build a filter function that you send the result through, and the filter function can convert all the harmless errors into <code>S_OK</code>.</p>
+<pre>HRESULT AllowPending(HRESULT hr)
+{
+    if (hr == E_PENDING) return S_OK;
+    return hr;
+}
+</pre>
+<p>You can then combine this with <code>RETURN_<wbr/>IF_<wbr/>FAILED</code>:</p>
+<pre>    RETURN_IF_FAILED(AllowPending(GetItem()));
+</pre>
+<p>You can even generalize this to allow the list of allowed errors to be passed as a parameter:</p>
+<pre>HRESULT IgnoreSpecificErrors(
+    HRESULT hr,
+    std::initializer_list&lt;HRESULT&gt; ignored)
+{
+    for (auto candidate : ignored) {
+        if (hr == candidate) return S_OK;
+    }
+    return hr;
+}
+
+
+    RETURN_IF_FAILED(IgnoreSpecificErrors(GetItem(), { E_PENDING }));
+</pre>
+<p>You can also create sets of ignorable errors:</p>
+<pre>constexpr HRESULT rpc_errors[] {
+    RPC_E_DISCONNECTED,
+    RPC_E_SERVER_DIED,
+    RPC_E_SERVER_DIED_DNE,
+};
+
+    RETURN_IF_FAILED(IgnoreSpecificErrors(GetItem(), rpc_errors));
+</pre>
+<p>The nice thing about using a filter function is that you can add whatever other features you like.</p>
+<pre>HRESULT IgnoreSpecificErrors(
+    HRESULT hr,
+    std::initializer_list&lt;HRESULT&gt; ignored)
+{
+    for (auto candidate : ignored) {
+        if (hr == candidate) {
+            LOG_HR(hr); // log the failure before transforming it
+            return S_OK;
+        }
+    }
+    return hr;
+}
+</pre>
+
+
+</body>

@@ -1,0 +1,103 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I break down a shell item in the same way as the breadcrumb bar?</h1>  <!-- .entry-meta -->
+
+<p>Suppose you have a shell item in the form of an <code>IShell­Item</code>. How can you produce the folders that lead up to the shell item?</p>
+<p>One idea is to start from the item you have in your hand and keep trying to get its parent item, until you run out of parents.</p>
+<p>Let’s try that.</p>
+<p>My smart pointer library will be (rolls dice) C++/WinRT, with wil for string management.</p>
+<pre>#include &lt;winrt/base.h&gt;
+#include &lt;wil/resource.h&gt;
+
+winrt::com_ptr&lt;IShellItem&gt; GetShellItemFromUser()
+{
+    auto open = winrt::create_instance&lt;IFileOpenDialog&gt;(CLSID_FileOpenDialog);
+    if (FAILED(open-&gt;Show(nullptr)))
+    {
+        return {};
+    }
+
+    winrt::com_ptr&lt;IShellItem&gt; item;
+    winrt::check_hresult(open-&gt;GetResult(item.put()));
+    return item;
+}
+</pre>
+<p>We start with this helper function that produces an <code>IShell­Item</code>. We’ll do it by just letting the user pick one.</p>
+<p>We can use this in our main program:</p>
+<pre>int main(int, char**)
+{
+    winrt::init_apartment(winrt::apartment_type::single_threaded);
+    auto item = GetShellItemFromUser();
+
+    while (item) {
+        wil::unique_cotaskmem_string str;
+        winrt::check_hresult(item-&gt;GetDisplayName(SIGDN_PARENTRELATIVEFORUI, &amp;str));
+        printf("[ %ls ] ", str.get());
+
+        winrt::com_ptr&lt;IShellItem&gt; parent;
+        item-&gt;GetParent(parent.put());
+        item = parent;
+    }
+
+    return 0;
+}
+</pre>
+<p>If the user picks an item, then we go into a loop that walks up toward the parent. At each step, we get its normal display name and print it, just to do something interesting. To go to the next step, we ask for the parent item, and loop back if we got one.</p>
+<p>But since we are walking from the item to its parent, we generate the list bottom-up. For example:</p>
+<pre>[ Image ]
+[ Scanned Documents ]
+[ Documents ]
+[ This PC ]
+[ Desktop ]
+</pre>
+<p>Another way to generate the items is to start at the root and walk toward the item. In this case, we can take the ID list and use larger and larger prefixes.</p>
+<pre>winrt::com_ptr&lt;IShellItem&gt;
+ItemFromPartialPidl(PCIDLIST_ABSOLUTE begin, PIDLIST_ABSOLUTE end)
+{
+    auto restore = wil::scope_exit([end, prev = std::exchange(end-&gt;mkid.cb, {})]
+        { end-&gt;mkid.cb = prev; });
+    return winrt::capture&lt;IShellItem&gt;(SHCreateItemFromIDList, begin);
+}
+</pre>
+<p>This helper function takes a portion of an ID list (from <code>begin</code> up to but not including <code>end</code>) and creates a shell item from it. We do this by temporarily setting the <code>cb</code> to 0, causing to serve as a null terminator, and then asking <code>SHCreate­Item­From­ID­List</code> to create an <code>IShell­Item</code> from it. The call to <code>capture</code> expands to</p>
+<pre>winrt::com_ptr&lt;IShellItem&gt; item;
+winrt::check_hresult(SHCreateItemFromIDList(begin, IID_PPV_ARGS(&amp;item)));
+return item;
+</pre>
+<p>Meanwhile, the <code>scope_exit</code> ensures that the original value is restored, even if the <code>SHCreate­Item­From­ID­List</code> fails.</p>
+<p>We can use this helper function to generate all the prefixes.</p>
+<pre>int main(int, char**)
+{
+    winrt::init_apartment(winrt::apartment_type::single_threaded);
+    auto item = GetShellItemFromUser();
+
+    if (item) {
+        wil::unique_cotaskmem_ptr&lt;ITEMIDLIST_ABSOLUTE&gt; pidlFull;
+        item.as&lt;IPersistIDList&gt;()-&gt;GetIDList(wil::out_param(pidlFull));
+        PIDLIST_ABSOLUTE pidlNext = pidlFull.get();
+        for (;;)
+        {
+            item = ItemFromPartialPidl(pidlFull.get(), pidlNext);
+            wil::unique_cotaskmem_string str;
+            winrt::check_hresult(item-&gt;GetDisplayName(SIGDN_PARENTRELATIVEFORUI, &amp;str));
+            printf("[ %ls ]\n", str.get());
+            if (ILIsEmpty(pidlNext)) break;
+            pidlNext = ILNext(pidlNext);
+        }
+    }
+
+    return 0;
+}
+</pre>
+<p>From the item, we obtain the ID list by calling <code>IPersistIDList::GetIDList</code>. We then walk through the ID list one item at a time, producing the <code>IShell­Item</code> for each partial prefix, stopping when we have nothing more to add.</p>
+<p>This version generates the items starting from the root:</p>
+<pre>[ Desktop ]
+[ This PC ]
+[ Documents ]
+[ Scanned Documents ]
+[ Image ]
+</pre>
+<p>The last detail is that we used <code>SIGDN_<wbr/>PARENT­RELATIVE­FOR­UI</code>, which is a display name format that is suitable for use in the breadcrumb bar.</p>
+<p>If you use this to generate your own breadcrumb bar, you can respond to a click on an element by navigating to the shell item that generated that element. You’ll probably want to save the <code>IShell­Item</code> as reference data associated with the element. That’ll be easier than trying to regenerate it from scratch in response to the click.</p>
+
+
+</body>

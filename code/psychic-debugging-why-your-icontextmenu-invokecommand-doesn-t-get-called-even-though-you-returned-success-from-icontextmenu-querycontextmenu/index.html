@@ -1,0 +1,190 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Psychic debugging: Why your IContextMenu::InvokeCommand doesn’t get called even though you returned success from IContextMenu::QueryContextMenu</h1>  <!-- .entry-meta -->
+
+<p><p>
+A customer was having trouble with their
+<code>IContext­Menu</code> implementation.
+They observed that their
+<code>IContext­Menu::Query­Context­Menu</code> method
+was being called,
+but when the user selected their menu item,
+<code>IContext­Menu::Invoke­Command</code> was
+not being called.
+</p>
+<p>
+Given what you know about shell context menus,
+you can already direct the investigation.
+I’ll let you
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/09/20/231739.aspx">
+read up about it first</a>,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/10/07/239197.aspx">
+especially the part about composition</a>,
+then we can see how much you’ve learned.
+</p>
+<p>
+Welcome back.
+(Okay, I know you didn’t actually do the reading,
+but I’m welcoming you back anyway.)
+</p>
+<p>
+Your first theory as to why
+<code>IContext­Menu::Invoke­Command</code> is
+not being called is probably
+that they returned <code>S_OK</code> from
+<code>IContext­Menu::Query­Context­Menu</code> instead
+of
+<code>MAKE_HRESULT(SEVERITY_SUCCESS,
+FACILITY_NULL, 1)</code>.
+That would explain the problem, because a return value of
+<code>S_OK</code>
+is equivalent to
+<code>MAKE_HRESULT(SEVERITY_SUCCESS,
+FACILITY_NULL, 0)</code>,
+which means
+“I successfully added up to zero menu items starting at
+<code>idCmd­First</code>.”
+When the user picks the menu item they added,
+the dispatcher will go looking for the corresponding
+composite menu component,
+and since they said that they used zero entries,
+they will naturally never be called,
+since they disavowed any responsibility for those items.
+</p>
+<p>
+“Nope, that’s not it.
+We’re returning
+<code>MAKE_HRESULT(SEVERITY_SUCCESS,
+FACILITY_NULL, 1)</code>.
+Any other guesses?”
+</p>
+<p>
+Oh great, the customer is now playing Twenty Questions.
+</p>
+<p>
+“I’m going to pose a puzzle with almost no clues,
+and you get to propose solutions,
+and I’ll say whether or not you’re right.”
+</p>
+<p>
+I don’t know why customers play this game.
+Maybe they don’t realize that asking for help via email
+is very different from asking for help face-to-face.
+In a face-to-face conversation,
+the answer to a question arrives within seconds,
+whereas in email it can take hours or days.
+This means that when the answer finally comes back,
+the person asking the question has
+to go back and read the conversation history
+thread to re-establish context.
+</p>
+<p>
+Or maybe they think they’re going to be disclosing
+Top Secret Information to Microsoft if they
+share the code that they can’t get to work.
+Trust me, we don’t care about your Top Secret Algorithm
+for Beating the Stock Market With No Money Down.
+Go ahead and remove those from the code.
+We just want to see how you are interfacing with the shell.
+(And besides, you probably should be removing them anyway,
+since they are irrelevant and are not part
+of a minimal program that reproduces the problem.)
+</p>
+<p>
+What would your next guess be?
+</p>
+<p>
+“Perhaps you’re adding your items with the wrong menu item ID.”
+That would explain the problem,
+because returning
+<code>MAKE_HRESULT(SEVERITY_SUCCESS,
+FACILITY_NULL, 1)</code>
+means
+“I successfully added up to one menu item starting at
+<code>idCmd­First</code>.”
+But if they didn’t actually add it at <code>idCmd­First</code>,
+then when the user selects the item,
+it won’t be in the range they claimed,
+and therefore the invoke won’t get routed to them.
+</p>
+<p>
+“Your intuition is wrong again.
+Here’s the code we’re using.”
+</p>
+<p>
+I can abide by the “Ha ha, you guessed wrong again!”
+because it at least prodded them into sharing some code.
+Not much code, mind you, but at least some.
+</p>
+<pre>
+HRESULT SooperSeekrit::QueryContextMenu(
+    HMENU hmenu,
+    UINT indexMenu,
+    UINT idCmdFirst,
+    UINT idCmdLast,
+    UINT uFlags)
+{
+  UINT cItemsAdded = 0;
+  if (!(uFlags &amp; CMF_DEFAULTONLY) &amp;&amp;
+      InsertMenuItem(hmenu,
+                     indexMenu,
+                     TRUE,
+                     &amp;globalMenuItemInfo)) {
+    return MAKE_HRESULT(SEVERITY_SUCCESS, FACILITY_NULL, 1);
+  }
+  return MAKE_HRESULT(SEVERITY_SUCCESS, FACILITY_NULL, 0);
+}
+</pre>
+<p>
+The next thing you should have noticed is that they
+never actually used the
+<code>idCmd­First</code> parameter.
+So how could they claim to be adding the items with the correct
+menu item ID if they ignore the variable that tells them what
+the correct menu item ID is?
+</p>
+<p>
+“Could you tell us more about the
+<code>global­Menu­Item­Info</code>
+variable?
+In particular, what value does it use for the <code>wID</code> member,
+and how do you make sure that it is equal to
+<code>idCmd­First</code>?
+It seems that you are missing some lines of code here:
+</p>
+<pre>
+globalMenuItemInfo.fMask |= MIIM_ID;
+globalMenuItemInfo.wID = idCmdFirst;
+</pre>
+<p>
+but perhaps there’s something going on that we are missing.”
+</p>
+<p>
+The customer cheerfully replied,
+“Oops, sorry, didn’t notice that.
+Works great now, thanks!”
+</p>
+<p>
+I didn’t bother to draw their attention to the fact that they
+lied when they responded to the question
+“Did you add the menu item with the correct ID?”
+with “Wrong again! BZZZT!”
+</p>
+<p>
+The point of today’s story is that you, gentle reader,
+already know how to debug these types of issues.
+You just have to take what you know and apply it to the situation
+at hand.
+If you know how composite context menu dispatch works,
+then you can come up with failure modes in which the dispatcher
+fails to match up the menu item with the component.
+</p>
+<p>
+<b>Exercise</b>:
+The customer is still not out of the woods yet.
+What other bug remains in their
+<code>IContext­Menu::Query­Context­Menu</code>
+implementation?
+</p></p>
+
+
+</body>

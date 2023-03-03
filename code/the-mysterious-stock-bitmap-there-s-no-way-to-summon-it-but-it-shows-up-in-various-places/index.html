@@ -1,0 +1,105 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The mysterious stock bitmap: There's no way to summon it, but it shows up in various places</h1>  <!-- .entry-meta -->
+
+<p>
+A number of stock GDI objects are made available by the
+<code>Get­Stock­Object</code> function, but one stock GDI object
+that is mysteriously missing is the stock bitmap.
+You can’t summon the stock bitmap, but it manages to show up in
+various places,
+some of them perhaps unexpected.
+</p>
+<p>
+The stock bitmap is a monochrome 1×1 bitmap which GDI uses
+in various places where it has to produce a <code>HBITMAP</code>
+even though there really isn’t any bitmap worth speaking of.
+In other words, it’s used when GDI has to return <i>something</i>
+but would rather return <i>nothing</i>.
+</p>
+<ul>
+<li>When you create a memory DC, the current bitmap selected into it
+    is the stock bitmap.
+<li>When you create a metafile, the current bitmap is the stock bitmap.
+</li></li></ul>
+<p>
+Every DC and metafile has a current bitmap (which you can retrieve
+with <code>Get­Current­Object</code>), but when GDI creates a brand
+new DC or metafile, it doesn’t know what bitmap the program is
+going to pass to <code>Select­Object</code>—after all,
+predicting the future has yet to be perfected.
+As a placeholder, it sticks in the dummy static bitmap.
+</p>
+<p>
+There has to be a bitmap (as opposed to just leaving it <code>NULL</code>),
+because the <code>Select­Object</code> function returns the previous
+object or <code>NULL</code> on failure,
+so there needs to be a way to tell the difference between
+“I wasn’t able to select the bitmap you requested”
+and
+“I was able to select the bitmap you requested, but there was no
+old bitmap.”
+Returning <code>NULL</code> would also break the common coding pattern:
+</p>
+<pre>
+// select the new bitmap and save the old one
+HBITMAP hbmPrev = SelectObject(hdc, hbmNew);
+    ... do something with hdc ...
+// all done - restore the original bitmap
+SelectObject(hdc, hbmPrev);
+</pre>
+<p>
+If <code>Select­Object</code> had returned <code>NULL</code>
+when there was no bitmap previously selected into the DC,
+then the attempt to restore the original bitmap would fail.
+(Because GDI can’t tell whether you passed it a
+<code>(HBITMAP)NULL</code> or a
+<code>(HBRUSH)NULL</code> or a
+<code>(HPEN)NULL</code> or…)
+</p>
+<p>
+Normally, a single bitmap cannot be selected into more than one DC,
+but the stock bitmap has the magical power that
+it can be selected into multiple DCs at once.
+Without this magical power, GDI would have to create a different
+dummy bitmap to select into each newly-created DC and carry it
+around so that it can be selected back into the DC just before it
+is destroyed.
+Seems awful wasteful to allocate an extra bitmap per DC just for
+this,
+especially back in the days of 16-bit Windows when GDI heap space
+was extremely limited.
+</p>
+<p>
+There is one more place (that comes to mind) where the stock
+bitmap appears, and it’s somewhat unexpected:
+</p>
+<ul>
+<li>When you try to create a 0×<i>y</i> or a
+    <i>x</i>×0 bitmap with the <code>Create­Bitmap</code>
+    or <code>Create­Compatible­Bitmap</code> function
+    you get the stock bitmap back.
+</li></ul>
+<p>
+In other words, if you ask for a nothing-bitmap,
+you get the dummy bitmap back.
+This is analogous to the case of calling <code>malloc(0)</code>,
+where the implementation is permitted to return a pointer to zero bytes.
+In other words, <code>malloc(0)</code>
+can return a non-<code>NULL</code> value which
+you can’t dereference; the only things you can do with it is
+<code>free()</code> it or <code>realloc()</code> it to something bigger.
+In the same way that allowing zero-byte allocations simplifies boundary cases
+of certain algorithms,
+allowing impossibly thin bitmaps (and returning a dummy handle)
+may simplify certain graphical algorithms.
+</p>
+<p>
+Note however that this behavior of returning the stock bitmap handle
+when asked to create an impossibly thin bitmap
+<i>does not apply to the <code>Create­DIB­Section</code> function</i>!
+If you ask <code>Create­DIB­Section</code> for an impossibly thin
+bitmap, it returns <code>NULL</code>.
+So much for consistency.</p>
+
+
+</body>

@@ -1,0 +1,57 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Providing a better error message when someone tries to use <code>std::vector&lt;bool&gt;</code> as a buffer</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/of-what-use-is-a-type-dependent-expression-that-is-always-false"> Last time</a>, we looked at how we could generate a useful error message if somebody tried to pass <code>std::vector&lt;bool&gt;</code> to our <code>buffer_</code><code>view</code> class. The <code>std::vector&lt;bool&gt;</code> is unlike all the other <code>std::vector&lt;T&gt;</code> types because it does not require its storage to be in the form of a traditional C array, which means that it is not possible to obtain direct access to the underlying storage.</p>
+<p>Last time, we struggled with this buffer type:</p>
+<pre>struct buffer_view
+{
+  template&lt;typename C&gt;
+  buffer_view(std::vector&lt;C&gt; const&amp; v) :
+    data(v.data()), size(v.size() * sizeof(C)) { }
+
+  // Imagine other constructors for std::array, etc.
+
+  void const* data;
+  std::size_t size;
+};
+</pre>
+<p>If somebody tries to create a <code>buffer_</code><code>view</code> from a <code>std::vector&lt;bool&gt;</code>, they get an incomprehensible error message because there is no <code>v.data()</code> method. (For some reason, gcc and clang do have a <code>data()</code> method, but it doesn’t return anything interesting, so the error message is <i>even more</i> incomprehensible.)</p>
+<p>We addressed the problem last time by introducing an overload of the constructor that is active only for <code>std::vector&lt;bool&gt;</code>, and putting a <code>static_</code><code>assert</code> in the body with a deceptively type-dependent expression so that the assertion wasn’t raised until the overload was invoked.</p>
+<p>I noted that <a href="https://kennykerr.ca/"> Kenny Kerr</a> came up with a simpler solution: <a href="https://github.com/microsoft/cppwinrt/commit/0a9256c5b2bd75568c25130c819b383f8871c179"> Move the call to <code>data()</code> to a helper function</a>, and templatize that helper.</p>
+<pre>struct buffer_view
+{
+  template&lt;typename C&gt;
+  buffer_view(std::vector&lt;C&gt; const&amp; v) :
+    data(<span style="color: blue;">get_data(v)</span>), size(v.size() * sizeof(C)) { }
+
+  // Imagine other constructors for std::array, etc.
+
+  void const* data;
+  std::size_t size;
+
+<span style="color: blue;">private:
+  void const* get_data(std::vector&lt;C&gt; const&amp; v)
+  {
+    static_assert(!is_same_v&lt;C, bool&gt;,
+      "Can't use std::vector&lt;bool&gt;. Try std::array instead.");
+    return v.data();
+  }</span>
+};
+</pre>
+<p>The <code>static_</code><code>assert</code> comes ahead of the call to <code>v.data()</code>, so it becomes the first error message.</p>
+<p>You could go even further and make it the <i>only</i> error message by adding some <code>if constexpr</code>:</p>
+<pre>  void const* get_data(std::vector&lt;C&gt; const&amp; v)
+  {
+    static_assert(!is_same_v&lt;C, bool&gt;,
+      "Can't use std::vector&lt;bool&gt;. Try std::array instead.");
+    <span style="color: blue;">if constexpr (!is_same_v&lt;C, bool&gt;) {
+      return v.data();
+    } else {
+      return nullptr;
+    }</span>
+  }
+</pre>
+<p> </p>
+
+
+</body>

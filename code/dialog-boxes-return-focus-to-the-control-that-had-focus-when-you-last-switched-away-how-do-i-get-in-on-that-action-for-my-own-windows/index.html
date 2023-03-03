@@ -1,0 +1,81 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Dialog boxes return focus to the control that had focus when you last switched away; how do I get in on that action for my own windows?</h1>  <!-- .entry-meta -->
+
+<p>When you switch away from a dialog box, and then switch back to the dialog box, focus returns to the control that had focus when you last left the dialog box. But if you have a window that manually hosts two controls, then when the user switches away from your window, and then switches back, focus goes to, um…</p>
+<p>Let’s find out what happens! Take our <a href="/code/the-scratch-program"> scratch program</a> and make these changes.</p>
+<pre><span style="color: blue;">HWND g_hwndChild2;</span>
+
+void
+OnSize(HWND hwnd, UINT state, int cx, int cy)
+{
+ <span style="color: red;">// <span style="text-decoration: line-through;">if (g_hwndChild) {</span>
+ //    <span style="text-decoration: line-through;">MoveWindow(g_hwndChild, 0, 0, cx, cy, TRUE);</span>
+ // <span style="text-decoration: line-through;">}</span></span>
+}
+
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ <span style="color: 2;">g_hwndChild = CreateWindow(TEXT("button"), TEXT("&amp;1"),
+                            WS_CHILD | WS_VISIBLE |
+                            WS_TABSTOP | BS_PUSHBUTTON,
+                            0, 0, 100, 100,
+                            hwnd, nullptr, g_hinst, 0);
+ g_hwndChild2 = CreateWindow(TEXT("button"), TEXT("&amp;2"),
+                            WS_CHILD | WS_VISIBLE |
+                            WS_TABSTOP | BS_PUSHBUTTON,
+                            100, 0, 100, 100,
+                            hwnd, nullptr, g_hinst, 0);</span>
+ return TRUE;
+}
+
+// message loop
+
+ while (GetMessage(&amp;msg, NULL, 0, 0)) {
+  <span style="color: blue;">if (<a href="https://devblogs.microsoft.com/oldnewthing/20031021-00/?p=42083">IsDialogMessage</a>(hwnd, &amp;msg)) continue;</span>
+  TranslateMessage(&amp;msg);
+  DispatchMessage(&amp;msg);
+ }
+</pre>
+<p>Run the program, and the first thing you notice is that <i>neither button</i> has keyboard focus. Focus is on the frame window, not that that helps you much, since the frame window ignores keyboard input.</p>
+<p>Well, anyway, hit the <kbd>Tab</kbd> key to put focus on one of the buttons, then switch away to some other application, then switch back via <kbd>Alt</kbd>+<kbd>Tab</kbd> or clicking on the taskbar button. (Just don’t click on the window itself, because that would interfere with the experiment, since the click also sets focus to the window you clicked on.)</p>
+<p>Again, focus is not on either button because it’s on the frame window.</p>
+<p>Focus is on the frame window because nobody bothered to put it anywhere else. Let’s fix that. Let’s say that focus goes to the first child button when the user activates the main frame window.</p>
+<pre><span style="color: blue;">void OnActivate(HWND hwnd, UINT state,
+                HWND hwndActDeact, BOOL fMinimized)
+{
+ if (state != WA_INACTIVE &amp;&amp; !fMinimized) {
+  SetFocus(g_hwndChild);
+ }
+}
+
+ HANDLE_MSG(hwnd, WM_ACTIVATE, OnActivate);</span>
+</pre>
+<p>There’s a little gotcha here: We don’t want to do this when minimized. When the window is activated while minimized, the user can’t see any of the child windows, so putting focus on the child causes the user’s keypresses to start doing invisible things. (If the user hits the space bar, it will push the invisible button!) Instead, focus should stay on the frame window. It is not well-known, but if you hit the space bar when focus is on a minimized window, it will open the system menu. Keeping focus on the frame when minimized preserves this behavior.</p>
+<p>Okay, at least this time, focus goes somewhere when the user activates our window. Of course, it would be better if we restored focus to where it was when the user last used our window. (For one thing, it means that the default pushbutton effect is more likely to remain correct!) If we don’t know where to restore the focus to, then we fall back to using the first child window.</p>
+<pre><span style="color: blue;">HWND g_hwndLastFocus;</span>
+void OnActivate(HWND hwnd, UINT state,
+                HWND hwndActDeact, BOOL fMinimized)
+{
+ <span style="color: blue;">if (!fMinimized) {
+  if (state == WA_INACTIVE) {
+   HWND hwndFocus = GetFocus();
+   if (hwndFocus &amp;&amp; IsChild(hwnd, hwndFocus)) {
+       g_hwndLastFocus = hwndFocus;
+   }
+  } else {
+   SetFocus(g_hwndLastFocus ? g_hwndLastFocus
+                            : g_hwndChild);
+  }
+ }</span>
+}
+
+ <span style="color: blue;">HANDLE_MSG(hwnd, WM_ACTIVATE, OnActivate);</span>
+</pre>
+<p>The basic idea is that when the window is deactivated, we remember the window that had focus, and when the window is reactivated, we restore the focus to that same window (or to our first child if we don’t know what the previous focus was).</p>
+<p>Again, it’s important to watch out for the minimized window case. If the window is minimized when the user deactivates it, we would end up saving the frame window for future restoration, when in fact we should just ignore the entire interaction while minimized.</p>
+<p>Note that even when not minimized, we do not try to save focus if it belongs to something outside our frame window. For our simple program, this is more of a safety check than something we expect to happen.</p>
+<p><a href="https://devblogs.microsoft.com/oldnewthing/20140522-00/?p=933" title="Why does my radio button group selection get reset each time my window regains activation?"> Next time</a>, we’ll see an unexpected consequence of this auto-restore behavior.</p>
+
+
+</body>

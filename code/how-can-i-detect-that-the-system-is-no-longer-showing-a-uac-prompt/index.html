@@ -1,0 +1,29 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I detect that the system is no longer showing a UAC prompt?</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to know how to detect when the system is no longer showing a UAC prompt.</p>
+<p>They explained that their program uses Direct3D9. When the UAC dialog is shown, a desktop switch occurs, and their application loses the graphics device. The attempt to reacquire the graphics device fails for as long as the UAC dialog is on screen. They want to know when the UAC dialog is dismissed so they know when they can attempt to reacquire the graphics device. Otherwise, they are forced to poll.</p>
+<p>Before checking with the product team, the customer liaison suggested that the customer look for a process called <code>consent.exe</code> and wait for it to exit.</p>
+<p>Okay, first of all, that’s a bad idea. The <code>consent.exe</code> program is an implementation detail. Nothing in the platform requires that the UAC feature be implemented by a program called <code>consent.exe</code>, nor does anything bind that the disappearance of such a program to the ability to create a Direct3D9 device.</p>
+<p>The customer is too focused on the UAC dialog and missing the big picture. Their application can lose access to graphics hardware for reasons other than the UAC dialog. The user might lock the workstation. The user might hit <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Del</kbd>. The screen saver could start.</p>
+<p>If you are specifically interested in when the user has switched to your desktop, you can get the desktop associated with the current thread and see if it is the one that is receiving input.</p>
+<pre>BOOL IsCurrentThreadOnInputDesktop()
+{
+  BOOL result;
+  HDESK desktop = GetThreadDesktop(GetCurrentThreadId());
+  return desktop &amp;&amp;
+         GetUserObjectInformation(desktop, UOI_IO, &amp;result,
+                                  sizeof(result), nullptr) &amp;&amp;
+         result;
+}
+</pre>
+<p>To know when the input desktop has changed, you can register an accessibility event hook and listen for the <code>EVENT_</code><code>SYSTEM_</code><code>DESKTOP­SWITCH</code> event. When you receive that event, check again.</p>
+<p>But really, you don’t care about whether you’re the input desktop. You want to know whether you can try to acquire graphics resources.</p>
+<p>So do that.</p>
+<p>Wait for a <code>WM_</code><code>PAINT</code> message and attempt your acquisition then. When your window isn’t visible, the system stops sending <code>WM_</code><code>PAINT</code> messages, so the fact that they have returned is an indicator that now might be a good time to try to acquire your graphics resources.</p>
+<p>This does have a <a href="https://en.wikipedia.org/wiki/Thundering_herd_problem"> thundering herd problem</a>: When the user switches desktops, all the programs on the new desktop will try to grab graphics resources all at once. The user may find themselves with a momentarily unresponsive system as all the programs wake up and try to do stuff all at the same time. Better would be to wait until the user activates your application’s window, if possible.</p>
+<p>A member of the graphics team suggested that the customer could switch to <a href="https://docs.microsoft.com/en-us/windows/win32/direct3darticles/direct3d-9ex-improvements"> Direct3D 9Ex</a>, which has improvements to the way it deals with desktop switching.</p>
+<p><b>Bonus chatter</b>: The UAC dialog can be configured to show on the same desktop, rather than a custom desktop. But the customer doesn’t care about that case. If we had answered the customer’s question as original stated, they would have been handling that case incorrectly.</p>
+
+
+</body>

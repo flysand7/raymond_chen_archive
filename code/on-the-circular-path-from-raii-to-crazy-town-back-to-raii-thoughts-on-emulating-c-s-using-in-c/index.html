@@ -1,0 +1,91 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On the circular path from RAII to crazy-town back to RAII: Thoughts on emulating C#’s using in C++</h1>  <!-- .entry-meta -->
+
+<p><p>
+Some follow-up notes on
+<a href="https://devblogs.microsoft.com/oldnewthing/">
+Emulating the C# <code>using</code> keyword in C++</a>,
+primarily for the benefit of
+<a href="https://www.reddit.com/r/programming/comments/6l6b3e/emulating_the_c_using_keyword_in_c/">
+people from reddit who stumbled into the series and
+didn’t understand the context of the discussion</a>,
+because this was really part 6 of the series begun the previous week,
+even though it wasn’t labeled as such.
+(And the title itself was a party trick rather than a serious
+proposal.)
+</p>
+<p>
+The main complication that prevented us from using RAII was
+the use of the
+<a href="https://msdn.microsoft.com/en-us/library/dd492418.aspx">
+Parallel Patterns Library</a> (PPL)
+to express asynchronous programming in C++.¹
+The most general pattern for asynchronous programming is that
+you start an operation, and then specify a callback
+to be invoked when the operation completes.
+In traditional C-style programming, this callback is
+a boring function pointer, coupled with some reference
+data so the callback has context for why it is being called back.
+C++ provides lambdas which let you express the continuation as
+a callback <i>object</i>,
+which is much more convenient since you can express the control
+flow inline instead of having tiny pieces of control flow scattered
+all over your program.
+And lambda capture makes it easy to express what pieces of information
+needs to be carried forward to the continuation.
+</p>
+<p>
+If we didn’t have any asynchronous operations, then a basic RAII
+class would do the trick:
+When the RAII class destructs, the cleanup operation occurs.
+(In our example, the cleanup operation is calling <code>Close</code>.)
+The difficulty in the asynchonous case
+is that it is cumbersome to keep carrying
+this RAII class forward and preventing it
+from destructing until the entire chain of continuations has completed.
+That’s where the <code>ensure_</code><code>close</code> and
+<code>shared_</code><code>close</code> classes entered the picture.
+But you still had to remember to carry them forward.
+</p>
+<p>
+The magical step was the
+introduction of the not-yet-standard-but-hopefully-soon
+<code>co_await</code> keyword.
+This
+<a href="https://devblogs.microsoft.com/oldnewthing/">
+transforms the function into a state machine</a>,
+where each <code>co_await</code> represents
+the end of a state.
+The current execution state is saved, and execution of the task
+suspends.
+When the awaited operation completes, the execution state is
+restored and the function resumes execution.
+This transformation is very tedious and error-prone to perform
+by hand (especially when there are loops and branches),
+and in particular,
+it preserves RAII semantics:
+The automatic variables created by the pre-transformed function
+become part of the execution state,
+and they are destructed at the “natural” time they would have
+been destructed prior to transformation.
+</p>
+<p>
+As a result, switching to <code>co_await</code> brings us full circle
+back to plain old RAII.
+Behind the scenes, the compiler is doing the wacky transformations
+that we tried to mimic with <code>ensure_</code><code>close</code>
+and <code>shared_</code><code>close</code>.
+But <code>co_await</code> lets us write the code in a far more natural way.
+</p>
+<p>
+¹
+There’s also
+<code>std::future</code>,
+but
+<a href="https://bartoszmilewski.com/2009/03/03/broken-promises-c0x-futures/">
+its lack of composability</a>
+makes it a poor choice for asynchronous programming.
+</p></p>
+
+
+</body>

@@ -1,0 +1,211 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What are anonymous structs, and more importantly, how do I tell windows.h to stop using them?</h1>  <!-- .entry-meta -->
+
+<p>Windows header files take advantage of a language extension known as “anonymous structs” or “nameless structs”. It looks <a href="https://msdn.microsoft.com/library/windows/desktop/dd183565(v=vs.85).aspx">like this</a>: </p>
+<pre>
+typedef struct _devicemode {
+  TCHAR dmDeviceName[CCHDEVICENAME];
+  WORD dmSpecVersion;
+  WORD dmDriverVersion;
+  WORD dmSize;
+  WORD dmDriverExtra;
+  DWORD dmFields;
+  union {
+    struct {
+      short dmOrientation;
+      short dmPaperSize;
+      short dmPaperLength;
+      short dmPaperWidth;
+      short dmScale;
+      short dmCopies;
+      short dmDefaultSource;
+      short dmPrintQuality;
+    }; // <font color="blue">&lt;--- mystery #1</font>
+    struct {
+      POINTL dmPosition;
+      DWORD dmDisplayOrientation;
+      DWORD dmDisplayFixedOutput;
+    }; // <font color="blue">&lt;--- mystery #2</font>
+  }; // <font color="blue">&lt;--- mystery #3</font>
+  short dmColor;
+  short dmDuplex;
+  short dmYResolution;
+  short dmTTOption;
+  short dmCollate;
+  TCHAR dmFormName[CCHFORMNAME];
+  WORD dmLogPixels;
+  DWORD dmBitsPerPel;
+  DWORD dmPelsWidth;
+  DWORD dmPelsHeight;
+  union {
+    DWORD dmDisplayFlags;
+    DWORD dmNup;
+  }; // <font color="blue">&lt;--- mystery #4</font>
+  DWORD dmDisplayFrequency;
+#if(WINVER &gt;= 0x0400) 
+  DWORD dmICMMethod;
+  DWORD dmICMIntent;
+  DWORD dmMediaType;
+  DWORD dmDitherType;
+  DWORD dmReserved1;
+  DWORD dmReserved2;
+#if (WINVER &gt;= 0x0500) || (_WIN32_WINNT &gt;= 0x0400)
+  DWORD dmPanningWidth;
+  DWORD dmPanningHeight;
+#endif
+#endif
+} DEVMODE, *PDEVMODE, *LPDEVMODE;
+</pre>
+<p>Members of structures and unions normally have names. But in the <code>DEVMODE</code> structure, there are some members with no name. There’s a union of two structures, and there’s no name for the union (mystery #3); furthermore, the two structures that are members of the union also have no names (mysteries #1 and #2). And there’s another union (mystery #4) that has no name. </p>
+<p>Let’s start with a smaller example. Consider this structure: </p>
+<pre>
+struct simple
+{
+ int a;
+ union {
+  int b;
+  int c;
+ } d;
+} x;
+</pre>
+<p>In this example, we have a structure called <code>simple</code> and an instance of that structure in a variable called <code>x</code>. It consists of the following: </p>
+<ul>
+<li>An integer <code>a</code>, called <code>x.a</code>.</li>
+<li>An integer <code>b</code>, called <code>x.d.b</code>, which shares     storage with</li>
+<li>An integer <code>c</code>, called <code>x.d.c</code>.</li>
+</ul>
+<p>A <i>nameless union</i> omits the name <code>d</code>. </p>
+<pre>
+struct simple2
+{
+ int a;
+ union {
+  int b;
+  int c;
+ }; // <font color="blue">&lt;-- no name!</font>
+} x2;
+</pre>
+<p>This time, the contents are </p>
+<ul>
+<li>An integer <code>a</code>, called <code>x2.a</code>.</li>
+<li>An integer <code>b</code>, called <code>x2.b</code>, which shares     storage with</li>
+<li>An integer <code>c</code>, called <code>x2.c</code>.</li>
+</ul>
+<p>See what happened there? Omitting the name on the union means that the members of the union are accessible without having to say the name of the union (which is a good thing, because that union has no name). </p>
+<p>Nameless unions are available in C and C++,¹ and that’s what is happening in the <code>DEVMODE</code> structure. That solves mysteries #3 and #4. </p>
+<p>These extensions are supported by both the Visual Studio compiler as well as <a href="http://gcc.gnu.org/onlinedocs/gcc/Unnamed-Fields.html">the GCC compiler</a>. But what if your compiler doesn’t? </p>
+<p>The answer lies in the actual definition in the header file. </p>
+<pre>
+typedef struct _devicemodeW { 
+  WCHAR   dmDeviceName[CCHDEVICENAME]; 
+  WORD   dmSpecVersion; 
+  WORD   dmDriverVersion; 
+  WORD   dmSize; 
+  WORD   dmDriverExtra; 
+  DWORD  dmFields; 
+  union {
+    struct {
+      short dmOrientation;
+      short dmPaperSize;
+      short dmPaperLength;
+      short dmPaperWidth;
+      short dmScale; 
+      short dmCopies; 
+      short dmDefaultSource; 
+      short dmPrintQuality; 
+    } <font color="blue">DUMMYSTRUCTNAME</font>; // magic #1
+    struct {
+      POINTL dmPosition;
+      DWORD  dmDisplayOrientation;
+      DWORD  dmDisplayFixedOutput;
+    } <font color="blue">DUMMYSTRUCTNAME2</font>; // magic #2
+  } <font color="blue">DUMMYUNIONNAME</font>; // magic #3
+  short  dmColor; 
+  short  dmDuplex; 
+  short  dmYResolution; 
+  short  dmTTOption; 
+  short  dmCollate; 
+  WCHAR  dmFormName[CCHFORMNAME]; 
+  WORD   dmLogPixels; 
+  DWORD  dmBitsPerPel; 
+  DWORD  dmPelsWidth; 
+  DWORD  dmPelsHeight; 
+  union {
+    DWORD  dmDisplayFlags; 
+    DWORD  dmNup;
+  } <font color="blue">DUMMYUNIONNAME2</font>; // magic #4
+  DWORD  dmDisplayFrequency; 
+#if(WINVER &gt;= 0x0400) 
+  DWORD  dmICMMethod;
+  DWORD  dmICMIntent;
+  DWORD  dmMediaType;
+  DWORD  dmDitherType;
+  DWORD  dmReserved1;
+  DWORD  dmReserved2;
+#if (WINVER &gt;= 0x0500) || (_WIN32_WINNT &gt;= 0x0400)
+  DWORD  dmPanningWidth;
+  DWORD  dmPanningHeight;
+#endif
+#endif
+} DEVMODEW,*LPDEVMODEW,*PDEVMODEW;
+</pre>
+<p>There are magic symbols called <code>DUMMY</code><code>SOMETHING</code><code>NAME</code> where a name would normally go. </p>
+<p>How curious. </p>
+<p>If you then search the Windows header files for definitions of these magic symbols, you find them here in <code>winnt.h</code>: </p>
+<pre>
+//
+// For compilers that don't support nameless unions/structs
+//
+#ifndef DUMMYUNIONNAME
+#if defined(NONAMELESSUNION) || !defined(_MSC_EXTENSIONS)
+#define DUMMYUNIONNAME   u
+#define DUMMYUNIONNAME2  u2
+#define DUMMYUNIONNAME3  u3
+#define DUMMYUNIONNAME4  u4
+#define DUMMYUNIONNAME5  u5
+#define DUMMYUNIONNAME6  u6
+#define DUMMYUNIONNAME7  u7
+#define DUMMYUNIONNAME8  u8
+#define DUMMYUNIONNAME9  u9
+#else
+#define DUMMYUNIONNAME
+#define DUMMYUNIONNAME2
+#define DUMMYUNIONNAME3
+#define DUMMYUNIONNAME4
+#define DUMMYUNIONNAME5
+#define DUMMYUNIONNAME6
+#define DUMMYUNIONNAME7
+#define DUMMYUNIONNAME8
+#define DUMMYUNIONNAME9
+#endif
+#endif // DUMMYUNIONNAME
+
+#ifndef DUMMYSTRUCTNAME
+#if defined(NONAMELESSUNION) || !defined(_MSC_EXTENSIONS)
+#define DUMMYSTRUCTNAME  s
+#define DUMMYSTRUCTNAME2 s2
+#define DUMMYSTRUCTNAME3 s3
+#define DUMMYSTRUCTNAME4 s4
+#define DUMMYSTRUCTNAME5 s5
+#else
+#define DUMMYSTRUCTNAME
+#define DUMMYSTRUCTNAME2
+#define DUMMYSTRUCTNAME3
+#define DUMMYSTRUCTNAME4
+#define DUMMYSTRUCTNAME5
+#endif
+#endif // DUMMYSTRUCTNAME
+</pre>
+<p>Ah, now the pieces all fall into place. </p>
+<p>If you define the symbol <code>NO</code><code>NAMELESS</code><code>UNION</code>, then the symbols <code>DUMMY</code><code>SOMETHING</code><code>NAME</code> are defined to expand to actual names. For dummy unions, they are <code>u</code>, <code>u2</code>, <code>u3</code>, and so on. For dummy structures, they follow the same pattern, but with <code>s</code> instead of <code>u</code>. </p>
+<p>This means that if you indicate that you don’t want the header files to use nameless unions, the nameless structures and unions magically get names! The names are not particularly exciting, but at least they have names. </p>
+<pre>
+DEVICEMODE dm;
+dm.dmPosition = ...;      // if nameless unions are enabled
+dm.u.s2.dmPosition = ...; // if nameless unions are disabled
+</pre>
+<p>Notice that I didn’t use any Microsoft insider information to solve this mystery. All the information you need is right there, if you just follow the symbol definitions. </p>
+<p>¹ The history here is unclear. Wikipedia claims that <a href="https://en.wikipedia.org/wiki/Union_type#Anonymous_union">anonymous unions are in C++ and C11</a>, but Stack Overflow claims that <a href="http://stackoverflow.com/a/12785369/902497">C++ supports anonymous unions only because C did</a>. So there’s some sort of circular causality loop here. </p>
+
+
+</body>

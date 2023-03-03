@@ -1,0 +1,166 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using WM_SETREDRAW to speed up adding a lot of elements to a control</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s Little Program shows one way you can implement
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/01/24/10119211.aspx">
+a better version of <code>WM_SET­REDRAW</code></a>.
+Our first version doesn’t use
+<code>WM_SET­REDRAW</code> at all.
+</p>
+<p>
+Start with the
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make the following changes:</p>
+<pre>
+HFONT g_hfList;
+int g_yOrigin;
+int g_cyLine;
+int g_cLinesPerPage;
+int g_cItems = 100;
+// <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/08/05/54602.aspx">GetTrackPos</a> incorporated by reference
+// <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/31/54601.aspx">ScrollTo</a> incorporated by reference
+// <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/31/54601.aspx">ScrollDelta</a> incorporated by reference
+// <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/31/54601.aspx">OnSize</a> incorporated by reference
+// <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/31/54601.aspx">OnVscroll</a> incorporated by reference + <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/08/05/54602.aspx">modifications</a>
+// <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/25/54582.aspx">OnCreate</a> incorporated by reference
+// <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/25/54582.aspx">OnDestroy</a> incorporated by reference
+// This is the same as the <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/29/54591.aspx">earlier version of PaintSimpleContent</a>
+// with one tiny change: Draw the items in reverse order so the effect
+// is more noticeable.
+void
+PaintSimpleContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+ HFONT hfPrev = SelectFont(pps-&gt;hdc, g_hfList);  /* Use the right font */
+ int iMin = max(pps-&gt;rcPaint.top / g_cyLine, 0);
+ int iMax = min((pps-&gt;rcPaint.bottom + g_cyLine - 1) / g_cyLine, g_cItems);
+ for (int i = iMin; i &lt; iMax; i++) {
+  char szLine[256];
+  int cch = wsprintf(szLine, "This is line %d", <font color="blue">g_cItems - i</font>);
+  TextOut(pps-&gt;hdc, 0, i * g_cyLine, szLine, cch);
+ }
+ SelectFont(pps-&gt;hdc, hfPrev);
+}
+// <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/31/54601.aspx">PaintContent</a> incorporated by reference
+<font color="blue">void AddItem(HWND hwnd)
+{
+ g_cItems++;
+ InvalidateRect(hwnd, 0, TRUE);
+ ScrollDelta(hwnd, 0);
+}
+void OnChar(HWND hwnd, TCHAR ch, int cRepeat)
+{
+ switch (ch) {
+ case TEXT('1'):
+  AddItem(hwnd);
+  break;
+ case TEXT('2'):
+  for (int i = 0; i &lt; 10000; i++) {
+   AddItem(hwnd);
+  }
+  break;
+ case TEXT('3'):
+  SetWindowRedraw(hwnd, FALSE);
+  for (int i = 0; i &lt; 10000; i++) {
+   AddItem(hwnd);
+  }
+  SetWindowRedraw(hwnd, TRUE);
+  InvalidateRect(hwnd, nullptr, TRUE);
+ }
+}
+ HANDLE_MSG(hwnd, WM_VSCROLL, OnVscroll);
+ HANDLE_MSG(hwnd, WM_CHAR, OnChar);</font>
+</pre>
+<p>
+Most of this program was stolen from my scroll bar series.
+The interesting new bits are that you can add one new item
+by hitting <kbd>1</kbd>,
+or you can add ten thousand items by hitting <kbd>2</kbd>,
+or you can add ten thousand items with redraw disabled
+by hitting <kbd>3</kbd>.
+</p>
+<p>
+I drew the items in reverse order so that adding an item
+forces everything to change position, so that the effect
+of the redraw is more noticeable.
+</p>
+<p>
+Observe that adding one item is fast,
+but adding ten thousand items with redraw enabled is slow;
+you can watch the scroll bar as it slowly shrinks.
+But adding ten thousand items with redraw disabled is not too bad.
+</p>
+<p>
+But we can do better.
+</p>
+<pre>
+<font color="blue">BOOL g_fRedrawEnabled = TRUE;</font>
+void AddItem(HWND hwnd)
+{
+ g_cItems++;
+ <font color="blue">if (g_fRedrawEnabled) {</font>
+  InvalidateRect(hwnd, 0, TRUE);
+  ScrollDelta(hwnd, 0);
+ <font color="blue">}</font>
+}
+<font color="blue">void OnSetRedraw(HWND hwnd, BOOL fRedraw)
+{
+ g_fRedrawEnabled = fRedraw;
+ if (fRedraw) {
+  InvalidateRect(hwnd, 0, TRUE);
+  ScrollDelta(hwnd, 0);
+ }
+}</font>
+void
+OnPaint(HWND hwnd)
+{
+ <font color="blue">if (g_RedrawEnabled) {</font>
+  PAINTSTRUCT ps;
+  BeginPaint(hwnd, &amp;ps);
+  PaintContent(hwnd, &amp;ps);
+  EndPaint(hwnd, &amp;ps);
+ <font color="blue">} else {
+  ValidateRect(hwnd, nullptr);
+ }</font>
+}
+ <font color="blue">HANDLE_MSG(hwnd, WM_SETREDRAW, OnSetRedraw);</font>
+</pre>
+<p>
+We have a custom handler for the
+<code>WM_SET­REDRAW</code> message that updates
+a flag that indicates whether redraw is enabled.
+When adding an item, we do the visual recalculations
+(updating the scroll bar, mostly)
+only if redraw is enabled.
+If a paint message comes in while redraw is disabled,
+we merely validate the window to say “It’s all good,
+don’t worry!”
+When redraw is re-enabled, we ask for a fresh repaint
+and update the scroll bars.
+</p>
+<p>
+With this version of the program, adding ten thousand items
+with redraw disabled is lightning fast.
+</p>
+<p>
+Notice that <code>g_fRedrawEnabled</code> is not
+reference-counted.
+It’s a simply <code>BOOL</code>.
+In other words, if you send the
+<code>WM_SET­REDRAW</code> message twice to disable
+redraw,
+you still only need to enable it once.
+Disabling redraw on a window where redraw is already disabled
+has no effect.
+</p>
+<p>
+<b>Exercise</b>:
+Compare the behavior of <code>WM_SET­REDRAW</code> with
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2007/02/22/1742084.aspx">
+(the incorrect)
+<code>Lock­Window­Update</code></a>
+for this program.</p>
+
+
+</body>

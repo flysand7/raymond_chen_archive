@@ -1,0 +1,125 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Watching thread messages disappear</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/04/26/412116.aspx">
+We saw last time that thread messages are eaten by modal loops</a>.
+Today we’ll illustrate, and then we’ll try to fix it next time.
+</p>
+<p>
+Start with our scratch program and make the following changes:
+</p>
+<pre>
+<font color="blue">#include &lt;shellapi.h&gt;</font>
+<font color="blue">BOOL IsThreadMessage(MSG *pmsg)
+{
+ if (pmsg-&gt;hwnd == NULL) {
+  switch (pmsg-&gt;message) {
+   case WM_APP: MessageBeep(-1); return TRUE;
+  }
+ }
+ return FALSE;
+}</font>
+<font color="blue">// For illustration, we'll post a thread message every two seconds
+DWORD CALLBACK ThreadProc(void *lpParameter)
+{
+ DWORD dwThread = PtrToUint(lpParameter);
+ for (;;) {
+  Sleep(2000);
+  PostThreadMessage(dwThread, WM_APP, 0, 0);
+ }
+ return 0;
+}</font>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+<font color="blue"> // Start the timer that posts the thread message
+ DWORD dwThread;
+ HANDLE hThread = CreateThread(NULL, 0, ThreadProc,
+       UintToPtr(GetCurrentThreadId()), 0, &amp;dwThread);
+ if (!hThread) return FALSE;
+ CloseHandle(hThread);
+ // create some content - just to make things interesting
+ g_hwndChild = CreateWindow(WC_LISTVIEW, NULL,
+                            WS_CHILD | WS_VISIBLE | LVS_ICON, 0, 0, 0, 0,
+                            hwnd, (HMENU)1, g_hinst, 0);
+    if (!g_hwndChild) return FALSE;
+    SHFILEINFO sfi;
+    HIMAGELIST himl = (HIMAGELIST)SHGetFileInfo(TEXT("C:\\"), 0,
+            &amp;sfi, sizeof(sfi),
+            SHGFI_SYSICONINDEX | SHGFI_DISPLAYNAME | SHGFI_LARGEICON);
+    if (!himl) return FALSE;
+    ListView_SetImageList(g_hwndChild, himl, LVSIL_NORMAL);
+    for (int i = 0; i &lt; 50; i++) {
+     LVITEM item;
+     item.iItem = i;
+     item.iSubItem = 0;
+     item.mask = LVIF_TEXT | LVIF_IMAGE;
+     item.pszText = sfi.szDisplayName;
+     item.iImage = sfi.iIcon;
+     if (ListView_InsertItem(g_hwndChild, &amp;item) &lt; 0) return FALSE;
+    }</font>
+    return TRUE;
+}
+<font color="blue">void OnClose(HWND hwnd)
+{
+ if (MessageBox(hwnd, TEXT("Really?"), TEXT("Title"),
+     MB_YESNO) == IDYES) {
+  DestroyWindow(hwnd);
+ }
+}</font>
+// add to window procedure
+<font color="blue">    HANDLE_MSG(hwnd, WM_CLOSE, OnClose);</font>
+    while (GetMessage(&amp;msg, NULL, 0, 0)) {
+      <font color="blue">if (!IsThreadMessage(&amp;msg)) {</font>
+        TranslateMessage(&amp;msg);
+        DispatchMessage(&amp;msg);
+      <font color="blue">}</font>
+    }
+</pre>
+<p>
+Run this program and notice that it beeps every two seconds,
+or at least it does most of the time. If you right-click on the
+caption bar or grab the edge of the window to start resizing it
+or grab the scollbar or start a drag-selection or display a message box,
+the beeps stop.
+That’s because all of those actions are modal operations, and
+the modal message loop is eating the thread messages.
+</p>
+<p>
+Save this program because we’ll come back to it.
+</p>
+<p>
+The obvious solution is to post the message to the main window
+itself rather than to the thread.
+You have a window handle; use it!
+</p>
+<pre>
+DWORD CALLBACK ThreadProc(void *lpParameter)
+{
+ <font color="blue">HWND hwnd = reinterpret_cast&lt;HWND&gt;(lpParameter);</font>
+ for (;;) {
+  Sleep(2000);
+  <font color="blue">PostMessage(hwnd</font>, WM_APP, 0, 0);
+ }
+ return 0;
+}
+ HANDLE hThread = CreateThread(NULL, 0, ThreadProc,
+       <font color="blue">reinterpret_cast&lt;void*&gt;(hwnd)</font>, 0, &amp;dwThread);
+// add to window procedure
+<font color="blue"> case WM_APP: MessageBeep(-1); return 0;</font>
+    while (GetMessage(&amp;msg, NULL, 0, 0)) {
+      <font color="blue"><strike>if (!IsThreadMessage(&amp;msg)) {</strike></font>
+        TranslateMessage(&amp;msg);
+        DispatchMessage(&amp;msg);
+      <font color="blue"><strike>}</strike></font>
+    }
+</pre>
+<p>
+Now that that problem has been solved, I’m going to tempt fate
+and solve the problem <strong>the wrong way</strong> because I
+want to illustrate message filters.
+Next time.</p>
+
+
+</body>

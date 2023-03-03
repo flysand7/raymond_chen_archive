@@ -1,0 +1,97 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: The mental model for coroutine promises</h1>  <!-- .entry-meta -->
+
+<p>My earlier series on <a href="/code/c-coroutines-getting-started-with-awaitable-objects" title="C++ coroutines: Getting started with awaitable objects"> getting started with awaitable objects</a> looked at how you produce awaitable objects, but up until now we haven’t been looking at the other side: How can you be an object that can await other objects?</p>
+<p><a href="http://lewissbaker.github.io/"> Lewis Baker</a> covered this topic <a href="https://lewissbaker.github.io/2018/09/05/understanding-the-promise-type"> some time ago</a>, but I’m going to take a stab at it as well. Because maybe if there are enough articles about it, one of them will actually make sense to you.</p>
+<p>The idea behind language coroutines is that the coroutine function is transformed into a state machine, formally known as a <i>coroutine state</i>. The coroutine is represented to callers by some sort of object, and depending on how fancy you get, that object may provide functionality such as basic things like <code>co_await</code>ing the return value to retrieve the final result of the coroutine function, or fancier things like interacting with the coroutine-in-progress, say, by cancelling it or retrieving progress information.</p>
+<p>The coroutine state is represented in memory by an aggregate of three things:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>Compiler bookkeeping</td>
+</tr>
+<tr>
+<td>Promise object</td>
+</tr>
+<tr>
+<td>Coroutine “stack frame”</td>
+</tr>
+</tbody>
+</table>
+<p>The compiler bookkeeping is where the compiler puts its state machine, so that it knows where to resume a suspended coroutine. It also needs to keep track of how far the code in the coroutine has reached, so that it knows which variables need to be destructed if the coroutine state is destroyed before the coroutine reaches its natural end.</p>
+<p>The coroutine stack frame contains all the stuff that used to go into the traditional stack frame. Inbound parameters, local variables, that sort of thing.</p>
+<p>Of course, this is all compiler implementation detail, but it’s still handy to think of a coroutine state of consisting of these three pieces, even if it’s not literally how things are organized. For example, the compiler might keep its live-object information in the space it reserved for the stack frame, particularly if the stack frame is where it kept the live-object information in non-coroutine functions. And if a local variable’s lifetime does not extend across a suspension point, then it could be stored on the regular stack instead of inside the coroutine state’s stack frame.</p>
+<p>Anyway, the important thing is that there is this bonus “promise” object hiding inside the coroutine state. This promise object is something you provide as the implementor of the coroutine, and its main job is to mediate communication between the coroutine and the outside world.</p>
+<p>For concreteness, let’s say that we have something like this:</p>
+<pre>task DoSomethingAsync()
+{
+    co_await something();
+    co_return 42;
+}
+</pre>
+<p>To start things off, the compiler allocates a coroutine state, constructs the promise object inside the coroutine state, let’s call it <code>p</code>, and then calls <code>p.get_return_object()</code> to ask the promise to produce the object that is returned to the caller, which matches the nominal return value of the coroutine. In the above example, <code>p.get_return_object()</code> should return a <code>task</code>.</p>
+<p>The promise typically arranges so that it and the return object work together to establish the communication channel between the coroutine and its caller.</p>
+<p>When the coroutine performs a <code>co_return</code>, the compiler calls <code>p.return_value()</code>, passing the value that the coroutine returned. In the above example, the compiler will call <code>p.return_value(42)</code>. The promise will typically put this value somewhere that the return object can access, so that the caller of the coroutine can obtain the result.</p>
+<p>Here’s a diagram of how the pieces fit together. If a caller does <code>t = DoSomethingAsync()</code>, what we have is this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<th>Coroutine state</th>
+<td rowspan="2" valign="bottom"><code>p.get_<br/>
+return_<br/>
+object()</code></td>
+<th>Caller</th>
+</tr>
+<tr>
+<td style="border: solid 1px black;">bookkeeping</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;">promise</td>
+<td>→→→→→→</td>
+<td style="border: solid 1px black;"><code>t</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black;">stack frame</td>
+<td> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>The promise produced a <code>task</code>, which the caller now possesses. Most of the time, the <code>task</code> object will be something the caller can <code>co_await</code>, so that the caller can retrieve the result produced by the coroutine.</p>
+<p>Eventually, the coroutine finishes with a <code>co_return</code>, and the coroutine state forwards the value through to the original return object <code>t</code>, and that in turn causes the caller’s <code>co_await t</code> to complete with that result.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<th>Coroutine function</th>
+<td rowspan="2" valign="bottom"><code>p.return_<br/>
+value(42);</code></td>
+<th>Coroutine state</th>
+<td> </td>
+<th>Caller</th>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px black;">bookkeeping</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>co_return 42;</code></td>
+<td>→→→</td>
+<td style="border: solid 1px black;">promise</td>
+<td>→→→</td>
+<td style="border: solid 1px black;"><code>t</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">stack frame</td>
+</tr>
+</tbody>
+</table>
+<p>The compiler calls <code>p.return_value(42)</code> to pass the result from the coroutine to the promise, and it’s up to the promise to figure out how to propagate that value to the task.</p>
+<p>Next time, we’ll take these diagrams and fill them in with actual code.</p>
+
+
+</body>

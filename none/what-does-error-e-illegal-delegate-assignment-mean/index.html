@@ -1,0 +1,33 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What does error E_ILLEGAL_DELEGATE_ASSIGNMENT mean?</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that they program was crashing because it got the error <code>E_<wbr/>ILLEGAL_<wbr/>DELEGATE_<wbr/>ASSIGNMENT</code>. The description of this error is “A delegate was assigned when not allowed,” but what does that mean?</p>
+<p>The most common source of this error is attempting to set a completion callback for a Windows Runtime <code>IAsyncXxx</code> asynchronous operation when a callback has already been set. There can be only one completion callback for an asynchronous operation, and you get this error if you try to set a second one.</p>
+<p>You typically do not set completion callbacks explicitly. They are usually set for you as part of your programming framework. In the case of C++/WinRT, the most common place it it happens is when you <code>co_await</code> an asynchronous operation. (Less common sources are functions like <code>when_all</code> or <code>when_any</code>.)</p>
+<p>The good news is that the stack trace from the crash dump usually points to the code that attempted to register the second callback.</p>
+<pre>SomeClass::SomeClass()
+{
+    m_start = StartAsync();
+}
+
+IAsyncAction SomeClass::DoThing1Async()
+{
+    co_await m_start;
+    Thing1();
+}
+
+IAsyncAction SomeClass::DoThing2Async()
+{
+    co_await m_start; // ← crash here
+    Thing2();
+}
+</pre>
+<p>The idea here is that the object initializes itself at construction, but does so asynchronously. When the <code>Do­Thing</code> methods are called, they first wait for the initialization to complete, and then proceed with the actual operation.</p>
+<p>The problem is that we are <code>co_await</code>ing the <code>m_start</code> object more than once. Each coroutine’s call to <code>co_await</code> will try to set its own continuation as the completion handler so it can resume execution when the operation completes. The first one to perform the <code>co_await</code> succeeds. The rest fail with <code>E_<wbr/>ILLEGAL_<wbr/>DELEGATE_<wbr/>ASSIGNMENT</code>.</p>
+<p>The rule that we walk away with is “Each <code>IAsyncXxx</code> can be awaited only once.”</p>
+<p>Okay, so what do we do if we need to await something more than once, like here, where we want all of the operations to wait for the initialization to complete before proceeding with work?</p>
+<p>You’ll have to find something that can be awaited more than once.</p>
+<p>We’ll look into possible solutions next time.</p>
+
+
+</body>

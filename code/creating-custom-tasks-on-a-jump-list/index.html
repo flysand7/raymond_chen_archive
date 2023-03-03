@@ -1,0 +1,120 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating custom tasks on a jump list</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s Little Program adds a custom task to the application’s
+jump list.
+Take the
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make the following changes.
+(Remember, Little Programs do very little error checking
+because that’s how they roll.)
+</p>
+<pre>
+<font color="blue">#include &lt;shlobj.h&gt;
+#include &lt;propkey.h&gt;
+#include &lt;wrl/client.h&gt;
+using namespace Microsoft::WRL;
+ComPtr&lt;IShellLink&gt;
+CreateShellLinkForTask(
+    PCWSTR pszTitle,
+    PCTSTR pszArgs,
+    int idIcon)
+{
+    ComPtr&lt;IShellLink&gt; spsl;
+    CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&amp;spsl));
+    wchar_t szBuf[MAX_PATH];
+    GetModuleFileName(g_hinst, szBuf, ARRAYSIZE(szBuf));
+    spsl-&gt;SetPath(szBuf);
+    spsl-&gt;SetArguments(pszArgs);
+    spsl-&gt;SetIconLocation(szBuf, idIcon);
+    PROPVARIANT pvar;
+    pvar.vt = VT_LPWSTR;
+    pvar.pwszVal = const_cast&lt;PWSTR&gt;(pszTitle);
+    ComPtr&lt;IPropertyStore&gt; spps;
+    spsl.As(&amp;spps);
+    spps-&gt;SetValue(PKEY_Title, pvar);
+    spps-&gt;Commit();
+    return spsl;
+}</font>
+</pre>
+<p>
+This helper function creates an
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/02/24/10133280.aspx">
+in-memory shell link object</a>
+with the specified title, command line arguments, and icon.
+The underlying executable is assumed to be the running executable.
+</p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  <font color="blue">ComPtr&lt;ICustomDestinationList&gt; spcdl;
+  CoCreateInstance(CLSID_DestinationList, nullptr, CLSCTX_ALL,
+                   IID_PPV_ARGS(&amp;spcdl));
+  ComPtr&lt;IObjectCollection&gt; spoc;
+  UINT cMinSlots;
+  spcdl-&gt;BeginList(&amp;cMinSlots, IID_PPV_ARGS(&amp;spoc));
+  spoc-&gt;Clear();
+  spoc-&gt;AddObject(CreateShellLinkForTask(L"New frob",
+                   TEXT("/frob"), -2).Get());
+  spcdl-&gt;AddUserTasks(spoc.Get());
+  spcdl-&gt;CommitList();</font>
+  return TRUE;
+}
+</pre>
+<p>
+When our window is created,
+we get the destination list for our application
+and ask it for an object collection so we can fill it with tasks.
+We empty the existing collection and add a single shortcut
+called “New frob” and which passes the <code>/frob</code> command line
+argument.
+The icon here is given as a negative number to indicate
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/05/05/10007461.aspx">
+that it is an icon ID rather than an icon index</a>.
+We then tell the destination list that this is our new task collection.
+</p>
+<p>
+Before we forget, let’s add the icon to our resource file.
+</p>
+<pre>
+// scratch.rc
+1 ICON icon1.ico
+2 ICON icon2.ico
+</pre>
+<p>
+I’ll leave you to find some icons to use.
+Icon number 2 is the one that will be used for the jump list.
+(Icon number 1 I left to represent the application itself.)
+</p>
+<p>
+Finally, we respond to the command line switch.
+</p>
+<pre>
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+  <font color="blue">if (strcmp(lpCmdLine, "/frob") == 0) {
+    MessageBox(nullptr, L"Frob!", L"Title", MB_OK);
+    return 0;
+  }</font>
+  ...
+}
+</pre>
+<p>
+If the command line switch <code>/frob</code> is passed,
+then we say something silly.
+In real life, we would create a new frob,
+possibly by looking for an existing running copy of the program
+and asking it to do the creation.
+</p>
+<p>
+Okay, run this program and then right-click on the taskbar icon.
+Observe that there is now a <i>New frob</i> task,
+and if you select it,
+you get the silly message.</p>
+
+
+</body>

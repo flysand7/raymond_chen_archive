@@ -1,0 +1,81 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The macros for declaring COM interfaces, revisited: C++ implementation</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/the-macros-for-declaring-com-interfaces-revisited-c-version" title="The macros for declaring COM interfaces, revisited: C++ version"> the macros for declaring COM interfaces and how they expand when compiled for C++</a>. Now we’ll look at the macros you use for implementing the interface.</p>
+<pre>class Class : public ISomething
+{
+public:
+    // *** IUnknown ***
+    IFACEMETHOD(QueryInterface)(REFIID riid, void** ppv);
+    IFACEMETHOD_(ULONG, AddRef)();
+    IFACEMETHOD_(ULONG, Release)();
+
+    // *** ISomething ***
+    IFACEMETHOD(Method1)();
+    IFACEMETHOD_(int, Method2)();
+    IFACEMETHOD(Method3)(int iParameter);
+};
+</pre>
+<p>The <code>IFACEMETHOD</code> and <code>IFACEMETHOD_</code> macros are used for declaring that your class implements a particular method. The result of the macro expansion is this:</p>
+<pre>class Class : public ISomething
+{
+public:
+    // *** IUnknown ***
+    /* IFACEMETHOD(QueryInterface)(REFIID riid, void** ppv); */
+    __override virtual __declspec(nothrow)
+    HRESULT QueryInterface(REFIID riid, void** ppv);
+
+    /* IFACEMETHOD_(ULONG, AddRef)(); */
+    __override virtual __declspec(nothrow)
+    ULONG AddRef();
+
+    /* IFACEMETHOD_(ULONG, Release)(); */
+    __override virtual __declspec(nothrow)
+    ULONG Release();
+
+    // *** ISomething ***
+    /* IFACEMETHOD(Method1)(); */
+    __override virtual __declspec(nothrow)
+    HRESULT Method1();
+
+    /* IFACEMETHOD_(int, Method2)(); */
+    __override virtual __declspec(nothrow)
+    int Method2();
+
+    /* IFACEMETHOD(Method3)(int iParameter); */
+    __override virtual __declspec(nothrow)
+    HRESULT Method3(int iParameter);
+};
+</pre>
+<p>Analogous with the <code>STDMETHOD</code> and <code>STDMETHOD_</code> macros, you use the underscore version of the <code>IFACEMETHOD</code> macro (<code>IFACEMETHOD_</code>) if the return value is not <code>HRESULT</code>.</p>
+<p>The <code>__override</code> annotation is understood by static analysis tools like <a href="https://devblogs.microsoft.com/cppblog/prefast-and-sal-annotations/" title="Prefast And SAL Annotations"> PREfast</a>. The annotation means that the static analysis tool should verify that function declaration overrides an identical method in the base class.</p>
+<p>The <code>__override</code> annotation was introduced as part of SAL, the Microsoft Standard Annotation Language. It has been made redundant by C++11’s <code>override</code> keyword, but the macros still generate them just the same.</p>
+<p>In practice, therefore, you are probably going to write</p>
+<pre>    IFACEMETHOD(Method1)() override;
+</pre>
+<p>to inform both the static analysis tool and the C++ compiler of your intention to override a method from the base class.</p>
+<p>When it comes time to define the method, you do it with the <code>IFACEMETHODIMP</code> macro:</p>
+<pre>IFACEMETHODIMP Class::Method1()
+{
+    ...
+}
+</pre>
+<p>Use <code>IFACEMETHODIMP_(T)</code> if the return type is not <code>HRESULT</code>.</p>
+<p>The above expands to</p>
+<pre>__override HRESULT __stdcall Class::Method1()
+{
+    ...
+}
+</pre>
+<p>If you want to implement the method inline, then you can put the implementation directly after the declaration inside the class definition.</p>
+<pre>class Class : public ISomething
+{
+public:
+    ...
+    IFACEMETHOD(Method1)() override { ... }
+    ...
+};
+</pre>
+
+
+</body>

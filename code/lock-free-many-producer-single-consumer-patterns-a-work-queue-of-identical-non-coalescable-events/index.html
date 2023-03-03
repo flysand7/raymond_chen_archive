@@ -1,0 +1,59 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Lock free many-producer/single-consumer patterns: A work queue of identical non-coalescable events</h1>  <!-- .entry-meta -->
+
+<p>Onward with our miniseries on lock-free many-producer/single-consumer patterns. Today, we’re going to look at the case where you have a work queue where there can be multiple work items, and you need to perform them all, but each item is identical. </p>
+<p>For example, you may have a <i>Buy It</i> button. Each time the user clicks the button, you want to run a transaction. But each button press is equivalent; all that’s important is the number of times the user pushed the button. </p>
+<p>Okay, that’s not a very good example, but it’ll have to do. </p>
+<p>One way of doing this is with a semaphore, where the number of tokens in the semaphore is the number of work items left to be done. But let’s stick with our current pattern where the producers need to manually wake the consumer, say with a message, and we want to minimize the number of times we need to perform the wake ritual. </p>
+<pre>
+LONG WorkCount;
+
+void RequestWork()
+{
+ if (InterlockedIncrement(&amp;WorkCount) == 1) {
+  // You provide the WakeConsumer() function.
+  WakeConsumer();
+ }
+}
+
+// You call this function when the consumer receives the
+// signal raised by WakeConsumer().
+void ConsumeWork()
+{
+ while (InterlockedDecrementToZero(&amp;WorkCount)) {
+  DoSomeWork();
+ }
+}
+
+bool InterlockedDecrementToZero(LONG volatile* value)
+{
+ LONG original, result;
+ do {
+  original = *value;
+  if (original == 0) return false;
+  result = original - 1;
+ } while (InterlockedCompareExchange(value, result,
+                               original) != original);
+ return true;
+}
+</pre>
+<p>The <code>Interlocked­Decrement­To­Zero</code> function follows <a href="https://blogs.msdn.microsoft.com/oldnewthing/20040915-00/?p=37863">the pattern for building complex interlocked operations</a>, in this case, decrementing a number, but not decrementing it below zero. We check if the value is zero; if so, then stop and return <code>false</code>. Otherwise, try to swap it with the value one less than the current value. If that fails, then it means that another thread changed the <code>WorkCount</code> while we were busy thinking, so we start over. If we successfully decremented, then return <code>true</code>. </p>
+<p>The <code>Work­Count</code> variable remembers how much work there is for the consumer to do. When the first piece of work arrives, we wake the consumer, and the consumer keeps draining the work until it’s all done. </p>
+<p>Remember, there is only one consumer, so if <code>Wake­Consumer</code> is called while <code>Consume­Work</code> is still running, the wake will not start a new consumer immediately. It will wait for the existing <code>Consume­Work</code> to complete before starting a new <code>Consume­Work</code>. </p>
+<p>Although this specific pattern may not be all that interesting, it can be viewed as a building block on top of which other patterns are built. We’ll look at one such next time. </p>
+<p><b>Exercise</b>: Why couldn’t the <code>Interlocked­Decrement­To­Zero</code> function have been written like this? </p>
+<pre>
+<i>// Code in italics is wrong.
+LONG InterlockedDecrementToZero(LONG volatile* value)
+{
+ LONG original = *value;
+ if (original == 0) return false;
+ InterlockedDecrement(value);
+ return true;
+}</i>
+</pre>
+<p><b>Bonus chatter</b>: We could have avoided having to write the <code>Interlocked­Decrement­To­Zero</code> by writing this instead: void ConsumeWork() {  LONG count = InterlockedExchange(&amp;WorkCount);  for (LONG i = 0; i &lt; count; i++) {   DoSomeWork();  } } </p>
+<p>Discuss. </p>
+
+
+</body>

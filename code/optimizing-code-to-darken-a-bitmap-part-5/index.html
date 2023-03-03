@@ -1,0 +1,242 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Optimizing code to darken a bitmap, part 5</h1>  <!-- .entry-meta -->
+
+<p>For our last trick, we’ll ARM-ify this simple function to darken a bitmap.</p>
+<pre>union Pixel
+{
+    uint8_t c[4]; // four channels: red, green, blue, alpha
+    uint32_t v;   // full pixel value as a 32-bit integer
+};
+
+void darken(Pixel* first, Pixel* last, int darkness)
+{
+  int lightness = 256 - darkness;
+  for (; first &lt; last; ++first) {
+    first-&gt;c[0] = (uint8_t)(first-&gt;c[0] * lightness / 256);
+    first-&gt;c[1] = (uint8_t)(first-&gt;c[1] * lightness / 256);
+    first-&gt;c[2] = (uint8_t)(first-&gt;c[2] * lightness / 256);
+  }
+}
+</pre>
+<p>The general principle is the same, but we just apply it to ARM Neon intrinsics instead of x86 SSE intrinsics.</p>
+<pre>void darken(Pixel* first, Pixel* last, int darkness)
+{
+  int lightness = 256 - darkness;
+  uint16x8_t lightness128 = vdupq_n_u16((uint16_t)lightness);
+  lightness128 = vsetq_lane_u16(256, lightness128, 3);
+  lightness128 = vsetq_lane_u16(256, lightness128, 7);
+  void* end = last;
+  for (auto pixels = (uint8_t*)first; pixels &lt; end; pixels += 16) {
+    uint8x16_t val = vld1q_u8(pixels);
+    uint8x16x2_t zipped = vzipq_u8(val, vdupq_n_u8(0));
+    uint16x8_t lo = vreinterpretq_u16_u8(zipped.val[0]);
+    lo = vmulq_u16(lo, lightness128);
+    auto hi = vreinterpretq_u16_u8(zipped.val[1]);
+    hi = vmulq_u16(hi, lightness128);
+    val = vuzpq_u8(vreinterpretq_u8_u16(lo), vreinterpretq_u8_u16(hi)).val[1];
+    vst1q_u8(pixels, val);
+  }
+}
+</pre>
+<p>We want to set up our <code>lightness128</code> vector to consists of 8 lanes of 16-bit values, with the ones corresponding to color channels get the specified lightness, and the ones corresponding to alpha channels get a lightness of 256, which means “do not darken”. The quickest way I found to do this (not that I looked very hard) is to broadcast the <code>lightness</code> value to all the lanes, and then set lanes 3 and 7 explicitly to 256.</p>
+<p>Inside the loop, we process 16 bytes at a time, which comes out to four pixels.</p>
+<p>First, we load the 16 bytes into a Neon register and call it <code>val</code>.</p>
+<p>Next, we <i>zip</i> the 16-byte register with a register with a register full of zeroes. The zip intrinsic interleaves the results twice: The element in <code>val[0]</code> contains the interleaved low bytes, and the element in <code>val[1]</code> contains the interleaved high bytes.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center; font-size: 80%;">
+<tbody>
+<tr>
+<td>source 0</td>
+<td style="border: solid 1px black; width: 4ex;">A15</td>
+<td style="border: solid 1px black; width: 4ex;">A14</td>
+<td style="border: solid 1px black; width: 4ex;">A13</td>
+<td style="border: solid 1px black; width: 4ex;">A12</td>
+<td style="border: solid 1px black; width: 4ex;">A11</td>
+<td style="border: solid 1px black; width: 4ex;">A10</td>
+<td style="border: solid 1px black; width: 4ex;">A9</td>
+<td style="border: solid 1px black; width: 4ex;">A8</td>
+<td style="border: solid 1px black; width: 4ex;">A7</td>
+<td style="border: solid 1px black; width: 4ex;">A6</td>
+<td style="border: solid 1px black; width: 4ex;">A5</td>
+<td style="border: solid 1px black; width: 4ex;">A4</td>
+<td style="border: solid 1px black; width: 4ex;">A3</td>
+<td style="border: solid 1px black; width: 4ex;">A2</td>
+<td style="border: solid 1px black; width: 4ex;">A1</td>
+<td style="border: solid 1px black; width: 4ex;">A0</td>
+</tr>
+<tr>
+<td>source 1</td>
+<td style="border: solid 1px black; width: 4ex;">B15</td>
+<td style="border: solid 1px black; width: 4ex;">B14</td>
+<td style="border: solid 1px black; width: 4ex;">B13</td>
+<td style="border: solid 1px black; width: 4ex;">B12</td>
+<td style="border: solid 1px black; width: 4ex;">B11</td>
+<td style="border: solid 1px black; width: 4ex;">B10</td>
+<td style="border: solid 1px black; width: 4ex;">B9</td>
+<td style="border: solid 1px black; width: 4ex;">B8</td>
+<td style="border: solid 1px black; width: 4ex;">B7</td>
+<td style="border: solid 1px black; width: 4ex;">B6</td>
+<td style="border: solid 1px black; width: 4ex;">B5</td>
+<td style="border: solid 1px black; width: 4ex;">B4</td>
+<td style="border: solid 1px black; width: 4ex;">B3</td>
+<td style="border: solid 1px black; width: 4ex;">B2</td>
+<td style="border: solid 1px black; width: 4ex;">B1</td>
+<td style="border: solid 1px black; width: 4ex;">B0</td>
+</tr>
+<tr>
+<td> </td>
+</tr>
+<tr>
+<td><code>val[0]</code></td>
+<td style="border: solid 1px black; width: 4ex;">B7</td>
+<td style="border: solid 1px black; width: 4ex;">A7</td>
+<td style="border: solid 1px black; width: 4ex;">B6</td>
+<td style="border: solid 1px black; width: 4ex;">A6</td>
+<td style="border: solid 1px black; width: 4ex;">B5</td>
+<td style="border: solid 1px black; width: 4ex;">A5</td>
+<td style="border: solid 1px black; width: 4ex;">B4</td>
+<td style="border: solid 1px black; width: 4ex;">A4</td>
+<td style="border: solid 1px black; width: 4ex;">B3</td>
+<td style="border: solid 1px black; width: 4ex;">A3</td>
+<td style="border: solid 1px black; width: 4ex;">B2</td>
+<td style="border: solid 1px black; width: 4ex;">A2</td>
+<td style="border: solid 1px black; width: 4ex;">B1</td>
+<td style="border: solid 1px black; width: 4ex;">A1</td>
+<td style="border: solid 1px black; width: 4ex;">B0</td>
+<td style="border: solid 1px black; width: 4ex;">A0</td>
+</tr>
+<tr>
+<td><code>val[1]</code></td>
+<td style="border: solid 1px black; width: 4ex;">B15</td>
+<td style="border: solid 1px black; width: 4ex;">A15</td>
+<td style="border: solid 1px black; width: 4ex;">B14</td>
+<td style="border: solid 1px black; width: 4ex;">A14</td>
+<td style="border: solid 1px black; width: 4ex;">B13</td>
+<td style="border: solid 1px black; width: 4ex;">A13</td>
+<td style="border: solid 1px black; width: 4ex;">B12</td>
+<td style="border: solid 1px black; width: 4ex;">A12</td>
+<td style="border: solid 1px black; width: 4ex;">B11</td>
+<td style="border: solid 1px black; width: 4ex;">A11</td>
+<td style="border: solid 1px black; width: 4ex;">B10</td>
+<td style="border: solid 1px black; width: 4ex;">A10</td>
+<td style="border: solid 1px black; width: 4ex;">B9</td>
+<td style="border: solid 1px black; width: 4ex;">A9</td>
+<td style="border: solid 1px black; width: 4ex;">B8</td>
+<td style="border: solid 1px black; width: 4ex;">A8</td>
+</tr>
+</tbody>
+</table>
+<p>If you aren’t interested in one of the results, you can just ignore it, and the optimizer will remove that calculation from the code generation. In our case, we use both parts, though, so that optimization doesn’t come into play.</p>
+<p>Zipping with zero has the effect of zero-extending all the lanes from 8-bit to 16-bit, once you reinterpret the values as eight 16-bit lanes rather than sixteen 8-bit lanes.</p>
+<p>For the low part, we take the first zipped-up value, reinterpret it as eight 16-bit lanes, and then perform a parallel multiply with our <code>lightness128</code> vector. Our x86 version took the result of the multiplication and shifted it right by 8 positions at this point, in order to divide by 256 and put the values in the right place to be combined with a pack instruction. For Neon, however, we’ll leave the values in the odd bytes for reasons we’ll see later.</p>
+<p>We perform the same set of calculations on the high part, again leaving the values in the odd bytes of the result.</p>
+<p>The final step is combining the results, which we do with the <i>unzip</i> instruction. This takes the even-numbered lanes from the first source register and puts them in the low-order lanes of the first destination. And it takes the even-numbered lanes from the second source register and puts them in the high-order lanes of the first destination. The odd-numbered lanes are collected and placed in the second destination. If you just relabel the bytes, you’ll see that this is the inverse of the <i>zip</i> instruction, hence its name.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center; font-size: 80%;">
+<tbody>
+<tr>
+<td>source 0</td>
+<td style="border: solid 1px black; width: 4ex;">A15</td>
+<td style="border: solid 1px black; width: 4ex;">A14</td>
+<td style="border: solid 1px black; width: 4ex;">A13</td>
+<td style="border: solid 1px black; width: 4ex;">A12</td>
+<td style="border: solid 1px black; width: 4ex;">A11</td>
+<td style="border: solid 1px black; width: 4ex;">A10</td>
+<td style="border: solid 1px black; width: 4ex;">A9</td>
+<td style="border: solid 1px black; width: 4ex;">A8</td>
+<td style="border: solid 1px black; width: 4ex;">A7</td>
+<td style="border: solid 1px black; width: 4ex;">A6</td>
+<td style="border: solid 1px black; width: 4ex;">A5</td>
+<td style="border: solid 1px black; width: 4ex;">A4</td>
+<td style="border: solid 1px black; width: 4ex;">A3</td>
+<td style="border: solid 1px black; width: 4ex;">A2</td>
+<td style="border: solid 1px black; width: 4ex;">A1</td>
+<td style="border: solid 1px black; width: 4ex;">A0</td>
+<td><code>val[0]</code></td>
+</tr>
+<tr>
+<td>source 1</td>
+<td style="border: solid 1px black; width: 4ex;">B15</td>
+<td style="border: solid 1px black; width: 4ex;">B14</td>
+<td style="border: solid 1px black; width: 4ex;">B13</td>
+<td style="border: solid 1px black; width: 4ex;">B12</td>
+<td style="border: solid 1px black; width: 4ex;">B11</td>
+<td style="border: solid 1px black; width: 4ex;">B10</td>
+<td style="border: solid 1px black; width: 4ex;">B9</td>
+<td style="border: solid 1px black; width: 4ex;">B8</td>
+<td style="border: solid 1px black; width: 4ex;">B7</td>
+<td style="border: solid 1px black; width: 4ex;">B6</td>
+<td style="border: solid 1px black; width: 4ex;">B5</td>
+<td style="border: solid 1px black; width: 4ex;">B4</td>
+<td style="border: solid 1px black; width: 4ex;">B3</td>
+<td style="border: solid 1px black; width: 4ex;">B2</td>
+<td style="border: solid 1px black; width: 4ex;">B1</td>
+<td style="border: solid 1px black; width: 4ex;">B0</td>
+<td><code>val[1]</code></td>
+</tr>
+<tr>
+<td>↓zip↓</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>↑unzip↑</td>
+</tr>
+<tr>
+<td><code>val[0]</code></td>
+<td style="border: solid 1px black; width: 4ex;">B7</td>
+<td style="border: solid 1px black; width: 4ex;">A7</td>
+<td style="border: solid 1px black; width: 4ex;">B6</td>
+<td style="border: solid 1px black; width: 4ex;">A6</td>
+<td style="border: solid 1px black; width: 4ex;">B5</td>
+<td style="border: solid 1px black; width: 4ex;">A5</td>
+<td style="border: solid 1px black; width: 4ex;">B4</td>
+<td style="border: solid 1px black; width: 4ex;">A4</td>
+<td style="border: solid 1px black; width: 4ex;">B3</td>
+<td style="border: solid 1px black; width: 4ex;">A3</td>
+<td style="border: solid 1px black; width: 4ex;">B2</td>
+<td style="border: solid 1px black; width: 4ex;">A2</td>
+<td style="border: solid 1px black; width: 4ex;">B1</td>
+<td style="border: solid 1px black; width: 4ex;">A1</td>
+<td style="border: solid 1px black; width: 4ex;">B0</td>
+<td style="border: solid 1px black; width: 4ex;">A0</td>
+<td>source 0</td>
+</tr>
+<tr>
+<td><code>val[1]</code></td>
+<td style="border: solid 1px black; width: 4ex;">B15</td>
+<td style="border: solid 1px black; width: 4ex;">A15</td>
+<td style="border: solid 1px black; width: 4ex;">B14</td>
+<td style="border: solid 1px black; width: 4ex;">A14</td>
+<td style="border: solid 1px black; width: 4ex;">B13</td>
+<td style="border: solid 1px black; width: 4ex;">A13</td>
+<td style="border: solid 1px black; width: 4ex;">B12</td>
+<td style="border: solid 1px black; width: 4ex;">A12</td>
+<td style="border: solid 1px black; width: 4ex;">B11</td>
+<td style="border: solid 1px black; width: 4ex;">A11</td>
+<td style="border: solid 1px black; width: 4ex;">B10</td>
+<td style="border: solid 1px black; width: 4ex;">A10</td>
+<td style="border: solid 1px black; width: 4ex;">B9</td>
+<td style="border: solid 1px black; width: 4ex;">A9</td>
+<td style="border: solid 1px black; width: 4ex;">B8</td>
+<td style="border: solid 1px black; width: 4ex;">A8</td>
+<td>source 1</td>
+</tr>
+</tbody>
+</table>
+<p>It is that second result that’s interesting to us: For each 16-bit lane consists of An in the low byte and Bn in the high byte, we want to shift right 8 and save the low byte. “Shift right 8 and save the low byte” is the same as “extract the high byte”, which in our case is Bn. In other words, we want to save all the Bn bytes and pack them into a single register. Everything is set up perfectly for an unzip, and our result is in the unzip output <code>val[1]</code>, which we store to memory.</p>
+<p>I don’t have easy access to an AArch64 system for performance testing,¹ so I can’t say how much faster this is than the original version, but I suspect it gives a comparable speed-up as the x86 version.</p>
+<p>¹ So how do I know this code even works? I put this function into a test program and sent it to a colleague who does have an AArch64 system. He ran the program and sent me a screen shot of the output, and I visually confirmed that it looked correct. It took me back to the days of punch card programming, where you submitted your deck to the machine operator and then came back later for the results. Faced with such slow turnaround times, you double- and sometimes triple-checked that your program was exactly what you wanted, because if you messed up, you had to go through the whole cycle again.</p>
+
+
+</body>

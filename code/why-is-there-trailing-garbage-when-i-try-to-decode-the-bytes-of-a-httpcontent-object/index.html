@@ -1,0 +1,95 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why is there trailing garbage when I try to decode the bytes of a HttpContent object?</h1>  <!-- .entry-meta -->
+
+<p>A customer was having trouble extracting text from an HTTP response.</p>
+<pre>winrt::HttpRequest request = ...;
+
+auto result = co_await request.Content().ReadAsStringAsync();
+</pre>
+<p>This version produced a string that looked mostly okay, but some parts were corrupted.</p>
+<blockquote class="q"><p><tt>{"name":"ð<span style="background-color: black; color: white; padding: 0 1px; margin: 0 1px;">APC</span><span style="background-color: black; color: white; padding: 0 1px; margin: 0 1px;">DCS</span>±meow"}</tt></p></blockquote>
+<p>From inspection, it’s clear that what we have here is mojibake, wherein a UTF-8 string is being misinterpreted in some other 8-bit character set.</p>
+<p>According to <a href="https://tools.ietf.org/html/rfc2616#section-3.7.1">RFC 2616 section 3.7.1</a>, if there is no explicit character set for a <tt>text</tt> media subtype, the default character set is ISO-8859-1. Evidently, this server returned a string encoded as UTF-8 but failed to indicate this character set when it reported its <tt>Content-Type</tt>. As a result, the string defaults to ISO-8859-1.</p>
+<p>Oops.</p>
+<p>Now, <a href="https://tools.ietf.org/html/rfc2616#section-3.4.1"> section 3.4.1 of RFC 2616</a> acknowledges that it is common for HTTP clients to interpret the lack of an explicit character set as an opportunity to make a best guess. The Windows Runtime does perform some guessing of the character set if no character set is provided:</p>
+<ul>
+<li>If the buffer begins with a UTF-8 BOM, a UTF-16LE BOM, a UTF-16BE BOM, or a GB18030 BOM, then the buffer is decoded according to that character set.</li>
+<li>If the content type is <tt>application/json</tt> or is of the form <tt>*+json</tt>, then it is decoded as UTF-8.</li>
+<li>Otherwise, it is decoded as ISO-8859-1.</li>
+</ul>
+<p>The fact that we made it all the way to the last step means that the server didn’t use a UTF-8 BOM, nor did it set the content type to <tt>application/json</tt> even though it was returning JSON.</p>
+<p>Oops.</p>
+<p>Okay, so let’s try to work around this (apparently very broken) server by taking the response bytes and explicitly decoding them as UTF-8.</p>
+<pre>std::wstring Utf8ToUtf16(char const* str)
+{
+    std::wstring result;
+    if (str) {
+        auto resultLen = MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, str, -1, nullptr, 0);
+        if (resultLen) {
+            result.resize(resultLen);
+            MultiByteToWideChar(
+                CP_UTF8, MB_ERR_INVALID_CHARS, str, -1,
+                result.data(), resultLen);
+        }
+    }
+    return result;
+}
+
+winrt::HttpRequest request = ...;
+
+auto buffer = co_await request.Content().ReadAsBufferAsync();
+auto result = Utf8ToUtf16((char const*)buffer.data());
+</pre>
+<p>This version worked better, but it had garbage at the end:</p>
+<blockquote class="q"><p><tt>{"name":"🐱meow"}<span style="background-color: black; color: white; padding: 0 1px; margin: 0 1px;">SOH</span></tt></p></blockquote>
+<p>In this case, the problem was not in the acquisition of the buffer but rather in the conversion of the buffer to a string. The <code>buffer.data()</code> method returns a pointer to the start of the buffer, and the code passes this as the source string to <code>Multi­Byte­To­Wide­Char</code> with <code>-1</code> as the string length.</p>
+<p>The special value <code>-1</code> means that the pointer should be treated as the start of a null-terminated string. But the <code>Buffer</code> that is produced by <code>Read­As­Buffer­Async</code> is just raw bytes returned from the server, and the server isn’t going to put a null terminator at the end. The server says, “The response is 19 bytes long,” and it sends the 19 bytes and that’s that.</p>
+<p>So the extra garbage is a read buffer overflow, where the code just reads past the end of the buffer until it finally runs into a zero byte somewhere.</p>
+<p>You want to decode the bytes in the buffer, so you need to specify the number of bytes in the buffer, rather than saying “Just keep decoding until you hit a zero byte.”</p>
+<pre>std::wstring Utf8ToUtf16(char const* str<span style="color: blue;">, int32_t inputLen</span>)
+{
+    std::wstring result;
+    if (str) {
+        auto resultLen = MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, str, <span style="color: blue;">inputLen</span>, nullptr, 0);
+        if (resultLen) {
+            result.resize(resultLen);
+            MultiByteToWideChar(
+                CP_UTF8, MB_ERR_INVALID_CHARS, str, <span style="color: blue;">inputLen</span>,
+                result.data(), resultLen);
+        }
+    }
+    return result;
+}
+
+winrt::HttpRequest request = ...;
+
+auto buffer = co_await request.Content().ReadAsBufferAsync();
+auto result = Utf8ToUtf16(
+    (char const*)buffer.data(),
+    <span style="color: blue;">static_cast&lt;int32_t&gt;(buffer.Length())</span>);
+</pre>
+<p>This produces the desired string, decoded as UTF-8, with no garbage.</p>
+<p>Now, it turns out that you don’t have to write the code to take a <code>Buffer</code> containing a string encoded in UTF-8 and convert it to a UTF-16 string. The Windows Runtime already provides a helper function to do this:</p>
+<pre>winrt::HttpRequest request = ...;
+
+auto buffer = co_await request.Content().ReadAsBufferAsync();
+auto result = <span style="color: blue;">CryptographicBuffer::ConvertBinaryToString(
+    BinaryStringEncoding::Utf8, buffer);</span>
+</pre>
+<p>But since we’re using C++/WinRT, we can avoid all that and use <a href="https://devblogs.microsoft.com/oldnewthing/20210922-00/?p=105717" title="Converting between UTF-8 strings and UTF-16 strings in C++/WinRT"> the conversion built into C++/WinRT we learned last time</a>. The hard part is getting a <code>std::string_view</code> out of a <code>buffer</code>.</p>
+<pre>winrt::HttpRequest request = ...;
+
+auto buffer = co_await request.Content().ReadAsBufferAsync();
+auto result = <span style="color: blue;">winrt::to_hstring(
+    std::string_view{
+        static_cast&lt;char const*&gt;(buffer.data()),
+        buffer.Length() });</span>
+</pre>
+<p>So there you go, reading the raw buffer and converting it from UTF-8 to a UTF-16 string.</p>
+<p>In the meantime, go fix your server already.</p>
+<p><b>Epilogue</b>: The customer found that indeed their server was misconfigured. The response was being generated via a loopback server, and it was putting the <code>Content-Type</code> header in the <code>ResponseHeaders</code> instead of the <code>ContentHeaders</code>.</p>
+
+
+</body>

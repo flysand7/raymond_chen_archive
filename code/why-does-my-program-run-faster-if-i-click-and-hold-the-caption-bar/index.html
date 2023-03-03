@@ -1,0 +1,186 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does my program run faster if I click and hold the caption bar?</h1>  <!-- .entry-meta -->
+
+<p>
+Sometimes, people discover that a long-running task
+runs faster if you hold down the mouse.
+How can that be?
+</p>
+<p>
+This strange state of affairs
+typically results when a program is spending too much time
+updating its progress status and not enough time actually doing work.
+(In other words, the programmer messed up badly.)
+When you click and hold the mouse over the caption bar,
+the window manager waits for the next mouse message
+so it can determine whether
+you are clicking on the caption or attempting to drag.
+During this waiting, window painting is momentarily suppressed.
+</p>
+<p>
+That’s why the program runs faster:
+No window painting means less CPU spent updating something
+faster than you can read it anyway.
+Let’s illustrate this with a sample program.
+Start with
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/04/22/410773.aspx">
+the new scratch program</a>
+and make the following changes:
+</p>
+<pre>
+class RootWindow : public Window
+{
+public:
+ virtual LPCTSTR ClassName() { return TEXT("Scratch"); }
+ static RootWindow *Create();
+ <font color="blue">void PaintContent(PAINTSTRUCT *pps);</font>
+protected:
+ LRESULT HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam);
+ LRESULT OnCreate();
+ <font color="blue">static DWORD CALLBACK ThreadProc(void *p);</font>
+private:
+ HWND m_hwndChild;
+ <font color="blue">int m_value;</font>
+};
+LRESULT RootWindow::OnCreate()
+{
+ <font color="blue">QueueUserWorkItem(ThreadProc, this, WT_EXECUTELONGFUNCTION);</font>
+ return 0;
+}
+<font color="blue">void RootWindow::PaintContent(PAINTSTRUCT *pps)
+{
+ TCHAR sz[256];
+ int cch = wnsprintf(sz, 256, TEXT("%d"), m_value);
+ ExtTextOut(pps-&gt;hdc, 0, 0, 0, &amp;pps-&gt;rcPaint, sz, cch, 0);
+}
+DWORD RootWindow::ThreadProc(void *p)
+{
+ RootWindow*self = reinterpret_cast&lt;RootWindow*&gt;(p);
+ for (int i = 0; i &lt; 100000; i++) {
+  self-&gt;m_value++;
+  InvalidateRect(self-&gt;m_hwnd, NULL, NULL);
+ }
+ MessageBeep(-1);
+ return 0;
+}</font>
+</pre>
+<p>
+This program fires up a background thread that counts up to 100,000
+and invalidates the foreground window each time the value changes.
+Run it and watch how fast the numbers count up to 100,000.
+(I added a little beep when the loop is finished so you can judge
+the time by listening.)
+</p>
+<p>
+Now run it again, but this time, click and hold the mouse on the title bar.
+Notice that the program beeps almost immediately:
+It ran faster when you held the mouse down.
+That’s because all the painting was suppressed by the
+maybe-a-drag-operation-is-in-progress that was triggered when you
+clicked and held the caption.
+</p>
+<p>
+Updating the screen at every increment is clearly pointless
+because you’re incrementing far faster than the screen can refresh,
+not to mention far faster than the human eye can read it.
+As a rule of thumb, changing progress status
+faster than ten times per second is generally pointless.
+The effort you’re spending on the screen updates is wasted.
+</p>
+<p>
+Let’s fix our sample program to update at most ten times per second.
+We will run a timer at 100ms which checks if anything has changed
+and repaints if so.
+</p>
+<pre>
+class RootWindow : public Window
+{
+ ...
+ <font color="blue">LONG m_fChanged;</font>
+};
+DWORD RootWindow::ThreadProc(void *p)
+{
+ RootWindow*self = reinterpret_cast&lt;RootWindow*&gt;(p);
+ for (int i = 0; i &lt; 100000; i++) {
+  self-&gt;m_value++;
+  <font color="blue">InterlockedCompareExchangeRelease(&amp;m_fChanged, TRUE, FALSE);</font>
+ }
+ MessageBeep(-1);
+ return 0;
+}
+LRESULT RootWindow::OnCreate()
+{
+ QueueUserWorkItem(ThreadProc, this, WT_EXECUTELONGFUNCTION);
+ <font color="blue">SetTimer(m_hwnd, 1, 100, NULL);</font>
+ return 0;
+}
+LRESULT RootWindow::HandleMessage(
+                          UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+  ...
+  <font color="blue">case WM_TIMER:
+   switch (wParam) {
+   case 1:
+    if (InterlockedCompareExchangeAcquire(&amp;m_fChanged,
+                                                   FALSE, TRUE)) {
+      if (m_value &gt;= 100000) {
+        KillTimer(m_hwnd, 1);
+      }
+      InvalidateRect(m_hwnd, NULL, FALSE);
+    }
+   }
+   break;</font>
+   ...
+}
+</pre>
+<p>
+Instead of updating the screen each time the counter changes value,
+we merely set a “hey, something changed” flag and check it on our
+timer.
+We set the flag with release semantics in the producer thread
+(because we want all pending stores to complete before the exchange
+occurs) and clear the flag with acquire semantics in the consumer
+thread
+(because we don’t want any future stores to be speculated ahead
+of the exchange).
+</p>
+<p>
+Run the program again and notice that it counts all the way
+up to 100,000 instantly.
+Of course, that doesn’t really demonstrate the progress counter,
+so insert a <code>Sleep(1);</code> into the loop:
+</p>
+<pre>
+DWORD RootWindow::ThreadProc(void *p)
+{
+ RootWindow*self = reinterpret_cast&lt;RootWindow*&gt;(p);
+ for (int i = 0; i &lt; 100000; i++) {
+  self-&gt;m_value++;
+  InterlockedCompareExchangeRelease(&amp;m_fChanged, TRUE, FALSE);
+  <font color="blue">Sleep(1);</font>
+ }
+ MessageBeep(-1);
+ return 0;
+}
+</pre>
+<p>
+This slows down the loop enough that you can now see the values
+being incremented.
+It’s not the dizzying incrementing that you saw in the original
+version, but it’s fast enough that people will get the point.
+</p>
+<p>
+The mechanism I used to pass information between the background and
+foreground thread assumed that background changes were comparatively
+frequent, so that the timer will nearly always see something worth
+doing.
+If you have a mix of fast and slow tasks, you could change the
+communication mechanism so that the timer shut itself off when
+it noticed that some time has elapsed with no changes.
+The background thread would then have to start the timer again
+when it resumed updating the value.
+I didn’t bother writing this more complicated version because it
+would just be a distraction from the point of the article.</p>
+
+
+</body>

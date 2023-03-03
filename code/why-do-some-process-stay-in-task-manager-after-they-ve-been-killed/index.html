@@ -1,0 +1,13 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why do some process stay in Task Manager after they've been killed?</h1>  <!-- .entry-meta -->
+
+<p>When a process ends (either of natural causes or due to something  harsher like  <a href="http://msdn.microsoft.com/library/en-us/dllproc/base/terminateprocess.asp">  TerminateProcess</a>),  the user-mode part of the process is thrown away.  But the kernel-mode part can’t go away until all drivers are  finished with the thread, too.
+  For example, if a thread was in the middle of an I/O operation,  the kernel signals to the driver responsible for the I/O that  the operation should be cancelled.  If the driver is well-behaved,  it cleans up the bookkeeping for the incomplete I/O and releases  the thread.
+  If the driver is not as well-behaved (or if the hardware that the  driver is managing is acting up), it may take a long time for  it to clean up the incomplete I/O.  During that time,  the driver holds that thread (and therefore the process that the  thread belongs to) hostage.
+  (This is a simplification of what actually goes on.  <a href="http://weblogs.asp.net/oldnewthing/archive/2004/07/22/191123.aspx#191459">  Commenter Skywing gave a more precise explanation,  for those who like more precise explanations</a>.)
+  If you think your problem is a wedged driver, you can drop into  the kernel debugger, find the process that is stuck and look at  its threads to see why they aren’t exiting.  You can use the !irp  debugger command to view any pending IRPs to see what device is  not completing.
+  After all the drivers have acknowledged the death of the process,  the “meat” of the process finally goes away.  All that remains is the  “process object”, which lingers until all handles to the process  and all the threads in the process have been closed.  (You did remember to  <a href="http://msdn.microsoft.com/library/en-us/sysinfo/base/closehandle.asp">  CloseHandle</a> the handles returned in  <a href="http://msdn.microsoft.com/library/en-us/dllproc/base/process_information_str.asp">  the PROCESS_INFORMATION structure</a>  that you passed to  <a href="http://msdn.microsoft.com/library/en-us/dllproc/base/createprocess.asp">  the CreateProcess function</a>, didn’t you?)</p>
+<p>  In other words, if a process hangs around after you’ve terminated it,  it’s really dead, but its remnants will remain in the system until  all drivers have cleaned up their process bookkeeping, and all  open handles to the process have been closed.  </p>
+
+
+</body>

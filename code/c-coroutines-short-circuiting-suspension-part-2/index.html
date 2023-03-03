@@ -1,0 +1,99 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Short-circuiting suspension, part 2</h1>  <!-- .entry-meta -->
+
+<p>There’s one last section of the outline of compiler code generation for <code>co_await</code> that is marked “We’re not ready to talk about this step yet.” Let’s talk about that step.</p>
+<p>Before suspending the coroutine, the compiler asks the awaiter’s <code>await_ready</code> method. This method returns <code>true</code> if the operation is already complete, or <code>false</code> if the coroutine should suspend.</p>
+<p>If the operation is already complete, then the compiler can avoid having to save the coroutine’s state, only to load it back up again immediately.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td> </td>
+<td>
+
+
+</td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black;" valign="middle"><code>co_await</code></td>
+<td style="border: solid 1px black;">
+
+
+
+
+
+
+</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;">
+
+
+
+
+
+</td>
+</tr>
+<tr>
+<td> </td>
+<td>execution continues</td>
+</tr>
+</tbody>
+</table>
+<p>In the case where <code>await_ready</code> says, “Yes, I’m ready!”, the compiler skips over the code that saves the coroutine state, creates a continuation handle, suspends the coroutine, and asks the <code>await_</code><code>suspend</code> to arrange for the coroutine’s continuation; and then when the continuation occurs, restoring the coroutine state. Instead, it can go straight to the “So what was the result?” This avoids a bunch of register spilling and reloading.</p>
+<p>The C++ language comes with a predefined awaiter known as <code>suspend_</code><code>never</code>. Its <code>await_</code><code>ready</code> always returns <code>true</code>, which means that it never actually suspends. It always goes straight to the continuation.¹</p>
+<p>We can take advantage of the <code>await_</code><code>ready</code> method <code>resume_</code><code>in_</code><code>any_</code><code>apartment</code> function:</p>
+<pre>template&lt;typename Async,
+         typename = std::enable_if_t&lt;
+             std::is_convertible_v&lt;
+                 Async,
+                 winrt::Windows::Foundation::IAsyncInfo&gt;&gt;&gt;
+[[nodiscard]] auto resume_in_any_apartment(Async async)
+{
+  struct awaiter
+  {
+    <span style="color: blue;">bool await_ready()
+    {
+      return async.Status() ==
+                Windows::Foundation::AsyncStatus::Completed;
+    }</span>
+
+    void await_suspend(
+        std::experimental::coroutine_handle&lt;&gt; handle)
+    {
+      async.Completed([handler](auto&amp;&amp;...) { handler(); });
+    }
+
+    auto await_resume()
+    {
+        return async.GetResults();
+    }
+    Async async;
+  };
+  return awaiter{ std::move(async) };
+};
+</pre>
+<p>Perhaps a clearer example of this pattern is an awaitable which detects that its work is unnecessary, such as this one which switches to the dispatcher’s thread:</p>
+<pre>auto ensure_dispatcher_thread(CoreDispatcher dispatcher)
+{
+  struct awaiter : std::experimental::suspend_always
+  {
+    CoreDispatcher dispatcher;
+
+    bool await_ready() { return dispatcher.HasThreadAccess(); }
+
+    void await_suspend(
+        std::experimental::coroutine_handle&lt;&gt; handle)
+    {
+      dispatcher.RunAsync(CoreDispatcherPriority::Normal,
+                           [handle]{ handle(); });
+    }
+  };
+  return awaiter{ {}, std::move(dispatcher) };
+}
+</pre>
+<p>This awaitable resumes execution on the dispatcher’s thread. In the <code>await_</code><code>ready</code>, we check if we are already on the dispatcher’s thread. If so, then we report that the <code>co_await</code> is complete even before it started, and execution will continue without ever suspending. Otherwise, the coroutine suspends, and we schedule its resumption on the dispatcher’s thread.</p>
+<p>¹ An awaiter that never suspends sounds really strange. After all, why bother even being a coroutine! But it’s handy for cases in which you have to provide an awaiter even though nothing is being awaited. We’ll see examples of this when we study the promise object at some unspecified point in the future.</p>
+<p> </p>
+
+
+</body>

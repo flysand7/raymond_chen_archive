@@ -1,0 +1,16 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Adventures in application compatibility: The bogus memory calculation</h1>  <!-- .entry-meta -->
+
+<p>One of my colleagues shared with me one of his application compatibility stories. </p>
+<p>There was a program that would fail on some computers but not others, and it wasn’t clear why. The problem was traced to the size of an internal cache. Now, <code>Global­Memory­Status</code> officially returns unsigned values, but if the calling application <a href="https://devblogs.microsoft.com/oldnewthing/">is not marked <code>/LARGE­ADDRESS­AWARE</code></a>, then <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/aa366586(v=vs.85).aspx"><code>Global­Memory­Status</code> reports a maximum</a> of 2<a href="https://blogs.msdn.microsoft.com/oldnewthing/20090611-00/?p=17933">GB</a> − 1 bytes of memory, for compatibility purposes. </p>
+<p>You’d think that this would be enough to keep old programs happy, but apparently not. This particular program wasn’t content with the values that it got from <code>Global­Memory­Status</code>. Instead, it took the <code>dwTotalPhys</code> and added it to the <code>dwTotalPageFile</code>, and treated the result as a signed value. This means that on systems with more than 2GB of memory, the addition will produce a total of <code>0xFFFFFFFE</code>, which is a negative value when interpreted as a signed result, which in turn causes the program to crash. </p>
+<p>My colleague fixed the program by patching out the instructions that added <code>dwTotalPhys</code> to <code>dwTotalPageFile</code>, and had the program operate solely on <code>dwTotalPhys</code>, which is probably what it should have been operating on in the first place. </p>
+<p>You see, even though the field in <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/aa366772(v=vs.85).aspx">the <code>MEMORY­STATUS</code> structure</a> is named <code>dwTotalPageFile</code>, it doesn’t actually give you the size of the page file. The documentation of <code>dwTotalPageFile</code> says </p>
+<blockquote class="q"><p>The current size of the committed memory limit, in bytes. This is physical memory plus the size of the page file, minus a small overhead. </p></blockquote>
+<p>Yes, this is a case of <a href="http://martinfowler.com/bliki/TwoHardThings.html">bad naming</a>. (You can come up with your own theories how we ended up with the bad name.) </p>
+<p>By adding <code>dwTotalPhys</code> and <code>dwTotalPageFile</code>, the code was double-counting the physical memory. </p>
+<p>The conclusion my colleague drew from this exercise was that there are still programmers out there who are working hard to skip the documentation, come up with bad ideas, and <a href="http://www.quotationspage.com/quote/781.html">implement them poorly</a>. </p>
+<p>I admire the program’s dedication to getting everything wrong despite the operating system’s efforts to save them from themselves. </p>
+
+
+</body>

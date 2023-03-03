@@ -1,0 +1,186 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I convert an HRESULT to a Win32 error code?</h1>  <!-- .entry-meta -->
+
+<p>
+Everybody knows that you can use the <code>HRESULT_FROM_WIN32</code>
+macro to convert a Win32 error code to an <code>HRESULT</code>,
+but how do you do the reverse?
+</p>
+<p>
+Let’s look at the definition of <code>HRESULT_FROM_WIN32</code>:
+</p>
+<pre>
+#define HRESULT_FROM_WIN32(x) \
+  ((HRESULT)(x) &lt;= 0 ? ((HRESULT)(x)) \
+: ((HRESULT) (((x) &amp; 0x0000FFFF) | (FACILITY_WIN32 &lt;&lt; 16) | 0x80000000)))
+</pre>
+<p>
+If the value is less than or equal to zero, then the macro returns
+the value unchanged.
+Otherwise, it takes the lower sixteen bits and combines them with
+<code>FACILITY_WIN32</code> and <code>SEVERITY_ERROR</code>.
+</p>
+<p>
+How do you reverse this process?
+How do you write the function
+<code>WIN32_FROM_HRESULT</code>?
+</p>
+<p>
+It’s impossible to write that function since the mapping provided
+by the <code>HRESULT_FROM_WIN32</code> function is not one-to-one.
+I leave as an execise to draw the set-to-set mapping diagram
+from <code>DWORD</code> to <code>HRESULT</code>.
+(Original diagram removed since
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/06/23/644239.aspx#647297">
+people hate VML so much</a>,
+and I can’t use SVG since it requies XHTML.)
+If you do it correctly, you’ll have a single line
+which maps 0 to <code>S_OK</code>,
+and a series of blocks that map blocks of 65536 error codes
+into the same <code>HRESULT</code> space.
+</p>
+<p>&lt;!–
+Let's draw a diagram that shows how the <code>HRESULT_FROM_WIN32</code>
+function works:</p>
+<table border="0">
+<tr>
+<td style="padding-top: 10pt">
+
+</td>
+</tr>
+</table>
+<p>
+The little sliver at the top is the mapping of zero to zero.
+The big white box at the bottom is the mapping of all negative
+numbers to corresponding negative numbers.
+And the rainbow represents the mapping of all the positive
+values, mod 65536, into the range 0x80070000 through 0x8007FFFF.
+</p>
+<p>–&gt;</p>
+<p>
+Notice that the values in the range 1 through 0x7FFFFFFFF
+are impossible results from the <code>HRESULT_FROM_WIN32</code> macro.
+Furthermore, values in the range 0x80070000 through 0x8007FFFF
+could have come from quite a few original Win32 codes; you can’t
+pick just one.
+</p>
+<p>
+But let’s try to write the reverse function anyway:
+</p>
+<pre>
+BOOL WIN32_FROM_HRESULT(HRESULT hr, OUT DWORD *pdwWin32)
+{
+ if ((hr &amp; 0xFFFF0000) == MAKE_HRESULT(SEVERITY_ERROR, FACILITY_WIN32)) {
+  // Could have come from many values, but we choose this one
+  *pdwWin32 = HRESULT_CODE(hr);
+  return TRUE;
+ }
+ if (hr == S_OK) {
+  *pdwWin32 = HRESULT_CODE(hr);
+  return TRUE;
+ }
+ // otherwise, we got an impossible value
+ return FALSE;
+}
+</pre>
+<p>
+Of course, we could have been petulant and just written</p>
+<pre>
+BOOL WIN32_FROM_HRESULT_alternate(HRESULT hr, OUT DWORD *pdwWin32)
+{
+ if (hr &lt; 0) {
+  *pdwWin32 = (DWORD)hr;
+  return TRUE;
+ }
+ // otherwise, we got an impossible value
+ return FALSE;
+}
+</pre>
+<p>
+because the <code>HRESULT_FROM_WIN32</code> macro is idempotent:
+<code>HRESULT_FROM_WIN32(HRESULT_FROM_WIN32(x)) ==
+HRESULT_FROM_WIN32(x)</code>.
+Therefore you would be technically correct if you declared that
+the “inverse” function was trivial.
+But in practice, people want to try to get “x” back out, so that’s
+what we give you.
+</p>
+<p>
+Now that you understand how the <code>HRESULT_FROM_WIN32</code> macro
+works, you can answer this question, based on an actual customer question:
+</p>
+<blockquote class="q"><p>
+Sometimes, when I import data from a scanner, I get the error
+“The directory cannot be removed.”
+What does this mean?
+</p></blockquote>
+<p>
+You will have to use some psychic powers, but I think you’re up to it.
+</p>
+<p>
+One unfortunate aspect of both <code>HRESULT</code>s and
+Win32 error codes is that there is no single header file that
+contains all the errors.
+This is understandable from a logistical point of view:
+Multiple teams need to make up new error codes for their components,
+but the <code>winerror.h</code> file is maintained by the kernel team.
+If <code>winerror.h</code> were selected to be the master repository
+for all error codes, it means that any team that wanted to add a new
+error code or change an existing one would have to pester the kernel
+team to make the change for them.
+Things get even more complicated if those teams have their own SDK.
+For example, suppose both the DirectX and Windows Media teams wanted
+to include the new <code>winerror.h</code> in their corresponding SDKs.
+If you install the SDKs in the wrong order (and how are you supposed to
+know which should be installed first, DirectX 8 or WMSDK 6?),
+you can end up regressing your <code>winerror.h</code> file.
+It’s the version conflict problem, but without the benefit of version
+resources.
+</p>
+<p>
+Many teams have prevailed upon the kernel team to reserve a chunk of
+error codes just for them.
+</p>
+<table>
+<tr>
+<td>Networking</td>
+<td align="RIGHT">2100–2999</td>
+</tr>
+<tr>
+<td>Cluster</td>
+<td align="RIGHT">5000–5999</td>
+</tr>
+<tr>
+<td>Traffic Control</td>
+<td align="RIGHT">7500–7999</td>
+</tr>
+<tr>
+<td>Active Directory</td>
+<td align="RIGHT">8000–8999</td>
+</tr>
+<tr>
+<td>DNS</td>
+<td align="RIGHT">9000–9999</td>
+</tr>
+<tr>
+<td>Winsock</td>
+<td align="RIGHT">10000–11999</td>
+</tr>
+<tr>
+<td>IPSec</td>
+<td align="RIGHT">13000–13999</td>
+</tr>
+<tr>
+<td>Side By Side</td>
+<td align="RIGHT">14000–14999</td>
+</tr>
+</table>
+<p>
+There is room for only 65535 Win32 error codes, and over an eighth
+of them have already been carved out by these “block assignments”.
+I wonder if we will eventually run out of error codes prematurely
+due to having given away error codes in too-large chunks.
+(Some sort of analogy with IPv4 could be made here but I’m not going to try.)</p>
+
+
+</body>

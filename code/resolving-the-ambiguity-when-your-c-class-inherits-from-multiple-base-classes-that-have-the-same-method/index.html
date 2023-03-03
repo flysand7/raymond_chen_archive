@@ -1,0 +1,112 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Resolving the ambiguity when your C++ class inherits from multiple base classes that have the same method</h1>  <!-- .entry-meta -->
+
+<p>Suppose you have a class which derives from two base classes, both of which have the same method.</p>
+<pre>struct Base1
+{
+    void Something();
+    bool IsReady();
+};
+
+struct Base2
+{
+    void Something();
+    bool IsReady();
+};
+
+struct Derived : Base1, Base2
+{
+};
+
+void oops()
+{
+    Derived d;
+    d.Something(); // ambiguous call to Something()
+}
+</pre>
+<p>What happens next depends on what you want.</p>
+<p>If you want the derived class to call both base class methods, then you get to write that out, specifying the order in which you want the calls to occur and how you want the results to be combined:</p>
+<pre>struct Derived : Base1, Base2
+{
+    void Something() { Base1::Something(); Base2::Something(); }
+    bool IsReady() { return Base1::IsReady() &amp;&amp; Base2::IsReady(); }
+};
+</pre>
+<p>On the other hand, maybe you want everything to go to <code>Base1</code>:</p>
+<pre>struct Derived : Base1, Base2
+{
+    void Something() { Base1::Something(); }
+    bool IsReady() { return Base1::IsReady(); }
+};
+</pre>
+<p>Writing out this forwarder can get cumbersome if you have lots of methods, or if the methods have parameters that you need to perfect-forward:</p>
+<pre>struct Derived : Base1, Base2
+{
+    template&lt;typename... Args&gt;
+    void Something(Args&amp;&amp;... args)
+    { Base1::Something(std::forward&lt;Args&gt;(args)...); }
+
+    template&lt;typename... Args&gt;
+    bool IsReady(Args&amp;&amp;... args)
+    { return Base1::IsReady(std::forward&lt;Args&gt;(args)...); }
+};
+</pre>
+<p>Fortunately, there’s a trick: You can steer the compiler toward the implementation in one of the base classes by using a <code>using</code> declaration.</p>
+<pre>struct Derived : Base1, Base2
+{
+    using Base1::Something;
+    using Base1::IsReady;
+};
+</pre>
+<p>One use of the <code>using</code> declaration is to import a method from a base class so you can add overloads to it. (If you don’t import the methods from the base class, then your overloads <i>shadow</i> the base class methods.) Here, we are importing a method from a base class and not adding any overloads. We just want the method to be treated as if it were directly in our class all along.</p>
+<p>This trick comes in handy in C++/WinRT stateful factories: The standard mechanism for implementing a stateful factory is to <a href="/code/on-static-methods-in-the-windows-runtime-and-c-winrt"> override the stateless factory methods provided by the <code>WidgetT</code> template with your own stateful ones</a>.</p>
+<pre>namespace winrt::factory_implementation::Widget
+{
+    struct Widget : WidgetT&lt;Widget, implementation::Widget, static_lifetime&gt;
+    {
+        void Method(); // stateful static
+    };
+}
+</pre>
+<p>Windows Runtime static methods can be an aggregation of multiple independent providers that march together under one flag. Factoring out the functionality into separate classes is helpful if the class has a large number of static methods which fall naturally into categories of related methods. For example, there might be some static Widget members that use Plug and Play (a static <code>WidgetsChanged</code> event and a static <code>FindAllWidgets</code> method), and another group of static Widget methods that deal with system configuration (<code>SetMaximumActiveTime</code>, <code>AllowDownloadedContent</code>).</p>
+<p>The naïve version doesn’t work:</p>
+<pre>namespace winrt::factory_implementation::Widget
+{
+    struct WidgetPlugAndPlay
+    {
+        event_token WidgetsChanged(TypedEventHandler&lt;IInspectable, IInspectable&gt; handler);
+        void WidgetsChanged(event_token token);
+        IVectorView&lt;Widget&gt; FindAllWidgets();
+    };
+
+    struct WidgetConfiguration
+    {
+        void SetMaximumActiveTime(TimeSpan limit);
+        bool AllowDownloadedContent();
+        void AllowDownloadedContent(bool value);
+    };
+
+    struct Widget : WidgetT&lt;Widget, implementation::Widget, static_lifetime&gt;,
+        WidgetPlugAndPlay, WidgetConfiguration
+    {
+    };
+}
+</pre>
+<p>It doesn’t work because the static methods are multiply-inherited: Once from the <code>WidgetT</code> template (which forwards to static methods on the implementation class) and once from the <code>WidgetPlugAndPlay</code> and <code>WidgetConfiguration</code> base classes. To resolve the ambiguity, you can steer the methods with a <code>using</code> declaration.</p>
+<pre>namespace winrt::factory_implementation::Widget
+{
+    struct Widget : WidgetT&lt;Widget, implementation::Widget, static_lifetime&gt;,
+        WidgetPlugAndPlay, WidgetConfiguration
+    {
+        <span style="color: blue;">using WidgetPlugAndPlay::WidgetsChanged;
+        using WidgetPlugAndPlay::FindAllWidgets;
+
+        using WidgetConfiguration::SetMaximumActiveTime;
+        using WidgetConfiguration::AllowDownloadedContent;</span>
+    };
+}
+</pre>
+<p><b>Related</b>: <a href="https://devblogs.microsoft.com/oldnewthing/20210114-00/?p=104714"> How can I write a C++ class that iterates over its base classes?</a></p>
+
+
+</body>

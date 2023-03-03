@@ -1,0 +1,16 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Randomly-generated passwords still have to be legal strings</h1>  <!-- .entry-meta -->
+
+<p>If you need to generate a password for programmatic use, then you don’t have to worry about generating characters that are difficult or impossible to type on a keyboard. Go ahead and mix Cyrillic with Vietnamese and throw in some Linear B while you’re at it. There is no keyboard that can type all of these characters, but it doesn’t matter because nobody will be typing it. </p>
+<p>However, you should make sure that your password is a legal string. </p>
+<blockquote class="q">
+<p>We generate our password from a cryptographically secure random number generator. Basically, we take 256 random bits and treat them as sixteen 16-bit values. (If one of the 16-bit values is zero, then we ask for 16 more bits.) </p>
+<p>We found that sometimes (no predictable pattern), we have interoperability problems between systems. The password produced by one system is not recognized by the other. </p>
+</blockquote>
+<p>After much investigation, the problem was traced back to the fact that taking a bunch of non-null 16-bit values and declaring them to be a Unicode (UTF-16LE) string does not always result in a valid Unicode string. </p>
+<p>UTF-16 has the concept of <i>surrogate pairs</i>, which encode characters outside the BMP as a pair of 16-bit values. The first entry in the pair is a <i>high surrogate</i> in the range <code>0xD800</code>–<code>0xDBFF</code>, and the second is a <i>low surrogate</i> in the range <code>0xDC00</code>–<code>0xDFFF</code>. <a href="https://en.wikipedia.org/wiki/UTF-16#U.2B10000_to_U.2B10FFFF">Together, they encode a character in a supplementary plane</a>. </p>
+<p>If your randomly-generated string contains a value in the range <code>0xD800</code>–<code>0xDFFF</code>, then unless you are very lucky, it will not be part of a valid surrogate pair. The string is therefore not well-formed, and various parts of the system might decide to reject them with <code>ERROR_INVALID_PARAMETER</code>, or they might “fix” the problem by changing the illegal values to <code>U+FFFD</code>, the <a href="https://en.wikipedia.org/wiki/Specials_(Unicode_block)#Replacement_character">Unicode Replacement Character</a>, which is used for unknown or unrepresentable character. For example, if the protocol specifies that the password is transmitted in UTF-8, then the presence of an unpaired surrogate causes the conversion from UTF-16 to UTF-8 to fail, and consequently, the password fails to replicate to the other machine. </p>
+<p>If you want to generate a random password, make sure your algorithm produces legal character sequences. A simple solution is to generate the desired amount of entropy, then hex-encode it. Yes, it isn’t very space-efficient, but it gets the job done. (Assuming you don’t have to meet password complexity rules.) </p>
+
+
+</body>

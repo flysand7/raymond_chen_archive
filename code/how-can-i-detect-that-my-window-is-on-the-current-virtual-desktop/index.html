@@ -1,0 +1,171 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I detect that my window is on the current virtual desktop?</h1>  <!-- .entry-meta -->
+
+<p>Virtual desktops are a feature added in Windows 10 blah blah exposition. </p>
+<p>Here is how virtual desktops work, from a programmatic standpoint: </p>
+<ul>
+<li>    To switch to a virtual desktop, the system shows the windows     that belong to the virtual desktop and hides the windows that     do not belong to the virtual desktop. Note that the windows     still all belong to the same desktop (hence the “virtual”).     All we’re doing is hiding and showing windows. </li>
+<li>    When a new window is shown, it gets placed on the current     virtual desktop. </li>
+<li>    When a window becomes foreground, the system switches to the     virtual desktop that the window belongs to. </li>
+</ul>
+<p>That said, there are some guidelines that programs should follow. </p>
+<ul>
+<li>    Do not programatically change the current virtual desktop.     The user should be the one to change virtual desktops,     if that’s what they want. </li>
+<li>    If your program decides to open a new window,     then open a new window.     It will be placed on the current virtual desktop. </li>
+<li>    If your program decides to reuse an existing window     (for example, if you have a tabbed user interface,     and you want to open the document in a new tab),     then when looking for a window to reuse,     limit your search to the current virtual desktop.     If you cannot find a window from the current virtual desktop,     then create and show a new one,     which will be placed on the current virtual desktop. </li>
+<li>    Exception:     If your program opens each document in a new window,     and the user opens a document that you already have a window for,     then you are allowed to switch to the virtual desktop that contains     the already-open document. </li>
+</ul>
+<p>Let’s start with <a href="https://blogs.msdn.microsoft.com/oldnewthing/20030723-00/?p=43073">the scratch program</a> and make these changes. </p>
+<pre>
+<font color="blue">#include &lt;shlobj.h&gt;</font>
+
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+    <font color="blue">g_hwndChild = CreateWindow("listbox", nullptr,
+       WS_VISIBLE | WS_CHILD, 0, 0, 0, 0, hwnd,
+       (HMENU)IntToPtr(1), g_hinst, 0);</font>
+
+    return TRUE;
+}
+
+<font color="blue">void
+ProcessCommandLine(LPCSTR pszMessage)
+{
+    ListBox_AddString(g_hwndChild, pszMessage);
+}
+
+void
+OnCopyData(HWND hwnd, HWND hwndFrom, PCOPYDATASTRUCT pcds)
+{
+    if (pcds-&gt;dwData == 0)
+    {
+      // WARNING! Parameter validation is missing!
+      ProcessCommandLine(reinterpret_cast&lt;PSTR&gt;(pcds-&gt;lpData));
+    }
+}
+
+    // Add to WndProc
+    HANDLE_MSG(hwnd, WM_COPYDATA, OnCopyData);
+
+BOOL
+WindowCanBeReused(HWND hwnd)
+{
+    // A more realistic program would have some evaluation criteria.
+    return TRUE;
+}
+
+BOOL
+TryHandOffToExistingInstance(LPCSTR pszMessage)
+{
+    HWND hwndFound = nullptr;
+    while ((hwndFound = FindWindowEx(nullptr, hwndFound,
+                        "Scratch", nullptr)) != nullptr) {
+      if (WindowCanBeReused(hwndFound)) {
+        SetForegroundWindow(hwndFound);
+        COPYDATASTRUCT cds;
+        cds.dwData = 0;
+        cds.cbData = lstrlen(pszMessage) + 1;
+        cds.lpData = const_cast&lt;PSTR&gt;(pszMessage);
+        FORWARD_WM_COPYDATA(hwndFound, nullptr, &amp;cds, SendMessage);
+        return TRUE;
+      }
+    }
+    return FALSE;
+}
+</font>
+
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+    MSG msg;
+    HWND hwnd;
+
+    g_hinst = hinst;
+
+    if (!InitApp()) return 0;
+
+    if (SUCCEEDED(CoInitialize(NULL))) {/* In case we use COM */
+
+      <font color="blue">if (!lpCmdLine[0]) {
+        lpCmdLine = const_cast&lt;PSTR&gt;("(empty command line)");
+      }
+      
+      if (!TryHandOffToExistingInstance(lpCmdLine)) {</font>
+
+        hwnd = CreateWindow(
+            TEXT("Scratch"),                /* Class Name */
+            TEXT("Scratch"),                /* Title */
+            WS_OVERLAPPEDWINDOW,            /* Style */
+            CW_USEDEFAULT, CW_USEDEFAULT,   /* Position */
+            CW_USEDEFAULT, CW_USEDEFAULT,   /* Size */
+            NULL,                           /* Parent */
+            NULL,                           /* No menu */
+            hinst,                          /* Instance */
+            0);                             /* No special parameters */
+
+        ShowWindow(hwnd, nShowCmd);
+
+        while (GetMessage(&amp;msg, NULL, 0, 0)) {
+            TranslateMessage(&amp;msg);
+            DispatchMessage(&amp;msg);
+        }
+      <font color="blue">}</font>
+
+      CoUninitialize();
+    }
+
+    return 0;
+}
+</pre>
+<p>This is our non-virtual-desktop-aware version of the program. When it is run, it looks for an existing instance that can be reused, and if it finds one, it asks that existing instance to handle the command line. </p>
+<p>Now let’s make this program virtual-desktop-aware. </p>
+<pre>
+<font color="blue">IVirtualDesktopManager* g_pvdm;</font>
+
+BOOL
+WindowCanBeReused(HWND hwnd)
+{
+    <font color="blue">BOOL isCurrent;
+    if (g_pvdm &amp;&amp;
+        SUCCEEDED(g_pvdm-&gt;IsWindowOnCurrentVirtualDesktop(hwnd,
+                                          &amp;isCurrent)) &amp;&amp;
+        !isCurrent) {
+      return FALSE;
+    }</font>
+
+    // A more realistic program would have some evaluation criteria.
+    return TRUE;
+}
+
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+    ...
+    
+    if (SUCCEEDED(CoInitialize(NULL))) {/* In case we use COM */
+
+      <font color="blue">// This can fail if the system does not support virtual desktops.
+      CoCreateInstance(CLSID_VirtualDesktopManager,
+                       nullptr, CLSCTX_ALL, IID_PPV_ARGS(&amp;g_pvdm));</font>
+
+      if (!lpCmdLine[0]) {
+        lpCmdLine = const_cast&lt;PSTR&gt;("(empty command line)");
+      }
+      
+      if (!TryHandOffToExistingInstance(lpCmdLine)) {
+         ...
+      }
+
+      <font color="blue">if (g_pvdm) g_pvdm-&gt;Release();</font>
+
+      CoUninitialize();
+    }
+
+    return 0;
+}
+</pre>
+<p>We updated the <code>Window­Can­Be­Reused</code> function so it takes the virtual desktop state into account. Specifically, we will not attempt to reuse windows that are not part of the current virtual desktop. </p>
+
+
+</body>

@@ -1,0 +1,84 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The hidden callout: The destructor</h1>  <!-- .entry-meta -->
+
+<p>This is a general problem, but I’m going to give a specific example.</p>
+<p>C++ standard library collections do not support concurrent mutation. It is the caller’s responsibility to serialize mutation operations, and to ensure that no mutation occurs at the same time as any other operation. And the usual way of accomplishing this is to use a mutex of some kind.</p>
+<pre>class ThingManager
+{
+private:
+  std::mutex things_lock_;
+  std::vector&lt;std::shared_ptr&lt;Thing&gt;&gt; things_;
+
+public:
+  void AddThing(std::shared_ptr&lt;Thing&gt; thing)
+  {
+    std::lock_guard guard(things_lock_);
+    things_.push_back(std::move(thing));
+  }
+
+  void RemoveThingById(int32_t id)
+  {
+    std::lock_guard guard(things_lock_);
+    auto it = std::find_if(things_.begin(), things_.end(),
+      [&amp;](auto&amp;&amp; thing)
+      {
+        return thing-&gt;id() == id;
+      });
+    if (it != things_.end()) {
+      things_.erase(it);
+    }
+  }
+};
+</pre>
+<p>The idea here is that you give the <code>Thing­Manager</code> a bunch of things, and then you can later remove them by providing the <code>Thing</code>‘s ID. Presumably there are also methods to search for <code>Thing</code>s or to perform some operation across all <code>Thing</code>s, but those are just distractions from the exercise.</p>
+<p>This particular object wants to support concurrent operation, so it internally uses a mutex to ensure safe operation.</p>
+<p>Now, you can quibble about the use of <code>find_if</code> instead of <code>remove_if</code>, or using a <code>std::vector</code> instead of a <code>std::map</code>, but let’s set that aside.</p>
+<p>The question is: What’s wrong with this code?</p>
+<p>I sort of gave it away in the title: We are calling out to external code while holding our lock.</p>
+<p>You probably know not to call out to external code when holding an internal lock, and the act of invoking a method on an object may remind you of that fact. But destructors just run by themselves. You don’t typically write code the trigger the destruction of an object. The object just destructs when it destructs.</p>
+<p>Removing the <code>shared_ptr&lt;Thing&gt;</code> from our vector could result in the <code>Thing</code>‘s destruction if this was the last strong reference to the <code>Thing</code>. And that destructor runs while the <code>things_lock_</code> is still locked.</p>
+<p>Now things get interesting.</p>
+<p>You may not know all that happens inside the <code>Thing</code> destructor. It may have been written by another team, or by you, six months ago. Or somebody could have derived from <code>Thing</code> and given you a shared pointer to the derived object.¹ Or you might be given a shared pointer to a <code>Thing</code> embedded inside a larger object.</p>
+<p>Let’s do that thing with the derived type:</p>
+<pre>class SuperThing : Thing
+{
+private:
+  ThingManager&amp; manager_;
+  int32_t helper_id_ = 0;
+
+public:
+  SuperThing(ThingManager&amp; manager) :
+    manager_(manager)
+  {
+    auto helper = std::make_shared&lt;Thing&gt;();
+    helper_id_ = helper-&gt;id();
+    manager_.AddThing(helper);
+  }
+
+  ~SuperThing()
+  {
+    manager_.RemoveThingById(helper_id_);
+  }
+};
+</pre>
+<p>The <code>Super­Thing</code> object is itself a <code>Thing</code>, but it also uses a helper thing. At construction, it creates a helper thing and registers it with the manager, retaining the ID. And at destruction, it removes its helper thing.</p>
+<p>And then this happens:</p>
+<pre>void test(ThingManager&amp; manager)
+{
+  auto s = std::make_shared&lt;SuperThing&gt;();
+  auto id = s-&gt;id();
+  manager.AddThing(s);
+  s = nullptr;
+
+  manager.RemoveThingById(id);
+}
+</pre>
+<p>This little test function creates a <code>Super­Thing</code>, adds it to the thing manager, and then immediately removes it.</p>
+<p>The <code>Remove­Thing­By­Id</code> function looks for a matching Id and finds it, so it erases the corresponding <code>Thing</code> from the vector. That erasure destroys the <code>shared_</code><code>ptr</code>, and since this is the last strong reference, the underlying <code>Thing</code> is also destroyed.</p>
+<p>This runs the destructor of our <code>Super­Thing</code>, which tries to remove its helper <code>Thing</code>. And that calls back into the <code>ThingManager</code>, which gets stuck trying to acquire a mutex that is already held (unwittingly, by itself).</p>
+<p>This is not a purely theoretical exercise. This sort of thing happens, and it’s a source of bugs.</p>
+<p>Next time, we’ll look at how to address these types of problems.</p>
+<p>¹ If you work in Windows, a common scenario for this is that the <code>shared_ptr</code> in the example above takes the form of a COM reference-counted pointer.</p>
+
+
+</body>

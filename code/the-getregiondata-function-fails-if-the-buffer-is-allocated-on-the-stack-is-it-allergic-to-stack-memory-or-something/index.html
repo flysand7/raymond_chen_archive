@@ -1,0 +1,81 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The GetRegionData function fails if the buffer is allocated on the stack. Is it allergic to stack memory or something?</h1>  <!-- .entry-meta -->
+
+<p>If you pass a <code>NULL</code> buffer to the <code>Get­Region­Data</code> function, the return value tells you the required size of the buffer in bytes. You can then allocate the necessary memory and call <code>Get­Region­Data</code> a second time. </p>
+<pre>
+DWORD bytesRequired = GetRegionData(hrgn, 0, NULL);
+RGNDATA* data = (RGNDATA*)malloc(bytesRequired);
+data-&gt;rdh.dwSize = sizeof(data-&gt;rdh);
+DWORD bytesUsed = GetRegionData(hrgn, bytesRequired, data);
+</pre>
+<p>This version of the code works just fine. We call the <code>Get­Region­Data</code> function to obtain the number of bytes required, then allocate that many bytes, and then call <code>Get­Region­Data</code> again to get the bytes. </p>
+<p>However, this version doesn’t work: </p>
+<pre>
+struct REGIONSTUFF
+{
+   ...
+   char buffer[USUALLY_ENOUGH];
+   ...
+};
+
+REGIONSTUFF stuff;
+DWORD bytesRequired = GetRegionData(hrgn, 0, NULL);
+RGNDATA* data = (RGNDATA*)(bytesRequired &gt; sizeof(stuff.buffer) ?
+                           malloc(bytesRequired) : stuff.buffer);
+data-&gt;rdh.dwSize = sizeof(data-&gt;rdh);
+DWORD bytesUsed = GetRegionData(hrgn, bytesRequired, data);
+</pre>
+<p>The idea here is that we preallocate a stack buffer that profiling tells us is usually big enough to hold the desired data. If the required size fits in our preallocated stack buffer, then we use it. Otherwise, we allocate the buffer from the heap. (<a href="https://blogs.msmvps.com/gdicanio/2016/11/17/the-small-string-optimization/">Related</a>.) </p>
+<p>This version works fine in the case where the number of bytes required is larger than our preallocated stack buffer, so that the actual buffer is on the heap. </p>
+<p>But this version fails (returns zero) if we decide to use the preallocated stack buffer. </p>
+<p>Is <code>Get­Region­Data</code> allergic to stack memory? </p>
+<p>No. That’s not the problem. </p>
+<p>My psychic powers told me that the <code>...</code> at the start of <code>struct REGIONSTUFF</code> had a total size that was not a multiple of four. The <code>buffer</code> member therefore was at an address that was misaligned for a <code>RGNDATA</code>, causing the code to run afoul of one of the <a href="https://blogs.msdn.microsoft.com/oldnewthing/20060320-13/?p=31853">basic ground rules for programming</a>: </p>
+<ul>
+<li>Pointers are properly aligned.</li>
+</ul>
+<p>And indeed, it turns out that the members at the start of the structure did indeed have a total  size that was not a multiple of four. Let’s say it went like this: </p>
+<pre>
+struct REGIONSTUFF
+{
+   HGRN hrgn;
+   char name[15];
+   char buffer[USUALLY_ENOUGH];
+};
+</pre>
+<p>To fix this, you need to align the <code>buffer</code> the same way as a <code>RGNDATA</code>. One way to do this is with a union. </p>
+<pre>
+struct REGIONSTUFF
+{
+   HGRN hrgn;
+   char name[15];
+   <font color="blue">union {
+     char buffer[USUALLY_ENOUGH];
+     RGNDATA data;
+   } u;</font>
+};
+
+REGIONSTUFF stuff;
+DWORD bytesRequired = GetRegionData(hrgn, 0, NULL);
+RGNDATA* data = (RGNDATA*)(bytesRequired &gt; sizeof(stuff.<font color="blue">u.</font>buffer) ?
+                           malloc(bytesRequired) : stuff.<font color="blue">u.</font>buffer);
+data-&gt;rdh.dwSize = sizeof(data-&gt;rdh);
+DWORD bytesUsed = GetRegionData(hrgn, bytesRequired, data);
+</pre>
+<p>Another way is to use an alignment annotation. The appropriate annotation varies depending on which compiler you are using. </p>
+<pre>
+   // Microsoft Visual C++
+   __declspec(align(__alignof(RGNDATA)))
+   char buffer[USUALLY_ENOUGH];
+
+    // gcc
+   char buffer[USUALLY_ENOUGH]
+   __attribute__((aligned(__alignof__(RGNDATA))));
+
+   // C++11
+   alignas(RGNDATA)
+   char buffer[USUALLY_ENOUGH];
+</pre>
+
+
+</body>

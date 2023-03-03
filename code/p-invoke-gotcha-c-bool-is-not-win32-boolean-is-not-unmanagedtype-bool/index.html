@@ -1,0 +1,36 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">p/invoke gotcha: C++ bool is not Win32 BOOLEAN is not UnmanagedType.Bool</h1>  <!-- .entry-meta -->
+
+<p>Welcome to CLR Week. I hope you enjoy your stay. </p>
+<p>A customer reported that their p/invoke was not working. <span id="more-91801"></span></p>
+<blockquote class="q">
+<p>We aren’t getting the proper return codes from the <code>Audit­Set­System­Policy</code>. When the call succeeds, the return code is 1, as expected. But in our tests, when we force the call to fail (insufficient access), the return code is not zero. Instead, the return code is some value of the form 0xFFxxxxxx, where the x’s vary, but the high byte is always 0xFF. </p>
+<p>For reference, the DllImport declaration we are using is</p>
+<pre>
+[DllImport("advapi32.dll", SetLastError=true)]
+public static extern UInt32 AuditSetSystemPolicy(
+    IntPtr pAuditPolicy,
+    UInt32 policyCount);
+</pre>
+<p>The corresponding Win32 declaration is </p>
+<pre>
+BOOLEAN WINAPI <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa375712(v=vs.85).aspx">AuditSetSystemPolicy</a>(
+  _In_  PCAUDIT_POLICY_INFORMATION pAuditPolicy,
+  _In_  ULONG PolicyCount
+);
+</pre>
+</blockquote>
+<p>Alas, the customer fell into one of the <a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/08/13/9867383.aspx">common gotchas when writing p/invoke</a>: They confused <code>BOOLEAN</code> and <code>BOOL</code>. </p>
+<p><code>BOOL</code> is a 32-bit integer, whereas <code>BOOLEAN</code> is an 8-bit integer. </p>
+<p>Since they were marshaling the return code as a <code>UInt32</code>, they were getting the byte returned by the function, plus three bonus uninitialized garbage bytes. If they studied more closely, they would have found that the erroneous return codes were all of the form <code>0xFFxxxx00</code> where the bottom 8 bits are all zero. That’s because the bottom 8 bits are the actual value; the rest are garbage. </p>
+<p>The correct declaration is to use <code>Unmanaged­Type.U1</code> aka <code>byte</code> rather than <code>Unmanaged­Type.U4</code> aka <code>UInt32</code>. </p>
+<pre>
+[DllImport("advapi32.dll", SetLastError=true)]
+public static extern byte AuditSetSystemPolicy(
+    IntPtr pAuditPolicy,
+    UInt32 policyCount);
+</pre>
+<p>The customer confirmed that switching to <code>Unmanaged­Type.U1</code> fixed the problem. </p>
+
+
+</body>

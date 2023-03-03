@@ -1,0 +1,91 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The compiler can make up its own calling conventions, within limits</h1>  <!-- .entry-meta -->
+
+<p>A customer was confused by what they were seeing when debugging. </p>
+<blockquote class="q">
+<p>It is our understanding that the Windows x86-64 calling convention passes the first four parameters in registers <code>rcx</code>, <code>rdx</code>, <code>r8</code>, and <code>r9</code>. But we’re seeing the parameters being passed some other way. Given the function prototype </p>
+<pre>
+int LogFile::Open(wchar_t *path, LogFileInfo *info, bool verbose);
+</pre>
+<p>we would expect to see the parameters passed as </p>
+<ul>
+<li><code>rcx</code> = <code>this</code>
+<li><code>rdx</code> = <code>path</code>
+<li><code>r8</code> = <code>info</code>
+<li><code>r9</code> = <code>verbose</code> </li></li></li></li></ul>
+<p>but instead we’re seeing this: </p>
+<pre>
+rax=0000000001399020 rbx=0000000003baf238 rcx=00000000013c3260
+rdx=0000000003baf158 rsi=000000000139abf0 rdi=00000000013c3260
+rip=00007ffd69b71724 rsp=0000000003baf038 rbp=0000000003baf0d1
+r8=0000000001377870  r9=0000000000000000 r10=000000007fffffb9
+r11=00007ffd69af08e8 r12=00000000013a3b80 r13=0000000000000000
+r14=0000000001399010 r15=00000000013a3b90
+contoso!LogFile::Open:
+00007ffd`69b71724 fff3        push rbx
+0:001&gt; du @rdx          // path should be in rdx
+00000000`03baf158  "`"
+0:001&gt; du @r8           // but instead it's in r8
+00000000`01377870  "C:\Logs\Contoso.txt"
+</pre>
+<p>Is our understanding of the calling convention incomplete? </p>
+</blockquote>
+<p>There are three parties to a calling convention. </p>
+<ol>
+<li>The function doing the calling. 
+<li>The function being called. 
+<li>The operating system. </li></li></li></ol>
+<p>The operating system needs to get involved if something unusual occurs, like an exception, and it needs to go walking up the stack looking for a handler. </p>
+<p>The catch is that if a compiler knows that it controls all the callers of a function, then it can modify the calling convention as long as the modified convention still observes the operating system rules. After all, the operating system doesn’t see your source code. As long as the object code satisfies the calling convention rules, everything is fine. (This typically means that the modification needs to respect unwind codes and stack usage.) </p>
+<p>For example, suppose you had code like this: </p>
+<pre>
+extern void bar(int b, int a);
+
+static void foo(int a, int b)
+{
+  return bar(b + 1, a);
+}
+
+int __cdecl main(int argc, char **argv)
+{
+ foo(10, 20);
+ foo(30, 40);
+ return 0;
+}
+</pre>
+<p>A clever compiler could make the following analysis: Since <code>foo</code> is a static function, it can be called only from this file. And in this file, the address of the function is never taken, so the compiler knows that it controls all the callers. Therefore, it optimizes the function <code>foo</code> by rewriting it as </p>
+<pre>
+static void foo(<font color="blue">int b, int a</font>)
+{
+  return bar(b + 1, a);
+}
+</pre>
+<p>It makes corresponding changes to main: </p>
+<pre>
+int __cdecl main(int argc, char *argv)
+{
+ <font color="blue">foo(20, 10); // flip the parameters
+ foo(40, 30); // flip the parameters</font>
+ return 0;
+}
+</pre>
+<p>By doing this, the compiler can generate the code for <code>foo</code> like this: </p>
+<pre>
+foo:
+        inc     ecx
+        jmp     bar
+</pre>
+<p>rather than the more conventional </p>
+<pre>
+foo:
+        mov     eax, edx
+        inc     eax
+        mov     ecx, edx
+        mov     edx, eax
+        jmp     bar
+</pre>
+<p>You can look at this transformation in one of two ways. You can say, “The compiler rewrote my function prototype to be more efficient.” Or you can say, “The compiler is using a custom calling convention for <code>foo</code> which passes the parameters in reverse order.” </p>
+<p>Both interpretations are just two ways of viewing the same thing. </p>
+
+
+</body>

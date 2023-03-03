@@ -1,0 +1,94 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Obtaining attributed network usage information from the Windows Runtime</h1>  <!-- .entry-meta -->
+
+<p>The network usage information we obtained <a href="/code/obtaining-network-usage-information-from-the-windows-runtime" title="Obtaining network usage information from the Windows Runtime"> last time</a> can also be attributed, so you can see who is consuming all of your bandwidth.</p>
+<p>Modify the C# application to gather data differently:</p>
+<pre>using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Windows.Networking.Connectivity;
+
+class Program
+{
+    static async Task DoIt()
+    {
+        var now = DateTime.Now;
+        var states = new NetworkUsageStates
+        { Roaming = TriStates.DoNotCare, Shared = TriStates.DoNotCare };
+
+        <span style="color: blue;">var profile = NetworkInformation.GetInternetConnectionProfile();
+        Console.WriteLine($"Profile: {profile.ProfileName}");
+        Console.WriteLine($"------------------");
+
+        var usages = await profile.GetAttributedNetworkUsageAsync(
+            now.AddHours(-24), now, states);
+        for (var usage in usages.OrderByDescending(u =&gt; u.BytesReceived + u.BytesSent))
+        {
+            Console.WriteLine($"Id = {usage.AttributionId}");
+            Console.WriteLine($"BytesReceived = {usage.BytesReceived}");
+            Console.WriteLine($"BytesSent = {usage.BytesSent}");
+            Console.WriteLine($"------------------");
+        }</span>
+    }
+
+    static void Main()
+    {
+        DoIt().GetAwaiter().GetResult();
+    }
+}
+</pre>
+<p>This time, we get the current connection that is being used to access the Internet and ask for attributed network usage for the past 24 hours.</p>
+<p>We sort the results descending by total byte transmitted (sent plus received) and print each record. The <code>Attribution­Id</code> identifies the source of the network access. It’s kind of ugly, but you can usually eyeball it to see what the application is. (Converting this to something prettier is out of scope for this exercise.)</p>
+<p>Here’s the C++/WinRT version:</p>
+<pre>#include &lt;winrt/Windows.Foundation.h&gt;
+#include &lt;winrt/Windows.Foundation.Collections.h&gt;
+#include &lt;winrt/Windows.Networking.Connectivity.h&gt;
+#include &lt;stdio.h&gt;
+<span style="color: blue;">#include &lt;algorithm&gt;</span>
+
+using namespace std::literals::chrono_literals;
+using namespace winrt;
+using namespace winrt::Windows::Foundation;
+using namespace winrt::Windows::Networking::Connectivity;
+
+IAsyncAction DoIt()
+{
+    auto now = clock::now();
+    NetworkUsageStates states{ TriStates::DoNotCare, TriStates::DoNotCare };
+
+    <span style="color: blue;">auto profile = NetworkInformation::GetInternetConnectionProfile();
+    printf("%ls\n", profile.ProfileName().c_str());
+    printf("------------------\n");
+
+    auto usages = co_await profile.GetAttributedNetworkUsageAsync(
+        now - 24h, now, states);
+    std::vector&lt;AttributedNetworkUsage&gt; sorted{ begin(usages), end(usages) };
+    std::sort(begin(sorted), end(sorted), [](auto&amp;&amp; left, auto&amp;&amp; right)
+    {
+        return left.BytesReceived() + left.BytesSent() &gt;
+            right.BytesReceived() + right.BytesSent();
+    });
+    for (auto usage : sorted) {
+        printf("Id = %ls\n", usage.AttributionId().c_str());
+        printf("BytesReceived = %I64u\n", usage.BytesReceived());
+        printf("BytesSent = %I64u\n", usage.BytesSent());
+        printf("------------------\n");
+    }</span>
+}
+
+int main()
+{
+    init_apartment();
+    DoIt().get();
+}
+</pre>
+<p>The hardest part about translating the C# version to C++ was sorting the results descending by total bytes transferred!</p>
+<p>Now you can answer this question that came in via a customer’s liaison:</p>
+<blockquote class="q"><p>My customer wants to use the data usage feature built into Windows 10 and export the data to a CSV. We couldn’t find a way to get this information from WMI, but it’s there in the Settings app. How can we get that information?</p></blockquote>
+<p>We pointed the customer to the <code>Network­Information</code> class and the <code>Attributed­Network­Usage</code> class in particular.</p>
+<blockquote class="q"><p>Can we use that class to export the data to a CSV?</p></blockquote>
+<p>The customer doesn’t seem to want to do any actual programming. It looks they’re hoping somebody has already written the program for them. Your exercise is to write that program.</p>
+
+
+</body>

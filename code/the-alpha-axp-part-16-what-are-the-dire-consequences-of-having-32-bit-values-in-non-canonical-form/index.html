@@ -1,0 +1,76 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Alpha AXP, part 16: What are the dire consequences of having 32-bit values in non-canonical form?</h1>  <!-- .entry-meta -->
+
+<p>On the Alpha AXP, 32-bit values are typically represented in so-called canonical form. But what happens if you use a non-canonical representation? </p>
+<p>Well, it depends on what instruction consumes the non-canonical representation. </p>
+<p>If the consuming instruction is an explicit 32-bit instruction, such as <code>ADDL</code> or <code>STL</code>, then the upper 32 bits are ignored, and the operation proceeds with the lower 32 bits. In that case, the non-canonical representation causes no harm. For example, consider this calculation: </p>
+<pre>
+    ; Calculate Rc = Ra + Rb + 0x1234 (32-bit result)
+    LDA     Rc, 0x1234(zero)    ; Rc = 0x00000000`00001234
+    ADDL    Rc, Rb, Rc          ; Rc = Rb + 0x1234
+    ADDL    Rc, Ra, Rc          ; Rc = Ra + Rb + 0x1234
+</pre>
+<p>If we are willing to use a non-canonical form temporarily, we could simplify this to </p>
+<pre>
+    ; Calculate Rc = Ra + Rb + 0x1234 (32-bit result)
+    LDA     Rc, 0x1234(Rb)      ; Rc = Rb + 0x1234 (64-bit intermediate)
+    ADDL    Rc, Ra, Rc          ; Rc = Ra + Rb + 0x1234 (32-bit result)
+</pre>
+<p>The <code>LDA</code> will put <var>Rc</var> into non-canonical 32-bit form if <var>Rb</var> is in the range <code>0x7FFFEDCC</code> to <code>0x7FFFFFFF</code> because the <code>LDA</code> instruction is 64-bit only, and the result would be in the range <code>0x00000000`80000000</code> through <code>0x00000000`80001233</code>, which are non-canonical. But all is forgiven at the <code>ADDL</code> instruction, since it considers only the 32-bit portion of the  addends (ignoring the non-canonical part) and generates a 32-bit result in canonical form. </p>
+<p>On the other hand, if the instruction that consumes the non-canonical 32-bit value is a 64-bit instruction, then the non-canonical value will cause trouble. </p>
+<p>Consider this simple function: </p>
+<pre>
+void f(int x)
+{
+    if (x == 0) DoSomething();
+}
+</pre>
+<p>The Windows ABI for Alpha AXP requires that all 32-bit values be passed and returned in canonical form. You are welcome to use non-canonical values inside your function, but all communication with the outside world must use canonical form for 32-bit values. </p>
+<p>This function might assemble to something like this: </p>
+<pre>
+    BEQ     a0, DoSomething ; tail call optimization
+    RET     zero, (ra), 1   ; return without doing anything
+</pre>
+<p>The first instruction checks whether <var>x</var> is zero. If so, then it jumps directly to the <code>Do­Something</code> function, leaving the return address unchanged, so that when <code>Do­Something</code> returns, it returns to the caller of <code>f</code>. (This is a tail call optimization.) </p>
+<p>If the value is not zero, then it returns to the caller. </p>
+<p>There is no 32-bit version of the <code>BEQ</code> instruction; it always tests the full 64 bits. </p>
+<p>If the value of <var>x</var> were not canonical, then the branch instruction could suffer false negatives: Even though the lower 32 bits are zero, there may be nonzero bits set in the upper half. That cause the <code>BEQ</code> to report “sorry, not zero” even though the 32-bit part of <var>a0</var> was zero. </p>
+<p>There are a number of instructions which do not have a 32-bit version and which always operate on the full 64-bit register value. Another example: </p>
+<pre>
+void f(int x, int y)
+{
+    if (x &lt; y) DoSomething();
+}
+</pre>
+<p>This function might assemble to something like this: </p>
+<pre>
+    CMPLT   a0, a1, t0      ; t0 = 1 if a0 &lt; a1
+    BNE     t0, DoSomething ; tail call optimization
+    RET     zero, (ra), 1   ; return without doing anything
+</pre>
+<p>In this version, the compiler performs a signed less-than operation and branches based on the result. The <code>CMPLT</code> instruction always operates on the full 64-bit register value; there is no 32-bit version. Consequently, passing a non-canonical value can result in the debugger reporting strange things like “Well, even though you passed <var>x</var> = 1 and <var>y</var> = 2, the less-than comparison returned false because <var>x</var> was passed in the non-canonical form of <code>0xFFFFFFFF`00000001</code>. </p>
+<p>Using sign-extended values for canonical form for 32-bit values has the nice property that signed and unsigned comparisons of 32-bit values have the same results as signed and unsigned comparisons of their corresponding canonical forms. </p>
+<p>If zero-extension had been used for canonical form, then unsigned comparisons would be preserved, but signed comparisons would not agree: The 32-bit signed comparison of <code>0x00000000</code> with <code>0xFFFFFFFF</code> would report that the first value is larger (0 &gt; −1) but the 64-bit signed comparison <code>0x00000000`00000000</code> with <code>0x00000000`FFFFFFFF</code> of the corresponding zero-extended values would report that the second value is larger (0 &lt; 4,294,967,295). </p>
+<p> I’m pretty sure this was not a coincidence. </p>
+<p><b>Bonus chatter</b>: Non-canonical values introduce another case where <a href="https://blogs.msdn.microsoft.com/oldnewthing/20040119-00/?p=41003">uninitialized variables can result in strange behavior</a>. Consider: </p>
+<pre>
+int f()
+{
+    int v;
+    ... a bunch of code that somehow forgot to set v ...
+    ... but in a complicated way that eluded code flow analysis ...
+    return (v &lt; 0) ? -1 : 0;
+}
+</pre>
+<p>This might get compiled to the following: </p>
+<pre>
+    ; compiler chooses t0 to represent v
+    ...
+    SRA     t0, #32, v0     ; v0 = 0xFFFFFFFF`FFFFFFFF if t0 was negative
+                            ; v0 = 0x00000000`00000000 if t0 was nonnegative
+    RET     zero, (ra), 1   ; return the result
+</pre>
+<p>If the code forgets to assign a value to <var>v</var>, then it will have the value left over from whatever code ran earlier. Suppose that leftover value happened to be the non-canonical value <code>0x12345678`12345678</code>. In that case, the result of the <code>SRA</code> would be <code>0x00000000`12345678</code>, and the function <code>f</code> ends up returning some value that seems to be impossible from reading the code: According to the code, the function always returns either <code>-1</code> or <code>0</code>, yet sometimes we crash because it returned the crazy value <code>0x12345678</code>! </p>
+
+
+</body>

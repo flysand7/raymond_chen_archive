@@ -1,0 +1,226 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do 16-bit programs start up?</h1>  <!-- .entry-meta -->
+
+<p>
+Back in 16-bit Windows,
+MS-DOS cast a long and dark shadow.
+The really ugly low-level munging was very much in the MS-DOS spirit.
+You opened files by setting up registers and issuing an <code>int 21h</code>,
+just like in MS-DOS.
+Although the interrupt went to Windows instead,
+Windows maintained the MS-DOS calling convention.
+Process startup followed the same
+“real men write in assembly language” philosophy.
+</p>
+<p>
+All the parameters to a 16-bit program
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/12/04/1205831.aspx#1240457">
+were passed in registers</a>.
+The entry point to a 16-bit process received the following
+parameters on Windows 3.1:
+</p>
+<table align="CENTER">
+<tr>
+<td>AX</td>
+<td>zero
+       (used to contain even geekier information in Windows 2)</td>
+</tr>
+<tr>
+<td>BX</td>
+<td>stack size</td>
+</tr>
+<tr>
+<td>CX</td>
+<td>heap size</td>
+</tr>
+<tr>
+<td>DX</td>
+<td>unused (reserved)</td>
+</tr>
+<tr>
+<td>SI</td>
+<td>previous instance handle</td>
+</tr>
+<tr>
+<td>DI</td>
+<td>instance handle</td>
+</tr>
+<tr>
+<td>BP</td>
+<td>zero (for stack walking)</td>
+</tr>
+<tr>
+<td>DS</td>
+<td>application data segment</td>
+</tr>
+<tr>
+<td>ES</td>
+<td>selector of program segment prefix</td>
+</tr>
+<tr>
+<td>SS</td>
+<td>application data segment (SS=DS)</td>
+</tr>
+<tr>
+<td>SP</td>
+<td>top of stack</td>
+</tr>
+</table>
+<p>
+Hey, nobody said that 16-bit Windows was designed for portability.
+</p>
+<p>
+The first thing a 16-bit program did was call the
+<code>InitTask</code> function.
+This function receives its parameters in registers,
+precisely in the format that they are received by the program
+entry point.
+The <code>InitTask</code> function initializes the stack,
+the data segment, the heap,
+retrieves and prepares the command line,
+recovers the <code>nCmdShow</code> parameter that was passed
+to <code>WinExec</code>, all the normal startup stuff.
+It even edits the stack of the caller so that real-mode stack
+walking works (critical for memory management in real-mode).
+When <code>InitTask</code> is all finished,
+it returns with the registers set for the next phase:
+</p>
+<table align="CENTER">
+<tr>
+<td>AX</td>
+<td>selector of program segment prefix (or 0 on error)</td>
+</tr>
+<tr>
+<td>BX</td>
+<td>offset of command line</td>
+</tr>
+<tr>
+<td>CX</td>
+<td>stack limit</td>
+</tr>
+<tr>
+<td>DX</td>
+<td><code>nCmdShow</code></td>
+</tr>
+<tr>
+<td>SI</td>
+<td>previous instance handle</td>
+</tr>
+<tr>
+<td>DI</td>
+<td>instance handle</td>
+</tr>
+<tr>
+<td>BP</td>
+<td>top of stack (for stack walking)</td>
+</tr>
+<tr>
+<td>DS</td>
+<td>application data segment</td>
+</tr>
+<tr>
+<td>ES</td>
+<td>selector of command line</td>
+</tr>
+<tr>
+<td>SS</td>
+<td>application data segment (SS=DS)</td>
+</tr>
+<tr>
+<td>SP</td>
+<td>edited top of stack</td>
+</tr>
+</table>
+<p>
+Once <code>InitTask</code> returns, the stack, heap, and data segment
+are "ready to run," and if you have no other preparations to do,
+you can head right for the application's <code>WinMain</code> function.
+Minimal startup code therefore would go like this:
+</p>
+<pre>
+    call    far InitTask
+    test    ax, ax
+    jz      exit
+    push    di      ; hInstance
+    push    si      ; hPrevInstance
+    push    es      ; lpszCmdLine selector
+    push    bx      ; lpszCmdLine offset
+    push    dx      ; nCmdShow
+    ... some lines of code that aren't important to the discussion ...
+    call    far WinMain ; call the application's WinMain function
+    ; return value from WinMain is in the AL register,
+    ; conveniently positioned for the exit process coming up next
+exit:
+    mov     ah, 4Ch ; exit process function code
+    int     21h     ; do it
+</pre>
+<p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2006/12/04/1205831.aspx#1206443">
+Why wasn't the application entry point called <code>main</code>?</a>
+Well, for one thing, the name <code>main</code> was already taken,
+and Windows didn't have the authority to reserve an alternate definition.
+There was no C language standardization committee back then;
+C was what
+<a href="http://netlib.bell-labs.com/who/dmr/">
+Dennis</a> said it was,
+and it was hardly guaranteed that Dennis would take any special steps to
+preserve Windows source code
+compatibility in any future version of the C language.
+Since K&amp;R didn't specify that implementations could extend the
+acceptable forms of the <code>main</code> function,
+it was entirely possible that there was a legal C compiler that
+rejected programs that declared <code>main</code> incorrectly.
+The current C language standard explicitly permits implementation-specific
+alternate definitions for <code>main</code>, but
+requiring all compilers to support
+this new Windows-specific version
+in order to compile Windows programs
+would gratuitously restrict the set of compilers you could use for
+writing Windows programs.
+</p>
+<p>
+If you managed to overcome that obstacle,
+you'd have the problem that the Windows version of <code>main</code>
+would have to be something like this:
+</p>
+<pre>
+int main(int argc, char *argv[], HINSTANCE hinst,
+         HINSTANCE hinstPrev, int nCmdShow);
+</pre>
+<p>
+Due to the way C linkage was performed,
+all variations of a function had to agree on the parameters
+they had in common.
+This means that the Windows version would have to add its parameters
+onto the end of the longest existing version of <code>main</code>,
+and then you'd have to cross your fingers and hope that the C language
+never added another alternate version of main.
+If you went this route, your crossed fingers failed you, because
+it turns out that
+<a href="http://qnxcs.unomaha.edu/help/product/neutrino/lib_ref/m/main.html">
+a third parameter was added to <code>main</code>
+some time later</a>,
+and it conflicted with your Windows-friendly version.
+</p>
+<p>
+Suppose you managed to convince Dennis not to allow that three-parameter
+version of <code>main</code>.
+You still have to come up with those first two parameters,
+which means that every program's startup code needs to contain
+a command line parser.
+Back in the 16-bit days, people scrimped to save every byte.
+Telling them, "Oh, and all your programs are going to be 2KB bigger"
+probably wouldn't make you a lot of friends.
+I mean, that's four sectors of I/O off a floppy disk!
+</p>
+<p>
+But probably the reason why the Windows entry point was given a
+different name
+is to emphasize that it's a different execution environment.
+If it were called <code>main</code>,
+people would take C programs designed for a console environment,
+throw them into their Windows compiler, and then run them,
+with disastrous results.</p>
+
+
+</body>

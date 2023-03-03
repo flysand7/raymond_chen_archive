@@ -1,0 +1,169 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Intel 80386, part 8: Block operations</h1>  <!-- .entry-meta -->
+
+<p>Most of the special-purpose operations that the 80386 inherited from the 8086 are largely obsolete. Although processors still support them, the implementations are not optimized, and compilers don’t generate them. </p>
+<p>Except for the block operations. Those are still important. </p>
+<p>The block operations (formally known as “string” instructions) operate on blocks of memory. They are another class of the unusual instructions that operate on two pieces of memory in a single instruction. </p>
+<p>The implied source memory is pointed to by the <var>esi</var> register, and the implied destination memory is pointed to by the <var>edi</var> register. You are not required to specify the implied operands in assembly language, but the Windows disassembler always shows them. I’ll show them as they are disassembled, since the focus of this series is on reading disassembly of compiler-generated code, not on writing assembly. </p>
+<p>Remember this table? </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Operand size</th>
+<th>Hi</th>
+<th>Lo</th>
+</tr>
+<tr>
+<td>byte</td>
+<td><code>AH</code></td>
+<td><code>AL</code></td>
+</tr>
+<tr>
+<td>word</td>
+<td><code>DX</code></td>
+<td><code>AX</code></td>
+</tr>
+<tr>
+<td>dword</td>
+<td><code>EDX</code></td>
+<td><code>EAX</code></td>
+</tr>
+</table>
+<p>We saw this table when we studied multiplication and division. Well, we’re going to use the <code>lo</code> column again. </p>
+<p>Let’s also define this operation: </p>
+<pre>
+advance reg {
+   if (direction flag is clear) reg += sizeof(size)
+   if (direction flag is set  ) reg -= sizeof(size)
+}
+</pre>
+<p>The <code>advance</code> operation performs a post-increment if the direction flag is clear, aka <var>up</var>, or a post-decrement if the direction flag is set, aka <var>dn</var> (down). </p>
+<p>The <var>DF</var> flag is required to be <var>up</var> at function call boundaries. A function is permitted to set it to <var>dn</var> temporarily, but it needs to set it back to <var>up</var> before allowing control to leave the function.¹ </p>
+<p>In practice, the direction flag is always <var>up</var>, except possibly for brief moments inside the <code>memmove</code> function when moving between overlapped memory blocks. </p>
+<pre>
+    MOVS    size PTR [edi], size PTR [esi] ; d = s
+                                           ; advance edi
+                                           ; advance esi
+
+    CMPS    size PTR [edi], size PTR [esi] ; set flags per d - s
+                                           ; advance edi
+                                           ; advance esi
+
+    SCAS    size PTR [edi]                 ; set flags per lo - d
+                                           ; advance edi
+
+    LODS    size PTR [esi]                 ; lo = s
+                                           ; advance esi
+
+    STOS    size PTR [edi]                 ; s = lo
+                                           ; advance edi
+</pre>
+<p>The “move string” instruction copies the specified unit of memory from the source address to the destination address, and then post-increments or post-decrements the <var>edi</var> and <var>esi</var> registers. For example, </p>
+<pre>
+    MOVS    DWORD PTR [edi], DWORD PTR [esi]
+                ; *(int32_t*)edi = *(int32_t*)esi
+                ; if up, then edi += 4, esi += 4
+                ; if dn, then edi -= 4, esi -= 4
+</pre>
+<p>The “compare string” instruction sets flags according to the calculation of <code>d - s</code>, the same as the <code>CMP</code> instruction, and then post-increments/post-decrements the <var>edi</var> and <var>esi</var> registers. </p>
+<p>The “scan string” instruction compares the destination with the <var>lo</var> register and then post-increments/post-decrements the <var>edi</var> register. </p>
+<p>The “load string” instruction loads <var>lo</var> from the source and then post-increments/post-decrements the <var>esi</var> register. </p>
+<p>The “store string” instruction stores <var>lo</var> to the destination and then post-increments/post-decrements the <var>edi</var> register. </p>
+<p>These instructions are known as “string” operations because they can include a “repeat” prefix that indicates that the operation should be repeated for a number of times specified by the <var>ecx</var> register, which is the length of the string. </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Prefixed opcode</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td><code>REP MOVS</code></td>
+<td>Move <var>ecx</var> units</td>
+</tr>
+<tr>
+<td><code>REPE CMPS</code></td>
+<td>Compare <var>ecx</var> units as long as they are equal</td>
+</tr>
+<tr>
+<td><code>REPNE CMPS</code></td>
+<td>Compare <var>ecx</var> units as long as they are different</td>
+</tr>
+<tr>
+<td><code>REPE SCAS</code></td>
+<td>Compare <var>ecx</var> units as long as they are equal to <var>lo</var></td>
+</tr>
+<tr>
+<td><code>REPNE SCAS</code></td>
+<td>Compare <var>ecx</var> units as long as they are different from <var>lo</var></td>
+</tr>
+<tr>
+<td><code>REP LODS</code></td>
+<td>Load <var>ecx</var> units into <var>lo</var></td>
+</tr>
+<tr>
+<td><code>REP STOS</code></td>
+<td>Store <var>ecx</var> units from <var>lo</var></td>
+</tr>
+</table>
+<p>The <code>REP</code> prefix causes the operation to repeat for <var>ecx</var> iterations. </p>
+<p>The <code>REPE</code> prefix causes the operation to repeat for <var>ecx</var> iterations, provided that the result of the comparison was “equal”. </p>
+<p>The <code>REPNE</code> prefix causes the operation to repeat for <var>ecx</var> iterations, provided that the result of the comparison was “not equal”. </p>
+<p>In all cases, if <var>ecx</var> is zero, then the instruction is a nop. </p>
+<p>The assembler accepts <code>REPZ</code> and <code>REPNZ</code> as synonyms for <code>REPE</code> and <code>REPNE</code>, respectively. </p>
+<p>Although <code>REP LODS</code> is technically legal, it is of dubious utility because each iteration will overwrite <var>lo</var>, and only the last iteration’s result will remain. </p>
+<p>At the end of the instruction, the <var>ecx</var> register has been decremented by the number of elements operated upon, and the <var>esi</var> and/or <var>edi</var> registers have been incremented or decremented by the number of bytes operated upon. </p>
+<p>These instructions are typically used only in the following idioms: </p>
+<pre>
+    ; copy ecx units from esi to edi
+    REP MOVS size PTR [edi], size PTR [esi]
+
+    ; look for lo in a buffer with ecx elements starting at edi
+    REPNE SCAS size PTR [edi]
+
+    ; store ecx copies of lo into the buffer starting at edi
+    REP STOS size PTR [edi]
+</pre>
+<p>For the cases where there are multiple termination conditions, you can inspect the flags and the <var>ecx</var> register to determine which condition terminated the loop and consequently how many iterations of the loop were performed. </p>
+<pre>
+    mov ecx, 100                ; search up to 100 characters
+    xor eax, eax                ; search for 0
+    mov edi, offset string      ; search this string
+    repne scas byte ptr [edi]   ; scan bytes looking for 0 (find end of string)
+    jnz toolong                 ; not found
+    sub edi, (offset string) + 1 ; calculate length
+</pre>
+<p>AFter preparing the preconditions for the <code>REPNE SCAS</code> instruction, we kick off the search. At the completion of the instruction, we know the following: </p>
+<ul>
+<li>If the zero byte was not found:</li>
+<ul>
+<li>The loop ran for 100 iterations.</li>
+<li><var>ZF</var> will be clear (<var>nz</var>).</li>
+<li><var>ecx</var> was decremented 100 times.         Its value is now zero.</li>
+<li><var>edi</var> was incremented 100 times.         It now points one past the end of the buffer.</li>
+</ul>
+<li>If the zero byte was found, at offset <var>n</var>:</li>
+<ul>
+<li>The loop ran for <var>n</var>+1 iterations.</li>
+<li><var>ZF</var> will be set (<var>zr</var>).</li>
+<li><var>ecx</var> was decremented <var>n</var>+1 times.         Its value is the number of characters not scanned.</li>
+<li><var>edi</var> was incremented <var>n</var>+1 times.         It now points one past the zero byte.</li>
+</ul>
+</ul>
+<p>After the <code>REPNE SCAS</code> instruction, we check the <var>ZF</var> flag to see whether the zero byte was found. If not, then we declare the string too long. </p>
+<p>Otherwise, the zero byte was found and we want to calculate the length. We have two choices: We could try to infer it from <var>ecx</var>, whose final value is 100 − (<var>n</var> + 1), or we could try to infer it from <var>edi</var>, whose final value is <code>offset string</code> + <var>n</var> + 1. </p>
+<p>To infer it from <var>ecx</var>, we solve for <var>n</var> and get <var>n</var> = 99 − <var>ecx</var>. However, the 80386 does not have a way to subtract a register from a constant in a single instruction, so this would require us to use two instructions, say <code>sub ecx, 99</code> followed by <code>neg ecx</code>. </p>
+<p>To infer it from <var>edi</var>, we solve for <var>n</var> and get <var>n</var> = <var>edi</var> − <code>offset string</code> − 1 = <var>edi</var> − (<code>offset string</code> + 1). </p>
+<p>The second calculation is easier in this case, so we go with that. </p>
+<p>These instructions are usually used with a repeat prefix, but for small numbers of iterations, they might be unrolled, to avoid the overhead of having to set up the <code>ecx</code> register. The <code>MOVS</code> instruction encodes in only one byte, so you can do four of them in fewer bytes than it takes to load a constant into a 32-bit register. </p>
+<pre>
+    ; move 16 bytes from esi to edi
+    MOVS    DWORD PTR [edi], DWORD PTR [esi]
+    MOVS    DWORD PTR [edi], DWORD PTR [esi]
+    MOVS    DWORD PTR [edi], DWORD PTR [esi]
+    MOVS    DWORD PTR [edi], DWORD PTR [esi]
+</pre>
+<p>The repeating instructions do not operate atomically. Rather, a single iteration is run, the registers are updated, and then the instruction pointer either advances to the next instruction if the loop termination condition is met, or it returns to the instruction if the loop should continue. This means that at each step, the <var>ecx</var> register decrements by one, the <var>edi</var> and/or <var>esi</var> registers advance by one unit, the flags are set as necessary, and then the instruction pointer either moves to the next instruction or stays put. (This design permits interrupts to be serviced during long block operations.) </p>
+<p>You’ll notice this behavior if you try to single-step through a repeated block operation in the debugger. Each single-step will run one iteration, and it will look like nothing happened because the instruction pointer didn’t move. But something did happen: The <var>ecx</var> register was decremented, the <var>edi</var> and/or <var>esi</var> registers advanced, and flags may have been updated. </p>
+<p><a href="http://devblogs.microsoft.com/oldnewthing/20190131-00/?p=100835">Next time</a>, we’ll look at the stack frame instructions. </p>
+<p>¹ Back in the days when assembly language was still commonly used, a frustrating source of bugs was forgetting to set the direction flag back to <var>up</var> when you were finished. This caused future string operations to walk backward through memory rather than forward, and the result of the error was often not manifested until much, much later, at which point the culprit was long gone. </p>
+
+
+</body>

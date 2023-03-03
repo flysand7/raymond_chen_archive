@@ -1,0 +1,335 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A closer look at the stack guard page</h1>  <!-- .entry-meta -->
+
+<p>In a discussion of <a href="/code/isbadxxxptr-should-really-be-called-crashprogramrandomly"> why <code>Is­Bad­Xxx­Ptr</code> should really be called <code>Crash­Program­Randomly</code></a>, I gave a brief description of the stack guard page:</p>
+<blockquote class="q"><p>The dynamic growth of the stack is performed via guard pages: Just past the last valid page on the stack is a guard page. When the stack grows into the guard page, a guard page exception is raised, which the default exception handler handles by committing a new stack page and setting the <i>next</i> page to be a guard page.</p></blockquote>
+<p>Let’s break this down a bit more.</p>
+<p>Here’s a thread’s stack after the thread has been running for a little while. As is customary in memory diagrams, higher addresses are at the top, which means that the stack grows downward (toward lower addresses).</p>
+
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td rowspan="4" style="vertical-align: middle; width: 1em; border: solid 1px black; border-right: none;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">valid stack</span></td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td style="animation: 1s ease-in-out infinite alternate wobble;">← Stack pointer</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffffb5;">guard page</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+</tbody>
+</table>
+<p>The regular committed pages encompass all of the stack memory that the program has used so far. It may not be using all of it right now: Any memory beyond the <a href="/code/why-do-we-even-need-to-define-a-red-zone-can-t-i-just-use-my-stack-for-anything"> red zone</a> is off limits to the application. When the stack pointer recedes from its high water mark, the pages left behind are not decommitted.</p>
+<p>The page just past the stack pointer’s high water mark is a special type of committed page known as a guard page. A guard page is a page which raises a <code>STATUS_<wbr/>GUARD_<wbr/>PAGE_<wbr/>VIOLATION</code> exception the first time it is accessed.</p>
+<p>Suppose that the stack pointer moves into the guard page, indicating that the thread has increased its stack requirements by one additional page.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td rowspan="4" style="vertical-align: middle; width: 1em; border: solid 1px black; border-right: none;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">valid stack</span></td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffffb5;">guard page</td>
+<td>← Stack pointer</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+</tbody>
+</table>
+<p>The moment the thread accesses memory from the guard page, the system converts it to a regular committed page (removing the <code>PAGE_<wbr/>GUARD</code> flag) and raises a <code>STATUS_<wbr/>GUARD_<wbr/>PAGE_<wbr/>VIOLATION</code> exception. The default exception handler deals with the exception by looking to see if the address lies in the current stack’s guard page region. If so, then it upgrades the next reserved page to a guard page, and then resumes execution:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<td align="center">Before</td>
+<td> </td>
+<td align="center">During</td>
+<td> </td>
+<td align="center">After</td>
+</tr>
+<tr>
+<td rowspan="4" style="vertical-align: middle; width: 1em; border: solid 1px black; border-right: none;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">valid stack</span></td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td style="width: 1ex;"> </td>
+<td rowspan="5" style="vertical-align: middle; width: 1em; border: solid 1px black; border-left: none;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">valid stack</span></td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffffb5;">guard page</td>
+<td>← Stack pointer →</td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td>← Stack pointer →</td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffffb5;">guard page</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+<td> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+</tbody>
+</table>
+<p>Clearing the <code>PAGE_<wbr/>GUARD</code> flag on an access to a guard page means that once you access it, it stops being a guard page. This means that guard pages raise the guard page exception only on first access. If you fail to take action on a guard page exception, the system ignores it, and you lost your one chance to do something.</p>
+<p>This is why our code to <a href="/code/determining-approximately-how-much-stack-space-is-available-part-1"> detect stack overflows</a> makes sure to call <code>_resetstkoflw()</code> if it decides to recover. Resetting the stack overflow state consists of turning the <code>PAGE_<wbr/>GUARD</code> flag back on for the guard page, restoring the page to its former glory as a guard page so it can do its job of detecting stack growth.</p>
+<p>This is how things go when everything is working right. But things don’t always work right.</p>
+<p>If one thread accesses another thread’s guard page, perhaps due to a buffer overflow, or just an uninitialized pointer variable that happens to point there, that too will trigger the guard page exception. That exception is raised by the thread that did the accessing, which is not the thread that owns the stack. The default exception handler sees that the guard page exception is not for the current thread’s stack, so it ignores it.¹</p>
+<p>Congratulations, your stack is now corrupted, because the guard page is gone:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td rowspan="4" style="vertical-align: middle; width: 1em; border: solid 1px black; border-right: none;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">valid stack</span></td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td style="animation: 1s ease-in-out infinite alternate wobble;">← Stack pointer</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td>(oops)</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+</tbody>
+</table>
+<p>Things proceed normally for a while, until the thread’s stack needs to grow into what used to be the guard page.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td rowspan="4" style="vertical-align: middle; width: 1em; border: solid 1px black; border-right: none;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">valid stack</span></td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td>← Stack pointer (oops)</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+</tbody>
+</table>
+<p>Normally, this would trigger a guard page exception, and the system would do the usual thing of upgrading the next reserved page to a new guard page. However, that page is no longer a guard page, so execution just continues normally with no action taken.</p>
+<p>Things still proceed as if everything were perfectly normal, but the consequences of your misdeeds finally catch up to you when the stack pointer crosses into a <i>second</i> new page, the first <i>reserved</i> page.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td rowspan="4" style="vertical-align: middle; width: 1em; border: solid 1px black; border-right: none;"><span style="writing-mode: vertical-lr; -ms-writing-mode: tb-rl; transform: rotate(180deg);">valid stack</span></td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #caffd8;">committed</td>
+<td>(oops)</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+<td>← Stack pointer (double oops)</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+<tr>
+<td> </td>
+<td style="width: 1ex;"> </td>
+<td style="border: solid 1px black; height: 3em; background-color: #ffb5b5;">reserved</td>
+</tr>
+</tbody>
+</table>
+<p>This is also not a guard page, so no special stack expansion kicks in. You just get a stack overflow exception and die.</p>
+<p>Such is the sad life of invalid memory access. You can corrupt your own process in a subtle way that doesn’t show up until much, much later.</p>
+<p>Next time, we’ll investigate a stack overflow problem and learn how to detect whether this guard page corruption has occurred.</p>
+<p>¹ In theory, the default exception handler could search through all the threads in the process and see if the address resides in a guard page of <i>any</i> thread, but it doesn’t. One reason is that this would require cross-thread coordination with the thread whose guard page you accidentally accessed, as well as any other thread that also might be accessing that guard page at the same time. But the bigger reason is probably that the entire situation is a bug in the program anyway, and there’s no point going out of your way to slow down the system in order to deal with things that programs shouldn’t be doing anyway.</p>
+<p>
+<script>
+(function() {
+  // break up "style" to prevent wordpress from injecting random junk
+  document.getElementById("p20220203_style").innerHTML = `<s` + `tyle>
+@keyframes wobble {
+    from { transform: translateY(0); }
+    to { transform: translateY(-6em); }
+}
+</s` + `tyle>`;
+})();
+</script></p>
+
+
+</body>

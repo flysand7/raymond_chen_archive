@@ -1,0 +1,188 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When do <code>Core­Dispatcher.</code><code>Run­Async</code> and <code>Thread­Pool.</code><code>Run­Async</code> actions complete?</h1>  <!-- .entry-meta -->
+
+<p>The <code>Core­Dispatcher::</code><code>Run­Async</code> and <code>Thread­Pool::</code><code>Run­Async</code> methods take a delegate and schedule it to be invoked on the dispatcher thread or on a thread pool thread. These methods return an <code>IAsync­Action</code>, but when does that action complete? </p>
+<p>When dealing with asynchronous methods, there are two ways of talking about the result. </p>
+<p>First, there’s the return value of the asynchronous method, which at the ABI level is an <code>IAsync­Action</code> or <code>IAsync­Operation</code>. Depending on the language projection, this is exposed to the programmer as a language-specific object. </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Projection</th>
+<th><code>IAsync­Action</code></th>
+<th><code>IAsync­Operation&lt;T&gt;</code></th>
+<th>Notes</th>
+</tr>
+<tr>
+<td>C++/WinRT</td>
+<td><code>IAsync­Action</code></td>
+<td><code>IAsync­Operation&lt;T&gt;</code></td>
+<td></td>
+</tr>
+<tr>
+<td>C++/CX</td>
+<td><code>IAsync­Action^</code><br/> <code>task&lt;void&gt;</code></td>
+<td><code>IAsync­Operation&lt;T&gt;^</code><br/> <code>task&lt;T&gt;</code></td>
+<td rowspan="2">Projected as <code>IAsyncXxx</code><br/>    usually wrapped into<br/><code>task</code>/<code>Task</code>.</td>
+</tr>
+<tr>
+<td>C#</td>
+<td><code>IAsync­Action</code><br/> <code>Task</code></td>
+<td><code>IAsync­Operation&lt;T&gt;</code><br/> <code>Task&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td>JavaScript</td>
+<td><code>Promise</code></td>
+<td><code>Promise</code></td>
+<td></td>
+</tr>
+</table>
+<p>The second result is the thing that you receive when the asynchronous operation completes. </p>
+<table border="1" cellpadding="3" class="cp3" style="border-collapse: collapse">
+<tr>
+<th>Projection</th>
+<th><code>IAsync­Action</code></th>
+<th><code>IAsync­Operation&lt;T&gt;</code></th>
+</tr>
+<tr>
+<td>C++/WinRT</td>
+<td><code>void</code></td>
+<td><code>T</code></td>
+</tr>
+<tr>
+<td>C++/CX</td>
+<td><code>void</code></td>
+<td><code>T</code></td>
+</tr>
+<tr>
+<td>C++/CX + PPL</td>
+<td><code>void</code></td>
+<td><code>T</code></td>
+</tr>
+<tr>
+<td>C#</td>
+<td><code>void</code></td>
+<td><code>T</code></td>
+</tr>
+<tr>
+<td>JavaScript</td>
+<td><code>undefined</code></td>
+<td><code>T</code></td>
+</tr>
+</table>
+<p>And there’s also a third thing to worry about, which is <i>when</i> you receive that completion result. </p>
+<p>Let’s answer the three questions for the <code>Core­Dispatcher::</code><code>Run­Async</code> and <code>Thread­Pool::</code><code>Run­Async</code> methods. </p>
+<p>First, they <i>return</i> an <code>IAsync­Action</code>. The methods schedule the delegate to be invoked later, and then return an <code>IAsync­Action</code> representing the pending operation. </p>
+<p>Second, they <i>complete</i> with <code>void</code>. There is no additional information reported when the operation completes. </p>
+<p>Third (and most interesting) is that they complete <a href="https://docs.microsoft.com/en-us/uwp/api/windows.ui.core.coredispatcher.runasync#await-a-ui-task-sent-from-a-background-thread">when the delegate <i>returns</i></a>. </p>
+<p>Not when the delegate <i>completes</i>. </p>
+<p>This means that when you pass a delegate that itself represents an asynchronous operation, the <code>IAsync­Action</code> returned by <code>Run­Async</code> completes once your delegate returns its own async operation. The dispatcher or thread pool doesn’t even see that async operation; it’s eaten by your language projection. All that the dispatcher or thread pool knows is that it invoked the delegate, and the delegate returned <code>void</code>, so we must be done. </p>
+<p>The C++/WinRT, and JavaScript projections permit your delegate to return someting, even though the formal function signature returns <code>void</code>. The projection just throws your return value away, and the caller gets nothing. The C# language lets you make a function formally return <code>void</code>, even though it secretly continues running asynchronously. The syntax for this is <code>async void</code>, and I’ve discussed <a href="https://devblogs.microsoft.com/oldnewthing/20170721-00/?p=96665">the perils of <code>async void</code></a> in the past. </p>
+<p>This means that if you await the result of a <code>Run­Async</code>, the await will complete when your delegate either returns or performs its own await operation, whichever comes first. </p>
+<pre>
+// C++/WinRT
+
+co_await Dispatcher().RunAsync(CoreDispatcherPriority::Normal,
+    [lifetime = get_strong()]() -&gt; fire_and_forget
+    {
+        co_await SomethingAsync();
+        co_await SomethingElseAsync();
+        Finished();
+    });
+
+// C++/CX
+
+create_task(Dispatcher-&gt;RunAsync(CoreDispatcherPriority::Normal,
+    ref new DispatchedHandler([this]()
+    {
+        create_task(SomethingAsync()).then([this]() {
+            return create_task(SomethingElseAsync());
+        }).then([this]() {
+            Finished();
+        });
+    }))).then([this]()
+    {
+        BackOnMainThread();
+    });
+
+
+// C++/CX + co_await
+
+co_await Dispatcher-&gt;RunAsync(CoreDispatcherPriority::Normal,
+    ref new DispatchedHandler([this]()
+    {
+        []() -&gt; task&lt;void&gt;
+        {
+            co_await SomethingAsync();
+            co_await SomethingElseAsync();
+            Finished();
+        }();
+    }));
+BackOnMainThread();
+
+// C#
+
+await Dispatcher.RunAsync(CoreDispatcherPriority::Normal, async () =&gt;
+    {
+        await SomethingAsync();
+        await SomethingElseAsync();
+        Finished();
+    });
+BackOnMainThread();
+
+// JavaScript (pretend)¹
+
+await dispatcher.runAsync(CoreDispatcherPriority.normal, async () =&gt;
+    {
+        await somethingAsync();
+        await somethingElseAsync();
+        finished();
+    });
+backOnMainThread();
+</pre>
+<p>When does the <code>await</code>/<code>co_await</code> complete and the <code>Back­On­Main­Thread</code> run? </p>
+<p>Answer: When <code>Something­Async</code> returns its <code>IAsync­Action</code>, that action gets wrapped inside a coroutine, and execution suspends, returning control to the dispatcher or thread pool. At this point, the delegate has returned, and the <code>Run­Async</code> declares its action to have completed. The object representing the coroutine (the <code>IAsyncAction</code>, <code>task</code>, <code>Task</code>, or <code>Promise</code>) is simply discarded. </p>
+<p>In C++/WinRT and JavaScript, the discarding is done by the projection. In C++/CX, the discarding is explicit in the code: Observe that we create a task but do not <code>return</code> it. In C#, the discarding is done by the language itself because an <code>async</code> lambda can be implicitly converted to a non-async <code>void</code> lambda (by treating it as if were <code>async void</code>). </p>
+<p>Another way of looking at this analysis is that the lambda returns when it encounters its first <code>await</code>/<code>co_await</code> or <code>return</code>. This in turn causes the <code>Run­Async</code> to complete its own <code>IAsync­Action</code>. </p>
+<p>If we write things out explicitly, the sequence of operations might be more clear: </p>
+<pre>
+// C#
+async () =&gt;
+{
+    await SomethingAsync();
+    await SomethingElseAsync();
+    Finished();
+}
+</pre>
+<p>This gets transformed by the compiler into </p>
+<pre>
+class Lambda
+{
+    async void Invoke()
+    {
+        await SomethingAsync();
+        await SomethingElseAsync();
+        Finished();
+    }
+}
+</pre>
+<p>which gets further transformed into </p>
+<pre>
+class Lambda
+{
+    void Invoke()
+    {
+        Task task1 = SomethingAsync();
+        task1.ContinueWith(_ =&gt; {
+            Task task2 = SomethingElseAsync();
+            task2.ContinueWith(_ =&gt; {
+                Finished();
+            });
+        });
+    }
+}
+</pre>
+<p>Once <code>Something­Async</code> returns its <code>Task</code>, the lambda attaches a continuation to it, so that it can resume execution when the task completes. At that point, the outer lambda has finished its work, and the <code>Invoke</code> method returns. This returns control back to the delegate or thread pool, which declares that the <code>Run­Async</code> has completed. And the completion of <code>Run­Async</code> means that <code>Back­On­Main­Thread</code> starts to run. </p>
+<p>This behavior is usually not what you want. You want to wait until the lambda has <i>completed</i>, not just returned. We’ll look at one possible solution next time. </p>
+<p>¹ JavaScript is a single-threaded language, so you can’t actually do this, but I included it for completeness to demonstrate what <i>would</i> happen if it were possible. </p>
+
+
+</body>

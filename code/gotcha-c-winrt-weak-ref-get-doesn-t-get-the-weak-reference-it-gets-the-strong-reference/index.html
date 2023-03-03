@@ -1,0 +1,69 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Gotcha: C++/WinRT weak_ref.get() doesn’t get the weak reference; it gets the strong reference</h1>  <!-- .entry-meta -->
+
+<p>If you have a <code>winrt::com_ptr&lt;T&gt;</code>, you can call the <code>get()</code> method to obtain the raw COM pointer inside it. This is handy if you need to pass that raw pointer along to another method that wants raw pointers.</p>
+<p>The <code>winrt::weak_ref&lt;T&gt;</code> also has a <code>get()</code> method, but its behavior is different: It tries to resolve the weak reference to a strong reference and returns that strong reference as a <code>com_ptr&lt;T&gt;</code>. If it fails to resolve the weak reference to a strong reference, then it returns an empty <code>com_ptr&lt;T&gt;</code>. (If <code>T</code> is a projected type, then the returned object is a <code>T</code> rather than <code>com_ptr&lt;T&gt;</code>, since <code>com_ptr&lt;T&gt;</code> is redundant.)</p>
+<p>I’ve seen this gotcha bite people who are familiar with <code>com_ptr</code>s, but haven’t worked much with <code>weak_ref</code>. They have a <code>weak_ref</code> in their hand and they want to look at the pointer inside it. They’ll call <code>weak_ref.get()</code> (because that’s what works for <code>com_ptr</code>), and not only is that not what they want, the result can be downright dangerous.</p>
+<pre>weak_ref&lt;T&gt; saved_weak;
+
+bool IsTheSavedWeakRef(weak_ref&lt;T&gt; const&amp; ref)
+{
+    return saved_weak.get() == ref.get();
+}
+</pre>
+<p>The idea here is that we want to compare the <code>IWeak­Reference</code> pointers hiding inside the <code>weak_ref</code> to see if the weak reference passed in is the same one we had saved earlier. Unfortunately, what actually happens is that we resolve both weak references to strong <code>T</code> references, and then see if the strong references match.</p>
+<p>The first bug is that this treats all broken weak references as equal, even if they aren’t the <i>same</i> weak reference. Indeed, they may even have been obtained from different objects entirely!</p>
+<p>The second bug is that the temporary materialization of a strong reference means that when the function returns, those strong references are released, and that can result in object destruction at a time you weren’t expecting. Suppose we initially have a strong reference to a <code>T</code> in a variable called <code>saved_strong</code> and a weak reference to the same <code>T</code> in a variable called <code>saved_weak</code>.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: 1px black; border-style: none solid solid none;">Thread 1</td>
+<td style="border: 1px black; border-style: none none solid solid;">Thread 2</td>
+<td style="width: 1em;"> </td>
+<td style="border-bottom: solid 1px black;">Refcount on <code>T</code></td>
+</tr>
+<tr>
+<td><code>IsTheSavedWeakRef()</code></td>
+<td> </td>
+<td style="width: 1em;"> </td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>saved_weak.get()</code></td>
+<td> </td>
+<td style="width: 1em;"> </td>
+<td>2</td>
+</tr>
+<tr>
+<td> </td>
+<td><code>saved_strong.reset()</code></td>
+<td style="width: 1em;"> </td>
+<td>1</td>
+</tr>
+<tr>
+<td>temporary <code>com_ptr</code> destructs</td>
+<td> </td>
+<td style="width: 1em;"> </td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<p>Initially, there is one strong reference to the object, held in <code>saved_strong</code>. The <code>Is­The­Saved­Weak­Ref()</code> function tries to promote the <code>saved_weak</code> to a strong reference in the form of a <code>com_ptr</code> (say), and it succeeds. The number of strong references is now two.</p>
+<p>Meanwhile, another thread resets the <code>saved_strong</code> strong reference, which would have destructed the object if <code>Is­The­Saved­Weak­Ref()</code> hadn’t created a temporary strong reference. Instead, the reset of <code>saved_strong</code> causes the reference count to drop to one.</p>
+<p>Back on Thread 1, the <code>Is­The­Saved­Weak­Ref()</code> function finishes its comparison and destructs the temporary <code>shared_ptr</code>, which drops the reference count to zero and destroys the object.</p>
+<p>The <code>Is­The­Saved­Weak­Ref()</code> function is destroying an object!</p>
+<p>This can be quite a surprise to the authors of <code>Is­The­Saved­Weak­Ref()</code>, who thought they were doing completely non-intrusive lightweight operations. In particular, the caller of <code>Is­The­Saved­Weak­Ref()</code> might be holding a lock, such as one that is designed to protect access to <code>saved_weak</code>.</p>
+<p>Now you are in the world of <a href="/code/the-hidden-callout-the-destructor"> destroying an object under a lock</a>, and depending on how those objects are structured, this could be harmless or create a potential deadlock or trigger memory corruption due to unexpected reentrancy.</p>
+<p><b>Bonus chatter</b>: With <a href="https://github.com/microsoft/cppwinrt/pull/608"> PR#608</a>, you can now compare weak references directly for equality, so you aren’t tempted to try the <code>get()</code> trick.</p>
+<p>Nevertheless, if you want to get the raw pointer inside a <code>winrt::weak_ref</code>, you can use <code>get_abi</code>.</p>
+<p><b>Bonus bonus chatter</b>: The WIL library has its own quirk related to COM weak references and COM agile references. The <code>wil::com_weak_ref</code> and <code>wil::com_agile_ref</code> act like a <code>wil::com_ptr</code> in most respects, but the <code>query</code> and <code>copy</code> methods operate on the underlying object, not the weak reference or agile reference itself.</p>
+<p>For weak references, this is normally what you want, since there isn’t much you can query from a weak reference. However, if you have a weak reference to a remote object, you may want to query the weak reference for interfaces like <code>IMarshal</code> or <code>IClientSecurity</code>, and those queries will go not to the weak reference but to the underlying object.</p>
+<p>If you want to perform the query against the weak reference itself, you will have to use a Jedi mind trick to make WIL forget that the pointer was ever a weak pointer: Decay it back to the <code>IUnknown</code>, and then operate on that.</p>
+<pre>// marshal = saved_weak.query&lt;IMarshal&gt;(); // doesn't work, do this instead
+auto marshal = wil::com_query&lt;IMarshal&gt;(static_cast&lt;IUnknown*&gt;(saved_weak.get()));
+</pre>
+<p>Here, we use the free <code>com_query</code> function which does the equivalent of a <code>com_ptr.query</code>, but as a free function instead of requiring a <code>com_ptr</code> in hand.</p>
+<p>(Personally, I think this magic behavior of weak and agile references is a pit of failure. I think the methods should have been called <code>lock</code> or <code>resolve</code>. Reserve <code>get</code> for extracting the raw ABI pointer.)</p>
+
+
+</body>

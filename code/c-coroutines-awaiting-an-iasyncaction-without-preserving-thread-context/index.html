@@ -1,0 +1,77 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Awaiting an <code>IAsyncAction</code> without preserving thread context</h1>  <!-- .entry-meta -->
+
+<p>The C++/WinRT library provides an awaiter for Windows Runtime asynchronous activities. Those asynchronous activities are represented by <code>IAsync­Action</code>, <code>IAsync­Operation</code>, and progress versions of the above. The C++/WinRT-provided awaiter resumes execution of the caller in the same COM apartment that awaited the activity.</p>
+<p><a href="/code/a-slightly-less-brief-introduction-to-com-apartments-but-it-s-still-brief"> Here’s a refresher on COM apartments</a>. If you don’t want to read it, then a simplified version is to say that it resumes execution in the same UI context. If you perform the <code>co_await</code> on a UI thread, then when the asynchronous activity completes, the caller resumes execution on the same UI thread. If you perform the <code>co_await</code> on a background thread, then the caller resumes execution on a background thread (possibly not the exact same thread that initiated the operation).</p>
+<p>But maybe you don’t need to resume in the same apartment. Your code is fine with running in any apartment, How can you <code>co_await</code> a Windows Runtime asynchronous activity and resume execution on any thread?</p>
+<p>With a custom awaiter, of course.</p>
+<pre>template&lt;typename Async&gt;
+[[nodiscard]] auto resume_in_any_apartment(Async async)
+{
+  struct awaiter : std::experimental::suspend_always
+  {
+    awaiter(Async async_) : async(std::move(async_)) { }
+
+    void await_suspend(
+        std::experimental::coroutine_handle&lt;&gt; handle)
+    {
+      async.Completed([handle](auto&amp;&amp;...) { handle(); });
+    }
+
+    auto await_resume()
+    {
+        return async.GetResults();
+    }
+    Async async;
+  };
+  return awaiter{ std::move(async) };
+}
+</pre>
+<p>Note that we use the function pattern for generating the awaiter because that makes it easier to generate a different awaiter for the four different kinds of Windows Runtime asynchronous activities: We can templatize the function and propagate the type into the custom awaiter. (Alternatively, we could use CTAD.)</p>
+<p>Our custom awaiter has a simple constructor that moves its parameter, and the <code>resume_</code><code>in_</code><code>any_</code><code>apartment</code> constructs the object by moving its own parameter into the awaiter. This moves the original parameter to the <code>resume_</code><code>in_</code><code>any_</code><code>apartment</code> function all the way into the awaiter.</p>
+<p>When the caller performs the <code>co_await</code> of this custom awaiter, we schedule the handle for completion by hooking it up to the <code>Completed</code> handler. We use the magic <code>auto&amp;&amp;...</code> parameter list to say that the lambda accepts any number of arbitrary parameters.</p>
+<p>When the asynchronous activity completes, the lambda is invoked, and the lambda throws away the parameters and simply invokes the <code>handle</code>, which resumes the coroutine.</p>
+<p>When the coroutine resumes, the compiler will call <code>await_</code><code>resume</code> to find out what the result of the <code>co_await</code> is. We call the asynchronous activity’s <code>Get­Results</code> and propagate that as our result using the <code>auto</code> return type. (If the asynchronous activity failed with an exception, the <code>Get­Result()</code> method will re-raise the exception.)</p>
+<p>Since we did no work in the <code>Completed</code> handler to get onto any particular thread, the resumption of the coroutine will occur on whatever thread called the <code>Completed</code> handler.</p>
+<p>Here’s an example of how you could use it:</p>
+<pre>winrt::fire_and_forget DoSomething()
+{
+  co_await FirstStep();
+  co_await resume_in_any_apartment(SecondStep());
+  co_await ThirdStep();
+}
+</pre>
+<p>Assuming that all of the steps return <code>IAsync­Action</code>, the first and third <code>co_await</code>s resume execution in the same apartment, but the second one can resume in any apartment.</p>
+<p>Now to add style points:</p>
+<pre>template&lt;typename Async,
+         <span style="color: blue;">typename = std::enable_if_t&lt;
+             std::is_convertible_v&lt;
+                 Async,
+                 winrt::Windows::Foundation::IAsyncInfo&gt;&gt;</span>&gt;
+[[nodiscard]] auto resume_in_any_apartment(Async async)
+{
+  struct awaiter : std::experimental::suspend_always
+  {
+    <span style="color: red;">// <span style="text-decoration: line-through;">awaiter(Async async_) : async(std::move(async_)) { }</span></span>
+
+    void await_suspend(
+        std::experimental::coroutine_handle&lt;&gt; handle)
+    {
+      async.Completed([handle](auto&amp;&amp;amp...) { handle(); });
+    }
+
+    auto await_resume()
+    {
+        return async.GetResults();
+    }
+    Async async;
+  };
+  return awaiter{ <span style="color: blue;">{}, std::move(async)</span> };
+};
+</pre>
+<p>We tweak the template parameters so that the overload is eligible only if the <code>Async</code> is convertible to <code>IAsync­Info</code>, which is an interface common to all of the Windows Runtime asynchronous activities. That way, if you try to use this with the wrong type, you get a more helpful error message saying that no suitable overload of <code>resume_</code><code>in_</code><code>any_</code><code>apartment</code> was found, rather than issuing a weird error message about a missing <code>Completed</code> method.</p>
+<p>We also remove the constructor of the custom awaiter and instead construct it via aggregate construction. The empty braces initialize the <code>suspend_</code><code>always</code> base class, and the <code>std::move(async)</code> initializes the awaiter’s <code>async</code> member.</p>
+<p>Next time, we’ll look at a feature of custom awaiters that is useful to avoid runaway stack consumption.</p>
+
+
+</body>

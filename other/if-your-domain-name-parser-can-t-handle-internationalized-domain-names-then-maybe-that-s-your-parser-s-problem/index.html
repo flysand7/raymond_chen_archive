@@ -1,0 +1,29 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If your domain name parser can’t handle internationalized domain names, then maybe that’s your parser’s problem</h1>  <!-- .entry-meta -->
+
+<p>A security vulnerability report arrived that went roughly like this:</p>
+<blockquote class="q">
+<p>Internet Explorer has a security vulnerability that allows an attacker to bypass domain filtering. Suppose my web site filters domain names, say with the following test:</p>
+<pre>if ($frame_domain == "microsoft.com") {
+    block();
+}
+</pre>
+<p>An attacker can construct a frame which targets an intentional misspelling:</p>
+<pre>&lt;iframe src="https://ⓜicrosoft.com" ...&gt;
+</pre>
+<p>Even though the “ⓜ” is the Unicode character CIRCLED LATIN SMALL LETTER M (U+24DC), the web page that is shown in the frame is indeed <code>microsoft.com</code>. The web browser rewrote the domain, allowing an attacker to bypass filtering.</p>
+</blockquote>
+<p>Yes, this is all true. The web browser rewrote the domain, allowing an attacker to bypass filtering. But the bug is not in the web browser. The web browser is doing exactly what the standard says it’s supposed to do: <a href="https://unicode.org/reports/tr46/"> Unicode Technical Standard #46</a> describes how so-called <i>international domain names</i> are converted to ASCII for domain lookup purposes. One of the steps is to <a href="https://unicode.org/reports/tr46/#ProcessingStepMap"> map the code points according to the IDNA Mapping Table</a>, and the IDNA Mapping Table says that character CIRCLED LATIN SMALL LETTER M (U+24DC) is mapped to LATIN SMALL LETTER M (U+006D).</p>
+<p>The bug is in the code which tries to block access to <code>microsoft.com</code>. It’s performing a literal string comparison against <code>microsoft.com</code> without going through the IDN conversion process. Indeed, you didn’t even need to use IDN to attack the filter.</p>
+<pre>&lt;iframe src="https://microsoft.com." ...&gt;
+</pre>
+<p>As we learned some time ago, <a href="https://devblogs.microsoft.com/oldnewthing/20120412-00/?p=7873" title="What is the real maximum length of a DNS name?"> <code>microsoft.com</code> is technically shorthand for the full name <code>microsoft.com.</code> with a trailing period</a>. But the above filter doesn’t handle that case, so appending a dot easily avoids the filter.</p>
+<p>Hang on, it’s even easier:</p>
+<pre>&lt;iframe src="https://Microsoft.com" ...&gt;
+</pre>
+<p>The filter used a case-sensitive comparison, but domain names are case-insensitive, so <code>Microsoft.com</code> sneaks past the filter.</p>
+<p>And, of course, you could gain access to <code>microsoft.com</code> by using its IP address explicitly.</p>
+<p>None of this is the fault of the web browser. The problem is in the attempt at filtering the domains that can be placed inside frames. If you set up an insecure system, don’t be surprised that it has a security issue.</p>
+
+
+</body>

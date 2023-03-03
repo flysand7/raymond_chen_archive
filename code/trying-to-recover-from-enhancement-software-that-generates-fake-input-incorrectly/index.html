@@ -1,0 +1,48 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Trying to recover from enhancement software that generates fake input incorrectly</h1>  <!-- .entry-meta -->
+
+<p>A customer had a program that supported the mouse wheel, and they found that some laptops have trackpad enhancement software which supports a gesture for turning the mouse wheel. When the enhancement software recognizes the gesture, it <i>sends</i> a <code>WM_MOUSE­WHEEL</code> message to the foreground window.. This causes problems for the program because there are various things that are not allowed when processing an inbound sent message. Fortunately, <a href="https://msdn.microsoft.com/library/windows/desktop/ms644941(v=vs.85).aspx">they can detect whether they are in this situation</a>, but it’s not clear how they can recover from it. “We have been brainstorming and thinking that if we see this problem, we will use <code>Post­Message</code> to put the message ‘back’ into our queue.” </p>
+<p>The trackpad software is supposed to be using <code>Send­Input</code> so that the wheel message orders correctly with the other messages in your input queue. The <code>Send­Message</code> delivers the message immediately (or as immediately as possible), and <a href="https://devblogs.microsoft.com/oldnewthing/">messages posted with the <code>Post­Message</code> function are processed ahead of input</a>, both of which are wrong when you are trying to simulate input. Even your attempt to delay processing by calling <code>Post­Message</code> won’t help because posted messages are processed ahead of input. </p>
+<p>Here’s a diagram which is inaccurate but may help to get the point across: </p>
+<table border="0" cellpadding="3" style="border-collapse: collapse" title='A stack of messages. At the top are inbound sent messages. There is an arrow labeled "SendMessage inserts messages here" at the bottom of that section. Next are inbound posted messages. There is an arrow labeled "PostMessage inserts messages here" at the bottom of that section. Last are inbound input messages. There is an arrow labeled "SendInput inserts messages here" at the bottom of that section.'>
+<tr>
+<td style="border: 1px black;border-style: solid solid none solid"></td>
+</tr>
+<tr>
+<td style="border: 1px black;border-style: none solid">Inbound sent messages</td>
+</tr>
+<tr>
+<td style="border: 1px black;border-style: none solid solid solid"></td>
+<td rowspan="2" valign="center">← <code>SendMessage</code> inserts messages here</td>
+</tr>
+<tr>
+<td style="border: 1px black;border-style: none solid"></td>
+</tr>
+<tr>
+<td style="border: 1px black;border-style: none solid">Inbound posted messages</td>
+</tr>
+<tr>
+<td style="border: 1px black;border-style: none solid solid solid"></td>
+<td rowspan="2" valign="center">← <code>PostMessage</code> inserts messages here</td>
+</tr>
+<tr>
+<td style="border: 1px black;border-style: none solid"></td>
+</tr>
+<tr>
+<td style="border: 1px black;border-style: none solid">Inbound input messages</td>
+</tr>
+<tr>
+<td style="border: 1px black;border-style: none solid solid solid"></td>
+<td rowspan="2" valign="center">← <code>SendInput</code> inserts messages here</td>
+</tr>
+
+<tr>
+<td></td>
+</tr>
+</table>
+<p>Basically, the enhancement software already screwed you with respect to message ordering. You won’t be able to make a perfect recovery; all you can do is try to make the best of a bad situation. </p>
+<p>One idea is to use the <code>Reply­Message</code> function in your message handler. The <code>Reply­Message</code> function says, “Hey, like, act like I returned from this message for the purpose of inter-thread <code>Send­Message</code> bookkeeping, such as unblocking the sender, but let me keep running anyway.” This may be enough to get the parts of the system that normally say “No, you can’t do that from inside a sent message” to realize “Oh, wait, the synchronous part is over. Carry on.” </p>
+<p>If that doesn’t work, then you can use the <code>Send­Input</code> message to generate a wheel message back into the input queue. The wheel input will be a bit late (by the amount of time it took your window procedure to receive the message), but it’ll probably be close enough to correct that most people won’t notice. There’s most likely already a lag in the gesture recognition in the enhancement software, so a little more lag probably isn’t the end of the world. </p>
+
+
+</body>

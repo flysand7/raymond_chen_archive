@@ -1,0 +1,109 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What was the role of MS-DOS in Windows 95?</h1>  <!-- .entry-meta -->
+
+<p><i>Welcome, Slashdot readers. Remember, this Web site is <a href="/other/things-i-ve-written-that-have-amused-other-people-episode-4"> for entertainment purposes only</a>.</i></p>
+<p><a href="http://blogs.msdn.com/oldnewthing/pages/407234.aspx#442593"> Sean wants to know what the role of MS-DOS was in Windows 95</a>. I may regret answering this question since it’s clear Slashdot bait. (Even if Sean didn’t intend it that way, that’s what it’s going to turn into.)</p>
+<p>Here goes. Remember, what I write here may not be 100% true, but it is “true enough.” (In other words, it gets the point across without getting bogged down in nitpicky details.)</p>
+<p>MS-DOS served two purposes in Windows 95.</p>
+<ul>
+<li>It served as the boot loader.</li>
+<li>It acted as the 16-bit legacy device driver layer.</li>
+</ul>
+<p>When Windows 95 started up, a customized version of MS-DOS was loaded, and it’s that customized version that processed your <code>CONFIG.SYS</code> file, launched <code>COMMAND.COM</code>, which ran your <code>AUTOEXEC.BAT</code> and which eventually ran <code>WIN.COM</code>, which began the process of booting up the VMM, or the 32-bit virtual machine manager.</p>
+<p>The customized version of MS-DOS was fully functional as far as the phrase “fully functional” can be applied to MS-DOS in the first place. It had to be, since it was all that was running when you ran Windows 95 in “single MS-DOS application mode.”</p>
+<p>The <code>WIN.COM</code> program started booting what most people think of as “Windows” proper. It used the copy of MS-DOS to load the virtual machine manager, read the <code>SYSTEM.INI</code> file, load the virtual device drivers, and then it turned off any running copy of <code>EMM386</code> and switched into protected mode. It’s protected mode that is what most people think of as “the real Windows.”</p>
+<p>Once in protected mode, the virtual device drivers did their magic. Among other things those drivers did was “<a href="https://docs.microsoft.com/en-us/archive/blogs/larryosterman/aardvarks-in-your-code" title="AARDvarks in your code">suck the brains out of MS-DOS</a>,” transfer all that state to the 32-bit file system manager, and then shut off MS-DOS. All future file system operations would get routed to the 32-bit file system manager. If a program issued an <code>int 21h</code>, the 32-bit file system manager would be responsible for handling it.</p>
+<p>And that’s where the second role of MS-DOS comes into play. For you see, MS-DOS programs and device drivers loved to mess with the operating system itself. They would replace the <code>int 21h</code> service vector, they would patch the operating system, they would patch the low-level disk I/O services <code>int 25h</code> and <code>int 26h</code>. They would also do crazy things to the BIOS interrupts such as <code>int 13h</code>, the low-level disk I/O interrupt.</p>
+<p>When a program issued an <code>int 21h</code> call to access MS-DOS, the call would go first to the 32-bit file system manager, who would do some preliminary munging and then, if it detected that somebody had hooked the <code>int 21h</code> vector, it would <i>jump back into the 16-bit code</i> to let the hook run. Replacing the <code>int 21h</code> service vector is logically analogous to subclassing a window. You get the old vector and set your new vector. When your replacement handler is called, you do some stuff, and then call the original vector to do “whatever would normally happen.” After the original vector returned, you might do some more work before returning to the original caller.</p>
+<p>One of the 16-bit drivers loaded by <code>CONFIG.SYS</code> was called <code>IFSMGR.SYS</code>. The job of this 16-bit driver was <i>to hook MS-DOS first</i> before the other drivers and programs got a chance! This driver was in cahoots with the 32-bit file system manager, for its job was to <i>jump from 16-bit code back into 32-bit code</i> to let the 32-bit file system manager continue its work.</p>
+<p>In other words, MS-DOS was just an extremely elaborate <a href="https://devblogs.microsoft.com/oldnewthing/20060110-17/?p=32703" title="The decoy display control panel"> decoy</a>. Any 16-bit drivers and programs would patch or hook what they thought was the real MS-DOS, but which was in reality just a decoy. If the 32-bit file system manager detected that somebody bought the decoy, it told the decoy to quack.</p>
+<p>Let’s start with a system that didn’t contain any “evil” drivers or programs that patched or hooked MS-DOS.</p>
+<table border="0">
+<tbody>
+<tr>
+<td colspan="2">Program calls int 21h</td>
+</tr>
+<tr>
+<td style="width: 1em;"> </td>
+<td bgcolor="#D0FED0" style="border: solid .75pt black;">
+
+<p>checks that nobody has patched or hooked MS-DOS<br/>
+performs the requested operation<br/>
+updates the state variables inside MS-DOS<br/>
+returns to caller</p></td>
+</tr>
+<tr>
+<td colspan="2">Program gets result</td>
+</tr>
+</tbody>
+</table>
+<p>This was paradise. The 32-bit file system manager was able to do all the work without having to deal with pesky drivers that did bizarro things. Note the extra step of updating the state variables inside MS-DOS. Even though we extracted the state variables from MS-DOS during the boot process, we keep those state variables in sync because drivers and programs frequently “knew” how those state variables worked and bypassed the operating system and accessed them directly. Therefore, the file system manager had to maintain the charade that MS-DOS was running the show (even though it wasn’t) so that those drivers and programs saw what they wanted.</p>
+<p>Note also that those state variables were per-VM. (I.e., each MS-DOS “box” you opened got its own copy of those state variables.) After all, <a href="http://blogs.msdn.com/oldnewthing/archive/2007/12/18/6794821.aspx#6825546"> each MS-DOS box had its idea of what the current directory was</a>, what was in the file tables, that sort of thing. This was all an act, however, because the real list of open files was kept in by the 32-bit file system manager. It had to be, because disk caches had to be kept coherent, and file sharing need to be enforced globally. If one MS-DOS box opened a file for exclusive access, then an attempt by a program running in another MS-DOS box to open the file should fail with a sharing violation.</p>
+<p>Okay, that was the easy case. The hard case is if you had a driver that hooked <code>int 21h</code>. I don’t know what the driver does, let’s say that it’s a network driver that intercepts I/O to network drives and handles them in some special way. Let’s suppose also that there’s some TSR running in the MS-DOS box which has hooked <code>int 21h</code> so it can <a href="http://web.archive.org/web/20070804140615/http://www.frontiernet.net/~fys/tsrdemo.htm"> print a 1 to the screen when the <code>int 21h</code> is active and a 2 when the <code>int 21h</code> completes</a>. Let’s follow a call to a local device (not a network device, so the network driver doesn’t do anything):</p>
+<table border="0">
+<tbody>
+<tr>
+<td colspan="4">Program calls int 21h</td>
+</tr>
+<tr>
+<td style="width: 1em;"> </td>
+<td bgcolor="#D0FED0" colspan="3" style="border: solid .75pt black;">
+
+<p>notices that somebody has patched or hooked MS-DOS<br/>
+jumps to the hook (which is the 16-bit TSR)</p></td>
+</tr>
+<tr>
+<td style="width: 1em;"> </td>
+<td bgcolor="#FED0D0" colspan="3" style="border: solid .75pt black;">
+
+<p>prints a 1 to the screen<br/>
+calls previous handler (which is the 16-bit network driver)</p></td>
+</tr>
+<tr>
+<td style="width: 1em;"> </td>
+<td bgcolor="#FED0D0" colspan="3" style="border: solid .75pt black;">
+
+<p>decides that this isn’t a network I/O request calls previous handler (which is the 16-bit IFSMGR hook)</p></td>
+</tr>
+<tr>
+<td style="width: 1em;"> </td>
+<td bgcolor="#FED0D0" colspan="3" style="border: solid .75pt black;">
+
+<p>tells 32-bit file system manager<br/>
+  that it’s <a href="http://web.archive.org/web/20070708225902/http://www.ciadvertising.org/sa/spring_04/adv382j/cristin44/donuts.html"> time to make the donuts</a></p></td>
+</tr>
+<tr>
+<td style="width: 1em;"> </td>
+<td bgcolor="#D0FED0" colspan="3" style="border: solid .75pt black;">
+
+<p>regains control<br/>
+performs the requested operation<br/>
+updates the state variables inside MS-DOS<br/>
+returns to caller</p></td>
+</tr>
+<tr>
+<td style="width: 1em;"> </td>
+<td bgcolor="#FED0D0" colspan="3" style="border: solid .75pt black;">
+
+<p>returns to caller</p></td>
+</tr>
+<tr>
+<td style="width: 1em;"> </td>
+<td bgcolor="#FED0D0" colspan="3" style="border: solid .75pt black;">
+
+<p>prints a 2 to the screen<br/>
+returns to caller</p></td>
+</tr>
+<tr>
+<td colspan="4">Program gets result</td>
+</tr>
+</tbody>
+</table>
+<p>Notice that all the work is still being done by the 32-bit file system manager. It’s just that the call gets routed through all the 16-bit stuff to maintain the charade that 16-bit MS-DOS is still running the show. The only 16-bit code that actually ran (in red) is the stuff that the TSR and network driver installed, plus a tiny bit of glue in the 16-bit IFSMGR hook. Notice that no 16-bit MS-DOS code ran. The 32-bit file manager took over for MS-DOS.</p>
+<p>A similar sort of “take over but let the crazy stuff happen if somebody is doing crazy stuff” dance took place when the I/O subsystem took over control of your hard drive from 16-bit device drivers. If it recognized the drivers, it would “suck their brains out” and take over all the operations, in the same way that the 32-bit file system manager took over operations from 16-bit MS-DOS. On the other hand, if the driver wasn’t one that the I/O subsystem recognized, it let the driver be the one in charge of the drive. If this happened, it was said that you were going through the “real-mode mapper” since “real mode” was name for the CPU mode when protected mode was not running; in other words, the mapper was letting the 16-bit drivers do the work.</p>
+<p>Now, if you were unlucky enough to be using the real-mode mapper, you probably noticed that system performance to that drive was pretty awful. That’s because you were using the old clunky single-threaded 16-bit drivers instead of the faster, multithread-enabled 32-bit drivers. (When a 16-bit driver was running, no other I/O could happen because 16-bit drivers were not designed for multi-threading.)</p>
+<p>This awfulness of the real-mode mapper actually came in handy in a backwards way, because it was an early indication that your computer got infected with an MS-DOS virus. After all, MS-DOS viruses did what TSRs and drivers did: They hooked interrupt vectors and took over control of your hard drive. From the I/O subsystem’s point of view, they looked just like a 16-bit hard disk device driver! When people complained, “Windows suddenly started running really slow,” we asked them to look at the system performance page in the control panel and see if it says that “Some drives are using MS-DOS compatibility.” If so, then it meant that the real-mode mapper was in charge, and if you didn’t change hardware, it probably means a virus.</p>
+<p>Now, there are parts of MS-DOS that are unrelated to file I/O. For example, there are functions for allocating memory, <a href="https://devblogs.microsoft.com/oldnewthing/20071217-00/?p=24143"> parsing a string containing potential wildcards into FCB format</a>, that sort of thing. Those functions were still handled by MS-DOS since they were just “helper library” type functions and there was no benefit to reimplementing them in 32-bit code aside from just being able to say that you did it. The old 16-bit code worked just fine, and if you let it do the work, you preserved compatibility with programs that patched MS-DOS in order to alter the behavior of those functions.</p>
+
+
+</body>

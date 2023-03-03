@@ -1,0 +1,153 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Reading mouse input from a console program, and programmatically turning off Quick Edit mode</h1>  <!-- .entry-meta -->
+
+<p><p>
+Today’s Little program shows how to read mouse input from
+a console program.
+You might use this if you are writing a console-mode text
+editor with mouse support,
+or maybe you want to want to add mouse support to your
+<a href="http://blogs.msdn.com/b/ericlippert/archive/2011/12/12/shadowcasting-in-c-part-one.aspx">
+roguelike game</a>.
+</p>
+<p>
+But I’m not going to implement the game itself.
+Instead, I’m just going to print mouse coordinates to the
+screen.
+</p>
+<pre>
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/02/12/71851.aspx">UNICODE</a>
+#define _UNICODE
+#include &lt;windows.h&gt;
+#include &lt;tchar.h&gt;
+#include &lt;stdio.h&gt;</pre></p>
+<p>int __cdecl _tmain(int argc, PTSTR argv[])
+{
+ HANDLE hConsole = GetStdHandle(STD_INPUT_HANDLE);
+ BOOL fContinue = TRUE;
+ DWORD dwEvents;
+ INPUT_RECORD input;
+ while (fContinue &amp;&amp;
+        ReadConsoleInput(hConsole, &amp;input, 1, &amp;dwEvents) &amp;&amp;
+        dwEvents &gt; 0) {
+  switch (input.EventType) {
+  case KEY_EVENT:
+   if (input.Event.KeyEvent.wVirtualKeyCode == VK_ESCAPE) {
+    fContinue = FALSE;
+   }
+  case MOUSE_EVENT:
+   _tprintf(TEXT(“X=%d, Y=%d; buttons=%x, shift=%x, flags=%x\n”),
+     input.Event.MouseEvent.dwMousePosition.X,
+     input.Event.MouseEvent.dwMousePosition.Y,
+     input.Event.MouseEvent.dwButtonState,
+     input.Event.MouseEvent.dwControlKeyState,
+     input.Event.MouseEvent.dwEventFlags);
+   break;
+  }
+ }
+ return 0;
+}
+
+<p>
+Our program just loops around collecting input,
+and if it gets a mouse event, it just prints the coordinates.
+“Insert game here.”
+If the user presses the
+<kbd>Esc</kbd> key, then we exit.
+</p>
+<p>
+Run this program,
+move the mouse around the window, and… hey,
+nothing happened!
+</p>
+<p>
+Oh right, because we forgot to enable mouse input.
+Let’s try that again.
+</p>
+<pre>
+ …
+ HANDLE hConsole = GetStdHandle(STD_INPUT_HANDLE);</pre></p>
+<p> <font color="blue">DWORD dwPreviousMode = 0;
+ GetConsoleMode(hConsole, &amp;dwPreviousMode);
+ DWORD dwNewMode = dwPreviousMode | ENABLE_MOUSE_INPUT;
+ SetConsoleMode(hConsole, dwNewMode);
+ }</font></p>
+<p> BOOL fContinue = TRUE;
+ …
+ }</p>
+<p> <font color="blue">SetConsoleMode(hConsole, dwPreviousMode);</font></p>
+<p> return 0;
+}
+
+<p>
+Remember, this is just a Little Program,
+so there is little to no error checking.
+</p>
+<p>
+Okay, now you can run the program,
+and as you move the mouse around the window, you get…
+Well, it depends.
+Some of you may get output,
+and others may get nothing.
+</p>
+<p>
+Those of you who got nothing aren’t getting anything
+because you set <i>Quick Edit</i> mode on your console.
+<i>Quick Edit</i> mode commandeers the mouse and uses it
+for copy/paste operations rather than passing it through
+to the application.
+It’s handy if you spend most of your time using programs
+that don’t use the mouse,
+since it saves you from having to go to the
+<i>Edit</i> menu all the time.
+</p>
+<p>
+It’s not so handy if you’re running a program that actually
+wants to use the mouse.
+</p>
+<p>
+Add another line of code to the program to disable
+Quick-Edit mode:
+</p>
+<pre>
+ DWORD dwNewMode = dwPreviousMode | ENABLE_MOUSE_INPUT;
+ <font color="blue">dwNewMode &amp;= ~ENABLE_QUICK_EDIT_MODE;</font>
+ SetConsoleMode(hConsole, dwNewMode);
+</pre>
+<p>
+Okay, now when you run the program and move the mouse around,
+you get… still nothing.
+</p>
+<p>
+Ah, because
+<code>ENABLE_QUICK_EDIT_MODE</code> is an extended
+flag,
+and if you want to modify an extended flag, you also have to pass
+the
+<code>ENABLE_EXTENDED_FLAGS</code> flag.
+(You can guess how I discovered this.)
+</p>
+<pre>
+ dwNewMode &amp;= ~ENABLE_QUICK_EDIT_MODE;
+ SetConsoleMode(hConsole, dwNewMode <font color="blue">|
+                          ENABLE_EXTENDED_FLAGS</font>);</pre></p>
+<p> …
+ SetConsoleMode(hConsole, dwPreviousMode <font color="blue">|
+                          ENABLE_EXTENDED_FLAGS</font>);
+
+<p>
+Okay, now you can run the program,
+and as you wave the mouse around,
+the coordinates will be printed to the screen.
+Whew.
+</p>
+<p>
+<b>Exercise</b>:
+Discuss why there is the crazy
+<code>ENABLE_EXTENDED_FLAGS</code> flag.
+For bonus points, come up with a way the flag could have
+been avoided while still solving the problem the flag was created for.
+</p></p>
+
+
+</body>

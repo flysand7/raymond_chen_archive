@@ -1,0 +1,72 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The default number of threads in an I/O completion port is the number of processors, but is that logical or physical processors?</h1>  <!-- .entry-meta -->
+
+<p>The <a href="https://docs.microsoft.com/en-us/windows/desktop/FileIO/createiocompletionport"><code>Create­Io­Completion­Port</code></a> function lets you specify how many concurrent threads can be processing work from the completion port. But if you pass a value of 0 for <code>Number­Of­Concurrent­Threads</code>, “the system allows as many concurrently running threads as there are processors in the system.” </p>
+<p>Are these physical processors or logical processors? </p>
+<p>They are logical processors. </p>
+<p>One way to figure this out is that the goal of the I/O completion port is to keep CPU usage at exactly 100%. If the I/O completion port consumed only as many threads as physical processors, then you wouldn’t quite get to 100% CPU utilization, because there would be extra capacity on the unused logical processors. </p>
+<p>Another way to figure this out is to use your understanding of history. I/O completion ports were created long before hyperthreading was invented, so this code <a href="https://devblogs.microsoft.com/oldnewthing/">treated all logical processors as full-fledged processors</a>. </p>
+<p>And a third way to figure it out is to test it. </p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;strsafe.h&gt;
+
+#define THREADS 10
+
+LONG ActiveThreads = 0;
+
+DWORD CALLBACK IoThread(void* Port)
+{
+ DWORD Bytes;
+ ULONG_PTR Key;
+ OVERLAPPED* Overlapped;
+ while (GetQueuedCompletionStatus(Port, &amp;Bytes,
+              &amp;Key, &amp;Overlapped, 1000)) {
+  TCHAR msg[64];
+  auto count = InterlockedIncrement(&amp;ActiveThreads);
+  StringCchPrintf(msg, ARRAYSIZE(msg), TEXT("&gt;%d\r\n"), count);
+  OutputDebugString(msg);
+
+  DWORD Tick = GetTickCount();
+  while (GetTickCount() - Tick &lt; 1000) { }
+
+  count = InterlockedDecrement(&amp;ActiveThreads);
+  StringCchPrintf(msg, ARRAYSIZE(msg), TEXT("&lt;%d\r\n"), count);
+  OutputDebugString(msg);
+ }
+ return 0;
+}
+
+int __cdecl main(int, char**)
+{
+ HANDLE Port = CreateIoCompletionPort(INVALID_HANDLE_VALUE,
+                nullptr, 0, 0);
+
+ HANDLE ThreadHandles[THREADS];
+ int i;
+ for (i = 0; i &lt; THREADS; i++) {
+  DWORD Id;
+  ThreadHandles[i] = CreateThread(0, 0, IoThread, Port, 0, &amp;Id);
+ }
+
+ for (i = 0; i &lt; THREADS * 2; i++) {
+  PostQueuedCompletionStatus(Port, 0, 0, nullptr);
+ }
+
+ for (i = 0; i &lt; THREADS; i++) {
+  WaitForSingleObject(ThreadHandles[i], INFINITE);
+ }
+
+ return 0;
+}
+</pre>
+<p>Pick a value for <code>THREADS</code> that is greater than the number of logical processors. </p>
+<p>We start by creating an I/O completion port and a bunch of threads whose job it is to complete work posted to the port. we then post a lot of work to the port and wait for the threads to drain the work. </p>
+<p>Each thread grabs a work item, then increments a counter that lets us know how many threads are actively processing work. The thread then goes into a tight spin loop for one second. It has to do this rather than <code>Sleep</code> because the thread needs to be actively doing work for it to be counted against the I/O completion port’s concurrency limit. </p>
+<p>After wasting some time, the thread decrements the count of active threads, and then goes back to looking for more work. </p>
+<p>Along the way, we print the number of active threads. </p>
+<p>Run this program, and you’ll see that it retires work in chunks, and the number of threads in each chunk is the number of logical processors. </p>
+<p>So there, confirmed by experimentation. </p>
+
+
+</body>

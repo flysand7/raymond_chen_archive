@@ -1,0 +1,130 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Building a result holder for movable types</h1>  <!-- .entry-meta -->
+
+<p>One of the pieces we need for <a href="/code/c-coroutines-making-the-promise-itself-be-the-shared-state-the-outline" title="C++ coroutines: Making the promise itself be the shared state, the outline"> the <code>simple_promise</code> we use to construct a coroutine</a> is what we have been calling the “result holder”. This is basically a variant that starts out empty, and can atomically transition to holding either the result of a successful coroutine, an exception pointer for a failed coroutine.</p>
+<p>Our variant is more complicated than a <code>std::variant</code> thanks to the atomic nature (since it is used from both the coroutine as well as the awaiter). On the other hand, we’re simpler than a <code>std::variant</code> because we do not have to deal with the <code>valueless_<wbr/>_<wbr/>by_<wbr/>exception</code> state.</p>
+<p>The storage of the value result is made complicated by a few things:</p>
+<ul>
+<li>If the promise produces a <code>void</code>, we can’t actually store a <code>void</code> anywhere because there is no such thing as an object of type <code>void</code>. Instead, <code>void</code> needs to be represented by the <i>absence</i> of an object.</li>
+<li>If the promise produces a reference, we have to be careful to preserve the reference rather than accidentally decaying it to a value.</li>
+<li>If the promise produces a non-reference, then we need to move the value around, in case the value is non-copyable, and more generally to avoid unnecessary copies. Even better is if we just pass the value by reference as much as possible, so that there is only a single move operation to get it to its destination.</li>
+</ul>
+<p>As we saw earlier, we can handle the first two cases by wrapping the value inside a structure. And the third case just requires vigilance.</p>
+<pre>// ⟦simple_promise_result_holder definition⟧ ≔
+
+    template&lt;typename T&gt;
+    struct simple_promise_value
+    {
+        T value;
+        T&amp;&amp; get_value()
+        { return static_cast&lt;T&amp;&amp;&gt;(value); }
+    };
+
+    template&lt;&gt;
+    struct simple_promise_value&lt;void&gt;
+    {
+        void get_value() { }
+    };
+</pre>
+<p>This is similar to the pattern we’ve seen before for wrapping something (possibly a reference, possibly a <code>void</code>) in a structure. The <code>get_value</code> method here is a little different because we want to move the object out when retrieving it.</p>
+<p>The first thing to observe is that we cast the value to <code>T&amp;&amp;</code>, so everything hinges on what <code>T&amp;&amp;</code> is.</p>
+<p>In the case where <code>T</code> is a reference type, <code>T&amp;&amp;</code> collapses back down to just <code>T</code>: Adding a <code>&amp;&amp;</code> to a reference has no effect. Therefore, if <code>T</code> is a reference type, the net effect is to return the <code>value</code> as whatever type of reference <code>T</code> already is.</p>
+<p>In the case where <code>T</code> is not a reference, adding <code>&amp;&amp;</code> makes it an rvalue reference, so net effect is to return an rvalue reference to the held value. That rvalue reference is then ready to be moved out.</p>
+<p>That was a lot to unpack in that one function <code>get_<wbr/>value</code>.²</p>
+<p>Okay, so here comes the holder itself.</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_promise_result_holder
+    {
+        enum class result_status
+            { empty, value, error };
+</pre>
+<p>We define an enumeration that describes what is in the result holder. A status of <code>empty</code> means that the coroutine has started but hasn’t yet completed, <code>value</code> means that it completed with a result, and <code>error</code> means that it completed with an error.</p>
+<p>Next we have the member variables <code>simple_<wbr/>promise_<wbr/>result_<wbr/>holder</code>.</p>
+<pre>        std::atomic&lt;result_status&gt; status
+            { result_status::empty };
+
+        union result_holder
+        {
+            result_holder() { }
+            ~result_holder() { }
+            simple_promise_value&lt;T&gt; wrapper;
+            std::exception_ptr error;
+        } result;
+</pre>
+<p>We put the wrapper inside a union, and explicitly give the union trivial constructors and destructors to indicate that we will take responsibility for constructing and destructing the active member of the union.</p>
+<p>Okay, so how do we put values into the holder?</p>
+<pre>        template&lt;typename...Args&gt;
+        void set_value(Args&amp;&amp;... args)
+        {
+            new (std::addressof(result.wrapper))
+                simple_promise_value&lt;T&gt;
+                    { std::forward&lt;Args&gt;(args)... };
+            status.store(result_status::value,
+                std::memory_order_release);
+        }
+</pre>
+<p>If we are setting a value into the holder, then use placement new to construct the wrapper, forwarding the parameters into the constructor. If <code>T</code> is <code>void</code>, then there are no parameters, and we construct an empty wrapper. This seems pointless, but it presreves the invariant that if the status is <code>succeeded</code>, then the wrapper is the active member of the union, which saves us some <code>if constexpr</code> effort at destruction. In practice, constructing and destructing the empty structure has no code generation effect, so this is just bookkeeping to avoid tripping over undefined behavior.</p>
+<p>If <code>T</code> is non-<code>void</code>, then the parameter is the <code>T</code> (or possibly an rvalue or const lvalue reference to <code>T</code>) with which to initialize the wrapper.</p>
+<p>In both cases, if the wrapper has been successfully constructed, we mark the status as <code>value</code> to indicate that we have a value. Note that this must wait until construction is complete for two reasons.</p>
+<ol>
+<li>If an exception occurs during construction, we don’t want to say that we have a working wrapper.</li>
+<li>We don’t want the awaiting thread to see the value until it is fully constructed.</li>
+</ol>
+<p>Updating the status with release memory order ensures that the construction of the wrapper is visible to other threads before we set the status.</p>
+<pre>        void unhandled_exception() noexcept
+        {
+            new (std::addressof(result.error))
+                std::exception_ptr(std::current_exception());
+            status.store(result_status::error,
+                std::memory_order_release);
+        }
+</pre>
+<p>Saving the current exception is entirely analogous. The current exception is obtained from the C++ language itself and used to initialize the <code>error</code> member of our holder. Again, we update the status after the exception is stowed, and use release semantics to avoid races.</p>
+<pre>        bool is_empty() const noexcept
+        {
+            return status.load(std::memory_order_relaxed) ==
+                result_status::empty;
+        }
+</pre>
+<p>The <code>is_empty</code> method says whether there’s anything interesting in the holder yet.</p>
+<p>Of course, once we put the value into the holder, we presumably want to be able to get it out again.</p>
+<pre>        T get_value()
+        {
+            switch (status.load(std::memory_order_acquire)) {
+            case result_status::value:
+                return result.wrapper.get_value();
+            case result_status::error:
+                std::rethrow_exception(
+                    std::exchange(result.error, {}));
+            }
+            assert(false);
+            std::terminate();
+        }
+</pre>
+<p>We check the status to tell us whether the thing inside the holder is a value or an exception. We need to use acquire semantics here, to ensure that we don’t read the <code>T</code> or <code>exception_<wbr/>ptr</code> before it has been completely written by the coroutine.</p>
+<p>If the status says that the contents are a value, then we let the wrapper’s <code>get_value</code> extract the result (or return nothing, if the type is <code>void</code>). Reference types come out as themselves, and non-reference types are returned as rvalue references, so that the results can be moved out.</p>
+<p>If the status says that we have an error, then we rethrow the stowed exception. We exchange it out so we can detect at destruction if we had an unobserved exception.</p>
+<p>If the status is neither of these, then something horrible has happened, and we terminate.</p>
+<p>The last step in the lifetime of the holder is destruction:</p>
+<pre>        ~simple_promise_result_holder()
+        {
+            switch (status.load(std::memory_order_relaxed)) {
+            case result_status::value:
+                result.wrapper.~simple_promise_value();
+                break;
+            case result_status::error:
+                if (result.error)
+                    std::rethrow_exception(result.error);
+                result.error.~exception_ptr();
+            }
+        }
+    };
+</pre>
+<p>When it’s time to clean up, we use the status as a discriminant to figure out what is in the holder and destruct the appropriate member. (Note that we take advantage of the <a href="https://en.cppreference.com/w/cpp/language/injected-class-name"> injected class name</a> to save us some <code>&lt;T&gt;</code> and <code>std::</code> keypresses.)</p>
+<p>If we are cleaning an exception and the exception is still there, then that means that an exception occurred in the coroutine but was never observed, much less caught. This is not a great thing, so we rethrow the exception immediately so that the program can crash with an unhandled exception.²</p>
+<p>That takes care of the missing pieces related to the result holder. Next time, we’ll look at the <code>return_<wbr/>value</code> and <code>return_<wbr/>void</code> methods which are responsible for mediating the <code>co_return</code>.</p>
+<p>¹ An earlier version of this code used <code>std::forward&lt;T&gt;(value)</code> instead of <code>static_cast&lt;T&amp;&amp;&gt;(value)</code>, in the mistaken belief that the two are equivalent. But they’re not: <code>std::forward&lt;T&gt;(value)</code> contains extra magic in its declaration to reject lvalue-to-rvalue conversion. Mind you, at the end of the day, they are both <code>static_cast&lt;T&amp;&amp;&gt;(value)</code>, so it’s a toss-up which one you use if you aren’t trying to block lvalue-to-rvalue conversion.</p>
+<p>² We are explicitly ignoring the guidance not to throw an exception in a destructor, because we really do want to crash.</p>
+
+
+</body>

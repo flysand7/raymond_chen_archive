@@ -1,0 +1,99 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does the CLR report a NullReferenceException even if the referenced access is not exactly the null pointer?</h1>  <!-- .entry-meta -->
+
+<p>
+We saw some time ago that before invoking a method on an object,
+the CLR will generate a
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2007/08/16/4407029.aspx">
+<code>cmp [ecx], ecx</code> instruction</a>
+to force a null reference exception to be raised if you are trying
+to invoke a method on a null reference.
+</p>
+<p>
+But why does the CLR raise a
+<code>Null­Reference­Exception</code> if the faulting address
+is almost but not quite zero?
+</p>
+<pre>
+class Program {
+ public static unsafe void Main() {
+  byte *addr = (byte*)0x42;
+  byte val = *addr;
+ }
+}
+</pre>
+<p>
+When run, this program raises a
+<code>Null­Reference­Exception</code> rather than
+an
+<code>Access­Violation­Exception</code>.
+On the other hand, if you change the address to
+<code>0x80000000</code>,
+then you get the expected
+<code>Access­Violation­Exception</code>.
+</p>
+<p>
+With a little bit of preparation,
+the CLR optimizes out null pointer checks if it knows that
+it’s going to access the object anyway.
+For example, if you write
+</p>
+<pre>
+class Something {
+ int a, b, c;
+ static int Test(Something s) { return s.c; }
+}
+</pre>
+<p>
+then the CLR doesn’t need to perform a null pointer test
+against <code>s</code> before trying to read <code>c</code>,
+because the act of reading <code>c</code> will raise an exception
+if <code>s</code> is a null reference.
+</p>
+<p>
+On the other hand, the offset of <code>c</code> within
+<code>s</code>
+is probably not going to be zero,
+so when the exception is raised by the CPU,
+the faulting address is not going to be exactly zero
+but rather some small number.
+</p>
+<p>
+The CLR therefore assumes that all exceptions at addresses close to
+the null pointer were the result of trying to access a field relative
+to a null reference.
+Once you also ensure that the first
+64<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/06/11/9725386.aspx">KB</a>
+of memory is always invalid,
+this assumption allows the null pointer check optimization.
+</p>
+<p>
+Of course, if you start messing with unmanaged code or unsafe code,
+then you can trigger access violations near the null pointer that
+are not the result of null references.
+That’s what happens when you operate outside the rules of the
+managed memory environment.
+</p>
+<p>
+Mind you, version 1 of the .NET Framework didn’t even have an
+<code>Access­Violation­Exception</code>.
+In purely managed code, all references are either valid or null,
+so version 1 of the .NET Framework assumed that any access violation was
+the result of a null reference.
+There’s even
+<a href="http://msdn.microsoft.com/en-us/library/system.accessviolationexception.aspx">
+a configuration option you can set</a>
+to force newer versions of the .NET Framework to treat all access
+violations as null reference exceptions.
+</p>
+<p>
+<b>Exercise</b>:
+Respond to the following statement:
+“Consider a really large class (more than 64KB),
+and I access a field near the end of the class.
+In that case, the null pointer optimization won’t work
+because the access will be outside the 64KB range.
+Aha, I have found a flaw in your design!”</p>
+
+
+</body>

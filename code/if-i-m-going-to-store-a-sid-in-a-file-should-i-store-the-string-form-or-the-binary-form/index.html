@@ -1,0 +1,47 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If I’m going to store a SID in a file, should I store the string form or the binary form?</h1>  <!-- .entry-meta -->
+
+<p>A customer needed to save some user SIDs into a file and wanted guidance on whether to use string format or binary format. </p>
+<p>Here are some pros and cons. </p>
+<p>String format: To save the SID, use the <code>Convert­Sid­To­String­Sid</code> function, then save the string to the file. To load the SID, read the string from the file, then call <code>Convert­String­Sid­To­Sid</code>. The conversion may fail if the string is corrupted (either accidentally or maliciously). </p>
+<ul>
+<li>Pro: Hard to get wrong.     The heavy lifting is done by the two helper functions.     In particular a corrupted string SID will be detected by     <code>Convert­String­Sid­To­Sid</code>. 
+<li>Pro: Strings are well-known quantities.     You probably already have code to load and save strings.     They are also easy to see in memory dumps or in file viewers. 
+<li>Con: Takes up more space.     The string format is larger than the binary format. 
+<li>Con: The conversion cost can add up if you have to do it a lot. 
+<li>Worst-case size is large:     S-255-281474976710655-4294967295-4294967295-4294967295-4294967295-4294967295-4294967295-4294967295-4294967295-4294967295-4294967295-4294967295-4294967295-4294967295-4294967295-4294967295 =     188 characters,     if you also include the null terminator. </li></li></li></li></li></ul>
+<p>Binary format: To save the SID, use the <code>Get­Length­Sid</code> function, then save the raw bytes to the file. To load the SID, read the bytes from the file, then validate the SID to ensure it was not corrupted (either accidentally or maliciously). </p>
+<ul>
+<li>Cons: Validating a SID is tricky. (Details below.)     If you mess up, you may have a security vulnerability. 
+<li>Cons: Binary format is harder to spot in a memory dump     or in a file viewer. 
+<li>Pro: Takes up less space. 
+<li>Worst-case size is     <code>SECURITY_MAX_SID_SIZE</code> =     68 bytes, so you might even just allocate     a fixed buffer for the SID and avoid the variable-length problem. </li></li></li></li></ul>
+<p>The tricky part is validating that a chunk of memory is a valid SID. </p>
+<p>You might think that the <code>Is­Valid­Sid</code> function would do that for you, but it can’t because the function doesn’t have a <code>cbSize</code> parameter, so it cannot validate that the purported SID fits inside the buffer. The <code>Is­Valid­Sid</code> function does logical validation, not physical validation. (It assumes that the memory is formatted like a SID, and it’s checking whether the formatting is legal.) </p>
+<p>Therefore, you have to do the length validation yourself, and then let <code>Is­Valid­Sid</code> do the semantic validation only after you have verified that the length is correct. </p>
+<pre>
+BOOL IsValidUntrustedSid(PSID psid, size_t cbSize)
+{
+    // First make sure the SID is at least the minimum size.
+    // This ensures that we can read the revision and subauthority
+    // count.
+    if (cbSize &lt; SECURITY_SID_SIZE(0)) return FALSE;
+
+    // Now that we know the header is readable, we can calculate
+    // the length the SID claims to be and make sure it is actually
+    // that length.
+    if (cbSize != GetLengthSid(psid)) return FALSE;
+
+    // Now that we know the entire memory block is the right size,
+    // we can use IsValidSid.
+    return IsValidSid(psid);
+}
+</pre>
+<p>Using strings is more convenient, and as long as the conversion isn’t a bottleneck, and the disk space is not an issue, it would probably be a more convenient choice for a persistence format. </p>
+<p>Note that the <code>Convert­String­Sid­To­Sid</code> function parses abbreviations for well-known SIDs. For example, you can pass <tt>BA</tt> and out will come the Builtin Administrators group. If you want to block that, you can first check that the string being converted begins with <tt>S-</tt>. </p>
+<p>On the other hand, the security people tell me that defending against shorthand SIDs like <tt>BA</tt> isn’t all that interesting. Since the attacker controls the string, they could just use the raw format <tt>S-1-5-32-544</tt> instead. Some shorthand SIDs expand to include the domain SID. For example <tt>EA</tt> expands to <tt>S-1-5-21-X-519</tt>, where <tt>X</tt> is the domain RID. Even if you blocked the shorthand SID, the attacker could still pass the full string <tt>S-1-5-21-X-519</tt>. (From a security-theoretical point of view, the SID for the domain is not considered sensitive data. You should assume that attackers already know your domain SID.) </p>
+<p>But wait, we got all distracted with answering the question and forgot to solve the problem. </p>
+<p>In general, it is rare to save just the SID all by itself. Usually a SID is part of a security descriptor, so you should be saving the entire security descriptor. (We saw this some time ago when we discussed how <a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/11/28/10576639.aspx">the SID history is used when a user’s SID changes</a>.) </p>
+
+
+</body>

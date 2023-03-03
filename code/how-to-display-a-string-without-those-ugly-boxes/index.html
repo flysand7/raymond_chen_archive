@@ -1,0 +1,293 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to display a string without those ugly boxes</h1>  <!-- .entry-meta -->
+
+<p>
+You’ve all seen those ugly boxes.  When you try to display a string
+and the font you have doesn’t support all of the characters in it,
+you get an ugly box for the characters that aren’t available in the
+font.
+</p>
+<p>
+Start with
+<a href="http://weblogs.asp.net/oldnewthing/archive/2003/07/23/54576.aspx">
+our scratch program</a> and add this to the
+<code>PaintContent</code> function:
+</p>
+<pre>
+void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+<font color="blue">    TextOutW(pps-&gt;hdc, 0, 0,
+            L"ABC\x0410\x0411\x0412\x0E01\x0E02\x0E03", 9);</font>
+}
+</pre>
+<p>
+That string contains the first three letters from
+three different alphabets: “ABC” from the Roman alphabet;
+“АБВ”
+from the Cyrillic alphabet; and
+“กขฃ” from the Thai alphabet.
+</p>
+<p>
+If you run this program, you get a bunch of ugly boxes for the
+non-Roman characters because the SYSTEM font is very limited in
+its character set support.
+</p>
+<p>
+But how to pick the right font?  What if the string contained
+Korean or Japanese characters?  There is no single font that
+contains every character defined by Unicode. (Or at least,
+none that is commonly available.)  What do you do?
+</p>
+<p>
+This is where
+<a href="http://msdn.microsoft.com/workshop/misc/mlang/tutorials/fontlinking.asp">
+font linking</a> comes in.
+</p>
+<p>
+Font linking allows you to take a string and break it into
+pieces, where each piece can be displayed in an appropriate font.
+</p>
+<p>
+<a href="http://msdn.microsoft.com/workshop/misc/mlang/reference/ifaces/imlangfontlink2/imlangfontlink2.asp">
+The IMLangFontLink2 interface</a> provides the methods necessary
+to do this breaking.
+<a href="http://msdn.microsoft.com/workshop/misc/mlang/reference/ifaces/imlangcodepages/getstrcodepages.asp">
+GetStrCodePages</a> takes the string apart into chunks, such that
+all the characters in a chunk
+can be displayed by the same font, and
+<a href="http://msdn.microsoft.com/workshop/misc/mlang/reference/ifaces/imlangfontlink/mapfont.asp">
+MapFont</a> creates the font.
+</p>
+<p>
+Okay, so let’s write our font-link-enabled version of the
+TextOut function.  We’ll do this in stages,
+starting with the
+<a href="http://weblogs.asp.net/oldnewthing/archive/2003/11/12/55659.aspx">idea kernel</a>.
+</p>
+<pre>
+#include &lt;mlang.h&gt;
+HRESULT TextOutFL(HDC hdc, int x, int y, LPCWSTR psz, int cch)
+{
+  ...
+  while (cch &gt; 0) {
+    DWORD dwActualCodePages;
+    long cchActual;
+    pfl-&gt;GetStrCodePages(psz, cch, 0, &amp;dwActualCodePages, &amp;cchActual);
+    HFONT hfLinked;
+    pfl-&gt;MapFont(hdc, dwActualCodePages, 0, &amp;hfLinked);
+    HFONT hfOrig = SelectFont(hdc, hfLinked);
+    TextOut(hdc, ?, ?, psz, cchActual);
+    SelectFont(hdc, hfOrig);
+    pfl-&gt;ReleaseFont(hfLinked);
+    psz += cchActual;
+    cch -= cchActual;
+  }
+  ...
+}
+</pre>
+<p>
+After figuring out which code pages the default font supports,
+we walk through the string asking GetStrCodePages to give us
+the next chunk of characters. From that chunk, we create a matching font
+and draw the characters in that font at “the right place”.
+Repeat until all the characters
+are done.
+</p>
+<p>
+The rest is refinement and paperwork.
+</p>
+<p>
+First of all, what is “the right place”?
+We want the next chunk to resume where the previous chunk left off.
+For that, we take advantage of the TA_UPDATECP text alignment style,
+which says that GDI should draw the text at the current position,
+and update the current position to the end of the drawn text
+(therefore, in position for the next chunk).
+</p>
+<p>
+Therefore, part of the paperwork is to set the DC’s current position
+and set the text mode to TA_UPDATECP:</p>
+<pre>
+  SetTextAlign(hdc, GetTextAlign(hdc) | TA_UPDATECP);
+  MoveToEx(hdc, x, y, NULL);
+</pre>
+<p>
+Then we can just pass “0,0” as the coordinates to TextOut,
+because the coordinates passed to TextOut are ignored if
+the text alignment mode is TA_UPDATECP;
+it always draws at the current position.
+</p>
+<p>
+Of course, we can’t just mess with the DC’s settings like this.
+If the caller did not set TA_UPDATECP, then the caller
+is not expecting us to be meddling with the current
+position.  Therefore, we have to save the original position
+and restore it (and the original text alignment mode) afterwards.
+</p>
+<pre>
+<font color="blue">  POINT ptOrig;
+  DWORD dwAlignOrig = GetTextAlign(hdc);
+  SetTextAlign(hdc, dwAlignOrig | TA_UPDATECP);
+  MoveToEx(hdc, x, y, &amp;ptOrig);</font>
+  while (cch &gt; 0) {
+    ...
+    TextOut(hdc, <font color="blue">0, 0</font>, psz, cchActual);
+    ...
+  }
+<font color="blue">  // if caller did not want CP updated, then restore it
+  // and restore the text alignment mode too
+  if (!(dwAlignOrig &amp; TA_UPDATECP)) {
+    SetTextAlign(hdc, dwAlignOrig);
+    MoveToEx(hdc, ptOrig.x, ptOrig.y, NULL);
+  }</font>
+</pre>
+<p>
+Next is a refinement:
+We should take advantage of the second parameter to
+GetStrCodePages, which specifies the code pages we would prefer to use
+if a choice is avialable.
+Clearly we should prefer to use the code pages supported by the font
+we want to use, so that if the character can be displayed in that font
+directly, then we shouldn’t map an alternate font.
+</p>
+<pre>
+<font color="blue">  HFONT hfOrig = (HFONT)GetCurrentObject(hdc, OBJ_FONT);
+  DWORD dwFontCodePages = 0;
+  pfl-&gt;GetFontCodePages(hdc, hfOrig, &amp;dwFontCodePages);</font>
+  ...
+  while (cch &gt; 0) {
+    pfl-&gt;GetStrCodePages(psz, cch, <font color="blue">dwFontCodePages</font>, &amp;dwActualCodePages, &amp;cchActual);
+    <font color="blue">if (dwActualCodePages &amp; dwFontCodePages) {
+      // our font can handle it - draw directly using our font
+      TextOut(hdc, 0, 0, psz, cchActual);
+    } else {</font>
+      ... MapFont etc ...
+    <font color="blue">}</font>
+  }
+  ...
+</pre>
+<p>
+Of course, you probably wonder this magical <code>pfl</code> comes
+from.  It comes from
+<a href="http://msdn.microsoft.com/workshop/misc/mlang/reference/objects/cmultilanguage.asp">
+the Multilanguage Object</a> in mlang.</p>
+<pre>
+<font color="blue">  IMLangFontLink2 *pfl;
+  CoCreateInstance(CLSID_CMultiLanguage, NULL,
+                   CLSCTX_ALL, IID_IMLangFontLink2, (void**)&amp;pfl);</font>
+  ...
+<font color="blue">  pfl-&gt;Release();</font>
+</pre>
+<p>
+And of course, all the errors we’ve been ignoring need to be taken care of.
+This does create a big of a problem if we run into an error after we have
+already made it through a few chunks.  What should we do?
+</p>
+<p>
+I’m going to handle the error by drawing the string in the original font,
+ugly boxes and all.  We can’t erase the characters we already drew,
+and we can’t just draw half of the string (for our caller won’t know where
+to resume).
+So we just draw with the original font and hope for the best.
+At least it’s no worse than it was before font linking.
+</p>
+<p>
+Put all of these refinements together and you get this final function:
+</p>
+<pre>
+HRESULT TextOutFL(HDC hdc, int x, int y, LPCWSTR psz, int cch)
+{
+  HRESULT hr;
+  IMLangFontLink2 *pfl;
+  if (SUCCEEDED(hr = CoCreateInstance(CLSID_CMultiLanguage, NULL,
+                      CLSCTX_ALL, IID_IMLangFontLink2, (void**)&amp;pfl))) {
+    HFONT hfOrig = (HFONT)GetCurrentObject(hdc, OBJ_FONT);
+    POINT ptOrig;
+    DWORD dwAlignOrig = GetTextAlign(hdc);
+    if (!(dwAlignOrig &amp; TA_UPDATECP)) {
+      SetTextAlign(hdc, dwAlignOrig | TA_UPDATECP);
+    }
+    MoveToEx(hdc, x, y, &amp;ptOrig);
+    DWORD dwFontCodePages = 0;
+    hr = pfl-&gt;GetFontCodePages(hdc, hfOrig, &amp;dwFontCodePages);
+    if (SUCCEEDED(hr)) {
+      while (cch &gt; 0) {
+        DWORD dwActualCodePages;
+        long cchActual;
+        hr = pfl-&gt;GetStrCodePages(psz, cch, dwFontCodePages, &amp;dwActualCodePages, &amp;cchActual);
+        if (FAILED(hr)) {
+          break;
+        }
+        if (dwActualCodePages &amp; dwFontCodePages) {
+          TextOut(hdc, 0, 0, psz, cchActual);
+        } else {
+          HFONT hfLinked;
+          if (FAILED(hr = pfl-&gt;MapFont(hdc, dwActualCodePages, 0, &amp;hfLinked))) {
+            break;
+          }
+          SelectFont(hdc, hfLinked);
+          TextOut(hdc, 0, 0, psz, cchActual);
+          SelectFont(hdc, hfOrig);
+          pfl-&gt;ReleaseFont(hfLinked);
+        }
+        psz += cchActual;
+        cch -= cchActual;
+      }
+      if (FAILED(hr)) {
+        //  We started outputting characters so we have to finish.
+        //  Do the rest without font linking since we have no choice.
+        TextOut(hdc, 0, 0, psz, cch);
+        hr = S_FALSE;
+      }
+    }
+    pfl-&gt;Release();
+    if (!(dwAlignOrig &amp; TA_UPDATECP)) {
+      SetTextAlign(hdc, dwAlignOrig);
+      MoveToEx(hdc, ptOrig.x, ptOrig.y, NULL);
+    }
+  }
+  return hr;
+}
+</pre>
+<p>
+Finally, we can wrap the entire operation inside a helper function
+that first tries with font linking and if that fails, then just draws
+the text the old-fashioned way.
+</p>
+<pre>
+void TextOutTryFL(HDC hdc, int x, int y, LPCWSTR psz, int cch)
+{
+  if (FAILED(TextOutFL(hdc, x, y, psz, cch)) {
+    TextOut(hdc, x, y, psz, cch);
+  }
+}
+</pre>
+<p>
+Okay, now that we have our font-linked TextOut with fallback,
+we can go ahead and adjust our <code>PaintContent</code> function to use it.
+</p>
+<pre>
+void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+  TextOutTryFL(pps-&gt;hdc, 0, 0,
+               TEXT("ABC\x0410\x0411\x0412\x0E01\x0E02\x0E03"), 9);
+}
+</pre>
+<p>
+Observe that the string is now displayed with no black boxes.
+</p>
+<p>
+One refinement I did not do was to avoid creating the
+IMlangFontLink2 pointer each time we want to draw text.
+In a “real program” you would probably create the multilanguage
+object once per drawing context (per window, perhaps) and re-use it
+to avoid going through the whole object creation codepath each time
+you want to draw a string.
+</p>
+<p>
+[Raymond is currently on vacation; this message was pre-recorded.]</p>
+
+
+</body>

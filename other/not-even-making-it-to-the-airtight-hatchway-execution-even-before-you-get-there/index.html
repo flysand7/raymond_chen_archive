@@ -1,0 +1,182 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Not even making it to the airtight hatchway: Execution even before you get there</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s dubious security vulnerability comes from somebody who
+reported that the <code>Load­Keyboard­Layout</code> function
+had a security vulnerability which could lead to arbitrary code
+execution.
+This is a serious issue, but reading the report made us wonder
+if something was missing.
+</p>
+<pre>
+// sample program to illustrate the vulnerability.
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+int __cdecl main(int argc, char **argv)
+{
+ LoadKeyboardLayout("whatever", system("notepad.exe"));
+ return 0;
+}
+</pre>
+<p>
+According to the report, this sample program illustrates that
+the <code>Load­Keyboard­Layout</code> function
+will execute whatever you pass as its second parameter.
+In this case, the program chose to launch Notepad,
+but obviously an attacker could change the code to something
+more dangerous.
+</p>
+<p>
+We had trouble trying to figure out what the person was trying to say.
+After all, it’s not the
+<code>Load­Keyboard­Layout</code> function
+that is executing the second parameter.
+It’s the sample program that’s doing it,
+and using the return value as the second parameter to the
+<code>Load­Keyboard­Layout</code> function.
+I mean, you can use this “technique” on the function
+</p>
+<pre>
+void donothing(int i) { }
+</pre>
+<p>
+to demonstrate that the <code>donothing</code> function has
+the same “vulnerability”:
+</p>
+<pre>
+donothing(system("notepad.exe"));
+</pre>
+<p>
+Logically, the compiler decomposes the call to
+<code>Load­Keyboard­Layout</code> function as
+</p>
+<pre>
+ auto param2 = system("notepad.exe");
+ LoadKeyboardLayout("whatever", param2);
+</pre>
+<p>
+and now it’s clear that it’s not the
+<code>Load­Keyboard­Layout</code> function which is
+executing its second parameter; it’s <i>you</i>.
+</p>
+<p>
+This is like taking a printed picture of your friend into a secured area,
+then saying,
+“See, I have a picture!
+Your security failed to stop me from taking a picture!”
+That picture was taken outside the secured area.
+What you have is not a security vulnerability because the picture
+was taken on the other side of the airtight hatchway.
+</p>
+<p>
+Before contacting the submitter, we want to be sure that we weren’t
+missing something,
+but after looking at it from every angle, we still couldn’t see what
+the issue was.
+We ran the alleged exploit under the kernel debugger and traced
+through the entire
+<code>Load­Keyboard­Layout</code> function (both the user-mode
+part and the kernel-mode part)
+to confirm that the function never launched Notepad on its own.
+We repeated the investigation on all service packs on all
+versions of Windows still under support (and even some that are
+no longer supported).
+Still nothing.
+</p>
+<p>
+Stumped, we contacted the submitter.
+“From what we can tell, the call to <code>system</code> takes place
+before you call the
+<code>Load­Keyboard­Layout</code> function.
+Can you elaborate on how this constitutes a vulnerability in the
+<code>Load­Keyboard­Layout</code> function?”
+</p>
+<p>
+Apparently, the submitter didn’t quite understand what we were after,
+because the response was just more of the same.
+“I have discovered that the Visual Basic
+<code>MsgBox</code> function
+has a similar vulnerability:
+</p>
+<pre>
+Module Program
+Sub Main()
+ MsgBox(System.Diagnostics.Process.Start("notepad.exe").ToString())
+End Sub
+End Module
+</pre>
+<p>
+The <code>MsgBox</code> method will execute whatever you
+pass as its parameter,
+as long as the result is a string.
+(You can even pass something that isn’t a string, but it’ll throw
+an exception after executing it.)
+The documentation for <code>MsgBox</code> clearly states that
+the function displays a message box with the specified text.
+It should therefore display a string and not execute a program!”
+</p>
+<p>
+At this point,
+we had to give up.
+We couldn’t figure out what the person was trying to report,
+and our attempt to obtain a clarification was met with another version
+of what appeared to be the same nonsense.
+As I recall, this entire investigation took five days to complete,
+plus another day or two to complete the necessary paperwork.
+Each year,
+<a href="http://www.technologyreview.com/blog/editors/23100/">
+200,000 vulnerability reports are received</a>,
+and each one is taken seriously,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/03/14/8080140.aspx">
+even the bogus-looking ones</a>,
+because there might be a real issue hiding behind a bogus-looking report.
+Sort of how the people in the emergency communication center
+have to follow through on every
+<a href="http://en.wikipedia.org/wiki/Emergency_telephone_number">
+911</a>
+call, even the ones that they strongly suspect are bogus,
+and even though dealing with the suspected-bogus ones
+<a href="http://www2.newsadvance.com/lna/news/local/article/911_hang-ups_mean_backups_for_dispatchers/12264/">
+slows down the overall response time for everyone</a>.
+</p>
+<p>
+These sort-of-but-not-quite reports are among the most frustrating.
+There’s enough sense in the report that it makes you wonder if there’s
+a real vulnerability lurking in there, but which remains elusive because
+the author is unable (perhaps due to a language barrier)
+to articulate it clearly.
+They live in the shadowy ground between the reports that are
+clearly crackpot
+and the reports which are clear enough that you can evaluate them
+with confidence.
+These middle-ground reports are just plausible enough to be dangerous.
+As a result, you close them out with trepidation,
+because there’s the risk
+that there really is something there, but you just aren’t seeing it.
+Then you have nightmares that the finder has taken the report public,
+and the vulnerability report you rejected as bogus is now
+headline news all over the technology press.
+(Or worse, exploits start showing up taking advantage of the vulnerability
+you rejected as bogus two months ago.)
+</p>
+<p>
+<b>Update</b>:
+Sure, this looks like something you can reject out of hand.
+But maybe there’s something there after all.
+Perhaps
+the <code>system</code> call somehow
+“primed the pump” and left the system in just the right state
+so that an uninitialized variable resulted in Notepad being
+launched a second time or editing its token to have higher
+privileges.
+In that case,
+you rejected a genuine security vulnerability,
+and then when hackers start using it to build a botnet,
+somebody will go back into the vulnerability investigation logs,
+and the only entry will be
+“Rejected without investigation by Bob.”</p>
+
+
+</body>

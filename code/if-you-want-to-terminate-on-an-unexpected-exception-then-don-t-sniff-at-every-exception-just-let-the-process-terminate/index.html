@@ -1,0 +1,138 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you want to terminate on an unexpected exception, then don’t sniff at every exception; just let the process terminate</h1>  <!-- .entry-meta -->
+
+<p>You’ve probably had to write code that lives at the boundary between exception-based code and error-code-based code.</p>
+<pre>HRESULT ConvertExceptionToHResult()
+{
+    try
+    {
+        throw;
+    }
+    catch (MyCustomExceptionClass const&amp;amp ex)
+    {
+        return ex.GetHResult();
+    }
+    catch (std::bad_alloc const&amp;amp)
+    {
+        return E_OUTOFMEMORY;
+    }
+    catch (...)
+    {
+        // Disallowed exception. Fail fast and get a crash dump.
+        std::terminate();
+    }
+}
+
+HRESULT DoSomething()
+{
+    try
+    {
+       DoStuffThatMayThrowExceptions();
+       AnotherThingThatMayThrowExceptions();
+    }
+    catch (...)
+    {
+        return ConvertExceptionToHResult();
+    }
+}
+</pre>
+<p>The idea is that the <code>Do­Something</code> function uses an error code to report problems, but it is built with the help of functions that use exceptions to report problems. The <code>Do­Something</code> function sets up a <code>try</code>/<code>catch</code> that catches any exceptions that may emerge from the helper functions and uses a helper function to convert the exception to an <code>HRESULT</code>. If the exception cannot be converted to an <code>HRESULT</code>, then we terminate the process, because the helper functions threw a disallowed exception.</p>
+<p>This works, but it does have a problem: When the inevitable crash reports arrive that say “Oh no, somebody threw a disallowed exception.” <i>The stack trace won’t tell you</i>.</p>
+<p>Let’s illustrate with a quick little program.</p>
+<pre>#include &lt;cstdlib&gt;
+#include &lt;new&gt;
+#include &lt;exception&gt;
+#include &lt;errno.h&gt;
+
+struct MyCustomExceptionClass
+{
+    int code;
+};
+
+int oopsie()
+{
+    int value = std::rand();
+    if (value &gt;= 0) throw 1; // totally disallowed exception
+    return value;
+}
+
+int victim() try
+{
+    return oopsie();
+}
+catch (MyCustomExceptionClass const&amp; ex)
+{
+    return ex.code;
+}
+catch (std::bad_alloc const&amp; ex)
+{
+    return ENOMEM;
+}
+catch (...)
+{
+   std::terminate();
+}
+
+int main()
+{
+    return victim();
+}
+</pre>
+<p>I’m taking advantage of a feature known as the <a href="https://en.cppreference.com/w/cpp/language/function-try-block"> function try block</a> that lets you float the <code>try</code>/<code>catch</code> outside the function body. This is handy because it saves you a level of indentation and makes it clearer (to those who have been initiated into the practice) that the <code>try</code>/<code>catch</code> block applies to the entire function body.</p>
+<p>When you run this program, it crashes, and all you see on the stack is the <code>victim</code>.</p>
+<pre>_exit+0x11
+abort+0xe8
+terminate+0x3b
+victim+0x5b <span style="color: red;">⇐ no sign of oopsie</span>
+main+0xd
+</pre>
+<p>You may be able to extract <a href="https://devblogs.microsoft.com/oldnewthing/20100730-00/?p=13273"> the object that was thrown</a>, but the code that threw it has already left the building.</p>
+<p>Why is that?</p>
+<p>The problem is that your <code>catch (...)</code> was a <i>successful catch</i>. You said, “Sure, I’ll catch anything!” If the thrown object doesn’t match any of the earlier clauses, the runtime says, “Okay, the code says it’ll catch anything. That’s great! Let me do my stack unwinding, then. Destructing automatic variables whose scopes have exited. All that great RAII stuff.” After the destructors have run and the stack has unwound, execution resumes in your handler. You successfully handled the exception.</p>
+<p>Of course, if your code that successfully handles the exception chooses to terminate the process, well, that’s your choice. But the code that threw the original exception is long gone.</p>
+<p>The solution is simple: Don’t catch what you can’t handle.</p>
+<pre>void victim() <span style="color: blue;">noexcept</span> try
+{
+    oopsie();
+}
+catch (MyCustomExceptionClass const&amp; ex)
+{
+    return ex.code;
+}
+catch (std::bad_alloc const&amp; ex)
+{
+    return ENOMEM;
+}
+<span style="color: red;">// <span style="text-decoration: line-through;">catch (...)</span>
+// <span style="text-decoration: line-through;">{</span>
+// <span style="text-decoration: line-through;">   std::terminate();</span>
+// <span style="text-decoration: line-through;">}</span></span>
+</pre>
+<p>We removed the <code>catch (...)</code> so that any exceptions we don’t understand are not handled. And then we added <code>noexcept</code> to the function signature to indicate that the process should terminate if an exception goes unhandled.</p>
+<p>This time, the stack in the crash dump is more useful:</p>
+<pre>_exit+0x11
+abort+0xe8
+terminate+0x3b
+FindHandler+0x377
+__InternalCxxFrameHandler+0xf7
+__CxxFrameHandler2+0x26
+ExecuteHandler2+0x26
+ExecuteHandler+0x24
+KiUserExceptionDispatcher+0x26
+RaiseException+0x62
+_CxxThrowException+0x68
+oopsie+0x2c <span style="color: blue;">⇐ here's the bad boy</span>
+victim+0x3a
+main+0x33
+</pre>
+<p>The C++ standard leaves it up to the implementation whether stack unwinding occurs, but the Visual C++ compiler does not unwind the stack. This means that the code that threw the exception is plain to see on the stack, and you can walk up the stack and look at local variables. Even better: No destructors have run, so the state of the process in the dump is the state at the time of the throw.</p>
+<pre>0:000&gt; .frame 5
+05 02a9fba0 00751e0a scratch!oopsie+0x2c
+0:000&gt; dv
+          value = 0n41
+</pre>
+<p>Those local variables may end up being crucial to understanding why the disallowed exception was thrown.</p>
+<p>C++/WinRT made this change <a href="https://github.com/microsoft/xlang/pull/423/files/454ce28968f0cfa7bbaad4aa1f276180d167e200#diff-ae563b582156e11a6cfea0687f8b47da"> in PR 423</a>.</p>
+
+
+</body>

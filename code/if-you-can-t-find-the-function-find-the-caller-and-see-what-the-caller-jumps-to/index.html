@@ -1,0 +1,140 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you can’t find the function, find the caller and see what the caller jumps to</h1>  <!-- .entry-meta -->
+
+<p><p>
+You’re debugging a program and
+you want to set a breakpoint on some function,
+say,
+<code>netapi32!Ds­Address­To­Site­NameW</code>,
+but when you execute the
+<code>bp netapi32!Ds­Address­To­Site­NameW</code> command in the debugger,
+the debugger says that there is no such function.
+</p>
+<blockquote class="q">
+The
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2007/12/18/6794821.aspx">
+<i>Advanced Windows Debugging</i> book</a>
+says that the <code>bp</code> command should set a breakpoint
+on the function,
+but the debugger says that the symbol cannot be found.
+I used the <code>x netapi32!*</code> command to see that
+the debugger did find a whole bunch of symbols,
+and it says that the symbols were loaded
+(from the
+<a href="http://support.microsoft.com/kb/311503">
+public symbol store</a>),
+but
+<code>netapi32!Ds­Address­To­Site­NameW</code>
+isn’t among them.
+The MSDN documentation says that <code>Ds­Address­To­Site­NameW</code> is
+in the <code>netapi32.dll</code>,
+but it’s not there!
+I can’t believe you guys stripped that function out
+of the symbol file,
+since it’s a function that people will
+want to set a breakpoint on.
+</blockquote>
+<p>
+Okay, first let’s
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/02/10/10127054.aspx">
+rule out the conspiracy theory</a>.
+The symbols were not stripped from the public symbols.
+And even if they were,
+that shouldn’t stop you, because after all,
+the <i>loader</i> has to be able to find the function
+when it loads your program,
+so it’s gotta be obtainable even without symbols.
+</p>
+<p>
+Don’t be helpless.
+You already have the tools to figure out where the function is.
+</p>
+<p>
+Just write a program that calls the function,
+then load it into the debugger and see what the
+destination of the <code>call</code> instruction is.
+You don’t even have to pass valid parameters to the
+function call,
+since you’re never actually executing the code;
+you’re just looking at it.
+</p>
+<p>
+And hey looky-here,
+you already have a program that calls the function:
+The program you’re trying to debug!
+So let’s see where it goes.
+</p>
+<pre>
+0:001&gt;u contoso!AwesomeFunction
+…
+00407352 call [contoso!__imp__DsAddressToSiteNameW (0040f104)]
+…
+0:001&gt;u poi 0040f104
+logoncli!DsAddressToSiteNameW:
+7f014710 push ebp
+7f014711 mov esp, ebp
+…
+</pre>
+<p>
+There you go.
+The code for the function is in <code>logoncli.dll</code>.
+</p>
+<p>
+What happened?
+How did you end up in <code>logoncli.dll</code>?
+</p>
+<p>
+What you saw was the effect of a
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2006/07/19/671238.aspx">
+DLL forwarder</a>.
+The code for the function
+<code>Ds­Address­To­Site­NameW</code> doesn’t live in
+<code>netapi32.dll</code>.
+Instead,
+<code>netapi32.dll</code> has an export table entry that says
+“If anybody comes to me asking for <code>Ds­Address­To­Site­NameW</code>,
+send them to
+<code>logoncli!Ds­Address­To­Site­NameW</code> instead.”
+</p>
+<p>
+Officially, the function is in <code>netapi32.dll</code>
+for linkage purposes,
+but internally the function has been forwarded to another DLL
+for implementation.
+It’s like a telephone call-forwarding service for DLL functions,
+except that instead of forwarding telephone calls,
+it forwards function calls.
+You publish a phone number in all your marketing materials,
+and behind the scenes, you set up the number to forward
+to the phone of the person responsible for sales.
+That way,
+if that person quits,
+or the responsibility for selling the product changes,
+you can just update the call-forwarding table,
+and all the calls get routed to the new person.
+</p>
+<p>
+That’s what happenned here.
+The MSDN phone book lists the function as being in
+<code>netapi32.dll</code>,
+and whenever a call comes in,
+it gets forwarded to wherever the implementation happens to be.
+And the implementation has moved around over time,
+so you should continue calling
+<code>netapi32!Ds­Address­To­Site­NameW</code>
+and let the call-forwarding do the work of getting you to
+the implementation.
+</p>
+<p>
+Don’t start calling <code>logoncli</code> directly,
+thinking that you’re cutting out the middle man,
+or in a future version of Windows,
+your program may start failing with a
+“This number is no longer in service” error,
+like calling the direct office number for
+the previous sales representative,
+only to find that he left the company last month.
+</p></p>
+
+
+</body>

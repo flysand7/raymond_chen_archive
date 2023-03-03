@@ -1,0 +1,67 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Getting rid of our atomic variant discriminator</h1>  <!-- .entry-meta -->
+
+<p>We continue <a href="/code/c-coroutines-getting-rid-of-our-reference-count" title="C++"> the refinement of our coroutine implementation</a> by removing the atomic variable used as the discriminant of our result holder variant.</p>
+<p>The discriminant needed to be atomic because we used it in <code>await_<wbr/>ready</code> to peek at whether the coroutine had completed. But we’ve switched over to using the atomic <code>m_waiting</code> member to track the coroutine state, which means that the use of the discriminant is now protected by the memory ordering requirements of <code>m_waiting</code>. The discriminant itself can now be a regular variable.</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_promise_holder
+    {
+        ...
+        <span style="color: red;">// <span style="text-decoration: line-through;">std::atomic&lt;result_status&gt;</span></span>
+        <span style="color: blue;">result_status</span> status
+            { result_status::empty };
+
+        template&lt;typename...Args&gt;
+        void set_value(Args&amp;&amp;... args)
+        {
+            new (std::addressof(result.wrap))
+                wrapper&lt;T&gt;{ std::forward&lt;Args&gt;(args)... };
+            <span style="color: blue;">status = result_status::value</span>;
+        }
+
+        void unhandled_exception() noexcept
+        {
+            new (std::addressof(result.error))
+                std::exception_ptr(std::current_exception());
+            <span style="color: blue;">status = result_status::error</span>;
+        }
+
+        <span style="color: red;">// <span style="text-decoration: line-through;">bool is_empty() const noexcept</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">{</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">    return status.load(std::memory_order_relaxed) ==</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">        result_status::empty;</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">}</span></span>
+
+        T get_value()
+        {
+            switch (<span style="color: blue;">status</span>) {
+            case result_status::value:
+                return result.wrap.get_value();
+            case result_status::error:
+                std::rethrow_exception(
+                    std::exchange(result.error, {}));
+            }
+            assert(false);
+            std::terminate();
+        }
+
+        ~simple_promise_result_holder()
+        {
+            switch (<span style="color: blue;">status</span>) {
+            case result_status::value:
+                result.wrap.~wrapper();
+                break;
+            case result_status::error:
+                if (result.error)
+                    std::rethrow_exception(result.error);
+                result.error.~exception_ptr();
+            }
+        }
+    };
+</pre>
+<p>What used to be <code>status.store</code> is now just an assignment, and what used to be <code>status.load</code> now just a read.</p>
+<p>We can also get rid of the <code>is_empty</code> method, since it was used only by our previous version of <code>client_<wbr/>await_<wbr/>ready</code>, which we abandoned when we switched to using <code>m_waiting</code>.</p>
+<p>Next time, we’ll add support for cold-start coroutines.</p>
+
+
+</body>

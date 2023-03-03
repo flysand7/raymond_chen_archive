@@ -1,0 +1,538 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Wouldn't the Recycle Bin sample program have been simpler without COM?</h1>  <!-- .entry-meta -->
+
+<p>
+Steve Wolf suggests that
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/08/31/10203215.aspx#10203669">
+the sample program would have been much simpler had the shell
+extension model been a flat Win32 interface</a>.
+</p>
+<p>
+Okay, let’s try it.
+</p>
+<p>
+Since this is an extension model, each extension needs to specify
+the callbacks for each namespace operation.
+Perhaps it could have been done like this:
+</p>
+<pre>
+HRESULT (CALLBACK *SHELLFOLDER_EXTENDHANDLER)(
+    void *lpContext,
+    OBJECTTYPE type, void **phObject);
+HRESULT (CALLBACK *SHELLFOLDER_PARSEDISPLAYNAMEHANDLER)(
+    void *lpContext,
+    HWND hwnd, LPBINDCTX pbc, LPWSTR pszDisplayName,
+    ULONG *pchEaten, PIDLIST_RELATIVE *ppidl, ULONG *pdwAttributes);
+HRESULT (CALLBACK *SHELLFOLDER_ENUMOBJECTSHANDLER)(
+    void *lpContext,
+    HWND hwnd, SHCONTF grfFlags, HENUMIDLIST *pheidl);
+HRESULT (CALLBACK *SHELLFOLDER_BINDTOOBJECTHANDLER)(
+    void *lpContext,
+    PCUIDLIST_RELATIVE pidl, LPBINDCTX pbc,
+    OBJECTTYPE type, void **phObject);
+HRESULT (CALLBACK *SHELLFOLDER_BINDTOSTRAGEHANDLER)(
+    void *lpContext,
+    PCUIDLIST_RELATIVE pidl, LPBINDCTX pbc,
+    OBJECTTYPE type, void **phObject);
+HRESULT (CALLBACK *SHELLFOLDER_COMPAREIDSHANDLER)(
+    void *lpContext,
+    LPARAM lParam, PCUIDLIST_RELATIVE pidl1,
+    PCUIDLIST_RELATIVE pidl2);
+... (etc) ...
+HFOLDER CreateShellFolderImplementation(
+    SHELLFOLDER_EXTENDHANDLER pfnExtend,
+    SHELLFOLDER_PARSEDISPLAYNAMEHANDLER pfnParseDisplayName,
+    SHELLFOLDER_ENUMOBJECTSHANDLER pfnEnumObjects,
+    SHELLFOLDER_BINDTOOBJECTHANDLER pfnBindToObject,
+    SHELLFOLDER_BINDTOSTRAGEHANDLER pfnBindToStorage,
+    SHELLFOLDER_COMPAREIDSHANDLER pfnCompareIDs,
+    ... (etc) ...
+    void *lpContext);
+</pre>
+<p>
+This would be the function that allows a third party to create a
+shell folder implementation.
+You pass it a bunch of flat callback functions, one for each
+operation that a shell folder supports,
+so that when the application tries to perform that operation on your
+custom folder, the operating system can ask your custom implementation
+to do that thing.
+</p>
+<p>
+If additional shell folder operations are added in the future,
+the operating system needs to know how to ask your shell extension
+whether it knows how to do  those extended things.
+That’s what the <code>Extend</code> method is for.
+The operating system could ask to extend your object to one
+that supports <code>HFOLDER2</code> operations.
+</p>
+<p>
+Actually, if you look at it, these are exactly the same as
+COM methods.
+The first parameter says what object you are operating on
+(“<code>this</code>“),
+and the rest are the parameters.
+</p>
+<p>
+Okay, so I’m setting up a straw man that looks just like COM.
+So let’s do something that looks very different from COM.
+We could use the window procedure paradigm:
+</p>
+<pre>
+HRESULT (CALLBACK *SHELLFOLDER_INVOKE)(
+    void *lpContext,
+    FOLDERCOMMAND cmd, void *parameters);
+HFOLDER CreateShellFolderImplementation(
+    SHELLFOLDER_INVOKE pfnInvoke,
+    void *lpContext);
+</pre>
+<p>
+Your invoke function receives a <code>FOLDER­COMMAND</code>
+enumeration which specifies what command the client is trying to
+perform,
+and then switches on the command to perform the command,
+or returns <code>E_NOT­IMPL</code> if you don’t handle the command.
+Since each of the methods takes different parameters,
+we have to do some work to pack them up into a generic parameter
+block, and then unpack it on the receiving end.
+Let’s assume some helper functions that do this packing and unpacking.
+</p>
+<pre>
+HRESULT UnpackParseDisplayName(
+    void *parameters,
+    HWND *phwnd,
+    LPBINDCTX *ppbc,
+    LPWSTR *ppszDisplayName,
+    ULONG **ppchEaten,
+    PIDLIST_RELATIVE **ppidl,
+    ULONG **ppdwAttributes);
+);
+HRESULT UnpackEnumObjects(
+    void *parameters,
+    HWND *phwnd,
+    SHCONTF *pgrfFlags,
+    HENUMIDLIST **ppheidl);
+HRESULT AwesomeShellFolderInvoke(
+    void *lpContext,
+    FOLDERCOMMAND cmd,
+    void *parameters)
+{
+  HRESULT hr = E_NOTIMPL;
+  CAwesome *self = reinterpret_cast&lt;CAwesome*&gt;(lpContext);
+  switch (cmd) {
+  case FOLDERCOMMAND_PARSEDISPLAYNAME:
+    {
+      HWND hwnd;
+      LPBINDCTX pbc;
+      LPWSTR pszDisplayName;
+      ULONG *ppchEaten;
+      PIDLIST_RELATIVE *pidl;
+      ULONG *pdwAttributes;
+      hr = UnpackParseDisplayName(parameters, &amp;hwnd, &amp;pbc,
+              &amp;pszDisplayName, &amp;ppchEaten, &amp;pidl,
+              &amp;pdwAttributes);
+      if (SUCCEEDED(hr)) {
+        hr = ... do the actual work ...
+      }
+    }
+    break;
+  case FOLDERCOMMAND_ENUMOBJECTS:
+    {
+      HWND hwnd;
+      SHCONTF grfFlags;
+      HENUMIDLIST *pheidl;
+      hr = UnpackEnumObjects(parameters, &amp;hwnd, &amp;grfFlags,
+              &amp;pheidl);
+      if (SUCCEEDED(hr)) {
+        hr = ... do the actual work ...
+      }
+    }
+    break;
+    ... (etc) ...
+  }
+  return hr;
+}
+</pre>
+<p>
+This could be made a lot simpler with the addition of some helper
+functions.
+</p>
+<pre>
+HRESULT DispatchParseDisplayName(
+  HRESULT (CALLBACK *)(
+    void *lpContext,
+    HWND hwnd, LPBINDCTX pbc, LPWSTR pszDisplayName,
+    ULONG *pchEaten, PIDLIST_RELATIVE *ppidl, ULONG *pdwAttributes),
+  void *lpContext,
+  void *parameters);
+HRSEULT DispatchEnumObjects(
+  HRESULT (CALLBACK *)(
+    void *lpContext,
+    HWND hwnd, SHCONTF grfFlags, HENUMIDLIST *pheidl),
+  void *lpContext,
+  void *parameters);
+</pre>
+<p>
+The implementation would then go like this:
+</p>
+<pre>
+HRESULT AwesomeParseDisplayName(
+    void *lpContext,
+    HWND hwnd, LPBINDCTX pbc, LPWSTR pszDisplayName,
+    ULONG *pchEaten, PIDLIST_RELATIVE *ppidl, ULONG *pdwAttributes)
+{
+  CAwesome *self = reinterpret_cast&lt;CAwesome*&gt;(lpContext);
+  HRESULT hr;
+  ... do the actual work ...
+  return hr;
+}
+HRESULT AwesomeEnumObjects(
+    void *lpContext,
+    HWND hwnd, SHCONTF grfFlags, HENUMIDLIST *pheidl),
+{
+  CAwesome *self = reinterpret_cast&lt;CAwesome*&gt;(lpContext);
+  HRESULT hr;
+  ... do the actual work ...
+  return hr;
+}
+HRESULT AwesomeShellFolderInvoke(
+    void *lpContext,
+    FOLDERCOMMAND cmd,
+    void *parameters)
+{
+  switch (cmd) {
+  case FOLDERCOMMAND_PARSEDISPLAYNAME:
+    return DispatchParseDisplayName(AwesomeParseDisplayName,
+              lpContext, parameters);
+  case FOLDERCOMMAND_ENUMOBJECTS:
+    return DispatchEnumObjects(AwesomeEnumObjects,
+              lpContext, parameters);
+    ... (etc) ...
+  }
+  return E_NOTIMPL;
+}
+</pre>
+<p>
+You might decide to make the parameter packing transparent
+instead of opaque, so that they are passed as, say,
+an array of generic types like <code>VARIANT</code>s.
+(Note that I’m abusing <code>VARIANT</code>s here.
+These are not valid <code>VARIANT</code>s,
+but it saves me from having to declare my own generic type.
+This is just a design discussion, not an actual implementation.)
+</p>
+<pre>
+HRESULT (CALLBACK *SHELLFOLDER_INVOKE)(
+    void *lpContext,
+    FOLDERCOMMAND cmd,
+    VARIANT *rgvarArgs,
+    UINT cArgs);
+// error checking elided for expository purposes
+// In real life, you would have to validate cArgs
+// and the variant types.
+HRESULT AwesomeShellFolderInvoke(
+    void *lpContext,
+    FOLDERCOMMAND cmd,
+    VARIANT *rgvarArgs,
+    UINT cArgs)
+{
+  CAwesome *self = reinterpret_cast&lt;CAwesome*&gt;(lpContext);
+  switch (cmd) {
+  case FOLDERCOMMAND_PARSEDISPLAYNAME:
+    return self-&gt;ParseDisplayName(
+      reinterpret_cast&lt;HWND&gt;(rgvarArgs[0]-&gt;byref),
+      reinterpret_cast&lt;LPBINDCTX&gt;(rgvarArgs[1]-&gt;byref),
+      reinterpret_cast&lt;LPWSTR&gt;(rgvarArgs[2]-&gt;byref),
+      reinterpret_cast&lt;ULONG*&gt;(rgvarArgs[3]-&gt;byref),
+      reinterpret_cast&lt;PIDLIST_RELATIVE*&gt;(rgvarArgs[4]-&gt;byref),
+      reinterpret_cast&lt;ULONG**&gt;(rgvarArgs[5]-&gt;byref));
+  case FOLDERCOMMAND_ENUMOBJECTS:
+    return self-&gt;EnumObjects(
+      reinterpret_cast&lt;HWND&gt;(rgvarArgs[0]-&gt;byref),
+      reinterpret_cast&lt;SHCONTF&gt;(rgvarArgs[1]-&gt;lVal),
+      reinterpret_cast&lt;HENUMIDLIST *&gt;(rgvarArgs[2]-&gt;byref));
+    ... (etc) ...
+  }
+  return E_NOTIMPL;
+}
+</pre>
+<p>
+(This is basically the plug-in model that
+<a href="https://developer.mozilla.org/en-US/docs/NPClass">
+some people have chosen to pursue</a>.
+It is also basically the same as
+<code>IDispatch::Invoke</code>.)
+</p>
+<p>
+Okay, that’s how you implement the plug-in.
+Now how do you call it?
+</p>
+<p>
+You would have to pack the parameters, then call through the
+<code>Invoke</code> method with your command ID.
+For example, a call to
+<code>FOLDER­COMMAND_ENUM­OBJECTS</code>
+would go like this:
+</p>
+<pre>
+// was: hr = psf-&gt;EnumObjects(hwnd, shcontf, &amp;peidl);
+// now:
+HENUMIDLIST heidl;
+VARIANT args[3];
+args[0].vt = VT_BYREF;
+args[0].byref = hwnd;
+args[1].vt = VT_I4;
+args[1].lVal = shcontf;
+args[2].vt = VT_BYREF;
+args[2].byref = &amp;heidl;
+hr = InvokeShellFolder(hsf, FOLDERCOMMAND_ENUMOBJECTS, args, 3);
+</pre>
+<p>
+Yuck.
+</p>
+<p>
+Let’s assume that the shell provides helper functions that do all
+this parameter packing for you.
+(This is
+<a href="https://developer.mozilla.org/en-US/docs/NPN_Invoke">
+more than certain plug-in models give you</a>.)
+</p>
+<pre>
+HRESULT ShellFolder_ParseDisplayName(
+    HSHELLFOLDER hsf,
+    HWND hwnd, LPBINDCTX pbc, LPWSTR pszDisplayName,
+    ULONG *pchEaten, PIDLIST_RELATIVE *ppidl, ULONG *pdwAttributes)
+{
+  VARIANT args[6];
+  args[0].vt = VT_BYREF;
+  args[0].byref = hwnd;
+  args[1].vt = VT_BYREF;
+  args[1].byref = pbc;
+  args[2].vt = VT_BYREF;
+  args[2].byref = pszDisplayName;
+  args[3].vt = VT_BYREF;
+  args[3].byref = pchEaten;
+  args[4].vt = VT_BYREF;
+  args[4].byref = ppidl;
+  args[5].vt = VT_BYREF;
+  args[5].byref = pdwAttributes;
+  return InvokeShellFolder(hsf, FOLDERCOMMAND_PARSEDISPLAYNAME,
+                           args, 6);
+}
+HRESULT ShellFolder_EnumObjects(
+    HSHELLFOLDER hsf,
+    HWND hwnd, SHCONTF grfFlags, HENUMIDLIST *pheidl)
+{
+  VARIANT args[3];
+  args[0].vt = VT_BYREF;
+  args[0].byref = hwnd;
+  args[1].vt = VT_I4;
+  args[1].lVal = shcontf;
+  args[2].vt = VT_BYREF;
+  args[2].byref = &amp;heidl;
+  return InvokeShellFolder(hsf, FOLDERCOMMAND_ENUMOBJECTS, args, 3);
+}
+... (etc) ...
+</pre>
+<p>
+The naming convention above is kind of awkward, so let’s give them
+a bit less clumsy names.
+</p>
+<pre>
+HRESULT ParseShellFolderDisplayName(
+    HSHELLFOLDER hsf,
+    HWND hwnd, LPBINDCTX pbc, LPWSTR pszDisplayName,
+    ULONG *pchEaten, PIDLIST_RELATIVE *ppidl, ULONG *pdwAttributes);
+HRESULT EnumShellFolderObjects(
+    HSHELLFOLDER hsf,
+    HWND hwnd, SHCONTF grfFlags, HENUMIDLIST *pheidl);
+... (etc) ...
+</pre>
+<p>
+Okay, now that we have a flat API,
+let’s convert
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/08/30/10202076.aspx">
+the original code</a>.
+The first function now goes like this:
+</p>
+<pre>
+HRESULT BindToCsidl(int csidl,
+    // <font color="red"><strike>REFIID riid, void **ppv</strike></font>
+    <font color="blue">HSHELLFOLDER</font> *phsf)
+{
+ HRESULT hr;
+ PIDLIST_ABSOLUTE pidl;
+ hr = SHGetSpecialFolderLocation(NULL, csidl, &amp;pidl);
+ if (SUCCEEDED(hr)) {
+  // <font color="red"><strike>IShellFolder *psfDesktop;</strike></font>
+  <font color="blue">HSHELLFOLDER hsfDesktop;</font>
+  hr = SHGetDesktopFolder(&amp;hsfDesktop);
+  if (SUCCEEDED(hr)) {
+   if (pidl-&gt;mkid.cb) {
+    // hr = <font color="red"><strike>psfDesktop-&gt;BindToObject(</strike></font>pidl, NULL, <font color="red"><strike>riid, ppv</strike></font>);
+    hr = <font color="blue">BindToShellFolderObject(hsfDesktop,</font> pidl, NULL, <font color="blue">phsf</font>);
+   } else {
+    // <font color="red"><strike>hr = psfDesktop-&gt;QueryInterface(riid, ppv);</strike></font>
+    <font color="blue">*phsf = hsfDesktop;
+    hsfDesktop = nullptr; // transfer to owner
+    hr = S_OK;</font>
+   }
+   // <font color="red"><strike>psfDesktop-&gt;Release();</strike></font>
+   <font color="blue">if (hsfDesktop) ShellFolder_Destroy(hsfDesktop);</font>
+  }
+  CoTaskMemFree(pidl);
+ }
+ return hr;
+}
+</pre>
+<p>
+What happened here?
+The <code>IShell­Folder</code>
+interface was replaced by a
+<code>HSHELL­FOLDER</code> flat handle.
+Flat APIs use handles to refer to objects instead of interface pointers.
+</p>
+<p>
+A method call on an interface pointer becomes a flat API call.
+In general,
+<code>pInterface-&gt;VerbNoun(args)</code> gets flattened to
+<code>VerbInterfaceNoun(h, args)</code>.
+But that’s just renaming and doesn’t change the underlying complexity
+of the issue.
+</p>
+<p>
+I could’ve added reference counting to these flat objects,
+but then I would be accused of intentionally making it look like COM,
+so let’s say that these flat objects are not reference-counted.
+Therefore, we have to be more careful about not destroying the object
+we plan on returning.
+</p>
+<p>
+On to the next two functions:
+</p>
+<pre>
+void PrintDisplayName(
+    // <font color="red"><strike>IShellFolder *psf,</strike></font>
+    <font color="blue">HSHELLFOLDER hsf</font>,
+    PCUITEMID_CHILD pidl, SHGDNF uFlags, PCTSTR pszLabel)
+{
+ <a href="http://blogs.msdn.com/oldnewthing/archive/2004/08/23/218837.aspx">STRRET</a> sr;
+ // HRESULT hr = <font color="red"><strike>psf-&gt;GetDisplayNameOf(</strike></font>pidl, uFlags, &amp;sr);
+ HRESULT hr = <font color="blue">GetShellFolderDisplayNameOf(hsf,</font> pidl, uFlags, &amp;sr);
+ if (SUCCEEDED(hr)) {
+  PTSTR pszName;
+  hr = StrRetToStr(&amp;sr, pidl, &amp;pszName);
+  if (SUCCEEDED(hr)) {
+   _tprintf(TEXT("%s = %s\n"), pszLabel, pszName);
+   CoTaskMemFree(pszName);
+  }
+ }
+}
+void PrintDetail(
+    // <font color="red"><strike>IShellFolder2 *psf,</strike></font>
+    <font color="blue">HSHELLFOLDER hsf</font>,
+    PCUITEMID_CHILD pidl,
+    const SHCOLUMNID *pscid, PCTSTR pszLabel)
+{
+ VARIANT vt;
+ // HRESULT hr = <font color="red"><strike>psf-&gt;GetDetailsEx(</strike></font>pidl, pscid, &amp;vt);
+ HRESULT hr = <font color="blue">GetShellFolderDetailsEx(hsf,</font> pidl, pscid, &amp;vt);
+ if (SUCCEEDED(hr)) {
+  hr = VariantChangeType(&amp;vt, &amp;vt, 0, VT_BSTR);
+  if (SUCCEEDED(hr)) {
+   _tprintf(TEXT("%s: %ws\n"), pszLabel, V_BSTR(&amp;vt));
+  }
+  VariantClear(&amp;vt);
+ }
+}
+</pre>
+<p>
+Not really all that different.
+Last function:
+</p>
+<pre>
+int __cdecl _tmain(int argc, PTSTR *argv)
+{
+ HRESULT hr = CoInitialize(NULL);
+ if (SUCCEEDED(hr)) {
+  // <font color="red"><strike>IShellFolder2 *psfRecycleBin;</strike></font>
+  <font color="blue">HSHELLFOLDER hsfRecycleBin;</font>
+  hr = BindToCsidl(CSIDL_BITBUCKET, <font color="blue">&amp;hsfRecycleBin</font>);
+  if (SUCCEEDED(hr)) {
+   // <font color="red"><strike>IEnumIDList *peidl;</strike></font>
+   <font color="blue">HENUMIDLIST heidl;</font>
+   // hr = <font color="red"><strike>psfRecycleBin-&gt;EnumObjects(</strike></font>NULL,
+   hr = <font color="blue">EnumShellFolderObjects(hsfRecycleBin,</font> NULL,
+     <a href="http://blogs.msdn.com/oldnewthing/archive/2010/04/02/9989235.aspx">SHCONTF_FOLDERS | SHCONTF_NONFOLDERS</a>, &amp;heidl);
+   if (hr == S_OK) {
+    PITEMID_CHILD pidlItem;
+    // while (<font color="red"><strike>peidl-&gt;Next(</strike></font>1, &amp;pidlItem, NULL) == S_OK) {
+    while (<font color="blue">EnumerateNextShellFolderObject(heidl,</font> 1, &amp;pidlItem, NULL) == S_OK) {
+     _tprintf(TEXT("------------------\n"));
+     PrintDisplayName(<font color="blue">hsfRecycleBin</font>, pidlItem,
+                      SHGDN_INFOLDER, TEXT("InFolder"));
+     PrintDisplayName(<font color="blue">hsfRecycleBin</font>, pidlItem,
+                      SHGDN_NORMAL, TEXT("Normal"));
+     PrintDisplayName(<font color="blue">hsfRecycleBin</font>, pidlItem,
+                      SHGDN_FORPARSING, TEXT("ForParsing"));
+     PrintDetail(<font color="blue">hsfRecycleBin</font>, pidlItem,
+                 &amp;SCID_OriginalLocation, TEXT("Original Location"));
+     PrintDetail(<font color="blue">hsfRecycleBin</font>, pidlItem,
+                 &amp;SCID_DateDeleted, TEXT("Date deleted"));
+     PrintDetail(<font color="blue">hsfRecycleBin</font>, pidlItem,
+                 &amp;PKEY_Size, TEXT("Size"));
+     CoTaskMemFree(pidlItem);
+    }
+   }
+   // <font color="red"><strike>psfRecycleBin-&gt;Release();</strike></font>
+   <font color="blue">DestroyShellFolder(hsfRecycleBin);</font>
+  }
+  CoUninitialize();
+ }
+ return 0;
+}
+</pre>
+<p>
+So we see that flattening the API didn’t really change the code
+at all.
+You’re still invoking methods on objects.
+Whether you use a flat API to do it or an object-based API
+is just changing the decorations.
+The underlying logic doesn’t change.
+</p>
+<p>
+One disadvantage of the flat version is that it requires everything
+to be mediated by the shell.
+Instead of invoking a method directly on the object,
+you have to call the flat function in the shell,
+which then packages up the call and dispatches it,
+and the recipient then needs to unpack the parameters
+(possibly with help from the shell)
+before finally getting around to doing the actual work.
+</p>
+<p>
+It also means that any interface change requires an operating system
+upgrade,
+since the mediator (the shell) needs to understand the new interface.
+</p>
+<p>
+But if this whole object-oriented syntax
+really annoys you and you want a flat API,
+then feel free to add the line
+</p>
+<pre>
+#define CINTERFACE
+</pre>
+<p>
+before including COM header files.
+If you do that, then
+you get the old flat C-style version of COM.
+Instead of the
+<code>p-&gt;Method(args)</code> new hotness,
+you can stick to the old trustworthy
+<code>p-&gt;lpVtbl-&gt;Method(p, args)</code> version,
+or use the
+<code>InterfaceName_MethodName(p, args)</code> helper macro.</p>
+
+
+</body>

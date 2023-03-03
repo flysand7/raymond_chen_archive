@@ -1,0 +1,63 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If you’re going to configure a header file, you have to do it before you include the header file</h1>  <!-- .entry-meta -->
+
+<p>In Windows, if you want the <code>windows.h</code> header file to default to the Unicode character set, you need to define the <code>UNICODE</code> symbol:</p>
+<pre>#define <a href="/code/text-vs-text-vs-t-and-unicode-vs-unicode" title="TEXT vs. _TEXT vs. _T, and UNICODE vs. _UNICODE">UNICODE</a>
+#include &lt;windows.h&gt;
+</pre>
+<p>There’s no point defining the symbol after the horse has left the barn:</p>
+<pre>// Code in italics is wrong
+<i>#include &lt;windows.h&gt;
+#define UNICODE</i>
+</pre>
+<p><b>Related</b>: <a href="https://devblogs.microsoft.com/oldnewthing/20040715-00/?p=38433" title="Don't forget to #define UNICODE if you want Unicode"> Don’t forget to #define UNICODE if you want Unicode</a>.</p>
+<p>Now, sure, a mistake like that is pretty obvious and easy to spot.</p>
+<p>But other mistakes might not be so easy to find.</p>
+<pre>#include &lt;stdio.h&gt;
+#include &lt;contoso.h&gt;
+#include &lt;fastmalloc.h&gt;
+#define UNICODE
+#include &lt;windows.h&gt;
+
+extern HWND g_mainWindow;
+
+void UpdateTitle(PCWSTR title)
+{
+  SetWindowText(g_mainWindow, title);
+}
+</pre>
+<p>This looks perfectly fine: We defined the <code>UNICODE</code> symbol before we included <code>windows.h</code>, but we still get compiler errors that suggest that the symbol didn’t take effect:</p>
+<pre style="white-space: pre-wrap;">error C2664: 'BOOL SetWindowTextA(HWND,const char *)': cannot convert argument 2 from 'const wchar_t *' to 'const char *'
+note: Types pointed to are unrelated; conversion requires reinterpret_cast, C-style cast or function-style cast
+</pre>
+<p>The error message tells us that the compiler thinks that <code>Set­Window­Text</code> redirects to <code>Set­Window­TextA</code>, and that function expects an ANSI string, not a Unicode one. But how can that be? We did the right thing and defined <code>UNICODE</code> symbol immediately before including <code>windows.h</code>.</p>
+<p>Yes, you defined it immediately before you included <code>windows.h</code>. But your inclusion of <code>windows.h</code> isn’t the one that counted.</p>
+<p>Somewhere in the chain of <code>#include</code> files that came before you included <code>windows.h</code> is somebody that did their own <code>#include &lt;windows.h&gt;</code>. That first inclusion did not have the <code>UNICODE</code> symbol defined, so the result was that all of the Windows macros redirected to the ANSI versions. You reconfigured the <code>windows.h</code> header afterward, but by then it was too late.</p>
+<p>You’ll need to move the definition to somewhere that occurs before the point at which the <code>windows.h</code> header is included for the first time. The safest place is to do it before including <i>anything</i>.</p>
+<pre><span style="color: blue;">#define UNICODE</span>
+#include &lt;stdio.h&gt;
+#include &lt;contoso.h&gt;
+#include &lt;fastmalloc.h&gt;
+#include &lt;windows.h&gt;
+</pre>
+<p><b>Bonus chatter</b>: If you want to find out who is doing the early inclusion of <code>windows.h</code>, you can pass the <code>/showIncludes</code> command line option to the Microsoft Visual C++ compiler. This can be configured in Visual Studio under <i>Project</i> → <i>Configuration Properties</i> → <i>C/C++</i> → <i>Advanced</i> → <i>Show Includes</i> = <i>Yes (/showIncludes)</i>. This will generate a hierarchy tree of every included file, and you can search it to see who included <code>windows.h</code>.</p>
+<p>For gcc, you don’t even need to do that much. You can reuse a trick we saw a little while ago: <a href="https://devblogs.microsoft.com/oldnewthing/20211206-00/?p=106002" title="Compiler error message metaprogramming: Helping to find the conflicting macro definition"> Give a macro a conflicting definition and wait for the fireworks</a>.</p>
+<pre><span style="color: blue;">#define CreateFile who_includes_windows_h_first</span>
+#define UNICODE
+#include &lt;stdio.h&gt;
+#include &lt;contoso.h&gt;
+#include &lt;fastmalloc.h&gt;
+#include &lt;windows.h&gt;
+</pre>
+<p>You will then get told</p>
+<pre>in file included from /sdk/fileapifromapp.h:19:
+                 from /sdk/winbase.h:42:
+                 from /sdk/windows.h:171:
+                 from /contoso/inc/internal/config.h:84:
+                 from /contoso/inc/contoso.h:20:
+/sdk/fileapi.h:84: warning: "CreateFile" redefined
+</pre>
+<p>Bingo, it’s <code>contoso.h</code>, via its helper include file <code>internal/config.h</code>.</p>
+
+
+</body>

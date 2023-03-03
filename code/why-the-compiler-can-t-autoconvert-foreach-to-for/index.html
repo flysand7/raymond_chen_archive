@@ -1,0 +1,76 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why the compiler can’t autoconvert foreach to for</h1>  <!-- .entry-meta -->
+
+<p>People have discovered that the “natural” C# loop construct</p>
+<pre>ArrayList list = ...;
+foreach (Object o in list) {
+  ... do something with o ...
+}
+</pre>
+<p>is fractionally slower than the corresponding manual loop:</p>
+<pre>ArrayList list = ...;
+for (int i = 0; i &lt; list.Length; i++) {
+    Object o = list[i];
+  ... do something with o ...
+}
+</pre>
+<p>The first thing that needs to be said here is that</p>
+<blockquote><p>The performance difference is almost certainly insignificant.</p></blockquote>
+<p>Don’t go running around changing all your <b>foreach</b> loops into corresponding <b>for</b> loops thinking that your program will magically run faster. It almost certainly won’t, because loop overhead is rarely where a non-benchmark program spends most of its time.</p>
+<p>My topic for today is not how to make your code faster by abandoning your <b>foreach</b> loops. My topic is to answer the question, “Why doesn’t the compiler autoconvert the <b>foreach</b> into the corresponding <b>for</b>, so I don’t lose readability but get to take advantage of the performance benefit.”</p>
+<p>The reason is that the two loops are in fact not identical.</p>
+<p>The semantics for enumeration is that you aren’t allowed to change the object being enumerated while an enumeration is in progress. If you do, then the enumerator will throw an InvalidOperationException the next time you talk to it. On the other hand, the <b>for</b> loop doesn’t care if you change the collection while you’re enumerating it. If you insert items into the collection inside the <b>for</b> loop, the loop will keep on going and depending on where the insertion happened, you might double-enumerate an item.</p>
+<p>If the compiler changed the <b>foreach</b> to a <b>for</b>, then a program that used to throw an exception would now run without a hiccup. Whether you consider this an “improvement” is a matter of opinion. (Depending on the circumstances, it may be better for the program to crash than to produce incorrect results.)</p>
+<p>Now, the compiler might be able to prove that you don’t change the collection inside the loop, but that is often hard to prove. For example, does this loop change the collection?</p>
+<pre>ArrayList list = target.GetTheList();
+foreach (Object o in list) {
+  o.GetHashCode();
+}
+</pre>
+<p>Well, it doesn’t look like it. But who knows, maybe <tt>target</tt> looks like this:</p>
+<pre>class Sneaky {
+  ArrayList list_;
+  public Sneaky(ArrayList list) { list_ = list; }
+  public override int GetHashCode()
+  {
+    list_.Add(this);
+    return base.GetHashCode();
+  }
+}
+class SneakyContainer {
+  public ArrayList GetTheList()
+  {
+    ArrayList list = new ArrayList();
+    list.Add(new Sneaky(list));
+    return list;
+  }
+}
+class Program {
+  static public void Main()
+  {
+    SneakyContainer target = new SneakyContainer();
+<span style="color: blue;">    ArrayList list = target.GetTheList();
+    foreach (object o in list) {
+      o.GetHashCode();
+    }
+</span>  }
+}
+</pre>
+<p>Ah, little did you know that <tt>o.GetHashCode()</tt> modifies the ArrayList. And yet it looked so harmless!</p>
+<p>If the <tt>SneakyContainer</tt> class came from another assembly, then the compiler must assume the worst, because it’s possible that somebody will make that assembly sneaky after you compiled your assembly.</p>
+<p>If that’s not a messed-up enough reason, here’s another: The <tt>ArrayList</tt> class is not sealed. Therefore, somebody can override its IEnumerable.GetEnumerator and return a nonstandard enumerator. For example, here’s a class that always returns an empty enumerator:</p>
+<pre>class ApparentlyEmptyArrayList : ArrayList {
+  static int[] empty = new int[] { };
+  public override IEnumerator GetEnumerator()
+    { return empty.GetEnumerator(); }
+}
+</pre>
+<p>“Who would be so crazy as to override the enumerator?”</p>
+<p>Well, this one is rather bizarro, but more generally one might override the enumerator in order to add a filter or to change the order of enumeration.</p>
+<p>So you can’t even trust that your ArrayList really is an ArrayList. It might be an ApparentlyEmptyArrayList!</p>
+<p>Now if the compiler wanted to do this rewrite optimization, not only would it have to prove that the object being enumerated is not modified inside the enumeration, it also has to prove that the object really is an ArrayList and not a derived class that may have overridden the GetEnumerator method.</p>
+<p>Given the late-binding nature of cross-assembly classes, the number of cases where the compiler can prove these requirements is very restricted indeed, to the point where the number of places where the optimization can safely be performed without changing semantics becomes so vanishingly small as to be not worth the effort.</p>
+<p> </p>
+
+
+</body>

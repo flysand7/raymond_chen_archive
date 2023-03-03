@@ -1,0 +1,118 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The <code>COM_</code><code>INTERFACE_</code><code>ENTRY</code> must be a COM interface, but nobody actually checks</h1>  <!-- .entry-meta -->
+
+<p>A customer had some code written with the Active Template Library, <a href="https://docs.microsoft.com/en-us/cpp/atl/active-template-library-atl-concepts"> more commonly known as ATL</a>. Apparently, ATL is still a thing!</p>
+<p>Anyway, their problem was that their component that had been working just fine for many years started crashing. Their object went something like this:</p>
+<pre>[uuid("...")]
+class ATL_NO_VTABLE CAwesomeWidget :
+    public CComObjectRootEx&lt;CComMultiThreadModel&gt;,
+    public CComCoClass&lt;CAwesomeWidget, &amp;CLSID_AwesomeWidget&gt;,
+    public IWidgetProviderInfo,
+    public IWidget
+    /// ... other interfaces ...
+{
+    ...
+
+    BEGIN_COM_MAP(CAwesomeWidget)
+      COM_INTERFACE_ENTRY(IWidgetProviderInfo)
+      COM_INTERFACE_ENTRY(IWidget)
+      // ... other interfaces ...
+    END_COM_MAP()
+
+    // IWidgetProviderInfo
+    IFACEMETHODIMP GetProviderId(GUID *pguidId);
+
+    // IWidget
+    IFACEMETHODIMP Frob();
+    ...
+};
+</pre>
+<p>Yes, I’m making you look at ancient ATL code, with all its wacky macros. Product maintenance is like that. <a href="https://blogs.msdn.microsoft.com/oldnewthing/20160329-00/?p=93214"> Deal with it</a>.</p>
+<p>Clients can do</p>
+<pre>void Sample()
+{
+  CComPtr&lt;IWidget&gt; widget;
+  widget.CoCreateInstance(CLSID_AwesomeWidget);
+  widget-&gt;Frob();
+}
+</pre>
+<p>to create the <code>CAwesome­Widget</code> as a widget, and then ask the widget to do something.</p>
+<p>The <code>CAwesome­Widget</code> did its job very well for over five years, and then suddenly it started crashing in <code>Get­Provider­Id</code>, even though nobody called <code>Get­Provider­Id</code>.</p>
+<p>They traced it back to this call:</p>
+<pre>void Sample2()
+{
+  CComPtr&lt;IUnknown&gt; unk;
+  unk.CoCreateInstance(CLSID_AwesomeWidget);
+
+  <span style="color: blue;">CComQIPtr&lt;IWidget&gt; widget(unk); // ← here</span>
+  widget-&gt;Frob();
+}
+</pre>
+<p>Obviously, this wasn’t literally what their code did, but it boils the problem down to its essence.</p>
+<p>The idea was that instead of creating the object for its <code>IWidget</code> interface, the object was created with the generic <code>IUnknown</code> interface, and then it was converted to an <code>IWidget</code>. The reason for this extra step isn’t important, but you can come up with scenarios where this might happen. (For example, maybe the <code>Co­Create­Instance</code> is coming from a generic “creation helper” function.)</p>
+<p>The problem was in the definition of the <code>IWidget­Provider­Info</code>:</p>
+<pre>// widget.h
+[uuid("...")] 
+interface IWidgetProviderInfo
+{
+    STDMETHOD(GetProviderId)(GUID *pguidId) PURE;
+};
+</pre>
+<p>Do you see something?</p>
+<p>Actually, more honestly, I should be asking, “Do you <i>not</i> see something?”</p>
+<p>The <code>IWidget­Provider­Info</code> interface does not derive from <code>IUnknown</code>!</p>
+<p>Once you realize this, everything unravels.</p>
+<p>The <code>COM_</code><code>INTERFACE_</code><code>ENTRY</code> macro assumes that the thing it’s given is indeed a COM interface. This assumption is made in two places:</p>
+<ol>
+<li>A request for <code>IUnknown</code> returns the first interface in the list.</li>
+<li>Any successful request will be accompanied by a call to <code>IUnknown::</code><code>Add­Ref</code>, per COM rules.</li>
+</ol>
+<p>They listed <code>IWidget­Provider­Info</code> as the first “interface”, so it was returned as in response to a request for <code>IUnknown</code>, even though it wasn’t <code>IUnknown</code>.</p>
+<p>The attempt to convert the <code>IUnknown</code> to an <code>IWidget</code> involves a call to <code>IUnknown::</code><code>Query­Interface</code>, but remember, that thing which the code thinks is an <code>IUnknown</code> is really an <code>IWidget­Provider­Info</code>. The call to <code>IUnknown::</code><code>Query­Interface</code> actually called <code>IWidget­Provider­Info::</code><code>Get­ProviderId</code>. With the wrong number and types of arguments, of course. The crash occurred when the <code>Get­Provider­Id</code> method tried to write to what it thought was a <code>pguidId</code>, but which was actually a <code>riid</code> from the <code>Query­Interface</code>.</p>
+<p>The customer would have noticed that something was wrong with <code>IWidget­Provider­Info</code> had they ever tried to use it!</p>
+<pre>CComPtr&lt;IWidgetProviderInfo&gt; info;
+// ^^ error: class "IWidgetProviderInfo" has no "Release" member
+</pre>
+<p>Merely talking about <code>IWidget­Provider­Info</code> causes the compiler to get upset because the <code>CComPtr</code> destructor needs to call the <code>Release</code> method, which doesn’t exist. The customer never noticed this because they never used the <code>IWidget­Provider­Info</code> interface at all! It was presumably added in anticipation of a feature that never materialized.</p>
+<p>Okay, so now we understand why this crashes and how it eluded compile-time detection, but how did it ever work? After all, the implementation of <code>Create­Instance</code> needs to do a <code>Query­Interface</code> to return the proper pointer back to the caller.</p>
+<p>Here’s a simplified version of how ATL implements <code>Create­Instance</code>:</p>
+<pre>template &lt;class T1&gt;
+class CComCreator
+{
+  static HRESULT WINAPI CreateInstance(void* pv, REFIID riid, LPVOID* ppv)
+  {
+    HRESULT hRes = E_OUTOFMEMORY;
+    T1* p = NULL;
+    ATLTRY(p = new T1(pv))
+    if (p != NULL)
+    {
+      p-&gt;SetVoid(pv);
+      p-&gt;InternalFinalConstructAddRef();
+      hRes = p-&gt;_AtlInitialConstruct();
+      if (SUCCEEDED(hRes))
+        hRes = p-&gt;FinalConstruct();
+      p-&gt;InternalFinalConstructRelease();
+      if (hRes == S_OK)
+        <span style="color: blue;">hRes = p-&gt;QueryInterface(riid, ppv);</span>
+      if (hRes != S_OK)
+        delete p;
+    }
+    return hRes;
+  }
+}
+</pre>
+<p>Why doesn’t the call to <code>p-&gt;Query­Interface</code> crash?</p>
+<p>Because it’s being called from a pointer to a <code>T1</code>, not from a pointer to an <code>IUnknown</code>. The compiler therefore knows that the <code>Query­Interface</code> method is in fact not at slot 0 in vtable 0, but rather is at slot 0 in vtable 1 (taking it from <code>IWidget</code>).</p>
+<p>So how about fixing the problem?</p>
+<p>One fix is to delete the unused <code>IWidget­Provider­Info</code> interface. However, when working with legacy code, you may be averse to taking such a drastic step, because there might be somebody who is actually using that interface in a way you failed to detect. Or maybe you want to keep the interface around because you really do plan on using it soon. In that case, you can make the interface derive from <code>IUnknown</code>, like it should have in the first place:</p>
+<pre>[uuid("...")] 
+interface IWidgetProviderInfo : <span style="color: blue;">IUnknown</span>
+{
+    STDMETHOD(GetProviderId)(GUID *pguidId) PURE;
+};
+</pre>
+<p>Customer problem solved.</p>
+<p>Next time, we’ll look at how to catch this problem at compile time.</p>
+
+
+</body>

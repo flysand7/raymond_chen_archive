@@ -1,0 +1,159 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A function pointer cast is a bug waiting to happen</h1>  <!-- .entry-meta -->
+
+<p>
+A customer reported an application compatibility bug in Windows.
+</p>
+<blockquote class="q">
+<p>
+We have some code that manages a Win32 button control.
+During button creation, we subclass the window by calling
+<code>Set­Window­Subclass</code>.
+On the previous version of Windows, the subclass procedure
+receives the following messages, in order:
+</p>
+<ul>
+<li><code>WM_WINDOWPOSCHANGING</code>
+<li><code>WM_NCCALCSIZE</code>
+<li><code>WM_WINDOWPOSCHANGED</code>
+</li></li></li></ul>
+<p>
+We do not handle any of these messages and pass them through
+to <code>Def­Subclass­Proc</code>.
+On the latest version of Windows,
+we get only the first two messages,
+and <code>comctl32</code> crashes while it’s handling
+the third message before it gets a chance to call us.
+It looks like it’s reading from invalid memory.
+</p>
+<p>
+The callback function goes like this:
+</p>
+<pre>
+LRESULT ButtonSubclassProc(
+    HWND hwnd,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR idSubclass,
+    DWORD_PTR dwRefData);
+</pre>
+<p>
+We install the subclass function like this:
+</p>
+<pre>
+SetWindowSubclass(
+    hwndButton,
+    reinterpret_cast&lt;SUBCLASSPROC&gt;(ButtonSubclassProc),
+    id,
+    reinterpret_cast&lt;DWORD_PTR&gt;(pInfo));
+</pre>
+<p>
+We found that if we changed the callback function declaration to
+</p>
+<pre>
+LRESULT <font color="blue">CALLBACK</font> ButtonSubclassProc(
+    HWND hwnd,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR idSubclass,
+    DWORD_PTR dwRefData);
+</pre>
+<p>
+and install the subclass function like this:
+</p>
+<pre>
+SetWindowSubclass(
+    hwndButton,
+    <font color="blue">ButtonSubclassProc</font>,
+    id,
+    reinterpret_cast&lt;DWORD_PTR&gt;(pInfo));
+</pre>
+<p>
+then the problem goes away.
+It looks like the new version of Windows introduced
+a compatibility bug; the old code works fine on all previous
+versions of Windows.
+</p>
+</blockquote>
+<p>
+Actually, you had the problem on earlier versions of Windows, too.
+You were just lucky that the bug wasn’t a crashing bug.
+But now it is.
+</p>
+<p>
+This is a classic case of
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/01/15/58973.aspx">
+mismatching the calling convention</a>.
+The <code>SUB­CLASS­PROC</code> function is declared as requiring
+the <code>CALLBACK</code> calling convention (which on x86
+maps to <code>__stdcall</code>),
+but the code declared it without any calling convention at all,
+and the ambient calling convention was <code>__cdecl</code>.
+When they went to compile the code, they got a compiler error
+that said something like this:
+</p>
+<p>
+<code>
+error C2664: 'SetWindowSubclass' : cannot convert parameter 2 from
+ 'LRESULT (__cdecl *)(HWND,UINT,WPARAM,LPARAM,UINT_PTR,DWORD_PTR)'
+ to 'SUBCLASSPROC'
+</code>
+</p>
+<p>
+“Since the compiler was unable to convert the parameter,
+let’s give it some help and stick a cast in front.
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/10/23/9911891.aspx#9912158">
+There, that shut up the compiler</a>.
+Those compiler guys are so stupid.
+They can’t even figure out how to convert one function pointer
+to another.
+I bet they need help wiping their butts when they go to the bathroom.”
+</p>
+<p>
+And there you go, you inserted a cast to shut up the compiler
+and masked a bug instead of fixing it.
+</p>
+<p>
+The only thing you can do with a function pointer after casting it
+is to cast it back to its original type.¹
+If you try to use it as the cast type, you will crash.
+Maybe not today,
+maybe not tomorrow, but
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/01/19/60162.aspx">
+someday</a>.
+</p>
+<p>
+In this case, the calling convention mismatch resulted in
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/01/16/59415.aspx">
+the stack being mismatched when the function returns</a>.
+It looks like earlier versions of Windows managed to hobble
+along long enough before things got resynchronized
+(by an <code>EBP</code> frame restoration, most likely)
+so the damage didn’t spread very far.
+But the new version of Windows, possibly one compiled with
+more aggressive optimizations,
+ran into trouble before things resynchronized, and thus occurred
+the crash.
+</p>
+<p>
+The compiler was yelling at you for a reason.
+</p>
+<p>
+It so happened that the Windows application compatibility team
+had already encountered this problem in their test labs,
+and a shim had already been developed to auto-correct this
+mistake.
+(Actually, the shim also corrects another mistake they hadn’t noticed
+yet:
+They forgot to call <code>Remove­Window­Subclass</code>
+when they were done.)
+</p>
+<p>
+¹I refer here to pointers to static functions.
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/02/09/70002.aspx">
+Pointers to member functions are entirely different animals</a>.</p>
+
+
+</body>

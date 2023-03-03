@@ -1,0 +1,75 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I disable the press-and-hold gesture for my window?</h1>  <!-- .entry-meta -->
+
+<p>A customer had a program which responded to left mouse clicks, but they found that when used with a touch screen, when users touched the screen, the <code>WM_LBUTTON­DOWN</code> message didn’t arrive until the users lifted their fingers from the screen. They wanted to know whether this was by design, and also whether there was a way to get the <code>WM_LBUTTON­DOWN</code> message as soon as the finger touches the screen. </p>
+<p>Yes, this behavior is by design. The system is waiting to see whether the user is making a press-and-hold gesture. If so, then the touch events are converted to right-mouse-button messages (<code>WM_RBUTTON­DOWN</code> and <code>WM_RBUTTON­UP</code>). But if the finger does not remain in contact for a long time, then the touch events are converted to left-mouse-button messages (<code>WM_LBUTTON­DOWN</code> and <code>WM_LBUTTON­UP</code>). </p>
+<p>The customer’s program was targeting Windows 7, so they were looking for solutions that would work on that platform. </p>
+<p>Take our <a href="https://blogs.msdn.microsoft.com/oldnewthing/20030723-00/?p=43073">scratch program</a> and add the following: </p>
+<pre>
+<font color="blue">#include &lt;strsafe.h&gt; // StringCchPrintf
+#include &lt;tpcshrd.h&gt; // WM_TABLET_QUERYSYSTEMGESTURESTATUS</font>
+
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  <font color="blue">g_hwndChild = CreateWindow(TEXT("listbox"), NULL,
+        LBS_HASSTRINGS | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+        0, 0, 0, 0, hwnd, NULL, g_hinst, 0);</font>
+  return TRUE;
+}
+
+void
+OnSize(HWND hwnd, UINT state, int cx, int cy)
+{
+    if (g_hwndChild) {
+        MoveWindow(g_hwndChild, 0, 0, cx, <font color="blue">cy/2</font>, TRUE);
+    }
+}
+
+
+LRESULT CALLBACK
+WndProc(HWND hwnd, UINT uiMsg, WPARAM wParam, LPARAM lParam)
+{
+  ...
+  <font color="blue">case WM_LBUTTONDOWN:
+  case WM_LBUTTONUP:
+  case WM_RBUTTONDOWN:
+  case WM_RBUTTONUP:
+  {
+    TCHAR buffer[80];
+    StringCchPrintf(buffer, 80, TEXT("%04x %d %d"), uiMsg,
+                    GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+    ListBox_AddString(g_hwndChild, buffer);
+  }
+  break;
+
+  case WM_TABLET_QUERYSYSTEMGESTURESTATUS:
+    return TABLET_DISABLE_PRESSANDHOLD;</font>
+  ...
+}
+</pre>
+<p>Most of this code is just creating a logging window so we can see the message traffic. (Note that we divide <code>cy</code> by 2 in the <code>OnSize</code> function so that there is room at the bottom of the window for touch activity.) </p>
+<p>The interesting part is adding a handler for the <code>WM_TABLET_QUERY­SYSTEM­GESTURE­STATUS</code> message and responding that we want to disable press-and-hold. </p>
+<p>This successfully disables the press-and-hold gesture on Tablet PC (remember that?), allowing the left-button messages to be generated immediately upon contact. But it doesn’t help for Windows 7 and above. For that, we need something else: </p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  g_hwndChild = CreateWindow(TEXT("listbox"), NULL,
+        LBS_HASSTRINGS | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+        0, 0, 0, 0, hwnd, NULL, g_hinst, 0);
+
+  <font color="blue">GESTURECONFIG config;
+  config.dwID = 0;
+  config.dwWant = 0;
+  config.dwBlock = GC_ALLGESTURES;
+  SetGestureConfig(hwnd, 0, 1, &amp;config, sizeof(config));</font>
+
+  return TRUE;
+}
+</pre>
+<p>This time, we disable all gestures using <code>Set­Gesture­Config</code>. This takes care of Windows 7 and higher. </p>
+<p>So there are your options: There’s a “Windows XP and Windows Vista” solution, and there’s a “Windows 7 and higher” solution. Or you can just play it safe and use both. </p>
+
+
+</body>

@@ -1,0 +1,107 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++/WinRT injects additional constructors into each runtime class</h1>  <!-- .entry-meta -->
+
+<p>C++/WinRT treats runtime classes similar to C# reference types. Copying a C++/WinRT runtime class copies a reference to the underlying object. You can null out the reference by assigning <code>nullptr</code> to it.</p>
+<p>On the other hand, C++ constructors don’t use the <code>new</code> keyword; the <code>new</code> keyword has a different meaning which doesn’t apply to Windows Runtime classes.</p>
+<p>This means that C++ constructors have to do double-duty: They can be used to construct new objects, or they can be used as copy constructors or conversion constructors.</p>
+<p>Constructors that actually, y’know, create new objects are represented as traditional C++ constructors.</p>
+<p>C++/WinRT also injects additional constructors into each runtime class. One is the copy constructor, and another is the conversion constructor from <code>nullptr</code>.</p>
+<p>If you had a class that has a default constructor, or could construct from an integer, you would write it something like this:</p>
+<pre>class Thing
+{
+public:
+    Thing();
+    explicit Thing(int capacity);
+};
+</pre>
+<p>The C++/WinRT version looks similar, but with additional constructors:</p>
+<pre>class Thing
+{
+public:
+    Thing();
+    explicit Thing(int capacity);
+    <span style="color: blue;">Thing(std::nullptr_t);
+    Thing(Thing const&amp;) = default;
+    Thing(const&amp;&amp;) = default;</span>
+};
+</pre>
+<p>(If you look at the C++/WinRT headers, you won’t see the default constructors. They simply are generated automatically by the compiler.)</p>
+<p>The first injected constructor is the conversion constructor from <code>nullptr</code>. The second and third are the copy and move copy constructors, which copy or move the reference to the underlying object.</p>
+<pre>// default constructor, creates an object
+Thing t1;
+
+// explicit constructor, creates an object
+Thing t2{ 42 }; 
+
+// conversion from nullptr, creates an empty reference
+Thing t3{ nullptr };
+Thing t4 = nullptr;
+
+// copy constructor, copies reference to object
+Thing t5{ t1 };
+Thing t6 = t1;
+
+// move copy constructor, moves reference to object
+Thing t5{ std::move(t1) };
+Thing t6 = std::move(t1);
+</pre>
+<p>This conflation of reference construction and object construction can be confusing. For example, you might forget that the default constructor creates an object:</p>
+<pre>class Something
+{
+private:
+    Thing m_thing;
+};
+</pre>
+<p>This constructs a brand new <code>Thing</code> object when the <code>Something</code> constructs. If you wanted to start with an empty reference, you need to initialize <code>m_thing</code> with <code>nullptr</code>.</p>
+<pre>class Something
+{
+private:
+    Thing m_thing <span style="color: blue;">= nullptr</span>;
+};
+</pre>
+<p>When designing your own runtime classes, you may want to avoid having a constructor whose single parameter is the same as the type being constructed, because that would conflict with the copy constructor.</p>
+<pre>runtimeclass Thing
+{
+  Thing(Thing parent);
+}
+</pre>
+<p>This would result in two conflicting projections into C++/WinRT. Would</p>
+<pre>// assuming t1 is a Thing
+Thing t2{ t1 };
+</pre>
+<p>be an attempt to construct a brand new <code>Thing</code>, using <code>t1</code> as the constructor parameter? Or would it be an attempt to copy the reference to the same underlying <code>Thing</code> object?</p>
+<p>You can work around this by using a static function that acts like a constructor.</p>
+<pre>runtimeclass Thing
+{
+  <span style="color: blue;">static Thing CreateFromParent(Thing parent);</span>
+}
+</pre>
+<p>Or by changing it to a method on the parent.</p>
+<pre>runtimeclass Thing
+{
+  <span style="color: blue;">Thing CreateChild();</span>
+}</pre>
+<p>There is also an ambiguity if you have a constructor that takes a single reference type, and it’s possible for that reference to be null.</p>
+<pre>runtimeclass ChildThing
+{
+  // parent=null means create parentless
+  ChildThing(ParentThing parent);
+}
+</pre>
+<p>In this case, you might be tempted to create a new parentless <code>ChildThing</code> object by saying this:</p>
+<pre>ChildThing child{ nullptr };
+</pre>
+<p>Unfortunately, this actually invokes the conversion constructor from <code>nullptr</code>. To construct a new parentless <code>ChildThing</code>, you need to write</p>
+<pre>ChildThing child{ ParentThing{ nullptr } };
+</pre>
+<p>A cleaner workaround is to provide a default constructor that creates a parentless <code>ChildThing</code>.</p>
+<pre>runtimeclass ChildThing
+{
+  <span style="color: blue;">ChildThing(); // create parentless</span>
+  ChildThing(ParentThing parent); // creates with parent
+}
+</pre>
+<pre> </pre>
+
+
+</body>

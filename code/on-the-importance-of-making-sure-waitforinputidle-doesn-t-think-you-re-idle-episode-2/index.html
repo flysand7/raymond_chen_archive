@@ -1,0 +1,23 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On the importance of making sure WaitForInputIdle doesn’t think you’re idle, episode 2</h1>  <!-- .entry-meta -->
+
+<p>Continuing our DDE micro-series, we’ll look at another customer who was having trouble getting the shell to recognize their DDE server. </p>
+<blockquote class="q">
+<p>We have a program that supports DDE for legacy reasons. More specifically, we have two versions of that program, and we support the user installing both of them side by side. To mediate this uneasy coexistence, we intend to have a “selector” program that registers for all the file extensions, and the user configures the selector so that the requests are directed at the specific version of the program the user chooses. </p>
+<p>We threw together a quick prototype of the selector, which simply looks up the user’s preference, and then forwards its command line to the appropriate version. For example, we register the <i>open</i> verb as <code>ddeexec = selector.exe</code>, and the selector program decides that (say) the user wants files to open in v1, so the selector runs <code>"C:\Program Files\Contoso\v1\contoso.exe"</code>. </p>
+<p>What we found is that we get <i>There was a problem sending the command to the program</i>. What are we doing wrong? </p>
+</blockquote>
+<p>Recall that after the shell launches the registered command, the shell calls <code>Wait­For­Input­Idle</code>, and then when that call returns, the shell goes looking for the DDE server. </p>
+<p>The first catch is that <code>Wait­For­Input­Idle</code> requires a GUI program. This makes sense because console programs don’t pump messages, so any such wait would be infinite. What’s happening is that the shell launches the selector, and then the shell calls <code>Wait­For­Input­Idle</code>, which returns (with an error), and then the shell goes looking for the DDE server. But the DDE server isn’t ready yet. </p>
+<p>The selector needs to be a GUI program, and it needs to perform a <code>Wait­For­Input­Idle</code> on the final program, so that it doesn’t go input idle until the actual server goes input idle. (In a sense, the selector is proxying input idle-ness.) </p>
+<p>The customer tried a quick prototype with a WPF program, but it still didn’t work. I don’t know for sure, but I suspect that something in the WPF framework is pumping messages (perhaps due to a cross-thread COM operation) or creating a background thread that goes input-idle, which causes the entire process to go input-idle before the business logic can launch the true DDE server. </p>
+<p>The customer tried another prototype with a pure Win32 program that launched the true DDE server, and then used <code>Wait­For­Input­Idle</code> to wait for the true DDE server to go idle, and then exited. </p>
+<p>And this worked, sort of. </p>
+<p>What the customer found is that they needed to add a <code>Sleep(1000)</code> between launching the true DDE server and calling <code>Wait­For­Input­Idle</code>. If they called <code>Wait­For­Input­Idle</code> immediately after the <code>Create­Process</code>, then the shell error occurred. </p>
+<p>This stumbles across another fine detail of <code>Wait­For­Input­Idle</code>: The process must be a GUI process. And even though the true DDE server is a GUI process, the selector is so fast that it calls <code>Wait­For­Input­Idle</code> before the true DDE server can call into the window manager and create its message queue, which is what causes the program to be marked as a GUI program. When this happens, the <code>Wait­For­Input­Idle</code> function returns <code>WAIT_FAILED</code>. </p>
+<p>Therefore, the selector program should check whether <code>Wait­For­Input­Idle&lt;/code returns <code>WAIT_FAILED</code>; if so, it should sleep a little bit and try again. (And eventually give up.) </code></p>
+<p>Phew. </p>
+<p>Please stop using DDE. </p>
+
+
+</body>

@@ -1,0 +1,253 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Alpha AXP, part 1: Initial plunge</h1>  <!-- .entry-meta -->
+
+<p>Since the Itanium series was such a smash hit (two whole people read it!), here’s another series for a now-defunct processor architecture which Windows once supported. The next who-knows-how-many days will be devoted to an introduction to the Alpha AXP processor, as employed by Win32. </p>
+<p>The Alpha AXP follows in the traditional RISC philosophy of having a relatively small and uniform instruction set. The first Alpha AXP chip was dual-issue, and it eventually reached quad-issue. (<a href="https://en.wikipedia.org/wiki/Alpha_21464">There was an eight-issue processor under development</a> when the Alpha AXP project was cancelled.) This series will focus on the original Alpha AXP architecture because that’s what Windows NT for Alpha AXP ran on, and it will largely ignore features added later. </p>
+<p>The Alpha AXP is a 64-bit processor. It does not have “32-bit mode”; the processor is always running in 64-bit mode. If the destination of a 32-bit operation is a register, the answer is always sign-extended to a 64-bit value. (This is known as the “canonical form” for a 32-bit value in a 64-bit register.) This one weird trick lets you close one eye and sort of pretend that it’s a 32-bit processor. An Alpha AXP program running on 32-bit Windows NT still has full access to the 64-bit registers and can use them to perform 64-bit computations. It could even use the full 64-bit address space, if you were willing to <a href="https://devblogs.microsoft.com/oldnewthing/">jump through some hoops</a>. </p>
+<p>Each instruction is a 32-bit word, aligned on a 4-byte boundary. Unlike other RISC processors of its era, the Alpha AXP does not have branch delay slots. If you don’t know what branch delay slots are, then consider yourself lucky. </p>
+<p>Memory size terms in the Alpha AXP instruction set are <var>byte</var>, <var>word</var> (two bytes), <var>longword</var> (four bytes), and <var>quadword</var> (eight bytes).¹ In casual conversation, <var>longword</var> and <var>quadword</var> are usually shortened <var>long</var> and <var>quad</var>. </p>
+<p>The Alpha AXP defines certain groups of instructions which are optional, such as floating point. If you perform an instruction which is not implemented by the processor, the instruction will trap into the kernel, and the kernel is expected to emulate the missing instruction, and then resume execution. </p>
+<p><b>Registers</b> </p>
+<p>There are 32 integer registers, all 64 bits wide. Formally, they are known by the names <var>r0</var> through <var>r31</var>, but Win32 assigns them the following mnemonics which correspond to their use in the Win32 calling convention. </p>
+<table border="1" cellpadding="3" cellspacing="0" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Mnemonic</th>
+<th>Meaning</th>
+<th>Preserved?</th>
+<th>Notes</th>
+</tr>
+<tr>
+<td><var>r0</var></td>
+<td><var>v0</var></td>
+<td>value</td>
+<td>No</td>
+<td>On function exit, contains the return value.</td>
+</tr>
+<tr>
+<td><var>r1</var>…<var>r8</var></td>
+<td><var>t0</var>…<var>t7</var></td>
+<td>temporary</td>
+<td>No</td>
+<td></td>
+</tr>
+<tr>
+<td><var>r9</var>…<var>r14</var></td>
+<td><var>s0</var>…<var>s5</var></td>
+<td>saved</td>
+<td>Yes</td>
+<td></td>
+</tr>
+<tr>
+<td><var>r15</var></td>
+<td><var>fp</var></td>
+<td>frame pointer</td>
+<td>Yes</td>
+<td>For functions with variable-sized stacks.</td>
+</tr>
+<tr>
+<td><var>r16</var>…<var>r21</var></td>
+<td><var>a0</var>…<var>a5</var></td>
+<td>argument</td>
+<td>No</td>
+<td>On function entry, contains function parameters.</td>
+</tr>
+<tr>
+<td><var>r22</var>…<var>r25</var></td>
+<td><var>t8</var>…<var>t11</var></td>
+<td>temporary</td>
+<td>No</td>
+<td></td>
+</tr>
+<tr>
+<td><var>r26</var></td>
+<td><var>ra</var></td>
+<td>return address</td>
+<td>Not normally</td>
+<td></td>
+</tr>
+<tr>
+<td><var>r27</var></td>
+<td><var>t12</var></td>
+<td>temporary</td>
+<td>No</td>
+<td></td>
+</tr>
+<tr>
+<td><var>r28</var></td>
+<td><var>at</var></td>
+<td>assembler temporary</td>
+<td>Volatile</td>
+<td>Long jump assist.</td>
+</tr>
+<tr>
+<td><var>r29</var></td>
+<td><var>gp</var></td>
+<td>global pointer</td>
+<td>Special</td>
+<td>Not used by 32-bit code.</td>
+</tr>
+<tr>
+<td><var>r30</var></td>
+<td><var>sp</var></td>
+<td>stack pointer</td>
+<td>Yes</td>
+<td></td>
+</tr>
+<tr>
+<td><var>r31</var></td>
+<td><var>zero</var></td>
+<td>reads as zero</td>
+<td>N/A</td>
+<td>Writes are ignored.</td>
+</tr>
+</table>
+<p>The <var>zero</var> register reads as zero, and writes to it are ignored. But it goes further than that: If you specify <var>zero</var> as the destination register for an instruction, the entire instruction may be optimized out by the processor! This means that any side effects <i>may or may not occur</i>. There are a few exceptions to this rule: </p>
+<ul>
+<li>Branch instructions are never optimized out.     If a branch instructions specifies <var>zero</var> as the register     to receive the return address,     the branch is still taken,     but the return address is thrown away. 
+<li>Load instructions are always optimized out.     If a load instruction specifies <var>zero</var> as the destination     register,     the processor will never raise an exception.     Instead, these “phantom loads”     are used as prefetch hints to the processor. </li></li></ul>
+<p>Whereas the behavior of the <var>zero</var> register is architectural, the behavior of the other registers are established by convention. </p>
+<p>Win32 requires that the <var>gp</var>, <var>sp</var>, and <var>fp</var> registers be used for their stated purpose throughout the entire function. (If a function does not have a variable-sized stack frame, then it can use <var>fp</var> for any purpose.) Some registers have stated purposes only at entry to a function or exit from a function. When not at the function boundary, those registers may be used for any purpose. </p>
+<p>Register marked with “Yes” in the “Preserved” column must be preserved across the call; those marked “No” do not. </p>
+<p>The <var>ra</var> register is marked “Not normally” because you don’t normally need to preserve it. However, if you are a leaf function that uses no stack space and modifies no preserved registers, then you can skip the generation of unwind codes for the leaf function, but you must keep the return address in <var>ra</var> for the duration of your function so that the operating system can unwind out of the function should an exception occur. (Special rules for lightweight leaf functions also exist for <a href="https://devblogs.microsoft.com/oldnewthing/">Itanium</a> and x64.) </p>
+<p>What does it mean when I say that the <var>at</var> register is volatile? </p>
+<p>Direct branch instructions can reach destinations up to 4<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/06/11/9725386.aspx">MB</a> from the current instruction. When the compiler generates a <var>bsr</var> instruction (branch to subroutine), it typically doesn’t know how far away the destination is. The compiler just generates a <var>bsr</var> instruction with a fixup and hopes for the best. It is the linker who knows how far away the destination actually is, and if it turns out the destination is too far away, the linker changes </p>
+<pre>
+        ....
+        BSR     toofaraway
+        ....
+</pre>
+<p> to </p>
+<pre>
+        ....
+        BSR     trampoline
+        ....
+
+trampoline:
+        ... set the "at" register equal to the
+        ... address of "toofaraway."
+        JMP     (at)            ; register indirect jump
+</pre>
+<p>The linker inserts the generated trampoline code between functions, which also has as a consequence that a single function cannot be larger than 8MB. </p>
+<p>Anyway, this secret rewriting means that any branch instruction can potentially modify the <var>at</var> register. In between branches, you can use <var>at</var>, but you cannot rely on its value remaining the same once a branch is taken. In practice, the compiler just avoids using the <var>at</var> register altogether. </p>
+<p>The <var>gp</var> register is not used by 32-bit code. I don’t know for sure, but I’m guessing that in 64-bit code, it serves the same purpose as <a href="http://blogs.msdn.com/b/oldnewthing/archive/2015/07/31/10631975.aspx">the Itanium <var>gp</var> register</a>. </p>
+<p>Note that some register names, like <var>a0</var> look like hex digits. The Windows debugger resolves them in favor of hex values, so if you do <code>? a0</code> thinking that you’re getting the value of the <var>a0</var> register, you’re going to be disappointed. To force a symbol to be interpreted as a register name, put an at-sign in front: <code>? @a0</code>. </p>
+<p>Even more confusing is that the Windows debugger’s disassembler does not put the <code>0x</code> prefix in front of numbers, so when you see an <code>a0</code>, you have to use the context to determine whether it is a number or a register. For example, </p>
+<pre>
+    LDA     a0, a0(a0)
+            ^^  ^^ ^^
+      register  |  register
+              number
+</pre>
+<p>The first parameter to <code>LDA</code> and the parameter inside the parentheses must be a register, so the outer <code>a0</code>‘s refer to the register. The thing just outside the parentheses must be a constant, so the middle <code>a0</code> is the number 160. Yes, it’s confusing at first, but the uniform instruction set means that these rules are quickly learned, and you don’t really notice it once you get used to it. </p>
+<p>Another point of confusion is that the conventional placeholder names for registers in instructions are <code>Ra</code>, <code>Rb</code> and <code>Rc</code>. This should not be confused with the <var>ra</var> register. </p>
+<p>There are thirty-two floating point registers. Formally, they are known as <var>f0</var> through <var>f31</var>, but Win32 assigns the following mnemonics: </p>
+<table border="1" cellpadding="3" cellspacing="0" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Mnemonic</th>
+<th>Preserved?</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td><var>f0</var></td>
+<td></td>
+<td>No</td>
+<td>Return value</td>
+</tr>
+<tr>
+<td><var>f1</var></td>
+<td></td>
+<td>No</td>
+<td>Second return value (for complex numbers)</td>
+</tr>
+<tr>
+<td><var>f2</var>…<var>f9</var></td>
+<td></td>
+<td>Yes</td>
+<td></td>
+</tr>
+<tr>
+<td><var>f10</var>…<var>f15</var></td>
+<td></td>
+<td>No</td>
+<td></td>
+</tr>
+<tr>
+<td><var>f16</var>…<var>f21</var></td>
+<td></td>
+<td>No</td>
+<td>First six parameters</td>
+</tr>
+<tr>
+<td><var>f22</var>…<var>f30</var></td>
+<td></td>
+<td>No</td>
+<td></td>
+</tr>
+<tr>
+<td><var>f31</var></td>
+<td><var>fzero</var></td>
+<td>N/A</td>
+<td>Reads as zero.  Writes are ignored.</td>
+</tr>
+</table>
+<p>There are four floating point formats supported. Two are the usual IEEE single and double precision formats. Two are special formats for backward compatibility with the DEC VAX. That’s about all I’m going to say about floating point. </p>
+<p>Finally, there are some special registers. </p>
+<table border="1" cellpadding="3" cellspacing="0" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Mnemonic</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td><var>pc</var></td>
+<td><var>fir</var></td>
+<td>program counter</td>
+</tr>
+<tr>
+<td><var>lock_flag</var></td>
+<td></td>
+<td>For interlocked memory access</td>
+</tr>
+<tr>
+<td><var>phys_locked</var></td>
+<td></td>
+<td>For interlocked memory access</td>
+</tr>
+<tr>
+<td><var>fpcr</var></td>
+<td></td>
+<td>Floating point control register</td>
+</tr>
+</table>
+<p>Why is the program counter called <var>fir</var>? Because that stands for “faulting instruction register”. </p>
+<p>Clearly named by somebody wearing kernel-colored glasses. </p>
+<p>These special registers are not directly accessible. To retrieve the program counter, you can to issue a branch instruction and save the “return address” into the desired destination register. We’ll learn more about the <var>lock_flag</var> and <var>phys_locked</var> when we study interlocked memory access. </p>
+<p>Note that there is no flags register. </p>
+<p>I repeat: There is no flags register. </p>
+<p>Here’s what a register dump looks like in the Windows debugger: </p>
+<pre>
+  v0=00000000 00000016   t0=00000000 00000000   t1=00000000 00000000
+  t2=00000000 00000000   t3=00000000 00000009   t4=00000000 00000001
+  t5=00000000 0006f9d0   t6=00000000 00000008   t7=00000000 00000000
+  s0=00000000 00000001   s1=00000000 00000000   s2=00000000 00081eb0
+  s3=00000000 77fc0000   s4=00000000 00081dec   s5=00000000 77fc0000
+  fp=00000000 7ffde000   a0=00000000 750900c8   a1=00000000 00000001
+  a2=00000000 00000009   a3=00000000 0006f9d0   a4=00000000 00000001
+  a5=00000000 00000001   t8=00000000 0000004c   t9=00000000 00000001
+ t10=00000000 0000004c  t11=ffffffff c00ea124   ra=00000000 77f4df08
+ t12=00000000 00000001   at=00000000 77f548f0   gp=00000000 00000000
+  sp=00000000 0006f9e0 zero=00000000 00000000 fpcr=08000000 00000000
+softfpcr=00000000 00000000  fir=77f63bf4
+ psr=00000003
+mode=1 ie=1 irql=0
+</pre>
+<p>I never needed to know what <code>softfpcr</code> is. The <code>psr</code> is the processor status register, the <code>mode</code> is 1 for user mode and 0 for kernel mode, <code>ie</code> is the interrupt enable flag, and <code>irql</code> is the interrupt request level. </p>
+<p>The calling convention is simple. As noted in the tables above, parameters are passed in registers, with excess parameters spilled onto the stack. There is no <a href="https://devblogs.microsoft.com/oldnewthing/">home space</a>. The return address is passed in the <var>ra</var> register, and the stack must be kept aligned on a 16-byte boundary. Exception dispatch is done by unwind tables stored in a separate section of the image. </p>
+<p>Okay, that’s the register set and calling convention. Next time, we’ll look at integer operations. </p>
+<p><b>Exercise</b>: The x64 calling convention reserves home space so that the register-based parameters can be spilled onto the stack and remain contiguous with the other stack-based parameters, so that the entire parameter pack can be enumerated with the <code>va_start</code> family of macros. Why doesn’t this requirement apply to the Alpha AXP? </p>
+<p>¹ The term <var>octaword</var> was introduced later, but we are focusing on the Alpha AXP classic architecture. </p>
+
+
+</body>

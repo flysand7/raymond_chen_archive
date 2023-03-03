@@ -1,0 +1,90 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">I marked my parameter as [optional], so why do I get an RPC error when I pass NULL?</h1>  <!-- .entry-meta -->
+
+<p>
+Consider the following interface declaration in an IDL file:
+</p>
+<pre>
+<i>// Code in italics is wrong
+interface IFoo : IUnknown
+{
+    HRESULT Cancel([in, optional, string] LPCWSTR pszReason);
+};</i>
+</pre>
+<p>
+The idea here is that you want to be able to call the
+<code>Cancel</code> method as
+<code>pFoo-&gt;Cancel(NULL)</code>
+if you don’t want to provide a reason.
+</p>
+<p>
+If you try this, you’ll find that the call sometimes fails with
+error
+0x800706F4, which decodes to
+<code>HRESULT_FROM_WIN32(<a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/08/28/9887637.aspx">RPC_X_NULL_REF_POINTER</a>)</code>.
+What’s going on here?
+</p>
+<p>
+The <code>optional</code> attribute does not mean what you think it means.
+To a C or C++ programmer, an “optional” pointer parameter typically means
+that it is valid to pass <code>NULL</code>/<code>nullptr</code> as the
+parameter value.
+But that’s not what it means to the IDL compiler.
+</p>
+<p>To the IDL compiler, optional parameters are
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/01/29/10495149.aspx">
+hints to the scripting engine that the parameter should be passed
+as <code>VT_ERROR</code>/<code>DISP_E_PARAM­NOT­FOUND</code></a>.
+The attribute is meaningful only when applied to parameters
+of type <code>VARIANT</code> or <code>VARIANT*</code>.
+</p>
+<p>
+What you actually want is the <code>unique</code> attribute.
+This somewhat confusingly-named attribute means
+“The parameter is allowed to be a null pointer.”
+Therefore, the interface should have been written as
+</p>
+<pre>
+interface IFoo : IUnknown
+{
+    HRESULT Cancel([in, <font color="blue">unique</font>, string] LPCWSTR pszReason);
+};
+</pre>
+<p>
+At the lowest level in the marshaler,
+pointer parameters are marked as
+<a href="http://msdn.microsoft.com/library/aa367153">
+<code>ref</code></a>,
+<a href="http://msdn.microsoft.com/library/aa367294">
+<code>unique</code></a>, or
+<a href="http://msdn.microsoft.com/library/aa367149">
+<code>ptr</code></a>.
+<code>ref</code> parameters may not be null, whereas
+<code>unique</code> and <code>ptr</code> parameters are allowed
+to be null.
+<a href="http://blogs.msdn.com/b/larryosterman">
+Larry Osterman</a> explained to me that
+the default for interface pointers (anything derived from
+<code>IUnknown</code>) is <code>unique</code> and the default for
+all other pointer types is <code>ref</code>.
+Therefore, if you want to say that <code>NULL</code> is a valid
+value for a non-interface pointer parameter, you must say so explicitly
+by annotating the parameter as <code>[unique]</code>.
+</p>
+<p>
+It’s probably too late to change the behavior of MIDL to reject the
+<code>[optional]</code> tag on non-<code>VARIANT</code> parameters
+because in the decades since the attribute was introduced,
+it’s probably being used incorrectly approximately twenty-five
+bazillion times, and making it an error would break a lot of code.
+(Even if you just made it a warning, that wouldn’t help because a lot
+of people treat warnings as errors.)
+</p>
+<p>
+<b>Exercise</b>:
+Why is the
+<code>RPC_X_NULL_REF_POINTER</code> error
+raised only sometimes?</p>
+
+
+</body>

@@ -1,0 +1,63 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I make my accelerators apply only when used in the main window and not when the user is using a modeless dialog?</h1>  <!-- .entry-meta -->
+
+<p>A customer had a main window and defined some keyboard accelerators for it. One of the accelerators calls up a modeless dialog box. The problem is that even when focus was in the modeless dialog box, the keyboard accelerators for the main window were still active. How can you disable the keyboard accelerators for the main window when focus is in the modeless dialog box?</p>
+<p>The standard message loop goes like this:</p>
+<pre>while (GetMessage(&amp;msg, nullptr, 0, 0)) {
+  if (!TranslateAccelerator(hwndMain, hacc, &amp;msg)) {
+    TranslateMessage(&amp;msg);
+    DispatchMessage(&amp;msg);
+  }
+}
+</pre>
+<p>For each message, we ask the <code>Translate­Accelerator</code> function to process it. The <code>Translate­Accelerator</code> function works by looking to see if the message matches any of the accelerators in the provided accelerator table <code>hacc</code>. If so, then it posts the corresponding command to the window <code>hwndMain</code>.</p>
+<p>As written, this message loop treats all messages as eligible for conversion into an accelerator for the main window. Maybe that’s what you want.</p>
+<p>In the customer’s case, they have a modeless dialog box, and in the absence of any special handling, it will still be the case that all messages (even ones destined for the modeless dialog box) are eligible for translation into accelerators for the main window.</p>
+<pre>while (GetMessage(&amp;msg, nullptr, 0, 0)) {
+  if (!TranslateAccelerator(hwndMain, hacc, &amp;msg) &amp;&amp;
+      !IsDialogMessage(hdlgModeless, &amp;msg)) {
+    TranslateMessage(&amp;msg);
+    DispatchMessage(&amp;msg);
+  }
+}
+</pre>
+<p>Observe that the call to <code>Translate­Accelerator</code> is made on every message. This means that messages destined for the modeless dialog box will nevertheless be inspected for keyboard accelerators.</p>
+<p>We can write an alternate version of <code>Translate­Accelerator</code> that translates accelerators only if the window is destined for the specified window.</p>
+<pre>BOOL TranslateAcceleratorForWindow(
+    HWND hwnd, HACC hacc, LPMSG pmsg)
+{
+  if (hwnd == pmsg-&gt;hwnd ||
+      IsChild(hwnd, pmsg-&gt;hwnd)) {
+    return TranslateAccelerator(hwnd, hacc, pmsg);
+  } else {
+    return FALSE;
+  }
+}
+</pre>
+<p>This does a preliminary check to see if the message is destined for the window or one of its children. Only in that case does it attempt to translate an accelerator. In this way, we limit accelerator translation to the case where the user is working with the specified window (or any of its children).</p>
+<p>We can switch to using this helper function in our main message loop:</p>
+<pre>while (GetMessage(&amp;msg, nullptr, 0, 0)) {
+  if (!<span style="color: blue;">TranslateAcceleratorForWindow</span>(
+        hwndMain, hacc, &amp;msg) &amp;&amp;
+      !IsDialogMessage(hdlgModeless, &amp;msg)) {
+    TranslateMessage(&amp;msg);
+    DispatchMessage(&amp;msg);
+  }
+}
+</pre>
+<p>We can go a step further and have one set of accelerators for the main window and another for the dialog box.</p>
+<pre>while (GetMessage(&amp;msg, nullptr, 0, 0)) {
+  if (!TranslateAcceleratorForWindow(
+        hwndMain, hacc, &amp;msg) &amp;&amp;
+      !<span style="color: blue;">TranslateAcceleratorForWindow(
+        hdlgModeless, haccDlg, &amp;msg) &amp;&amp;</span>
+      !IsDialogMessage(hdlgModeless, &amp;msg)) {
+    TranslateMessage(&amp;msg);
+    DispatchMessage(&amp;msg);
+  }
+}
+</pre>
+<p>It turns out you knew all this already. We discussed it quite some time ago, but looking at it <a href="/code/the-dialog-manager-part-9-custom-accelerators-in-dialog-boxes" title="The dialog manager, part 9: Custom accelerators in dialog boxes"> from the dialog box’s point of view</a>.</p>
+
+
+</body>

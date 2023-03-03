@@ -1,0 +1,105 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Cold-start coroutines</h1>  <!-- .entry-meta -->
+
+<p>So far, our coroutine promise has implemented a so-called <i>hot-start</i> coroutine, which is one that begins running as soon as it is created. Another model for coroutines is the so-called <i>cold-start</i> coroutine, which is one that doesn’t start running until it is awaited.</p>
+<p>C# and JavaScript use the hot-start model: Creating the coroutine runs the coroutine body synchronously to its first suspension point, and only after the coroutine suspends for the first time is the coroutine returned to the caller. The usual usage pattern is to create the coroutine, and then go do other stuff while the coroutine is running, on the assumption that the synchronous portion of the coroutine is brief, and the expensive portion runs asynchronously. The hot-start model makes it easy to start multiple coroutines in parallel, and await the combined result.</p>
+<p>Python uses cold-start coroutines: The coroutine doesn’t start running until you await it. With cold-start coroutines, you need other machinery if you want to do work in parallel with the await, although that machinery could be made relative simply, like Python’s <code>create_task</code> that runs a coroutine in an event loop. Cold-start coroutines have simpler bookkeeping since the <i>running</i> and <i>awaiting</i> states are identical, which makes a lot of state transitions impossible.</p>
+<p>You could also create a hybrid model where the coroutine is cold-start, but can be manually started. Mind you, doing so reintroduces the state transitions you thought you had simplified away.</p>
+<p>The C++ language doesn’t take a position on whether coroutines are hot-start or cold-start, or some hybrid of the two. It just provides the underlying infrastructure, and it’s up to you to decide what you want to build on top of it.</p>
+<p>If we define the initial state as <i>cold</i>, then our valid state transitions are as follows:</p>
+<ul>
+<li>cold → running → completed → abandoned: This is the common case where the task is awaited and then runs to completion.</li>
+<li>cold → abandoned: This is the case where the coroutine is abandoned without ever starting.</li>
+</ul>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="position: relative;">
+
+
+</td>
+<td>running</td>
+<td>completed</td>
+<td>abandoned</td>
+</tr>
+<tr>
+<td>cold</td>
+<td>Resume coroutine</td>
+<td style="background-color: #808080;"> </td>
+<td>Destroy promise</td>
+</tr>
+<tr>
+<td>running</td>
+<td style="background-color: #808080;"> </td>
+<td>Resume awaiter</td>
+<td style="background-color: #808080;"> </td>
+</tr>
+<tr>
+<td>completed</td>
+<td style="background-color: #808080;"> </td>
+<td style="background-color: #808080;"> </td>
+<td>Destroy promise</td>
+</tr>
+</tbody>
+</table>
+<p>The nice thing about cold-start coroutines is that there are very few transitions, and none of them are contended. Furthermore, the state is completely implied by the actions of the task, so we don’t even need to keep track of it explicitly.</p>
+<p>Here’s a sketch of the changes we can make to convert our hot-start coroutine promise to cold-start. Don’t incorporate these yet, for reasons we’ll see next time.</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_promise_base
+    {
+        ...
+
+        <span style="color: blue;">std::experimental::coroutine_handle&lt;&gt; m_waiting{ nullptr };</span>
+        simple_promise_result_holder&lt;T&gt; m_holder;
+
+        ...
+
+        void abandon()
+        {
+            <span style="color: blue;">destroy();</span>
+        }
+
+        <span style="color: blue;">std::experimental::suspend_always</span> initial_suspend() noexcept
+        {
+            return {};
+        }
+
+        auto final_suspend() noexcept
+        {
+            struct awaiter : std::experimental::suspend_always
+            {
+                simple_promise_base&amp; self;
+                void await_suspend(
+                    std::experimental::coroutine_handle&lt;&gt;)
+                    const noexcept
+                {
+                    <span style="color: blue;">self.m_waiting();</span>
+                }
+            };
+            return awaiter{ {}, *this };
+        }
+
+        bool client_await_ready()
+        {
+            <span style="color: blue;">return false;</span>
+        }
+
+        auto client_await_suspend(
+            std::experimental::coroutine_handle&lt;&gt; handle)
+        {
+            m_waiting = handle;
+            <span style="color: blue;">as_handle().resume();</span>
+        }
+
+        ...
+    };
+</pre>
+<p>What makes this a cold-start coroutine is the fact that the <code>initial_<wbr/>suspend</code> is a <code>suspend_<wbr/>always</code> rather than a <code>suspend_<wbr/>never</code>. This means that the coroutine body doesn’t start until the coroutine is explicitly <code>resume()</code>d.</p>
+<p>The other state transitions are significantly simplified. Destroying the coroutine doesn’t need to check whether the coroutine is running, because it happens either before the coroutine even starts, or after it has completed, never when the coroutine is runinng. Completing the coroutine can always resume the <code>m_waiting</code> coroutine, since the awaiter registers completion before resuming, so the resumption handle is known to be valid by this point.</p>
+<p>The other wrinkle about cold-start coroutines is that the awaiter is responsible for starting it, which we do by calling <code>resume()</code>.</p>
+<p>You may have noticed an inefficiency here: If the coroutine completes synchronously,¹ then we end up calling into the coroutine’s <code>resume()</code>, and the completion calls back into the awaiter’s <code>resume()</code>. This accumulates stack frames, which is a problem for a coroutine that awaits other synchronously-completing coroutines in a loop, since each time through the loop uses another level of stack.</p>
+<p>We’ll address this problem <a href="/code/c-coroutines-improving-cold-start-coroutines-which-complete-synchronously" title="C++ coroutines: Improving cold-start coroutines which complete synchronously"> next time</a>, and it will require us to bring back some of the code we deleted, which is why I warned you not to incorporate it yet.</p>
+<p>¹ “But why bother making it a coroutine if it completes synchronously?” The operation might complete synchronously under certain conditions, but asynchronously under other conditions. For example, the operation might complete asynchronously if a helper object needs to be started, but synchronously if the helper object is already up and running.</p>
+
+
+</body>

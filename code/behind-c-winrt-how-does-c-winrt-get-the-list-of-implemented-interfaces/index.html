@@ -1,0 +1,235 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Behind C++/WinRT: How does C++/WinRT get the list of implemented interfaces?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/behind-c-winrt-how-does-c-winrt-decide-which-interfaces-are-implemented" title="Behind C++/WinRT: How does C++/WinRT decide which interfaces are implemented?"> looked at how C++/WinRT decides which interfaces are implemented</a>. The <code>is_interface</code> type is just part of the larger template metaprogramming infrastructure inside C++/WinRT.</p>
+<p>Today, we’ll reverse-engineer the <code>interface_<wbr/>list&lt;...&gt;</code> template type, which holds a list of interfaces inside the <code>...</code>.</p>
+<pre>template &lt;typename...&gt; struct interface_list;
+
+template &lt;&gt;
+struct interface_list&lt;&gt;
+{
+    template &lt;typename T, typename Predicate&gt;
+    static constexpr void* find(const T*, const Predicate&amp;) noexcept
+    {
+        return nullptr;
+    }
+};
+</pre>
+<p>The base case is an empty interface list. In that case, there are no interfaces, and any attempt to find one always fails.</p>
+<pre>template &lt;typename First, typename ... Rest&gt;
+struct interface_list&lt;First, Rest...&gt;
+{
+    template &lt;typename T, typename Predicate&gt;
+    static constexpr void* find(const T* obj, const Predicate&amp; pred) noexcept
+    {
+        if (pred.template test&lt;First&gt;())
+        {
+            return to_abi&lt;First&gt;(obj);
+        }
+        return interface_list&lt;Rest...&gt;::find(obj, pred);
+    }
+    using first_interface = First;
+};
+</pre>
+<p>The recursive case is an interface list of at least one element. That element is called <code>First</code>, and is given the member type name <code>first_<wbr/>interface</code> for later extraction. The rest of the elements are called <code>Rest</code>.</p>
+<p>The <code>interface_<wbr/>list&lt;...&gt;</code> has a <code>find</code> method that looks for the first interface that satisfies a given predicate. From the usage pattern, you can see that the expected pattern for the predicate is</p>
+<pre>class Predicate
+{
+public:
+    template&lt;typename I&gt; bool test() const noexcept
+    {
+        return "true" if the interface "I" passes the test
+    }
+};
+</pre>
+<p>You can infer this because</p>
+<ul>
+<li>The <code>test</code> method must be public because we call it from outside the class.</li>
+<li>We call the <code>test&lt;First&gt;()</code> method, so the template parameter is the interface to test.</li>
+<li>The return value is used by the <code>if</code> statement, so it should be a <code>bool</code> (or at least be <code>bool</code>-like).</li>
+<li>We invoke it on a const <code>pred</code> object, so the method must be <code>const</code>.</li>
+<li>The containing function is <code>noexcept</code> so <code>test()</code> should be <code>noexcept</code> as well.</li>
+</ul>
+<p>In the base case, there are no interfaces, so clearly there are no matches, so it just returns <code>nullptr</code>.</p>
+<p>In the recursive case, it asks the predicate to test the first interface. If so, the we return <code>to_abi&lt;First&gt;(obj)</code>. Otherwise we call oureslves recursively to test the other interfaces.</p>
+<p>Template metaprogramming traditionally involves a lot of recursion.¹</p>
+<p>The next helper is this guy:</p>
+<pre>template &lt;typename, typename&gt; struct interface_list_append_impl;
+
+template &lt;typename... T, typename... U&gt;
+struct interface_list_append_impl&lt;interface_list&lt;T...&gt;, interface_list&lt;U...&gt;&gt;
+{
+    using type = interface_list&lt;T..., U...&gt;;
+};
+</pre>
+<p>The <code>interface_<wbr/>list_<wbr/>append_<wbr/>impl</code> class appends two interface lists. It extracts the interfaces from two interface lists (calling them <code>T...</code> and <code>U...</code>) and then creates a new interface list called <code>type</code> whose interfaces are the concatenation of <code>T...</code> and <code>U...</code>.</p>
+<p>To concatenate two interface lists, you would say</p>
+<pre>using result = interface_list_append_impl&lt;list1, list2&gt;::type;
+</pre>
+<p>Two patterns common to template metaprogramming are the “type” pattern and the “value” pattern. You create a class whose job is to perform some template metaprogramming task that produces a type or value. In order to express a type, you define a nested type called <code>type</code> which is aliased to to the produced type. And to express a value, you define a <code>static const</code> (or <code>constexpr</code> starting in C++11) member called <code>value</code> which has the produced value.</p>
+<p>The first complex operation on interface lists is filtering:</p>
+<pre>template &lt;template &lt;typename&gt; class, typename...&gt;
+struct filter_impl;
+</pre>
+<p>This weird declaration says that <code>filter_<wbr/>impl</code> is a templated class whose first template parameter is another template (which takes a single type template parameter), followed by zero or more additional types.</p>
+<p>Before implementing the <code>filter_<wbr/>impl</code>, we give it a prettier name:</p>
+<pre>template &lt;template &lt;typename&gt; class Predicate, typename... T&gt;
+using filter = typename filter_impl&lt;Predicate, unwrap_implements_t&lt;T&gt;...&gt;::type;
+</pre>
+<p>This is another common extension to the “type” and “value” patterns: Starting in C++11, you can define custom templated types or values that extract the type or value from the templated class. Here, we make <code>filter&lt;...&gt;</code> a typing-saver for <code>filter_impl&lt;...&gt;::type</code>, with the extra wrinkle that the types that come after the predicate pass through <code>unwrap_<wbr/>implements_t</code>. (We’ll look at <code>unwrap_<wbr/>implements_t</code> some other time. The focus here is on the interface list template metaprogramming.)</p>
+<p>This <code>using</code> statement also teaches us that the first template parameter is a predicate, seeing as it’s named <code>Predicate</code>.</p>
+<p>Okay, now we start implementing <code>filter_<wbr/>impl</code>:</p>
+<pre>template &lt;template &lt;typename&gt; class Predicate&gt;
+struct filter_impl&lt;Predicate&gt;
+{
+    using type = interface_list&lt;&gt;;
+};
+</pre>
+<p>The base case is filtering an empty list of types, which is easy: You get an empty interface list.</p>
+<p>Next comes the recursive case:</p>
+<pre>template &lt;template &lt;typename&gt; class Predicate, typename T, typename... Rest&gt;
+struct filter_impl&lt;Predicate, T, Rest...&gt;
+{
+    using type = typename interface_list_append_impl&lt;
+        std::conditional_t&lt;
+        Predicate&lt;T&gt;::value,
+        interface_list&lt;winrt::impl::uncloak&lt;T&gt;&gt;,
+        interface_list&lt;&gt;
+        &gt;,
+        typename filter_impl&lt;Predicate, Rest...&gt;::type
+    &gt;::type;
+};
+</pre>
+<p>We test the predicate by looking for <code>Predicate&lt;T&gt;::value</code> and treating it as a <code>bool</code>. Therefore the <code>Predicate</code> is expected to follow the value pattern:</p>
+<pre>template&lt;typename I&gt;
+class Predicate
+{
+    static constexpr bool value =
+        "true" if interface "I" satisfies the predicate;
+}
+</pre>
+<p><code>std::conditional_t</code> is a type-trait helper that is called like this:</p>
+<pre>std::conditional_t&lt;condition, if_true, if_false&gt;
+</pre>
+<p>If the condition is <code>true</code>, then the <code>std::conditional_t</code> resolves to the type <code>if_true.</code> Otherwise, it resolves to <code>if_false</code>.</p>
+<p>In this case, if the first interface in the interface list passes the test, then the <code>std::conditional_t</code> produces a single-element <code>interface_<wbr/>list</code> consisting of the uncloaked version of the interface. (We’ll look at uncloaking later.) Otherwise, it produces a zero-element interface list.</p>
+<p>This interface list is then combined via <code>interface_<wbr/>list_<wbr/>append_<wbr/>impl</code> with a recursive call to process the rest of the list, and we extract the resulting type.</p>
+<p>What this ultimately does is produce a type that is an <code>interface_<wbr/>list</code> where the elements of the list are the interfaces which satisfy the predicate.</p>
+<p>Next comes an alternate way of invoking the filter:</p>
+<pre>template &lt;template &lt;typename&gt; class Predicate, typename ... T, typename ... Rest&gt;
+struct filter_impl&lt;Predicate, interface_list&lt;T...&gt;, Rest...&gt;
+{
+    using type = typename interface_list_append_impl&lt;
+        filter&lt;Predicate, T...&gt;,
+        filter&lt;Predicate, Rest...&gt;
+    &gt;::type;
+};
+</pre>
+<p>This is a convenience helper which lets you apply a filter to an existing <code>interface_<wbr/>list</code>, as well as optional additional types. It extracts the interfaces from the <code>interface_<wbr/>list</code> and then filters them, and then also filters any additional types. (Since this is a recursive call, those additional types might themselves be <code>interface_<wbr/>list</code> types, in which case the inner types will be extracted from those types as well.)</p>
+<p>And another convenience helper that will lead us to the answer to the puzzle we solved earlier this week:</p>
+<pre>template &lt;template &lt;typename&gt; class Predicate, typename D, typename ... I, typename ... Rest&gt;
+struct filter_impl&lt;Predicate, winrt::implements&lt;D, I...&gt;, Rest...&gt;
+{
+    using type = typename interface_list_append_impl&lt;
+        filter&lt;Predicate, I...&gt;,
+        filter&lt;Predicate, Rest...&gt;
+    &gt;::type;
+};
+</pre>
+<p>If the first type after the predicate is an <code>implements</code>, it extracts the second and subsequent template parameters from the <code>implements</code> template type and filters those, and then continues recursively with any remaining types.</p>
+<p>We’re getting close to our goal of understanding the puzzle:</p>
+<pre>template &lt;typename T&gt;
+using implemented_interfaces = filter&lt;is_interface, typename T::implements_type&gt;;
+</pre>
+<p>This defines a helper type <code>implements_<wbr/>interfaces</code>: Given a type, it pulls out the <code>implements_<wbr/>type</code> and filters it with the <code>is_<wbr/>interface</code> predicate.</p>
+<p>The <code>implements_<wbr/>type</code> is a type that the <code>implements&lt;&gt;</code> template defines so it can find itself later:</p>
+<pre>template &lt;typename D, typename... I&gt;
+struct implements : impl::producers&lt;D, I...&gt;,
+                    impl::base_implements&lt;D, I...&gt;::type
+{
+...
+public:
+
+    using implements_type = implements;
+ ...
+};
+</pre>
+<p>Note that we are taking advantage of C++ <a href="https://en.cppreference.com/w/cpp/language/injected-class-name"> injected class names</a> which lets us write <code>implements</code> instead of the longer <code>mplements&lt;D, I...&gt;</code>. (The reason we have an explicit <code>implements_type</code> subtype is that other classes in C++/WinRT also define an <code>implements_type</code>, so this type name allows uniform access to the implemented thing.)</p>
+<p>The <code>is_<wbr/>interface</code> class we discussed last time is the final piece of the puzzle: The interfaces <code>I...</code> passed to <code>implements&lt;D, I...&gt;</code> are filtered through <code>is_<wbr/>interface</code> to produce an <code>interface_<wbr/>list&lt;...&gt;</code> which holds all of the interfaces that are implemented.</p>
+<p>The error that we got was complaining that there was no definition for <code>first_<wbr/>interface</code>, and from the definition at the start of this article, we see that the definition is present only if the interface list is nonempty.</p>
+<p>Putting it all together, we see that the error occurred because none of the <code>I...</code> types was recognized as an interface by <code>is_<wbr/>interface</code>, so the interface list ended up empty, and in order to <code>make</code> an object, it has to implement at least one interface. (Because without any interfaces, what you have isn’t even a COM object.)</p>
+<p><b>Bonus chatter</b>: C++ template metaprogramming is like programming in Prolog without a debugger.</p>
+<p>¹ The introduction of fold expressions in C++17 provides an opportunity to convert recursion to iteration. The trick is to rephrase your loop in terms of a fold expression. In this case, we could have written it as</p>
+<pre>template&lt;typename I, typename T, typename Predicate&gt;
+void find_interface_helper(
+    const T* obj, const Predicate&amp; pred,
+    bool&amp; found, void*&amp; result)
+    noexcept
+{
+    if (!found &amp;&amp; pred.template test&lt;I&gt;()) {
+        found = true;
+        result = to_abi&lt;I&gt;(obj);
+    }
+}
+
+template &lt;typename...Interfaces&gt;
+struct interface_list
+{
+    template &lt;typename T, typename Predicate&gt;
+    static constexpr void* find(const T* obj, const Predicate&amp; pred) noexcept
+    {
+        bool found = false;
+        void* result = nullptr;
+        (find_interface_helper&lt;Interfaces&gt;(obj, pred, found, result), ...);
+        return result;
+    }
+};
+</pre>
+<p>but it’s not clear that the effort was worth it. Fold expressions don’t have a way to <code>break</code> out of the loop, so we need a <code>found</code> variable that we use to cause the remaining calls to have no effect once a candidate is found.</p>
+<p>Aha, maybe we can fold using a short-circuiting operator. The short circuiting lets us “break” out of a “loop”.</p>
+<pre>template&lt;typename I, typename T, typename Predicate&gt;
+bool find_interface_helper(
+    const T* obj, const Predicate&amp; pred,
+    void*&amp; result) noexcept
+{
+    if (pred.template test&lt;I&gt;()) {
+        result = to_abi&lt;I&gt;(obj);
+        return true;
+    }
+    return false;
+}
+
+template &lt;typename...Interfaces&gt;
+struct interface_list
+{
+    template &lt;typename T, typename Predicate&gt;
+    static constexpr void* find(const T* obj, const Predicate&amp; pred) noexcept
+    {
+        void* result = nullptr;
+        (find_interface_helper&lt;Interfaces&gt;(obj, pred, result) || ...);
+        return result;
+    }
+};
+</pre>
+<p>And now we can inline the <code>find_<wbr/>interface_<wbr/>helper</code>:</p>
+<pre>template &lt;typename...Interfaces&gt;
+struct interface_list
+{
+    template &lt;typename T, typename Predicate&gt;
+    static constexpr void* find(const T* obj, const Predicate&amp; pred) noexcept
+    {
+        void* result = nullptr;
+        ([&amp;] {
+            if (pred.template test&lt;Interfaces&gt;()) {
+                 result = to_abi&lt;Interfaces&gt;(obj);
+                return true;
+            }
+            return false;
+        }() || ...);
+        return result;
+    }
+};
+</pre>
+
+
+</body>

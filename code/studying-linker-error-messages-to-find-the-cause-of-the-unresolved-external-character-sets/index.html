@@ -1,0 +1,60 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Studying linker error messages to find the cause of the unresolved external: Character sets</h1>  <!-- .entry-meta -->
+
+<p>A customer was encountering an unresolved external linker error when trying to link a plug-in with a static library.</p>
+<pre>// header.h
+#define UNICODE
+#define <a href="/code/text-vs-text-vs-t-and-unicode-vs-unicode" title="TEXT vs. _TEXT vs. _T, and UNICODE vs. _UNICODE">_UNICODE</a>
+#include &lt;windows.h&gt;
+
+BOOL SetSessionName(LPCTSTR name);
+</pre>
+<p>This header file is used both by the implementation:</p>
+<pre>// implementation.cpp
+#include "pch.h"
+#include &lt;header.h&gt;
+
+BOOL SetSessionName(LPCTSTR name)
+{
+    /* ... */
+}
+</pre>
+<p>And it is used by the plug-in:</p>
+<pre>// plugin.cpp
+#include "pch.h"
+#include &lt;header.h&gt;
+
+void Initialize()
+{
+    SetSessionName(TEXT("Fred"));
+}
+</pre>
+<p>The result when building the plug-in is an unresolved external:</p>
+<pre style="white-space: pre-wrap;">LNK2019 unresolved external "int __cdecl SetSessionName(char const*)" (?SetSessionName@@YAHPBD@Z)
+</pre>
+<p>What’s going on? The header file sets Unicode as the default before including the <code>windows.h</code> header file, so everything should be Unicode, shouldn’t it?</p>
+<p>Let’s look at what the error message is telling us. It says that the plug-in wants a function that takes a <code>char const*</code>, which is what <code>LPCTSTR</code> maps to when ANSI is the default. So somehow the Unicode setting isn’t sticking when the plug-in is using it.</p>
+<p>I usd my psychic powers to guess that the plug-in had already performed its own <code>#include &lt;windows.h&gt;</code> before including <code>header.h</code>, and that initial inclusion of <code>windows.h</code> was done with ANSI as the default character set. The <code>header.h</code> is changing the character set too late.</p>
+<p>Okay, so now that we understand the problem, how do we solve it?</p>
+<p>One option is to give up on ANSI. Just be all-Unicode all the time. After all, any plug-in that is ANSI-based is going to have problems with file names, user names, all sorts of things.</p>
+<p>But the customer said that they wanted to support both ANSI and Unicode plug-ins. Mind you, I’m not sure I believe that, seeing as their header file tried to <code>#define UNICODE</code> to force Unicode, but I’m going to take them at their word. Maybe the <code>#define UNICODE</code> was just an experiment.</p>
+<p>If you want to support either character set, then you need to define two versions, one for each character set. (While you’re at it, specify a calling convention already.) Classic Win32 uses C-style bindings, so you would have to decorate the function names manually:</p>
+<pre>EXTERN_C BOOL WINAPI SetSessionNameA(LPCSTR name);
+EXTERN_C BOOL WINAPI SetSessionNameW(LPCWSTR name);
+</pre>
+<p>Your implementation file would have to implement both the <a href="https://awrestaurants.com/"> A and W</a> versions.</p>
+<p>Another option is to use C++ decoration and overloads.</p>
+<pre>BOOL WINAPI SetSessionName(LPCSTR name);
+BOOL WINAPI SetSessionName(LPCWSTR name);
+</pre>
+<p>The downside of this is that it requires the plug-in to use the same compiler that your framework is written in. This is generally not a great idea, since your customers will probably have a preferred toolchain, and forcing them to use a specific compiler (and perhaps even a specific version of a specific compiler) will make it harder for you to make friends.</p>
+<p>Even worse: If your toolchain is the Microsoft Visual C compiler, then you have to deal with the <tt>/Zc:wchar_t</tt> option, which means <a href="https://devblogs.microsoft.com/oldnewthing/20161201-00/?p=94836" title="What is __wchar_t (with the leading double underscores) and why am I getting errors about it?"> bringing <code>__wchar_t</code> into the picture</a>.</p>
+<pre>BOOL WINAPI SetSessionName(LPCSTR name);
+BOOL WINAPI SetSessionName(unsigned short const* name);
+BOOL WINAPI SetSessionName(__wchar_t const* name);
+</pre>
+<p>You now have to implement three versions of the function, although you presumably could have them all be wrappers around a common helper that takes <code>LPCWSTR</code>.</p>
+<p><b>Related reading</b>: <a href="https://devblogs.microsoft.com/oldnewthing/20040706-00/?p=38543" title="Diagnosing a problem with calling conventions"> Diagnosing a problem with calling conventions</a>.</p>
+
+
+</body>

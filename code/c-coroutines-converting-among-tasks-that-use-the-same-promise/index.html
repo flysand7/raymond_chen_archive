@@ -1,0 +1,50 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Converting among tasks that use the same promise</h1>  <!-- .entry-meta -->
+
+<p>If the only difference between tasks is in the awaiter, then it’s possible to convert between them without the promise even knowing what happened. We have an example of this with our <code>simple_<wbr/>task</code> and <code>com_<wbr/>simple_<wbr/>task</code>, which differ only in the awaiter produced by the <code>co_<wbr/>await</code> operator. This means that we can actually convert between the two by simple wrapping the promise inside the other class:</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_task : details::simple_task_base&lt;T&gt;
+    {
+        using base = details::simple_task_base&lt;T&gt;;
+        simple_task() noexcept = default;
+        simple_task(details::simple_promise&lt;T&gt;*
+            initial) noexcept : base(initial)
+            { this-&gt;promise-&gt;start(); }
+        <span style="color: blue;">simple_task(com_aware_task&lt;T&gt;&amp;&amp; other) noexcept
+            : base(std::move(other)) { }</span>
+        ...
+    };
+
+    template&lt;typename T&gt;
+    struct com_aware_task : details::simple_task_base&lt;T&gt;
+    {
+        using base = details::simple_task_base&lt;T&gt;;
+        com_aware_task() noexcept = default;
+        com_aware_task(details::simple_promise&lt;T&gt;*
+            initial) noexcept : base(initial)
+            { this-&gt;promise-&gt;start(); }
+        <span style="color: blue;">com_aware_task(simple_task&lt;T&gt;&amp;&amp; other) noexcept
+            : base(std::move(other)) { }</span>
+        ...
+    };
+</pre>
+<p>You can now take a <code>simple_<wbr/>task&lt;T&gt;</code> and re-wrap it inside a <code>com_<wbr/>aware_<wbr/>task&lt;T&gt;</code>:</p>
+<pre>extern async_helpers::simple_task&lt;void&gt; SomethingAsync();
+
+auto task = com_aware_task&lt;void&gt;(SomethingAsync());
+</pre>
+<p>The <code>Something­Async</code> function returned a <code>simple_<wbr/>task&lt;void&gt;</code>, but we converted it to a <code>com_<wbr/>aware_<wbr/>task&lt;void&gt;</code>.</p>
+<p>We can also do the same thing to convert a cold-start task to a simple task or com-aware task by adopting the promise and starting it. However, we cannot convert a hot-start task into a cold-start task because the task has already started; you can’t un-start a task.</p>
+<p>The last step here is to remove the need to retype the coroutine return value when performing the conversion. We do this by adding deduction guides.</p>
+<pre>    template&lt;typename T&gt;
+    simple_task(com_aware_task&lt;T&gt;&amp;&amp;) -&gt; simple_task&lt;T&gt;;
+    template&lt;typename T&gt;
+    com_aware_task(simple_task&lt;T&gt;&amp;&amp;) -&gt; com_aware_task&lt;T&gt;;
+</pre>
+<p>Now you can write</p>
+<pre>auto task = com_aware_task(SomethingAsync());
+</pre>
+<p>Next time, I’ll look at a dark corner of the coroutine specification and how danger lurks inside.</p>
+
+
+</body>

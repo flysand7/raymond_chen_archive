@@ -1,0 +1,76 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I mark a shortcut file as requiring elevation?</h1>  <!-- .entry-meta -->
+
+<p>
+Specifying whether elevation is required
+is typically something that is the responsibility of the program.
+This is done by
+<a href="http://msdn.microsoft.com/library/en-us/dnlong/html/AccProtVista.asp">
+adding a <code>requestedExecutionLevel</code> element to your manifest</a>.
+(<a href="http://community.bartdesmet.net/blogs/bart/archive/2006/10/28/Windows-Vista-_2D00_-Demand-UAC-elevation-for-an-application-by-adding-a-manifest-using-mt.exe.aspx">Bart De Smet shows you how</a>.
+<a href="http://blogs.msdn.com/calvin_hsia/archive/2007/04/13/add-a-manifest-to-control-your-application-vista-uac-behavior.aspx">
+Calvin Hsia does the same for your Visual FoxPro programs</a>.)
+But if the program you’re running doesn’t have such a manifest—maybe
+it’s an old program that you don’t have
+any control over—you can create a shortcut to the program and
+mark the shortcut as requiring elevation.
+</p>
+<p>
+To do this, you set the <code>SLDF_RUNAS_USER</code> flag in the
+shortcut attributes.
+Here’s a skeleton program that sets the flag on the shortcut
+whose path is passed on the command line.
+For expository purposes, I’ve skimped on the error reporting,
+and just to shake things up, I’ve used ATL smart pointers.
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;atlbase.h&gt;
+void MarkShortcutRunAs(LPCWSTR pszShortcut)
+{
+ CComPtr&lt;IPersistFile&gt; sppf;
+ if (FAILED(sppf.CoCreateInstance(CLSID_ShellLink))) return;
+ if (FAILED(sppf-&gt;Load(pszShortcut, STGM_READWRITE))) return;
+ CComQIPtr&lt;IShellLinkDataList&gt; spdl(sppf);
+ if (!spdl) return;
+ DWORD dwFlags;
+ if (FAILED(spdl-&gt;GetFlags(&amp;dwFlags))) return;
+ dwFlags |= SLDF_RUNAS_USER;
+ if (FAILED(spdl-&gt;SetFlags(dwFlags))) return;
+ if (FAILED(sppf-&gt;Save(NULL, TRUE))) return;
+ wprintf(L"Succeeded\n");
+}
+int __cdecl wmain(int argc, wchar_t *argv[])
+{
+ if (argc == 2 &amp;&amp; SUCCEEDED(CoInitialize(NULL))) {
+  MarkShortcutRunAs(argv[1]);
+  CoUninitialize();
+ }
+ return 0;
+}
+</pre>
+<p>
+There’s not really much to this program.
+It creates a shell link object
+(<code>CLSID_ShellLink</code>) and
+asks it to load from the file whose path is given on the command line.
+It then uses <code>IShellLinkDataList::GetFlags</code> and
+<code>IShellLinkDataList::SetFlags</code> to fetch the old flags
+and set new flags that include <code>SLDF_RUNAS_USER</code>.
+Once that’s done, it saves the result back out.
+</p>
+<p>
+The hard part was knowing that the <code>SLDF_RUNAS_USER</code>
+flag existed in the first place.
+</p>
+<p>
+(I fear that most people will read this article and say,
+“Awesome! My program requires elevation, and this is how I can
+mark my Start menu shortcut to prompt for elevation.
+Thanks, Raymond!”
+These people will have completely ignored the opening paragraph,
+which explains that that is the <i>wrong thing to do</i>.)</p>
+
+
+</body>

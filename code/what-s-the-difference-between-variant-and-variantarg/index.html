@@ -1,0 +1,35 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What’s the difference between VARIANT and VARIANTARG?</h1>  <!-- .entry-meta -->
+
+<p>One of my colleagues asked me, “What’s the difference between <code>VARIANT</code> and <code>VARIANTARG</code>?” </p>
+<p>If you look at the definitions in the <code>oaidl.h</code> header file, you’ll see that <code>VARIANTARG</code> is just an alias for <code>VARIANT</code>. </p>
+<pre>
+typedef VARIANT VARIANTARG;
+
+typedef VARIANT *LPVARIANTARG;
+</pre>
+<p>“Why have two names for the same thing?” </p>
+<p>The two structures are physically identical, but the rules surrounding them are different. </p>
+<p>This is mentioned rather opaquely in <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms221627(v=vs.85).aspx">the documentation for <code>VARIANT</code></a>: </p>
+<blockquote class="q">
+<p><b>VARIANTARG</b> describes arguments passed within DISPPARAMS, and <b>VARIANT</b> to specify variant data that cannot be passed by reference. </p>
+<p>When a variant refers to another variant by using the VT_VARIANT | VT_BYREF vartype, the variant being referred to cannot also be of type VT_VARIANT | VT_BYREF. VARIANTs can be passed by value, even if VARIANTARGs cannot. </p>
+</blockquote>
+<p>The first sentence says that you use <code>VARIANTARG</code> as part of a <code>DISPPARAMS</code>, which is the structure used to pass parameters (also known as “arguments”) to methods of dispatch interfaces. </p>
+<p>The second sentence is not relevant to the discussion. It says that only one level of pointer chasing is allowed. You can’t send the method on a wild goose chase where you pass a variant that says “The real data is over there, in that other variant”, and then have the second variant say, “Ha ha, fooled, you. The real data is over there in that other other variant.” </p>
+<p>The third sentence starts to hint at the underlying issue. It says that <code>VARIANT</code>s can be passed by value, but <code>VARIANTARG</code>s cannot. </p>
+<p>Interesting, but no real insight as to why you can pass <code>VARIANT</code> by value but not <code>VARIANTARG</code>. </p>
+<p>There’s another MSDN page titled <a href="https://msdn.microsoft.com/en-us/library/ms891678.aspx">VARIANT and VARIANTARG</a>. Maybe that’ll help us get to the bottom of the mystery. </p>
+<blockquote class="q">
+<p>The <b>VARIANT</b> type cannot have the <b>VT_BYREF</b> bit set. </p>
+</blockquote>
+<p>Aha, that’s the difference. The <code>VARIANTARG</code> structure is allowed to say, “Hey, I don’t contain the data you want, but you can look over there for it.” For example, it could set its variant type to <code>VT_BYREF | VT_I4</code> to say, “There is an integer, but it’s not stored in the <code>lVal</code> member. Instead, you have to go to the <code>plVal</code> member, which is a pointer to the integer you want.” </p>
+<p>This explains why <code>VARIANT</code> can be copied, but <code>VARIANTARG</code> cannot: If you try to copy a <code>VARIANTARG</code> that uses <code>VT_BYREF</code>, you are just copying the raw pointer to the data, not the data itself. You have no control over the memory being pointed to, so you have no way to prevent it from being freed. </p>
+<p>Using <code>VT_BYREF</code> is allowed in a <code>DISPPARAMS</code> because the caller assumes the responsibility of keeping the pointed-to data valid for the duration of the method call. That’s just one of the <a href="https://blogs.msdn.microsoft.com/oldnewthing/20060320-13/?p=31853">basic ground rules of programming</a>, specifically the stability requirement. The caller has to wait for the method call to return before it can free the memory pointed to by the <code>VARIANTARG</code>. </p>
+<p>Okay, so what if you’re implementing a method and you want to make a copy of the <code>VARIANTARG</code>? How do you deal with the <code>VT_BYREF</code>? </p>
+<p>This is where <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms221184(v=vs.85).aspx">the <code>Variant­Copy­Ind</code> function</a> comes into play. This function takes a <code>VARIANTARG</code>, possibly with <code>VT_BYREF</code>, and converts it into a <code>VARIANT</code>, with all <code>VT_BYREF</code> removed. It does this by chasing the pointer one level and copying the value back into the <code>VARIANT</code>. For example, if the <code>VARIANTARG</code> were a <code>VT_BYREF | VT_I4</code>, then the <code>Variant­Copy­Ind</code> function would follow the <code>plVal</code> pointer, read the integer stored there, and copy it to the output <code>VARIANT</code>‘s <code>lVal</code> member, resulting in a simple <code>VT_I4</code>. </p>
+<p>The “Ind” therefore stands for “Indirect”. The <code>Variant­Copy­Ind</code> function indirects through the pointer hiding inside the <code>VT_BYREF</code>. </p>
+<p>Well, that was a strange bit of spelunking. </p>
+
+
+</body>

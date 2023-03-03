@@ -1,0 +1,54 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Nasty gotcha: The inadvertently named resource</h1>  <!-- .entry-meta -->
+
+<p>In the resources of a Win32 module, <a href="https://msdn.microsoft.com/library/windows/desktop/aa380599(v=vs.85).aspx">resource files</a>, you can identify a resource by number (ordinal) or by name (string). One horrific gotcha of the resource file format is that it doesn’t require you to quote strings that are used to name resources. </p>
+<p>Suppose you have this resource header file. </p>
+<pre>
+// resource.h
+
+#define IDD_ENTERPASSWORD 100
+</pre>
+<p>and you use it in your resource file like this: </p>
+<pre>
+#include &lt;resource.h&gt;
+
+IDD_ENTERPASWORD DIALOG ...
+BEGIN
+    ...
+END
+</pre>
+<p>And your code tries to use the dialog like this: </p>
+<pre>
+DialogBox(g_hinst, MAKEINTRESOURCE(IDD_ENTERPASSWORD),
+          hwndParent, DialogProc);
+</pre>
+<p>Everything compiles, but the <code>Dialog­Box</code> function returns <code>-1</code> without displaying any dialog box. Your breakpoint on the <code>Dialog­Proc</code> is never hit. What’s going on? </p>
+<p>What’s going on is that in your resource file, you misspelled “password”. </p>
+<pre>
+IDD_ENTER<u>PASWORD</u> DIALOG ...
+</pre>
+<p>This typo was not reported by the resource compile because of the strange rule that named resources permit but do not require quotation marks around the name. If you omit the quotation marks, the resource compile will “helpfully” insert them for you. Since <code>IDD_ENTER­PASWORD</code> is not defined anywhere, the resource compile assumes you meant </p>
+<pre>
+"IDD_ENTERPASWORD" DIALOG ...
+</pre>
+<p>and generates a <i>named</i> dialog resource called <code>"IDD_ENTERPASWORD"</code>. If you did this on purpose, then the way you would access the dialog box would be </p>
+<pre>
+DialogBox(g_hinst, <font color="blue">TEXT("IDD_ENTERPASWORD")</font>,
+          hwndParent, DialogProc);
+</pre>
+<p>But you didn’t misspell the symbol on purpose. It was a mistake. You meant <code>IDD_ENTER­PASSWORD</code>. And your misspelling cost you dearly: The resource was given the wrong identifier. </p>
+<p>Sucks to be you. </p>
+<p>The diagnosis for this class of problems is to verify that the dialog box you describe does indeed exist. </p>
+<pre>
+// Diagnosing the problem: Let's see if the resource exists.
+// DialogBox(<u>g_hinst</u>, <u>MAKEINTRESOURCE(IDD_ENTERPASSWORD)</u>, ...)
+
+auto res = <a href="https://devblogs.microsoft.com/oldnewthing/">FindResource</a>(g_hinst,
+                        MAKEINTRESOURCE(IDD_ENTERPASSWORD),
+                        RT_DIALOG);
+</pre>
+<p>In the debugger, check the return value of <code>Find­Resource</code>. If it’s <code>nullptr</code>, then the reason the <code>Dialog­Box</code> function failed is that the resource didn’t exist. The next step of the investigation would be to find out why the resource isn’t there. </p>
+<p>Maybe you misspelled it. </p>
+
+
+</body>

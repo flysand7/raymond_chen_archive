@@ -1,0 +1,150 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I convert a method name to a method index for the purpose of INTERFACEINFO?</h1>  <!-- .entry-meta -->
+
+<p><p>
+The
+<code>IMessage­Filter::Handle­Incoming­Call</code>
+method describes the incoming call by means of an
+<code>INTERFACE­INFO</code> structure:
+</p>
+<blockquote class="q">
+<pre>
+typedef struct tagINTERFACEINFO { 
+  LPUNKNOWN pUnk; 
+  IID iid; 
+  WORD wMethod; 
+} INTERFACEINFO, *LPINTERFACEINFO;
+</pre>
+</blockquote>
+<p>
+The <code>wMethod</code> is a zero-based index of the method
+within the interface.
+For example,
+<code>IUnknown::Query­Interface</code>
+has index zero,
+<code>IUnknown::Add­Ref</code>
+has index one,
+and
+<code>IUnknown::Release</code>
+has index two.
+</p>
+<p>
+If you want to filter on a method in an interface,
+you need to know its index.
+One way of doing this would be to sit and count the methods,
+but this is error-prone,
+especially if the interface is still under active
+development and is not yet set in stone.
+</p>
+<p>
+C to the rescue.
+</p>
+<p>
+The IDL compiler spits out a C-compatible structure for the
+virtual function table,
+and you can use that structure to derive the method indices.
+For example:
+</p>
+<pre>
+#if defined(__cplusplus) &amp;&amp; !defined(CINTERFACE)
+    …
+#else   /* C style interface */
+    typedef struct IPersistStreamVtbl
+    {
+        BEGIN_INTERFACE</pre></p>
+<p>        HRESULT ( STDMETHODCALLTYPE *QueryInterface )(
+            __RPC__in IPersistStream * This,
+            /* [in] */ __RPC__in REFIID riid,
+            /* [annotation][iid_is][out] */
+            _COM_Outptr_  void **ppvObject);</p>
+<p>        ULONG ( STDMETHODCALLTYPE *AddRef )(
+            __RPC__in IPersistStream * This);</p>
+<p>        ULONG ( STDMETHODCALLTYPE *Release )(
+            __RPC__in IPersistStream * This);</p>
+<p>        HRESULT ( STDMETHODCALLTYPE *GetClassID )(
+            __RPC__in IPersistStream * This,
+            /* [out] */ __RPC__out CLSID *pClassID);</p>
+<p>        HRESULT ( STDMETHODCALLTYPE *IsDirty )(
+            __RPC__in IPersistStream * This);</p>
+<p>        HRESULT ( STDMETHODCALLTYPE *Load )(
+            __RPC__in IPersistStream * This,
+            /* [unique][in] */ __RPC__in_opt IStream *pStm);</p>
+<p>        HRESULT ( STDMETHODCALLTYPE *Save )(
+            __RPC__in IPersistStream * This,
+            /* [unique][in] */ __RPC__in_opt IStream *pStm,
+            /* [in] */ BOOL fClearDirty);</p>
+<p>        HRESULT ( STDMETHODCALLTYPE *GetSizeMax )(
+            __RPC__in IPersistStream * This,
+            /* [out] */ __RPC__out ULARGE_INTEGER *pcbSize);</p>
+<p>        END_INTERFACE
+    } IPersistStreamVtbl;
+    …
+#endif  /* C style interface */
+
+<p>
+(You get roughly the same thing if you
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/10/05/238050.aspx">
+use the
+<code>DECLARE_INTERFACE</code> macros</a>.)
+</p>
+<p>
+After we remove the distractions, the structure is just
+</p>
+<pre>
+    typedef struct IPersistStreamVtbl
+    {
+        BEGIN_INTERFACE
+        HRESULT (*QueryInterface)(…);
+        ULONG (*AddRef)(…);
+        ULONG (*Release)(…);
+        HRESULT (*GetClassID)(…);
+        HRESULT (*IsDirty)(…);
+        HRESULT (*Load)(…);
+        HRESULT (*Save)(…);
+        HRESULT (*GetSizeMax)(…);
+        END_INTERFACE
+    } IPersistStreamVtbl;
+</pre>
+<p>
+From this, we can write a macro which extracts the method index:
+</p>
+<pre>
+// If your compiler supports offsetof, then you can use that
+// instead of FIELD_OFFSET.
+#define METHOD_OFFSET(itf, method) FIELD_OFFSET(itf##Vtbl, method)</pre></p>
+<p>#define METHOD_INDEX(itf, method) \
+    ((METHOD_OFFSET(itf, method) – \
+      METHOD_OFFSET(itf, QueryInterface)) / sizeof(FARPROC))
+
+<p>
+The macro works by looking at the position of the method in the
+vtable and calculating its index relative to
+<code>Query­Interface</code>,
+which we know has index zero
+for all <code>IUnknown</code>-derived COM interfaces.
+</p>
+<p>
+These macros assume
+that the size of a pointer-to-function
+is the same regardless of the prototype,
+but this assumption is safe to make because it is required by the COM ABI.
+</p>
+<p>
+Observe that in order to get the C-style interfaces,
+you must define the <code>CINTERFACE</code> macro before
+including the header file.
+(And observe that the C-style interfaces are not available
+in C++;
+you must do this in C.)
+</p>
+<p>
+If the bulk of your program is in C++,
+you can slip in a single C file to extract the method indices
+and expose them to the C++ side either through global variables
+or short functions.
+Depending on how fancy your link-time code generator is,
+the global variable or function call might even become eliminated.
+</p></p>
+
+
+</body>

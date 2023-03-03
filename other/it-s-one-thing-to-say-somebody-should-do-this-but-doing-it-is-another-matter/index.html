@@ -1,0 +1,92 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">It's one thing to say "somebody should do this", but doing it is another matter</h1>  <!-- .entry-meta -->
+
+<p>
+A common response when I describe a programming error is,
+“<a href="http://blogs.msdn.com/oldnewthing/archive/2006/04/25/583093.aspx#591242">“Programs should have to pass a test that includes testing for
+this case</a>.”
+The case could be a program mishandling a message,
+a program responding incorrectly to <code>IUnknown::QueryInterface</code>,
+whatever.
+But these suggestions fall into the same trap that I see
+<a href="http://blogs.msdn.com/oldnewthing/archive/tags/The+wisdom+of+seventh+graders/default.aspx">
+when grading student essays</a>:
+They’re good with the <i>what</i> but very weak on the <i>how</i>.
+</p>
+<p>
+Saying “Somebody should do X” is easy,
+but without some sort of suggestion as to how that could be accomplished,
+the suggestion rarely gets off the drawing board.
+It’s like saying
+“Somebody should solve world hunger.”
+</p>
+<p>
+Let’s look at that first example again.
+The topic at hand was window procedures which fail to pass unhandled messages
+to the <code>DefWindowProc</code> function.
+How would one “test for this”?
+Would the test walk through every code path in the program that
+creates a window, and then send each of those windows a fake
+<code>WM_QUERYENDSESSION</code> or a fake
+<code>WM_APPCOMMAND</code> message to see what happens?
+First of all, it’s unclear how a test could exercise all the window-creation
+code paths of a program without insider knowledge of that program.
+Therefore, this test would have to be written by the authors of
+the program.
+</p>
+<p>
+Next, even if you sent the message and saw that the message
+was passed to the <code>DefWindowProc</code> function,
+that wouldn’t actually prove that the message was handled
+properly.
+Maybe the window procedure for a window goes something like this:
+</p>
+<pre>
+...
+case WM_QUERYENDSESSION:
+ if (GetTickCount() / 1000 % 2) return 0;
+ return DefWindowProc(hwnd, uMsg, wParam, lParam);
+</pre>
+<p>
+Even if you managed to get this window created,
+if you send it a fake <code>WM_QUERYENDSESSION</code>,
+you’ll catch the issue only half the time.
+It’s not enough just to exercise every window procedure;
+you also have to exercise every code path.
+</p>
+<p>
+But wait, there’s more.
+What if the program really wanted to prevent the user from logging off?
+</p>
+<pre>
+...
+case WM_QUERYENDSESSION:
+ if (FileHasBeenEditedSinceLastSave()) {
+  switch (MessageBox(hwnd,
+             TEXT("Save changes before exiting?"),
+             TEXT("Title"), MB_YESNOCANCEL)) {
+  case IDYES: Save(); break;
+  case IDCANCEL: return 0; // user cancelled logoff
+  }
+ }
+ return DefWindowProc(hwnd, uMsg, wParam, lParam);
+</pre>
+<p>
+In this case, there is a code path that cancels the logoff,
+and it is legitimate, since it was done as the result of
+a user decision.
+Your test would somehow have to know this and consider
+that case to be a pass and not a failure.
+This sort of reasoning is hardly something that a generic
+test suite can do; it has to be tailored for each program.
+</p>
+<p>
+It’s one thing to say that something should be tested,
+but without an idea as to <i>how</i> it should be tested,
+the suggestion is much less valuable.
+I may as well say,
+“Programs should have to pass a test that verifies that there
+are no bugs.”</p>
+
+
+</body>

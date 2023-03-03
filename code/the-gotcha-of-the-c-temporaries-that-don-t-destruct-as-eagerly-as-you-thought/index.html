@@ -1,0 +1,168 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The gotcha of the C++ temporaries that don’t destruct as eagerly as you thought</h1>  <!-- .entry-meta -->
+
+<p>Forgetting to take a lock when updating variables is a common mistake. One way to make the mistake harder to make is to <i>force</i> the access to occur through some mechanism that proves that you possess the lock. Maybe something like this:</p>
+<pre>template&lt;typename&gt; struct LockableData;
+
+namespace std
+{
+    template&lt;typename Data&gt;
+    struct default_delete&lt;LockableData&lt;Data&gt;&gt;
+    {
+        void operator()(LockableData&lt;Data&gt;* p)
+        const noexcept { p-&gt;m.unlock(); }
+    };
+}
+
+template&lt;typename Lockable&gt;
+struct [[nodiscard]] LockedData
+{
+    LockedData(Lockable* l = nullptr) : l(l)
+    { if (l) l-&gt;m.lock(); }
+
+    auto operator-&gt;() const noexcept
+    { return std::addressof(l-&gt;data); }
+
+private:
+    std::unique_ptr&lt;Lockable&gt; l;
+};
+
+template&lt;typename Data&gt;
+struct LockableData
+{
+    LockedData&lt;LockableData&gt; Lock() { return this; }
+
+private:
+    friend struct LockedData&lt;LockableData&gt;;
+    friend struct std::default_delete&lt;LockableData&gt;;
+
+    std::mutex m;
+    Data data;
+};
+</pre>
+<p>The idea here is that you declare some structure that holds the data you want to be protected by a common mutex. You can then wrap that data inside a <code>LockableData</code>. To access the data, you call <code>Lock()</code> to acquire the mutex and receive a <code>LockedData</code> object. You then access the structure through the <code>LockedData</code> object, and when the <code>LockedData</code> object destructs, it releases the mutex.</p>
+<p>Using a <code>std::unique_ptr</code> with a custom deleter allows the <code>LockedData</code> object to be movable with the natural semantics. And marking the <code>LockedData</code> as <code>[[nodiscard]]</code> makes sure that you save the return value of <code>Lock()</code>; otherwise, it destructs immediately, and your lock accomplished nothing.</p>
+<p>Here’s an example usage:</p>
+<pre>struct WidgetInfo
+{
+    std::string name;
+    int times_toggled = 0;
+};
+
+class Widget
+{
+    LockableData&lt;WidgetInfo&gt; info;
+
+public:
+    void SetName(std::string name)
+    {
+        auto lock = info.Lock();
+        lock-&gt;name = name;
+        lock-&gt;times_toggled = 0;
+    }
+
+    std::string GetName()
+    {
+        auto lock = info.Lock();
+        return lock-&gt;name;
+    }
+
+    void Toggle()
+    {
+        { // scope the lock
+            auto lock = info.Lock();
+            lock-&gt;times_toggled++;
+        }
+        FlipSwitchesRandomly();
+    }
+};
+</pre>
+<p>One thing that’s slightly annoying here is that in many cases, we are locking around the access to a single member. One way to avoid having to create tiny scopes is to allow the <code>-&gt;</code> operator to be used directly from the <code>LockableData</code>, so that it does a lock-access-unlock.</p>
+<pre>template&lt;typename Data&gt;
+struct LockableData
+{
+    LockedData&lt;LockableData&gt; Lock() { return this; }
+    <span style="color: #08f;">auto operator-&gt;() { return Lock(); } // NEW!</span>
+
+private:
+    friend struct LockedData&lt;LockableData&gt;;
+    friend struct std::default_delete&lt;LockableData&gt;;
+
+    std::mutex m;
+    Data data;
+};
+
+class Widget
+{
+    LockableData&lt;WidgetInfo&gt; info;
+
+public:
+    void SetName(std::string name)
+    {
+        auto lock = info.Lock();
+        lock-&gt;name = name;
+        lock-&gt;times_toggled = 0;
+    }
+
+    std::string GetName()
+    {
+        <span style="color: #08f;">return info-&gt;name; // lock-read-unlock</span>
+    }
+
+    void Toggle()
+    {
+        <span style="color: #08f;">info-&gt;times_toggled++; // lock-modify-unlock</span>
+        FlipSwitchesRandomly();
+    }
+};
+</pre>
+<p>This convenience <code>-&gt;</code> operator makes single-member updates much easier, but it also comes with a catch:</p>
+<pre>    void Toggle()
+    {
+        <span style="color: #08f;">info-&gt;times_toggled = std::max(info-&gt;times_toggled, 10);</span>
+        FlipSwitchesRandomly();
+    }
+</pre>
+<p>Do you see the problem here?</p>
+<p>I mean, yes, there’s a race condition here if two threads toggle at the same time, but that’s not the problem I’m referring to. That would “merely” result in incorrect accounting.</p>
+<p>The real problem is the double lock.</p>
+<p>The <code>-&gt;</code> operator returns a temporary <code>LockedData</code> object, and the rules for temporary objects in C++ are that they are destructed at the end of the <i>full expression</i>.</p>
+<p>Therefore, the evaluation of the revised code goes like this:</p>
+<pre>    // Evaluate right hand side
+    LockedData&lt;WidgetInfo&gt; lock1 = info.operator-&gt;();
+    int rhs = std::max(lock1-&gt;times_toggled, 10);
+
+    // Evaluate left hand side
+    LockedData&lt;WidgetInfo&gt; lock2 = info.operator-&gt;();
+
+    // Perform the assignment
+    lock2-&gt;times_toggled = rhs;
+
+    // Destruct temporaries in reverse order of construction
+    destruct lock2;
+    destruct rhs;
+    destruct lock1;
+</pre>
+<p>Do you see the problem yet?</p>
+<p>Since the locks are temporaries, their lifetime extends to the end of the full expression. <a href="/code/spotting-problems-with-destructors-for-c-temporaries" title="Spotting problems with destructors for C++ temporaries"> We’ve seen this problem before</a>.¹ This means that the two <code>info-&gt;times_toggled</code> operations each create a separate <code>LockedData</code> object, and each one acquires the mutex.</p>
+<p>The result is that we acquire the mutex lock twice, which is not allowed. In practice, this results in a deadlock and forces you to <a href="https://twitter.com/windowsinsider/status/1433615378362503177"> issue a public apology</a>.</p>
+<p>The convenience <code>-&gt;</code> was a bit <i>too convenient</i>: If an object <code>o</code> is a smart pointer, people are accustomed to <code>o-&gt;Something</code> doing some work with <code>o</code> in order to produce the pointer that will be dereferenced in order to access the <code>Something</code>. What they are not accustomed to is the presence of work that occurs after the dereference to clean up.</p>
+<p>In other words, people tend to expect that it’s okay to call the <code>-&gt;</code> operator many times on the same object without consequence.</p>
+<p>So take away that dangerous operator. People can still get the one-liner convenience, though. They just have to lock explicitly:</p>
+<pre>    std::string GetName()
+    {
+        return info.Lock()-&gt;name;
+    }
+</pre>
+<p>Having to write out the word “Lock” also makes it easier to spot that you’re locking twice within the same expression.</p>
+<pre>    void Toggle()
+    {
+        // suspicious double-lock - more likely to be spotted in code review
+        info.Lock()-&gt;times_toggled = std::max(info.Lock()-&gt;times_toggled, 10);
+        FlipSwitchesRandomly();
+    }
+</pre>
+<p>¹ It looks like C++23 has adopted the idea of the <code>out_ptr</code> temporary object which resets the pointer on destruction, in spite of the <a href="https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2021/p1132r8.html#design-footguns"> footguns</a> that arise in certain usage patterns.</p>
+
+
+</body>

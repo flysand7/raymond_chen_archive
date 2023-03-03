@@ -1,0 +1,111 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A window can have a parent or an owner but not both</h1>  <!-- .entry-meta -->
+
+<p>Commenter MontagFTB had a problem which, upon investigation, allegedly was caused by a subtle “fact”: “<a href="http://web.archive.org/web/20100130070610/http://blogs.msdn.com/oldnewthing/pages/407234.aspx#925651">The parent specified in <code>CreateWindowEx</code> is both the parent of the window and the owner of the window</a>, but when you call <code>SetParent</code> it only sets the parent of the window, not the owner.” MontagFTB then concluded that some messages were sent to the parent and others were sent to the owner.</p>
+<p>This is a faulty diagnosis. We’ll look at the correct diagnosis next time, but today’s topic is parents and owners. Actually, parent and owner windows were already covered by my 2005 PDC talk, <i>Five Things Every Win32 Programmer Should Know</i>, so for most of you, today’s topic is a review. (And I included the topic in the talk specifically so I wouldn’t have to blog about it, but obviously that plan didn’t work out.)</p>
+<p>A window can be created as a child window (<code>WS_CHILD</code> set) or a top-level window (<code>WS_CHILD</code> not set). A child window has a parent, which you specify when you call <code>CreateWindowEx</code>, and which you can change by calling <code>SetParent</code>. A top-level window, on the other hand, has no parent. Its parent is <code>NULL</code>.</p>
+<p>Ownership is a concept that relates top-level windows. A top-level window can optionally have an owner, which is also specified when you call <code>CreateWindowEx</code>, and which you can change by a complicated mechanism described in my talk.</p>
+<p>Note that changing a window’s parent or owner is not a normal operation. You usually create a window with a specific parent or owner and leave it that way for the lifetime of the window.</p>
+<p>Now, a window can have a parent, or it can have an owner, or it can have neither, but it can never have both.</p>
+<p>What would it mean for a window to have both a parent and an owner? Well, in order to have a parent, the window must itself be a child. But in order to have an owner, the window must be top-level. And top-level windows and child windows are mutually exclusive (and collectively exhaustive), because you either have the <code>WS_CHILD</code> style (which makes you a child) or you don’t (which makes you top-level). Since people like tables so much, here’s a table:</p>
+<table border="1">
+<tbody>
+<tr>
+<th> </th>
+<th>Child window</th>
+<th>Top-level window</th>
+</tr>
+<tr>
+<th>The Parent window is…</th>
+<td>non-<code>NULL</code></td>
+<td><code>NULL</code></td>
+</tr>
+<tr>
+<th>The Owner window is…</th>
+<td>N/A</td>
+<td><code>NULL</code> or non-<code>NULL</code></td>
+</tr>
+</tbody>
+</table>
+<p>The box for “The Owner window of a Child window…” is marked N/A because the question is meaningless. Ownership is a relationship among top-level windows.</p>
+<p>By analogy, consider the people at a school for children. They can be separated into two groups, students and teachers. (We’ll treat non-teaching staff as teachers with no students.)</p>
+<p>Each student is assigned to a teacher. Each teacher might or might not have another teacher as a mentor. Several students can be assigned the same teacher, but every student must be assigned to some teacher. Similarly, several teachers might have the same mentor, but some teachers won’t have a mentor at all, and some mentors might themselves have mentors.</p>
+<p>It’s impossible for a person to have both a teacher and a mentor, because having a teacher applies only to students, and having a mentor applies only to teachers. Teachers don’t attend classes (they <i>lead</i> the classes) so they don’t have a teacher. But they might have mentors. Asking for a student’s mentor is a meaningless question because students don’t have mentors; teachers do.</p>
+<p>Since a window cannot have both a parent and an owner, the <code>CreateWindowEx</code> function takes a single <code>HWND</code> parameter which is either the parent or owner of the window being created, depending on what type of window you’re creating. If you’re creating a child window, then the parameter represents the parent window; if you’re creating a top-level window, then the parameter represents the owner window.</p>
+<p>A similar overloading of parameters happens with the <code>HMENU</code>: If you’re creating a child window, then the parameter represents the child window identifier; if you’re creating a top-level window, then the parameter represents the window menu. Because only top-level windows can have menus, and only child windows can have child window identifiers.</p>
+<p>If this parameter overloading bothers you, you can write your own helper functions:</p>
+<pre>HWND CreateChildWindowEx(
+    DWORD dwExStyle,
+    LPCTSTR lpClassName,
+    LPCTSTR lpWindowName,
+    DWORD dwStyle,
+    int x,
+    int y,
+    int nWidth,
+    int nHeight,
+    HWND hWndParent,
+    UINT_PTR id,
+    HINSTANCE hInstance,
+    LPVOID lpParam
+)
+{
+ // A child window must have the WS_CHILD style
+ if (!(dwStyle &amp; WS_CHILD)) {
+  SetLastError(ERROR_INVALID_PARAMETER);
+  return NULL;
+ }
+ return CreateWindowEx(
+    dwExStyle,
+    lpClassName,
+    lpWindowName,
+    dwStyle,
+    x,
+    y,
+    nWidth,
+    nHeight,
+    hWndParent,
+    reinterpret_cast&lt;HMENU&gt;(id),
+    hInstance,
+    lpParam);
+}
+
+HWND CreateTopLevelWindowEx(
+    DWORD dwExStyle,
+    LPCTSTR lpClassName,
+    LPCTSTR lpWindowName,
+    DWORD dwStyle,
+    int x,
+    int y,
+    int nWidth,
+    int nHeight,
+    HWND hWndOwner,
+    HMENU hMenu,
+    HINSTANCE hInstance,
+    LPVOID lpParam
+)
+{
+ // A top-level window must not have the WS_CHILD style
+ if (dwStyle &amp; WS_CHILD) {
+  SetLastError(ERROR_INVALID_PARAMETER);
+  return NULL;
+ }
+ return CreateWindowEx(
+    dwExStyle,
+    lpClassName,
+    lpWindowName,
+    dwStyle,
+    x,
+    y,
+    nWidth,
+    nHeight,
+    hWndOwner,
+    hMenu,
+    hInstance,
+    lpParam);
+}
+</pre>
+<p>There’s more to parent windows and owner windows than what I’ve written here; I refer you to my talk (or other documentation) for more details.</p>
+<p>Next time, <a href="https://devblogs.microsoft.com/oldnewthing/20100316-00/?p=14593"> we’ll look at what MontagFTB is really seeing</a>.</p>
+
+
+</body>

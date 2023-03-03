@@ -1,0 +1,91 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">In the debugger, how can I get from a projected type back to the C++/WinRT implementation?</h1>  <!-- .entry-meta -->
+
+<p>Say you are looking at a crash dump, and you have a pointer to a Windows Runtime object projection, and you know that the Windows Runtime object is implemented in C++/WinRT, and you want to get to the implementation type so you can look at its private members.</p>
+<p>The basic trick of treating the pointer as the start of an object doesn’t work:</p>
+<pre style="white-space: pre-wrap;">0:000&gt; ?? s
+struct winrt::Contoso::Sample
+   +0x000 m_ptr : 0x00000205`9ab9cf20 winrt::<wbr/>impl::<wbr/>abi&lt;<wbr/>winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IUnknown,<wbr/>void&gt;::<wbr/>type
+</pre>
+<p>If you dump memory starting at this interface pointer, you get the expected vtable, but the rest does not match the expected implementation type.</p>
+<pre>0:000&gt; dps 0x00000205`9ab9cf20
+00000205`9ab9cf20  00007ff6`0bef8998 contoso!<wbr/>winrt::<wbr/>impl::<wbr/>produce&lt;<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample,<wbr/>winrt::<wbr/>Contoso::<wbr/>ISample&gt;::<wbr/>`vftable'
+00000205`9ab9cf28  00007ff6`0bef8a38 contoso!<wbr/>winrt::<wbr/>impl::<wbr/>produce&lt;<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample,<wbr/>winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IClosable&gt;::<wbr/>`vftable'
+00000205`9ab9cf30  00000000`0000002a
+00000205`9ab9cf38  00000205`9ab9dae0
+00000205`9ab9cf40  00640065`00720046
+00000205`9ab9cf48  00000000`00000000
+00000205`9ab9cf50  00000000`00000004
+
+0:000&gt; dt contoso!<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample 0x00000205`9ab9cf20
+   +0x010 vtable           : winrt::<wbr/>impl::<wbr/>produce&lt;<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample,<wbr/>winrt::<wbr/>Contoso::<wbr/>ISample&gt;
+   +0x018 vtable           : winrt::<wbr/>impl::<wbr/>produce&lt;<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample,<wbr/>winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IClosable&gt;
+   +0x000 __VFN_table : 0x00007ff6`0bef8998
+   +0x008 m_references     : std::atomic&lt;unsigned __int64&gt;
+   +0x020 m_value          : <span style="border: solid 1px black;">0n7471174</span> ← garbage
+   +0x028 m_name           : std::<wbr/>basic_string&lt;<wbr/>wchar_t,<wbr/>std::<wbr/>char_traits&lt;<wbr/>wchar_t&gt;,<wbr/>std::<wbr/>allocator&lt;<wbr/>wchar_t&gt; &gt;
+
+0:000&gt; ?? ((contoso!<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample*)0x00000205`9ab9cf20)-&gt;m_name
+class std::<wbr/>basic_string&lt;<wbr/>wchar_t,<wbr/>std::<wbr/>char_traits&lt;<wbr/>wchar_t&gt;,<wbr/>std::<wbr/>allocator&lt;<wbr/>wchar_t&gt; &gt;
+   +0x000 _Mypair          : std::<wbr/>_Compressed_pair&lt;<wbr/>std::<wbr/>allocator&lt;wchar_t&gt;,<wbr/>std::<wbr/>_String_val&lt;<wbr/>std::<wbr/>_Simple_types&lt;<wbr/>wchar_t&gt; &gt;,1&gt;
+
+0:000&gt; ?? ((consolecppwinrt!winrt::MyProject::implementation::Sample*)0x00000205`9ab9cf20)-&gt;m_name._Mypair
+class std::<wbr/>_Compressed_pair&lt;<wbr/>std::<wbr/>allocator&lt;wchar_t&gt;,<wbr/>std::<wbr/>_String_val&lt;<wbr/>std::<wbr/>_Simple_types&lt;<wbr/>wchar_t&gt; &gt;,1&gt;
+   +0x000 _Myval2          : std::<wbr/>_String_val&lt;<wbr/>std::<wbr/>_Simple_types&lt;wchar_t&gt; &gt;
+
+0:000&gt; ?? ((consolecppwinrt!winrt::MyProject::implementation::Sample*)0x00000205`9ab9cf20)-&gt;m_name._Mypair._Myval2
+class std::<wbr/>_String_val&lt;<wbr/>std::<wbr/>_Simple_types&lt;wchar_t&gt; &gt;
+   +0x000 _Myproxy         : <span style="border: solid 1px black;">(null)</span> ← garbage
+   +0x008 _Bx              : std::_String_val&lt;std::_Simple_types&lt;wchar_t&gt; &gt;::_Bxty
+   +0x018 _Mysize          : <span style="border: solid 1px black;">0xabababab`fdfdfdfd</span> ← garbage
+   +0x020 _Myres           : <span style="border: solid 1px black;">0xabababab`abababab</span> ← garbage
+</pre>
+<p>The reason nothing matches up is that the projection vtable is not at the start of the object. Let’s look at the initial structure again:</p>
+<pre>0:000&gt; dt contoso!<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample
+   +<span style="border: solid 1px black;">0x010</span> vtable           : winrt::<wbr/>impl::<wbr/>produce&lt;<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample,<wbr/>winrt::<wbr/>Contoso::<wbr/>ISample&gt;
+   +0x018 vtable           : winrt::<wbr/>impl::<wbr/>produce&lt;<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample,<wbr/>winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IClosable&gt;
+   +0x000 __VFN_table : Ptr64
+   +0x008 m_references     : std::atomic&lt;unsigned __int64&gt;
+   +0x020 m_value          : Int4B
+   +0x028 m_name           : std::<wbr/>basic_string&lt;<wbr/>wchar_t,<wbr/>std::<wbr/>char_traits&lt;<wbr/>wchar_t&gt;,<wbr/>std::<wbr/>allocator&lt;<wbr/>wchar_t&gt; &gt;
+</pre>
+<p>Even though the debugger lists the <code>ISample</code> projection vtable first, it’s not actually the start of the object. The offset is <code>0x010</code>.</p>
+<p>The object starts with its private little vtable <code>__VFN_table</code>. In this case, we see that the projection vtable is at offset <code>0x10</code>, so we can subtract <code>0x10</code> to find the true start of the object:</p>
+<pre>0:000&gt; ?? ((consolecppwinrt!winrt::MyProject::implementation::Sample*)0x00000205`9ab9cf10)
+struct winrt::MyProject::implementation::Sample * 0x00000205`9ab9cf20
+   +0x010 vtable           : winrt::<wbr/>impl::<wbr/>produce&lt;<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample,<wbr/>winrt::<wbr/>Contoso::<wbr/>ISample&gt;
+   +0x018 vtable           : winrt::<wbr/>impl::<wbr/>produce&lt;<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample,<wbr/>winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IClosable&gt;
+   +0x000 __VFN_table : 0x00007ff6`0bef8d68
+   +0x008 m_references     : std::atomic&lt;unsigned __int64&gt;
+   +0x020 m_value          : <span style="border: solid 1px black;">0n42</span> ← good value
+   +0x028 m_name           : std::<wbr/>basic_string&lt;<wbr/>wchar_t,<wbr/>std::<wbr/>char_traits&lt;<wbr/>wchar_t&gt;,<wbr/>std::<wbr/>allocator&lt;<wbr/>wchar_t&gt; &gt;
+
+0:000&gt; ?? ((consolecppwinrt!winrt::MyProject::implementation::Sample*)0x00000205`9ab9cf10)-&gt;m_name._Mypair._Myval2
+class std::<wbr/>_String_val&lt;<wbr/>std::<wbr/>_Simple_types&lt;wchar_t&gt; &gt;
+   +0x000 _Myproxy         : 0x00000205`9ab9dae0 std::_Container_proxy
+   +0x008 _Bx              : std::_String_val&lt;std::_Simple_types&lt;wchar_t&gt; &gt;::_Bxty
+   +0x018 _Mysize          : <span style="border: solid 1px black;">4</span> ← good value
+   +0x020 _Myres           : <span style="border: solid 1px black;">7</span> ← good value
+
+0:000&gt; ?? ((consolecppwinrt!winrt::MyProject::implementation::Sample*)0x00000205`9ab9cf10)-&gt;m_name._Mypair._Myval2._Bx
+union std::<wbr/>_String_val&lt;std::<wbr/>_Simple_types&lt;wchar_t&gt; &gt;::<wbr/>_Bxty
+   +0x000 _Buf             : [8]  <span style="border: solid 1px black;">"Fred"</span> ← good value
+   +0x000 _Ptr             : 0x00640065`00720046  "--- memory read error at address 0x00640065`00720046 ---"
+   +0x000 _Alias           : [8]  "F"
+</pre>
+<p>We happened to know that the <code>m_ptr</code> came from a projection of the <code>Sample</code> runtime class, which means that it’s a pointer to the default interface, which is <code>ISample</code>. If <code>m_ptr</code> came from a projection f the <code>IClosable</code> interface, then we would have to adjust by <code>0x018</code> to get to the start of the object.</p>
+<p>My strategy is simply to go backward from the projection pointer and see if a non-projection vtable emerges.</p>
+<pre>0:000&gt; dps 0x00000205`9ab9cf20-40 0x00000205`9ab9cf20
+00000205`9ab9cee0  00000205`9ab9cdc0
+00000205`9ab9cee8  00000205`9ab9dab0
+00000205`9ab9cef0  00000000`00000000
+00000205`9ab9cef8  00000001`00000000
+00000205`9ab9cf00  00000000`00000050
+00000205`9ab9cf08  fdfdfdfd`00000118
+00000205`9ab9cf10  00007ff6`0bef8d68 <span style="border: solid 1px black;">contoso!<wbr/>winrt::<wbr/>impl::<wbr/>heap_<wbr/>implements&lt;<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample&gt;::<wbr/>`vftable'</span>
+00000205`9ab9cf18  00000000`00000001
+00000205`9ab9cf20  00007ff6`0bef8998 contoso!<wbr/>winrt::<wbr/>impl::<wbr/>produce&lt;<wbr/>winrt::<wbr/>Contoso::<wbr/>implementation::<wbr/>Sample,<wbr/>winrt::<wbr/>Contoso::<wbr/>ISample&gt;::<wbr/>`vftable'
+</pre>
+
+
+</body>

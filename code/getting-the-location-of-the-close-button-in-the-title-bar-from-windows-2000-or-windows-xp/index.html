@@ -1,0 +1,83 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Getting the location of the Close button in the title bar, from Windows 2000 or Windows XP</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s Little Program locates the × button in the corner
+of the window and
+displays a balloon tip pointing at it.
+We did this
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/05/05/10522553.aspx">
+some time ago</a>
+with the help of the
+<code>WM_GET­TITLE­BAR­INFO­EX</code> message,
+which is new for Windows Vista.
+But what if you don’t have that message available,
+say, because you’re running on Windows 2000 or Windows XP
+or (gasp) Windows 98?
+</p>
+<p>
+You can use the classic Accessibility interface
+<code>IAccessible</code>
+to enumerate the buttons in the title bar and see which
+one the window reports as the Close button.
+</p>
+<p>
+Let’s take the program from last time and change the
+<code>Get­Close­Button­Center</code> function:
+</p>
+<pre>
+<font color="blue">#include &lt;oleacc.h&gt;
+#include &lt;atlbase&gt;</font>
+BOOL GetCloseButtonCenter(HWND hwnd, POINT *ppt)
+{
+ <font color="blue">CComPtr&lt;IAccessible&gt; spacc;
+ if (FAILED(AccessibleObjectFromWindow(hwnd, OBJID_TITLEBAR,
+                   IID_PPV_ARGS(&amp;spacc)))) return FALSE;
+ CComQIPtr&lt;IEnumVARIANT&gt; spenum(spacc);
+ if (!spenum) return FALSE;
+ for (CComVariant vtChild; spenum-&gt;Next(1, &amp;vtChild, nullptr) == S_OK;
+      vtChild.Clear()) {
+  CComVariant vtState;
+  if (FAILED(spacc-&gt;get_accState(vtChild, &amp;vtState))) continue;
+  if (vtState.vt != VT_I4) continue;
+  if (vtState.lVal &amp; (STATE_SYSTEM_INVISIBLE |
+                      STATE_SYSTEM_OFFSCREEN |
+                      STATE_SYSTEM_UNAVAILABLE)) continue;
+  long left, top, width, height;
+  if (FAILED(spacc-&gt;accLocation(&amp;left, &amp;top, &amp;width, &amp;height,
+                                vtChild))) continue;
+  POINT pt = { left + width / 2, top + height / 2 };
+  if (SendMessage(hwnd, WM_NCHITTEST, 0,
+                  MAKELPARAM(pt.x, pt.y)) == HTCLOSE) {
+   *ppt = pt;
+   return TRUE;
+  }
+ }
+ return FALSE;</font>
+}
+</pre>
+<p>
+We obtain the <code>IAccessible</code> interface for the title bar
+and proceed to enumerate its children.
+For each child, we get its location, and then use the
+<code>WM_NC­HIT­TEST</code> message to determine
+programmatically what that location corresponds to.
+If the answer is “This is the Close button,”
+then we found the button and report its center.
+</p>
+<p>
+Note that this once again highlights
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/02/18/10131176.aspx">
+the distinction between
+<code>WM_NC­MOUSE­MOVE</code> and
+<code>WM_NC­HIT­TEST</code></a>.
+Hit-testing can occur for reasons other than mouse movement.
+</p>
+<p>
+<b>Exercise</b>:
+Why couldn’t we use the
+<code>IAccessible::get_accName</code>
+method to figure out which button each child represents?</p>
+
+
+</body>

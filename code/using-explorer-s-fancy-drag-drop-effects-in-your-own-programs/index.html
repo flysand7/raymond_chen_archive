@@ -1,0 +1,166 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using Explorer’s fancy drag/drop effects in your own programs</h1>  <!-- .entry-meta -->
+
+<p>The default drag/drop effect is very plain. Let’s try it out. Take the scratch program and make these changes. The COM smart pointer library for today is (rolls dice) C++/WinRT. I will also be using wil for error handling and RAII types.</p>
+<pre>#include &lt;winrt/base.h&gt;
+#include &lt;wil/<a href="https://github.com/microsoft/wil/blob/master/include/wil/result_macros.h">result_macros.h</a>&gt;
+#include &lt;wil/<a href="https://github.com/microsoft/wil/blob/master/include/wil/resource.h">resource.h</a>&gt;
+
+struct SimpleDropTarget :
+    winrt::implements&lt;SimpleDropTarget, IDropTarget&gt;
+{
+    SimpleDropTarget(HWND hwnd) : hwndOwner(hwnd)
+    {
+    }
+
+    STDMETHODIMP DragEnter(IDataObject* pDataObject,
+        DWORD grfKeyState, POINTL pt, DWORD* pdwEffect)
+    {
+        dto.copy_from(pDataObject);
+        RETURN_IF_FAILED(CalculateFeedback(grfKeyState, pdwEffect));
+        return S_OK;
+    }
+    STDMETHODIMP DragOver(
+        DWORD grfKeyState, POINTL pt, DWORD* pdwEffect)
+    {
+        RETURN_IF_FAILED(CalculateFeedback(grfKeyState, pdwEffect));
+        return S_OK;
+    }
+
+    STDMETHODIMP Drop(IDataObject* pDataObject,
+        DWORD grfKeyState, POINTL pt, DWORD* pdwEffect)
+    {
+        dto.copy_from(pDataObject);
+        auto cleanup = wil::scope_exit([&amp;] { DragLeave(); });
+
+        RETURN_IF_FAILED(CalculateFeedback(grfKeyState, pdwEffect));
+        if (*pdwEffect != DROPEFFECT_NONE) {
+            // Do something cool.
+        }
+        return S_OK;
+    }
+
+    STDMETHODIMP DragLeave()
+    {
+        dto = nullptr;
+        return S_OK;
+    }
+
+private:
+    HWND hwndOwner;
+    winrt::com_ptr&lt;IDataObject&gt; dto;
+
+    HRESULT CalculateFeedback(
+        DWORD grfKeyState,
+        DWORD* pdwEffect)
+    {
+        if (grfKeyState &amp; MK_CONTROL) {
+            *pdwEffect = DROPEFFECT_COPY;
+        } else {
+            *pdwEffect = DROPEFFECT_MOVE;
+        }
+        return S_OK;
+    }
+};
+</pre>
+<p>This drop target does nothing particularly fancy. The only special thing is that holding the <kbd>Ctrl</kbd> key provides copy feedback rather than move feedback.</p>
+<p>The <code>Drop</code> method processes the new data object and either performs the drop or defers to the <code>Drag­Leave</code> feedback if it turns out nothing is being dropped after all. Regardless of how the drop plays out, we call our own <code>Drag­Leave()</code> to clean up. (We use the <code>wil::scope_exit</code> function to create a one-off RAII type that performs some action at destruction.)</p>
+<p>Let’s hook up this drop target to our window.</p>
+<pre>BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+    <span style="color: blue;">RegisterDragDrop(hwnd,
+        winrt::make&lt;SimpleDropTarget&gt;(hwnd).get());</span>
+
+    return TRUE;
+}
+
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+    LPSTR lpCmdLine, int nShowCmd)
+{
+    ...
+    if (SUCCEEDED(<span style="color: blue;">OleInitialize</span>(NULL))) {
+        ...
+    }
+    ...
+}
+</pre>
+<p>In the main program, we use <code>OleInitialize</code> instead of <code>CoInitialize</code> because we are using OLE drag/drop, which is an OLE feature.</p>
+<p>And when the window is created, we register our drop target.</p>
+<p>When you run this program, the drag/drop feedback is just an empty gray box, possibly with a + sign to indicate that the resulting operation is a copy.</p>
+<p>Let’s add fancy Explorer-style drag/drop feedback.</p>
+<pre>struct SimpleDropTarget :
+    winrt::implements&lt;SimpleDropTarget, IDropTarget&gt;
+{
+    SimpleDropTarget(HWND hwnd) : hwndOwner(hwnd),
+        <span style="color: blue;">helper(winrt::create_instance&lt;IDropTargetHelper&gt;(
+            CLSID_DragDropHelper))</span>
+    {
+    }
+
+    STDMETHODIMP DragEnter(IDataObject* pDataObject,
+        DWORD grfKeyState, POINTL pt, DWORD* pdwEffect)
+    {
+        dto.copy_from(pDataObject);
+        RETURN_IF_FAILED(CalculateFeedback(grfKeyState, pdwEffect));
+        <span style="color: blue;">POINT point{ pt.x, pt.y };
+        RETURN_IF_FAILED(helper-&gt;DragEnter(hwndOwner, dto.get(),
+            &amp;point, *pdwEffect));</span>
+        return S_OK;
+    }
+
+    STDMETHODIMP DragOver(
+        DWORD grfKeyState, POINTL pt, DWORD* pdwEffect)
+    {
+        RETURN_IF_FAILED(CalculateFeedback(grfKeyState, pdwEffect));
+        <span style="color: blue;">POINT point{ pt.x, pt.y };
+        RETURN_IF_FAILED(helper-&gt;DragOver(&amp;point, *pdwEffect));</span>
+        return S_OK;
+    }
+
+    STDMETHODIMP Drop(IDataObject* pDataObject,
+        DWORD grfKeyState, POINTL pt, DWORD* pdwEffect)
+    {
+        dto.copy_from(pDataObject);
+        auto cleanup = wil::scope_exit([&amp;] { DragLeave(); });
+
+        RETURN_IF_FAILED(CalculateFeedback(grfKeyState, pdwEffect));
+        <span style="color: blue;">POINT point{ pt.x, pt.y };
+        RETURN_IF_FAILED(helper-&gt;Drop(dto.get(), &amp;point, *pdwEffect));</span>
+        if (*pdwEffect != DROPEFFECT_NONE) {
+            // Do something cool.
+        }
+        return S_OK;
+    }
+
+    STDMETHODIMP DragLeave()
+    {
+        dto = nullptr;
+        <span style="color: blue;">RETURN_IF_FAILED(helper-&gt;DragLeave());</span>
+        return S_OK;
+    }
+
+private:
+    HWND hwndOwner;
+    winrt::com_ptr&lt;IDataObject&gt; dto;
+    <span style="color: blue;">winrt::com_ptr&lt;IDropTargetHelper&gt; helper;</span>
+
+    HRESULT CalculateFeedback(
+        DWORD grfKeyState,
+        DWORD* pdwEffect)
+    {
+        if (grfKeyState &amp; MK_CONTROL) {
+            *pdwEffect = DROPEFFECT_COPY;
+        } else {
+            *pdwEffect = DROPEFFECT_MOVE;
+        }
+        return S_OK;
+    }
+};
+</pre>
+<p>We create a shell drop target helper and forward all of our drop target methods into it. There is a bit of frustration here due to the <a href="https://devblogs.microsoft.com/oldnewthing/20180123-00/?p=97865" title="Microspeak: Impedance mismatch"> impedance mismatch</a> between the way <code>IDropTarget</code> and <code>IDropTargetHelper</code> represent the point.</p>
+<p>With these changes, the drop feedback is much more Explorer-like: The drag image matches the Explorer drag image, showing a thumbnail of the item being dragged, or a collection of items with a numeric badge showing how many items are being dragged. There’s also an information box below the image that says what the resulting operation will be.</p>
+<p>That’s a good start. Next time, we’ll add another feature.</p>
+
+
+</body>

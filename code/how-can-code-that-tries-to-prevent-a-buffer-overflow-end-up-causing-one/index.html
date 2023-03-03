@@ -1,0 +1,221 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can code that tries to prevent a buffer overflow end up causing one?</h1>  <!-- .entry-meta -->
+
+<p>If you read your language specification, you’ll find that <a href="https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/strncpy-strncpy-l-wcsncpy-wcsncpy-l-mbsncpy-mbsncpy-l?view=msvc-170"> the <code>...ncpy</code> functions have extremely strange semantics</a>.</p>
+<blockquote class="q"><p>The <b>strncpy</b> function copies the initial count characters of <i>strSource</i> to <i>strDest</i> and returns <i>strDest</i>. If <i>count</i> is less than or equal to the length of <i>strSource</i>, a null character is not appended automatically to the copied string. If <i>count</i> is greater than the length of <i>strSource</i>, the destination string is padded with null characters up to length <i>count</i>.</p></blockquote>
+<p>In pictures, here’s what happens in various string copying scenarios.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3">
+<tbody>
+<tr>
+<td colspan="3"><code>strncpy(strDest, strSrc, 5)</code></td>
+</tr>
+<tr>
+<td><code>strSource</code></td>
+<td>
+<table cellpadding="2" style="font-family: monospace; text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid gray .75pt; width: 2em;">W</td>
+<td style="border: solid gray .75pt; width: 2em;">e</td>
+<td style="border: solid gray .75pt; width: 2em;">l</td>
+<td style="border: solid gray .75pt; width: 2em;">c</td>
+<td style="border: solid gray .75pt; width: 2em;">o</td>
+<td style="border: solid gray .75pt; width: 2em;">m</td>
+<td style="border: solid gray .75pt; width: 2em;">e</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+</tr>
+</tbody>
+</table>
+</td>
+</tr>
+<tr>
+<td><code>strDest</code></td>
+<td>
+<table cellpadding="2" style="font-family: monospace; text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid gray .75pt; width: 2em;">W</td>
+<td style="border: solid gray .75pt; width: 2em;">e</td>
+<td style="border: solid gray .75pt; width: 2em;">l</td>
+<td style="border: solid gray .75pt; width: 2em;">c</td>
+<td style="border: solid gray .75pt; width: 2em;">o</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td>observe no null terminator</td>
+</tr>
+<tr>
+<td colspan="3"> </td>
+</tr>
+<tr>
+<td colspan="3"><code>strncpy(strDest, strSrc, 5)</code></td>
+</tr>
+<tr>
+<td><code>strSource</code></td>
+<td>
+<table cellpadding="2" style="font-family: monospace; text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid gray .75pt; width: 2em;">H</td>
+<td style="border: solid gray .75pt; width: 2em;">e</td>
+<td style="border: solid gray .75pt; width: 2em;">l</td>
+<td style="border: solid gray .75pt; width: 2em;">l</td>
+<td style="border: solid gray .75pt; width: 2em;">o</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+</tr>
+</tbody>
+</table>
+</td>
+</tr>
+<tr>
+<td><code>strDest</code></td>
+<td>
+<table cellpadding="2" style="font-family: monospace; text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid gray .75pt; width: 2em;">H</td>
+<td style="border: solid gray .75pt; width: 2em;">e</td>
+<td style="border: solid gray .75pt; width: 2em;">l</td>
+<td style="border: solid gray .75pt; width: 2em;">l</td>
+<td style="border: solid gray .75pt; width: 2em;">o</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td>observe no null terminator</td>
+</tr>
+<tr>
+<td colspan="3"> </td>
+</tr>
+<tr>
+<td colspan="3"><code>strncpy(strDest, strSrc, 5)</code></td>
+</tr>
+<tr>
+<td><code>strSource</code></td>
+<td>
+<table cellpadding="2" style="font-family: monospace; text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid gray .75pt; width: 2em;">H</td>
+<td style="border: solid gray .75pt; width: 2em;">i</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+</tr>
+</tbody>
+</table>
+</td>
+</tr>
+<tr>
+<td><code>strDest</code></td>
+<td>
+<table cellpadding="2" style="font-family: monospace; text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid gray .75pt; width: 2em;">H</td>
+<td style="border: solid gray .75pt; width: 2em;">i</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+</tr>
+</tbody>
+</table>
+</td>
+<td>observe null padding to end of strDest</td>
+</tr>
+</tbody>
+</table>
+<p>Why do these functions have such strange behavior?</p>
+<p>Go back to the early days of UNIX. Personally, I only go back as far as System V. In System V, file names could be up to 14 characters long. Anything longer was truncated to 14. And the field for storing the file name was exactly 14 characters. Not 15. The null terminator was implied. This saved one byte.</p>
+<p>Here are some file names and their corresponding directory entries:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3">
+<tbody>
+<tr>
+<td><code>passwd</code></td>
+<td>
+<table cellpadding="2" style="font-family: monospace; text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid gray .75pt; width: 2em;">p</td>
+<td style="border: solid gray .75pt; width: 2em;">a</td>
+<td style="border: solid gray .75pt; width: 2em;">s</td>
+<td style="border: solid gray .75pt; width: 2em;">s</td>
+<td style="border: solid gray .75pt; width: 2em;">w</td>
+<td style="border: solid gray .75pt; width: 2em;">d</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+<td style="border: solid gray .75pt; width: 2em;">\0</td>
+</tr>
+</tbody>
+</table>
+</td>
+</tr>
+<tr>
+<td><code>newsgroups.old</code></td>
+<td>
+<table cellpadding="2" style="font-family: monospace; text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid gray .75pt; width: 2em;">n</td>
+<td style="border: solid gray .75pt; width: 2em;">e</td>
+<td style="border: solid gray .75pt; width: 2em;">w</td>
+<td style="border: solid gray .75pt; width: 2em;">s</td>
+<td style="border: solid gray .75pt; width: 2em;">g</td>
+<td style="border: solid gray .75pt; width: 2em;">r</td>
+<td style="border: solid gray .75pt; width: 2em;">o</td>
+<td style="border: solid gray .75pt; width: 2em;">u</td>
+<td style="border: solid gray .75pt; width: 2em;">p</td>
+<td style="border: solid gray .75pt; width: 2em;">s</td>
+<td style="border: solid gray .75pt; width: 2em;">.</td>
+<td style="border: solid gray .75pt; width: 2em;">o</td>
+<td style="border: solid gray .75pt; width: 2em;">l</td>
+<td style="border: solid gray .75pt; width: 2em;">d</td>
+</tr>
+</tbody>
+</table>
+</td>
+</tr>
+<tr>
+<td><code>newsgroups.old.backup</code></td>
+<td>
+<table cellpadding="2" style="font-family: monospace; text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid gray .75pt; width: 2em;">n</td>
+<td style="border: solid gray .75pt; width: 2em;">e</td>
+<td style="border: solid gray .75pt; width: 2em;">w</td>
+<td style="border: solid gray .75pt; width: 2em;">s</td>
+<td style="border: solid gray .75pt; width: 2em;">g</td>
+<td style="border: solid gray .75pt; width: 2em;">r</td>
+<td style="border: solid gray .75pt; width: 2em;">o</td>
+<td style="border: solid gray .75pt; width: 2em;">u</td>
+<td style="border: solid gray .75pt; width: 2em;">p</td>
+<td style="border: solid gray .75pt; width: 2em;">s</td>
+<td style="border: solid gray .75pt; width: 2em;">.</td>
+<td style="border: solid gray .75pt; width: 2em;">o</td>
+<td style="border: solid gray .75pt; width: 2em;">l</td>
+<td style="border: solid gray .75pt; width: 2em;">d</td>
+</tr>
+</tbody>
+</table>
+</td>
+</tr>
+</tbody>
+</table>
+<p>Notice that <code>newsgroups.old</code> and <code>newsgroups.old.backup</code> are actually the same file name, due to truncation. The too-long name was silently truncated; no error was raised. This <a href="http://www.greatcircle.com/lists/majordomo-users/mhonarc/majordomo-users.199302/msg00037.html"> has historically been the source of unintended data loss bugs</a>.</p>
+<p>The <code>strncpy</code> function was used by the file system to store the file name into the directory entry. This explains one part of the odd behavior of <code>strcpy</code>, namely why it does not null-terminate when the destination fills. The null terminator was implied by the end of the array. (It also explains the silent file name truncation behavior.)</p>
+<p>But why null-pad short file names?</p>
+<p>Because that makes scanning for file names faster. If you guarantee that all the “garbage bytes” are null, then you can use <code>memcmp</code> to compare them.</p>
+<p>For compatibility reasons, the C language committee decided to carry forward this quirky behavior of <code>strncpy</code>.</p>
+<p>So what about the title of this entry? How did code that tried to prevent a buffer overflow end up causing one?</p>
+<p><a href="http://forums.belution.com/ja/vc/000/259/78.shtml"> Here’s one example</a>. (Sadly I don’t read Japanese, so I am operating only from the code.) Observe that it uses <code>_tcsncpy</code> to fill the <code>lpstrFile</code> and <code>lpstrFileTitle</code>, being careful not to overflow the buffers. That’s great, but it also leaves off the null terminator if the string is too long. The caller may very well copy the result out of that buffer to a second buffer. But the <code>lstrFile</code> buffer lacks a proper null terminator and therefore exceeds the length the caller specified. Result: Second buffer overflows.</p>
+<p><a href="http://differentpla.net/node/view/253"> Here’s another example</a>. Observe that the function uses <code>_tcsncpy</code> to copy the result into the output buffer. This author was mindful of the quirky behavior of the <code>strncpy</code> family of functions and manually slapped a null terminator in at the end of the buffer.</p>
+<p>But what if <code>ccTextMax</code> = 0? Then the attempt to force a null terminator dereferences past the beginning of the array and corrupts a random character.</p>
+<p>What’s the conclusion of all this? Personally, my conclusion is simply to avoid <code>strncpy</code> and all its friends if you are dealing with null-terminated strings. Despite the “str” in the name, these functions do <strong>not</strong> produce null-terminated strings. They convert a null-terminated string into a raw character buffer. Using them where a null-terminated string is expected as the second buffer is plain wrong. Not only do you fail to get proper null termination if the source is too long, but if the source is short you get unnecessary null padding.</p>
+
+
+</body>

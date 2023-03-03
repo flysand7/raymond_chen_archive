@@ -1,0 +1,77 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using fibers to expand a thread’s stack at runtime, part 2</h1>  <!-- .entry-meta -->
+
+<p><a href="/none/using-fibers-to-expand-a-thread-s-stack-at-runtime-part-1"> Last time</a>, we wrote a <code>RunOnFiber</code> function that accepted a lambda and ran the lambda on a fiber.</p>
+<p>Since the <code>RunOnFiber</code> function is templated, a new copy of the function is created for each lambda. But we can reduce the code size explosion by factoring out the part that is independent of the lambda.</p>
+<p>We use a technique similar to the one we used when we <a href="https://devblogs.microsoft.com/oldnewthing/20200515-00/?p=103755"> wrote our own simplified version of <code>std::function</code></a>: Convert the lambda to a flat callback and a <code>void*</code>.</p>
+<pre><span style="color: blue;">HRESULT RunOnFiberWorker(
+    HRESULT (*callback)(void*),
+    void* parameter)</span>
+{
+  struct State
+  {
+    <span style="color: blue;">HRESULT (*callback)(void*);
+    void* parameter;</span>
+    HANDLE originalFiber;
+    HRESULT result = S_OK;
+
+    void FiberProc()
+    {
+      result = <span style="color: blue;">callback(parameter)</span>;
+      SwitchToFiber(originalFiber);
+    }
+
+  } state{ <span style="color: blue;">callback, parameter</span> };
+
+  unique_fiber workFiber{ CreateFiberEx(0, EXTRA_STACK_SIZE, 0,
+      [](void* parameter)
+      {
+        reinterpret_cast&lt;State*&gt;(parameter)-&gt;FiberProc();
+      }, &amp;state) };
+
+  if (!workFiber) return HRESULT_FROM_WIN32(GetLastError());
+
+  unique_thread_as_fiber threadFiber;
+  if (!IsThreadAFiber()) {
+    threadFiber.reset(ConvertThreadToFiber(nullptr));
+    if (!threadFiber) {
+      return HRESULT_FROM_WIN32(GetLastError());
+    }
+  }
+
+  state.originalFiber = GetCurrentFiber();
+  SwitchToFiber(workFiber.get());
+
+  return state.result;
+}
+
+template&lt;typename Lambda&gt;
+HRESULT RunOnFiber(Lambda&amp;&amp; lambda)
+{
+  <span style="color: blue;">using Type = std::remove_reference_t&lt;Lambda&gt;;
+  return RunOnFiberWorker([](void* parameter)
+    {
+      return (*reinterpret_cast&lt;Type*&gt;(parameter))();
+    }, &amp;lambda);</span>
+}
+</pre>
+<p>The boilerplate is now in a helper function called <code>Run­On­Fiber­Worker</code>, and the template function type-erases the lambda into a <code>void*</code> and callback function. The callback function converts the <code>void*</code> back into the lambda and invokes it.</p>
+<p>The decomposition of the lambda into a callback and <code>void*</code> allows the same <code>Run­On­Fiber­Worker</code> to be used for all lambdas. The lambda-specific code is just in the production of the callback function.</p>
+<p>This code is not quite finished yet, because there’s the case where the lambda is a functor passed by const reference, in which case we need to respect const-ness and invoke the const version of the <code>operator()</code> overload.</p>
+<p>There also the oddball case where the functor has an overloaded <code>operator&amp;</code>. We can avoid that by using <code>std::<code></code>addressof</code>.</p>
+<p>A little bit of additional fiddling will take care of that:</p>
+<pre>template&lt;typename Lambda&gt;
+HRESULT RunOnFiber(Lambda&amp;&amp; lambda)
+{
+  using Type = std::remove_reference_t&lt;Lambda&gt;;
+  <span style="color: blue;">using Decayed = std::remove_cv_t&lt;Type&gt;;</span>
+  return RunOnFiberWorker([](void* parameter)
+    {
+      return (*reinterpret_cast&lt;Type*&gt;(parameter))();
+    }, <span style="color: blue;">const_cast&lt;Decayed*&gt;</span>(<span style="color: blue;">std::addressof</span>(lambda)));
+}
+</pre>
+<p>Next time, we’ll look at writing a <code>Run­On­Fiber</code> function that reports errors by means other than just the return value.</p>
+
+
+</body>

@@ -1,0 +1,36 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does calling SetForegroundWindow immediately followed by GetForegroundWindow not return the same window back?</h1>  <!-- .entry-meta -->
+
+<p>A customer said that their program used <code>Find­Window</code> to find a window in the system, then called <code>Set­Foreground­Window</code> to set that window to the foreground. The call succeeds, but if they enumerate the windows to check the z-order, the window that they set as foreground is not at the top of the z-order. And if they call <code>Get­Foreground­Window</code>, they don’t get that window back. </p>
+<p>So what does it mean when <code>Set­Foreground­Window</code> succeeds, but doesn’t actually set the foreground window? </p>
+<p>The <code>Set­Foreground­Window</code> function actually does two things, one immediately and one asynchronously. </p>
+<p>It immediately sets the input queue associated with the window as being the foreground input queue. Among other thing, it means that keyboard input will be directed to that input queue. It also means that threads belonging to that input queue now have permission to call <code>Set­Foreground­Window</code>, which is why many people affectionately call this <a href="https://blogs.msdn.microsoft.com/oldnewthing/20090220-00/?p=19083">having the foreground love</a>. </p>
+<p>The function also notifies the window, “Hey, you should make yourself the active window for your queue.” This notification is processed synchronously if the target window’s thread belongs to the same input queue as the thread that is calling <code>Set­Foreground­Window</code>, and it is processed asynchronously if the window belongs to a different thread group. This notification is done by roughly the same internal nudging mechanism that <a href="https://blogs.msdn.microsoft.com/oldnewthing/20130606-00/?p=4153">threads sharing an input queue use to coordinate access to input</a>. In particular, it means that the thread responsible for the target window needs to process messages in order to receive the nudge. </p>
+<p>The fact that the “Go make yourself the active window for your queue” portion is asynchronous (in the cross-thread-group case) means that at the moment that <code>Set­Foreground­Window</code> returns, the window is <i>becoming</i> the foreground window, but it is not necessarily the foreground window <i>yet</i>. If you check the z-order or call <code>Get­Foreground­Window</code>, you are likely to see that the target window hasn’t activated yet. </p>
+<p>Let’s assume that the customer’s program is doing this sort of <code>Find­Window</code> trickery as part of test automation. And let’s suppose that they want the automation to wait until the target window has arrived to the foreground, so that it can continue the next step in the automation. </p>
+<p>A bad solution would be to use the <code>Attach­Thread­Input</code> function to connect the test automation tool’s input queue to the input queue of the target window. This is a bad solution because it means that if the target window has stopped responding, then the test automation will also stop responding. And it’s bad for a test to stop responding. The purpose of the test is to monitor the main application reliably, not to <a href="https://devblogs.microsoft.com/oldnewthing/">get into the same jail</a>. (Or to use a different earlier analogy, to <a href="https://blogs.msdn.microsoft.com/oldnewthing/20130619-00/?p=4043">create a joint bank account with an unreliable chap</a>.) </p>
+<p>What the test could do is something like this: </p>
+<pre>
+    SetForegroundWindow(hwndTarget);
+
+    // Wait up to 5 seconds for the window to process the
+    // foreground notification.
+    DWORD_PTR result; // unused
+    if (!SendMessageTimeout(hwndTarget, WM_NULL,
+                            0, 0, 0, 5000, &amp;result)) {
+        // Window was unresponsive for 5 seconds, or the
+        // window was destroyed, or some other bad thing.
+        ReportFailedTest();
+    }
+
+    if (GetForegroundWindow() != hwndTarget) {
+        // The window did not become foreground for some reason.
+        // Maybe there was some interference from elsewhere in the
+        // system.
+        ReportFailedTest();
+    }
+</pre>
+<p>Here we take advantage of the <code>WM_NULL</code> message. This message does nothing, so sending it has no practical effect, but the fact that we sent a message means that our code waits for the window to finish processing the <i>previous</i> message, which was “Hey, you should make yourself the active window for your queue.” And that’s what we are <i>really</i> waiting for. </p>
+
+
+</body>

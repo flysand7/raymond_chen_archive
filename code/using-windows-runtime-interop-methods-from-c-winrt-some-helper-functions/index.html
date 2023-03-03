@@ -1,0 +1,54 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Using Windows Runtime interop methods from C++/WinRT: Some helper functions</h1>  <!-- .entry-meta -->
+
+<p>Last time, <a href="/code/an-example-of-using-windows-runtime-interop-methods-from-c-winrt-requesttokenforwindowasync" title="An example of using Windows Runtime interop methods from C++/WinRT: RequestTokenForWindowAsync"> we saw how to combine various pieces of C++/WinRT in order to call a Windows Runtime interop interface and capture the result as a C++/WinRT object</a>.</p>
+<p>There is some redundancy in the pattern, since you have to name the interface twice: Once to obtain it from the factory, and again to name the member function.</p>
+<p>A little helper function will save some typing:</p>
+<pre>template&lt;
+    typename Result,
+    typename WinRTType,
+    typename InteropInterface,
+    typename... InteropArgs,
+    typename... Args&gt;
+auto capture_interop(
+    HRESULT (STDMETHODCALLTYPE InteropInterface::*method)(InteropArgs...),
+    Args&amp;&amp;... args)
+{
+    return winrt::capture&lt;Result&gt;(
+        winrt::get_activation_factory&lt;WinRTType, InteropInterface&gt;(),
+        method, std::forward&lt;Args&gt;(args)...);
+}
+</pre>
+<p>Our example last time then simplifies to</p>
+<pre>capture_interop&lt;
+    winrt::IAsyncOperation&lt;winrt::WebTokenRequestResult&gt;,
+    winrt::WebAuthenticationCoreManager&gt;(
+    &amp;::IWebAuthenticationCoreManagerInterop::RequestTokenForWindowAsync,
+    window,
+    static_cast&lt;::IInspectable*&gt;(winrt::get_abi(request)));
+</pre>
+<p>There is a corresponding pattern for interop interfaces on instance objects.</p>
+<pre>template&lt;
+    typename Result,
+    typename InteropInterface,
+    typename... InteropArgs,
+    typename... Args&gt;
+auto capture_interop(
+    winrt::IUnknown const&amp; o,
+    HRESULT (STDMETHODCALLTYPE InteropInterface::*method)(InteropArgs...),
+    Args&amp;&amp;... args)
+{
+    return winrt::capture&lt;Result&gt;(
+        o.as&lt;InteropInterface&gt;(), method, std::forward&lt;Args&gt;(args)...);
+}
+</pre>
+<p>Usage for this would be something like</p>
+<pre>winrt::UserActivity activity = ...;
+
+auto session = capture_interop&lt;winrt::UserActivitySession&gt;(
+    activity, &amp;::IUserActivityInterop::CreateSessionForWindow, window);
+</pre>
+<p>These helper functions are part of the <a href="https://github.com/microsoft/wil"> Windows Implementation Library</a>, documented here: <a href="https://github.com/microsoft/wil/wiki/WIL-and-C---WinRT-together#capture_interop"> <code>capture_interop</code></a>.</p>
+
+
+</body>

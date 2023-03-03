@@ -1,0 +1,331 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a simple pidl: For the times you care enough to send the very fake</h1>  <!-- .entry-meta -->
+
+<p><p>
+I’ll assume that we all know what pidls are and how the shell
+namespace uses them.
+That’s the prerequisite for today.
+</p>
+<p>
+A <i>simple pidl</i> is an item ID list that refers to
+a file or directory that may not actually exist.
+It’s a way of playing “what if”:
+“If there were a file or directory at this location,
+here is what I would have created to represent it.”
+For the times you
+<a href="http://corporate.hallmark.com/History/Brand-Legacy">
+care enough to send the very fake</a>.
+</p>
+<p>
+We’ve seen these things in action with the
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/06/01/145428.aspx">
+<code>SHGFI_USE­FILE­ATTRIBUTES</code>
+flag</a>,
+which tells the
+<code>SH­Get­File­Info</code> function,
+“Pretend that the file/directory exists with the attributes
+I specified, and tell me what the icon would be, were that item
+to actually exist.”
+</p>
+<p>
+Internally, the
+<code>SH­Get­File­Info</code> function
+creates one of these “simple pidls”, and then asks the simple pidl
+for its icon.
+</p>
+<p>
+Note that a simple pidl is really a special case of a
+pidl created from a
+<code>WIN32_FIND_DATA</code>.
+When you parse a display name with a custom bind context,
+and the bind context has a
+<code>STR_FILE_SYS_FIND_DATA</code>
+bind context object,
+then that object is used to control the information placed
+into the pidl instead of getting the information from the file system.
+</p>
+<p>
+Here’s a program that creates a simple pidl and then does
+a few simple things with it.
+(Note that the
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/dd940368(v=vs.85).aspx">
+Parsing with Parameters</a> sample covers this topic too,
+so if you don’t like the way I did it, you can look to see
+how somebody else did it.)
+</p>
+<pre>
+#define STRICT_TYPED_ITEMIDS
+#include &lt;new&gt;
+#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;oleauto.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;propkey.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;atlalloc.h&gt;</pre></p>
+<p>class CFileSysBindData : public IFileSystemBindData
+{
+public:
+ static HRESULT CreateInstance(
+  _In_ const WIN32_FIND_DATAW *pfd,
+  _In_ REFIID riid, _Outptr_ void **ppv);</p>
+<p> // *** IUnknown ***
+ IFACEMETHODIMP QueryInterface(
+  _In_ REFIID riid, _Outptr_ void **ppv)
+ {
+  *ppv = nullptr;
+  HRESULT hr = E_NOINTERFACE;
+  if (riid == IID_IUnknown ||
+      riid == IID_IFileSystemBindData) {
+   *ppv = static_cast&lt;IFileSystemBindData *&gt;(this);
+   AddRef();
+   hr = S_OK;
+  }
+  return hr;
+ }</p>
+<p> IFACEMETHODIMP_(ULONG) AddRef()
+ {
+  return InterlockedIncrement(&amp;m_cRef);
+ }</p>
+<p> IFACEMETHODIMP_(ULONG) Release()
+ {
+  LONG cRef = InterlockedDecrement(&amp;m_cRef);
+  if (cRef == 0) delete this;
+  return cRef;
+ }</p>
+<p> // *** IFileSystemBindData ***
+ IFACEMETHODIMP SetFindData(_In_ const WIN32_FIND_DATAW *pfd)
+ {
+  m_fd = *pfd;
+  return S_OK;
+ }</p>
+<p> IFACEMETHODIMP GetFindData(_Out_ WIN32_FIND_DATAW *pfd)
+ {
+  *pfd = m_fd;
+  return S_OK;
+ }</p>
+<p>private:
+ CFileSysBindData(_In_ const WIN32_FIND_DATAW *pfd) :
+  m_cRef(1)
+ {
+  m_fd = *pfd;
+ }
+private:
+ LONG m_cRef;
+ WIN32_FIND_DATAW m_fd;
+};</p>
+<p>HRESULT CFileSysBindData::CreateInstance(
+ _In_ const WIN32_FIND_DATAW *pfd,
+ _In_ REFIID riid, _Outptr_ void **ppv)
+{
+ *ppv = nullptr;
+ CComPtr&lt;IFileSystemBindData&gt; spfsbd;
+ HRESULT hr = E_OUTOFMEMORY;
+ spfsbd.Attach(new (std::nothrow) CFileSysBindData(pfd));
+ if (spfsbd) {
+  hr = spfsbd-&gt;QueryInterface(riid, ppv);
+ }
+ return hr;
+}
+
+<p>
+The
+<code>CFile­Sys­Bind­Data</code>
+object is extraordinarily boring.
+It simply implements
+<code>IFile­System­Bind­Data</code>,
+which is a simple interface that just babysits a
+<code>WIN32_FIND_DATA</code> structure.
+(There is also a
+<code>IFile­System­Bind­Data2</code> interface
+which babysits a little more information,
+but for the purpose of this program,
+we’re interested only in the
+<code>WIN32_FIND_DATA</code>.)
+</p>
+<pre>
+HRESULT CreateBindCtxWithOpts(
+ _In_ BIND_OPTS *pbo, _Outptr_ IBindCtx **ppbc)
+{
+ CComPtr&lt;IBindCtx&gt; spbc;
+ HRESULT hr = CreateBindCtx(0, &amp;spbc);
+ if (SUCCEEDED(hr)) {
+  hr = spbc-&gt;SetBindOptions(pbo);
+ }
+ *ppbc = SUCCEEDED(hr) ? spbc.Detach() : nullptr;
+ return hr;
+}
+</pre>
+<p>
+A bind context is basically a string-indexed associative array
+of COM objects.
+There is also a
+<code>BIND_OPTS</code> (or <code>BIND_OPTS2</code>)
+structure in there,
+but the things most people care about are the object parameters.
+They provide an extensible method of passing arbitrary parameters
+to a function.
+(Think of it as the COM version of the JavaScript convention of
+jamming random junk into an
+<a href="http://docs.jquery.com/Types#Options">
+Options</a> parameter.)
+You start with a
+<code>IBind­Ctx</code> parameter,
+and any time you need to add a new flag or parameter,
+you just stuff it into the
+<code>IBind­Ctx</code>.
+If you just want to add a new boolean flag,
+you can even ignore the contents of the object parameter and merely
+base your behavior on whether the parameter exists at all.
+</p>
+<pre>
+HRESULT AddFileSysBindCtx(
+ _In_ IBindCtx *pbc, _In_ const WIN32_FIND_DATAW *pfd)
+{
+ CComPtr&lt;IFileSystemBindData&gt; spfsbc;
+ HRESULT hr = CFileSysBindData::CreateInstance(
+  pfd, IID_PPV_ARGS(&amp;spfsbc));
+ if (SUCCEEDED(hr)) {
+  hr = pbc-&gt;RegisterObjectParam(STR_FILE_SYS_BIND_DATA,
+                                spfsbc);
+ }
+ return hr;
+}
+</pre>
+<p>
+To add a file system bind parameter,
+you just create an object which implements
+<code>IFile­System­Bind­Data</code>
+and register it with the bind context with
+the string
+<code>STR_FILE_SYS_FIND_DATA</code>.
+</p>
+<pre>
+HRESULT CreateFileSysBindCtx(
+ _In_ const WIN32_FIND_DATAW *pfd, _Outptr_ IBindCtx **ppbc)
+{
+ CComPtr&lt;IBindCtx&gt; spbc;
+ BIND_OPTS bo = { sizeof(bo), 0, STGM_CREATE, 0 };
+ HRESULT hr = CreateBindCtxWithOpts(&amp;bo, &amp;spbc);
+ if (SUCCEEDED(hr)) {
+  hr = AddFileSysBindCtx(spbc, pfd);
+ }
+ *ppbc = SUCCEEDED(hr) ? spbc.Detach() : nullptr;
+ return hr;
+}
+</pre>
+<p>
+The
+<code>Create­File­Sys­Bind­Ctx</code>
+function simply combines the two steps of creating a bind
+context and then adding a file system bind parameter to it.
+In casual conversation,
+a bind context is often named after the parameter inside it.
+In this case,
+we have a bind context with a file system bind parameter,
+so we call it a “file system bind context”.
+</p>
+<pre>
+HRESULT CreateSimplePidl(
+ _In_ const WIN32_FIND_DATAW *pfd,
+ _In_ PCWSTR pszPath, _Outptr_ PIDLIST_ABSOLUTE *ppidl)
+{
+ *ppidl = nullptr;
+ CComPtr&lt;IBindCtx&gt; spbc;
+ HRESULT hr = CreateFileSysBindCtx(pfd, &amp;spbc);
+ if (SUCCEEDED(hr)) {
+  hr = SHParseDisplayName(pszPath, spbc, ppidl, 0, nullptr);
+ }
+ return hr;
+}
+</pre>
+<p>
+This is where everything comes together.
+To create a simple pidl,
+we take the
+<code>WIN32_FIND_DATAW</code> containing the metadata
+we want to use,
+put it inside a file system bind context,
+then use that bind context to parse the file name.
+The presence of a file system bind context tells
+the parser,
+“Trust me on this, just go with what’s in the bind context.”
+It suppresses all disk access,
+and the final pidl will describe an item that exactly matches
+the metadata you provided,
+whether that accurately reflects reality or not.
+(You can also pass the bind context to
+<code>SHCreate­Item­From­Parsing­Name</code>
+if you prefer to get an <code>IShell­Item</code>.)
+</p>
+<p>
+Okay, let’s take this out for a spin.
+</p>
+<pre>
+void DoStuffWith(_In_ PCIDLIST_ABSOLUTE pidl)
+{
+ // Print the file name
+ wchar_t szBuf[MAX_PATH];
+ if (SHGetPathFromIDListW(pidl, szBuf)) {
+  wprintf(L”Path is \”%ls\”\n”, szBuf);
+ }</pre></p>
+<p> // Print the file size
+ CComPtr&lt;IShellFolder2&gt; spsf;
+ PCUITEMID_CHILD pidlChild;
+ if (SUCCEEDED(SHBindToParent(pidl,
+                        IID_PPV_ARGS(&amp;spsf), &amp;pidlChild))) {
+  CComVariant vt;
+  if (SUCCEEDED(spsf-&gt;GetDetailsEx(pidlChild,
+                        &amp;PKEY_Size, &amp;vt))) {
+   if (SUCCEEDED(vt.ChangeType(VT_UI8))) {
+    wprintf(L”Size is %I64u\n”, vt.ullVal);
+   }
+  }
+ }
+}</p>
+<p>int __cdecl wmain(int argc, PWSTR argv[])
+{
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+ if (SUCCEEDED(init)) {
+  WIN32_FIND_DATAW fd = {};
+  fd.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
+  fd.nFileSizeLow = 42;
+  CComHeapPtr&lt;ITEMIDLIST_ABSOLUTE&gt; spidlSimple;
+  if (SUCCEEDED(CreateSimplePidl(&amp;fd,
+                L”Q:\\Whatever.txt”, &amp;spidlSimple))) {
+   DoStuffWith(spidlSimple);
+  }
+ }
+ return 0;
+}
+
+<p>
+Our test program asks for a simple pidl to
+<code>Q:\Whatever.txt</code>,
+and then prints information from it.
+Observe that the creation of the simple pidl succeeds
+even though you probably don’t have a Q: drive,
+and even if you did,
+the code never tried to access it.
+And when we ask the pidl,
+“Hey, what’s the file size?”
+it retrieves the fake value 42 we passed in the
+<code>WIN32_FIND_DATAW</code> structure.
+</p>
+<p>
+Sure, that was kind of artificial, but
+so-called simple pidls are handy if you want to talk
+about an object on slow media (such as a network share)
+without actually accessing the target device.
+</p>
+<p>
+<b>Exercise</b>:
+What changes are necessary in order to create a simple
+pidl that refers to a file with illegal characters
+in its name?
+Hint:
+<code>STR_NO_VALIDATE_FILENAME_CHARS</code>.
+</p></p>
+
+
+</body>

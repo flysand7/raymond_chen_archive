@@ -1,0 +1,69 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Making C++ primitive types meaningfully movable when they have sentinel values</h1>  <!-- .entry-meta -->
+
+<p>C++ primitive types do not have special semantics for move constructor or move assignment. Their move operations are just copies. But what if you really want them to move, say, because they have a sentinel value that represents an “empty” state.</p>
+<pre>template&lt;typename T, T empty_value&gt;
+struct movable_primitive
+{
+    T value = empty_value;
+    movable_primitive() = default;
+    movable_primitive(T const&amp; init) : value(init) {}
+    movable_primitive(movable_primitive const&amp;) = default;
+    movable_primitive(movable_primitive&amp;&amp; other) :
+        value(std::exchange(other.value, empty_value)) {}
+    movable_primitive&amp; operator=(movable_primitive const&amp;) = default;
+    movable_primitive&amp; operator=(movable_primitive&amp;&amp; other)
+    {
+        value = std::exchange(other.value, empty_value);
+        return *this;
+    }
+
+    operator T() { return value; }
+};
+</pre>
+<p>The idea here is that when the primitive is copied, we copy the value, but when the primitive is moved, the old primitive’s value reverts to the <code>empty_value</code>.</p>
+<p>This class isn’t really useful on its own, since you can probably manage the state yourself without too much difficulty, but it comes in handy when it is part of a larger class, since it allows you to use the <a href="https://cpppatterns.com/patterns/rule-of-zero.html"> Rule of Zero</a>.</p>
+<p>For example, you might have one scalar member that records information about another movable member. If that other member is moved, then the scalar should be moved with it.</p>
+<pre>enum class flavor
+{
+    none,
+    vanilla,
+    chocolate,
+};
+
+struct vector_with_flavor
+{
+    std::vector&lt;int&gt; v;
+    movable_primitive&lt;flavor, flavor::none&gt; flav;
+};
+</pre>
+<p>If you copy this structure, the vector and its flavor are copied. If you move this structure, the vector is emptied, and the flavor reverts to <code>none</code>.</p>
+<p>If you use the <a href="https://github.com/Microsoft/wil/">Windows Implementation Libraries</a>, you can sort of build this out of <code>wil::<wbr/>unique_struct</code>:</p>
+<pre>template&lt;typename T&gt;
+struct primitive_wrapper
+{
+    T value;
+    primitive_wrapper() = default;
+    primitive_wrapper(T const&amp; initial) : value(initial) {}
+    static void close(primitive_wrapper*) noexcept {}
+    template&lt;T empty_value&gt; static void init(primitive_wrapper* p)
+        { p-&gt;value = empty_value; }
+    operator T() { return value; }
+};
+
+template&lt;typename T, T empty_value&gt;
+using movable_primitive = wil::unique_struct&lt;
+    primitive_wrapper&lt;T&gt;,
+    decltype(primitive_wrapper&lt;T&gt;::close),
+            &amp;primitive_wrapper&lt;T&gt;::close,
+    decltype(primitive_wrapper&lt;T&gt;::template init&lt;empty_value&gt;),
+            &amp;primitive_wrapper&lt;T&gt;::template init&lt;empty_value&gt;&gt;;
+</pre>
+<p>WIL’s <code>unique_struct</code> comes with other features like <code>release()</code> to return the value and reset to the empty state. However, setting a new value is a bit more cumbersome.</p>
+<pre>movable_primitive&lt;int, 0&gt; v;
+v = 42; // for original movable_primitive
+v.reset(42); // for wil-based movable_primitive
+</pre>
+
+
+</body>

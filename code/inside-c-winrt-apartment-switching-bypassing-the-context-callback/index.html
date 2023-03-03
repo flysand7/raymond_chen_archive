@@ -1,0 +1,31 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Inside C++/WinRT: Apartment switching: Bypassing the context callback</h1>  <!-- .entry-meta -->
+
+<p>Last time, <a href="/code/inside-c-winrt-apartment-switching-unblocking-the-outgoing-thread" title="Inside C++/WinRT: Apartment switching: Unblocking the outgoing thread"> we avoided the problem of the synchronous apartment-changing callback</a>.</p>
+<p>Our implementation always uses <code>IContext­Callback::<wbr/>Context­Callback()</code> to switch apartments. This is rather wasteful if we are already in the target apartment: It consumes a good amount of stack space as we call into the COM infrastructure, and then the COM infrastructure calls us back, where we then resume the coroutine, when we could have just resumed the coroutine directly without getting COM involved at all. It is not uncommon to resume a coroutine’s execution in the context you are already in (say, because the awaited-on coroutine happens to finish in the same apartment in which it started). The extra stack consumption can become a problem if you have a long chain of coroutines, or are awaiting in a loop.</p>
+<p>To short-circuit the <code>IContext­Callback::<wbr/>Context­Callback()</code>, we can check whether we are already in the correct apartment, in which case we resume the coroutine immediately.</p>
+<pre>inline auto resume_apartment(
+    com_ptr&lt;IContextCallback&gt; const&amp; context,
+    coroutine_handle&lt;&gt; handle)
+{
+    WINRT_ASSERT(context.valid());
+    <span style="color: #08f;">if (context ==
+        capture&lt;IContextCallback&gt;(WINRT_IMPL_CoGetObjectContext))
+    {
+        handle();
+    }
+    else</span> if (is_sta_thread())
+    {
+        resume_apartment_on_threadpool(context, handle);
+    }
+    else
+    {
+        resume_apartment_sync(context, handle);
+    }
+}
+</pre>
+<p>If the original context equals the current context, then we are already in the correct apartment, and we can just resume the coroutine immediately. Only if the contexts don’t match do we need to go through the whole <code>IContext­Callback::<wbr/>Context­Callback()</code> ritual.</p>
+<p>Next time, we’ll try to address another source of unwanted stack build-up.</p>
+
+
+</body>

@@ -1,0 +1,78 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does CryptDestroyHash crash, but only sometimes?</h1>  <!-- .entry-meta -->
+
+<p>A customer was having a problem with the cryptographic hashing functions. They reported that their function ran successfully most of the time, but once in a while, it crashed at the call to <code>Crypt­Destroy­Hash</code>: </p>
+<pre>
+bool SomethingSomething(BYTE *buffer, int bufferSize)
+{
+    bool succeeded = true;
+    HCRYPTPROV provider = 0;
+    HCRYPTHASH hash = 0;
+
+    if (!CryptAcquireContext(&amp;provider, NULL, NULL,
+                           PROV_RSA_FULL, CRYPT_VERIFYCONTEXT) ||
+        !CryptCreateHash(provider, CALG_MD5, 0, 0, &amp;hash))
+    {
+        succeeded = false;
+        goto Exit;
+    }
+
+    BYTE hashResult[16]; // MD5 hash is 16 bytes
+    DWORD hashResultSize = sizeof(hashResult);
+
+    if (!CryptHashData(hash, buffer, bufferSize, 0) ||
+        !CryptGetHashParam(hash, HP_HASHVAL, hashResult,
+                                          &amp;hashResultSize, 0)) {
+        succeeded = false;
+        goto Exit;
+    }
+
+    DoSomethingWith(hashResult); // some business logic
+
+    if (provider) {
+        CryptReleaseContext(provider, 0);
+    }
+
+    if (hash) {
+        CryptDestroyHash(hash);
+    }
+
+Exit:
+
+    return succeeded;
+}
+</pre>
+<p>The reason for the crash is straightforward. As noted in the documentation, <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/aa380268(v=vs.85).aspx">you must call <code>Crypt­Destroy­Hash</code> before <code>Crypt­Release­Context</code></a>. (The technical reason for this is that each hash has a reference back to the context, so if you destroy the context, you leave the hash with a dangling pointer.) </p>
+<p>This was a relatively straightforward consult. A simple programming error. The customer thanked us for identifying the problem, but then followed up with “But why is it happening only rarely? Shouldn’t it crash all the time?” </p>
+<p>Remember that when you break the rules, the behavior is undefined, and one valid manifestion of undefined behavior is “Everything seems to work okay.” </p>
+<p>You may have noticed some other problems with the code provided. </p>
+<ul>
+<li>If anything goes wrong, the calls to     <code>Crypt­Destroy­Hash</code> and     <code>Crypt­Release­Context</code> are skipped,     which means that the code leaks a hash and a context.     The <code>Exit</code> label should be moved to just     in front of the <code>if (provider)</code>. 
+<li>Setting <code>succeeded = true</code> and then manually setting     it to <code>false</code> when something goes wrong strikes me     as a high-risk proposition.     If somebody adds code to the function and does a     <code>goto Exit;</code> without also setting     <code>succeeded = false;</code>, the function will falsely     report success.     I prefer to fail safe and initialize     <code>succeeded = false;</code>, and set it to <code>true</code>     only after I am sure that the function succeeded. </li></li></ul>
+<p>Using RAII would have solved both the order-of-destruction problem and the memory leaks. </p>
+<pre>
+bool SomethingSomething(BYTE *buffer, int bufferSize)
+{
+    // assuming suitable definitions for CryptProv and CryptHash
+    CryptProv provider(NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT);
+    if (!provider) return false;
+    CryptHash hash(provider.get(), CALG_MD5, 0, 0);
+    if (!hash) return false;
+
+    BYTE hashResult[16]; // MD5 hash is 16 bytes
+    DWORD hashResultSize = sizeof(hashResult);
+
+    if (!CryptHashData(hash.get(), buffer, bufferSize, 0) ||
+        !CryptGetHashParam(hash.get(), HP_HASHVAL, hashResult,
+                                          &amp;hashResultSize, 0)) {
+        return false;
+    }
+
+    DoSomethingWith(hashResult); // some business logic
+
+    return true;
+}
+</pre>
+
+
+</body>

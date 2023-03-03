@@ -1,0 +1,79 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I get notified when the cursor changes?</h1>  <!-- .entry-meta -->
+
+<p>Today’s Little Program tracks changs to the cursor. You might want to do this as part of instrumentation, in order to see how often the user is staring at an hourglass, for example. (It’s easier to make the Move cursor appear on demand, so I’ll use that instead.) </p>
+<p>The magic words here are <code>OBJID_CURSOR</code> and <code>Get­Cursor­Info</code>. </p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+
+void log()
+{
+  CURSORINFO ci = { sizeof(ci) };
+  GetCursorInfo(&amp;ci);
+  printf("showing = %d, suppressed = %d, pos = (%d, %d), handle = %p\n",
+    !!(ci.flags &amp; CURSOR_SHOWING),
+    !!(ci.flags &amp; CURSOR_SUPPRESSED),
+    ci.ptScreenPos.x,
+    ci.ptScreenPos.y,
+    ci.hCursor);
+}
+</pre>
+<p>The <code>log</code> function prints information about the current cursor. For now, we just dump it to the screen, but obviously you could do something fancier with it. The <code>CURSOR_SHOWING</code> flag tells you <a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/12/17/9937972.aspx">whether the cursor show count is nonnegative</a>, which is what classically controls whether the cursor is visible on the screen. The <code>CURSOR_SUPPRESSED</code> flag tells tells you that nominally visible cursor is not visible to the user because the user touched the screen with a finger or pen. </p>
+<pre>
+void CALLBACK WinEventProc(
+  HWINEVENTHOOK hook,
+  DWORD event,
+  HWND hwnd,
+  LONG idObject,
+  LONG idChild,
+  DWORD idEventThread,
+  DWORD time)
+{
+  if (hwnd == nullptr &amp;&amp;
+      idObject == OBJID_CURSOR &amp;&amp;
+      idChild == CHILDID_SELF) {
+    switch (event) {
+    case EVENT_OBJECT_HIDE:
+      printf("cursor hidden\n");
+      log();
+      break;
+    case EVENT_OBJECT_SHOW:
+      printf("cursor shown\n");
+      log();
+      break;
+    case EVENT_OBJECT_NAMECHANGE:
+      printf("cursor changed\n");
+      log();
+      break;
+    }
+  }
+}
+</pre>
+<p>Our event hook procedure checks if we’re being notified about the cursor. If so, then we print some information about the event we received, and then log the cursor details. </p>
+<pre>
+int __cdecl main(int, char**)
+{
+  printf("Move cursor = %p\n", LoadCursor(nullptr, IDC_SIZEALL));
+
+  HWINEVENTHOOK hook = SetWinEventHook(
+    EVENT_OBJECT_SHOW,
+    EVENT_OBJECT_NAMECHANGE,
+    nullptr,
+    WinEventProc,
+    GetCurrentProcessId(),
+    GetCurrentThreadId(),
+    WINEVENT_OUTOFCONTEXT);
+
+  MessageBox(nullptr, TEXT("Press Ok when bored"),
+             TEXT("Title"), MB_OK);
+
+  UnhookWinEvent(hook);
+  return 0;
+}
+</pre>
+<p>Our main program prints the handle of the Move cursor, just to demonstrate that the handle will match the output. Next, it installs the event hook on its own process and thread. (If you want to monitor the entire process, then pass 0 for the thread ID. If you wanted to monitor all processes on the desktop, then pass 0 for both the process ID and thread ID.) Next, we display a message box to give you a way to exit the program, and to fire up a message pump. After you are bored, we remove the hook and exit. </p>
+<p>Now, I chose the Move cursor because it is pretty much the only cursor you can get to from a message box: Press <kbd>Alt</kbd>+<kbd>Space</kbd>, then hit <kbd>M</kbd> for Move. Bingo, a Move cursor. And you can see the program spit out the new cursor handle, and it should match the value printed at the start of the program. </p>
+
+
+</body>

@@ -1,0 +1,106 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Detecting in C++ whether a type is defined, part 5: Augmenting the basic pattern</h1>  <!-- .entry-meta -->
+
+<p>As I noted at the start of this series, <a href="https://github.com/Microsoft/react-native-windows"> React Native for Windows</a> has to deal with two axes of agility.</p>
+<ul>
+<li>It needs to compile successfully across different versions of the Windows SDK.</li>
+<li>It needs to run successfully across different versions of Windows, while taking advantage of new features if available.</li>
+</ul>
+<p>The second is a common scenario, and the typical way of solving it is to probe for the desired feature and use it if is available.</p>
+<p>The first is less common. Usually, you control the version of the Windows SDK that your project consumes. The act of <a href="https://devblogs.microsoft.com/oldnewthing/20190702-00/?p=102638"> ingesting</a> a new version is often considered a big deal.</p>
+<p>Libraries like React Native for Windows have to deal with this problem, however, because the project that consumes them gets to pick the Windows SDK version, and the library has to cope with whatever it’s given. In such cases, a feature is used if it is available both in the Windows SDK that the project was compiled with, as well as in the version of Windows that the project is running on.</p>
+<p>Not controlling the version of the Windows SDK means that you need to infer at compile time what features are available. The <code>call_<code></code>if_<code></code>defined</code> helper fits the bill, but we can go even further to make it even more convenient.</p>
+<p>For example, consider the <code>Windows.<code></code>UI.<code></code>Xaml.<code></code>UIElement</code> class. Support for the <code>Start­Bring­Into­View</code> method was added in interface <code>IUIElement5</code>, which arrived in the Creators Update.¹ You could write this:</p>
+<pre>void BringIntoViewIfPossible(UIElement const&amp; e)
+{
+  auto el5 = e.try_as&lt;IUIElement5&gt;();
+  if (el5) {
+    el5.StartBringIntoView();
+  }
+}
+</pre>
+<p>This works great provided the host project is compiling the library with a version of the Windows SDK that contains a definition for <code>IUIElement5</code> in the first place.</p>
+<p>Boom, textbook case for <code>call_<code></code>if_<code></code>defined</code>.</p>
+<pre>namespace winrt::Windows::UI::Xaml
+{
+  struct IUIElement5;
+}
+
+using namespace winrt::Windows::UI::Xaml;
+
+void BringIntoViewIfPossible(UIElement const&amp; e)
+{
+  call_if_defined&lt;IUIElement5&gt;([&amp;](auto* p) {
+    using IUIElement5 = std::decay_t&lt;decltype(*p)&gt;;
+
+    auto el5 = e.try_as&lt;IUIElement5&gt;();
+    if (el5) {
+      el5.StartBringIntoView();
+    }
+  });
+}
+</pre>
+<p>This type of “probe for interface support” is a common scenario when writing version-agile code, so we could make a specialized version of <code>call_<code></code>if_<code></code>defined</code> to simplify the scenario.</p>
+<pre>template&lt;typename T, typename TLambda&gt;
+void call_if_supported(IInspectable const&amp; source,
+                       TLambda&amp;&amp; lambda)
+{
+  if constexpr (is_complete_type_v&lt;T&gt;) {
+    auto t = source.try_as&lt;T&gt;();
+    if (t) lambda(std::move(t));
+  }
+}
+</pre>
+<p>This version calls the lambda if the specified type is (1) supported in the SDK being consumed, and (2) supported at runtime by the version of Windows that the code is running on. You would use it like this:</p>
+<pre>void BringIntoViewIfPossible(UIElement const&amp; e)
+{
+  call_if_supported&lt;IUIElement5&gt;(e, [&amp;](auto&amp;&amp; el5) {
+    el5.StartBringIntoView();
+  });
+}
+</pre>
+<p>The idea here is that <code>call_<code></code>if_<code></code>supported</code> checks for both compile-time and runtime support, and if both tests pass, it calls the lambda, passing an <i>actual object</i> rather than a dummy parameter.</p>
+<p>Passing an actual object means that the lambda doesn’t need to re-infer the type. It can just use the passed-in object directly.</p>
+<p>This lets you write code that is conditional both on compile-time and runtime feature detection.</p>
+<p>A case that you might find useful even if you don’t use C++/WinRT is declaring a variable or member of a particular type, provided it exists.</p>
+<pre>struct empty {};
+template&lt;typename T, typename = void&gt;
+struct type_if_defined
+{
+    using type = empty;
+};
+
+template&lt;typename T&gt;
+struct type_if_defined&lt;T, std::void_t&lt;decltype(sizeof(T))&gt;&gt;
+{
+    using type = T;
+};
+
+template&lt;typename T&gt;
+using type_if_defined = typename type_or_empty&lt;T&gt;::type;
+</pre>
+<p>You can declare a variable or member of type <code>type_</code><code>if_</code><code>defined</code>, and it will either contain the thing (if it is defined), or it will be an empty struct. You could combine this with <code>call_</code><code>if_</code><code>defined</code> so you have a place to put the thing-that-might-not-be-defined across two calls.</p>
+<pre>// If "special" is available, preserve it.
+
+type_if_defined&lt;special&gt; s;
+
+call_if_defined&lt;special&gt;([&amp;](auto *p)
+{
+  using special = std::decay_t&lt;decltype(*p)&gt;;
+
+  s = special::get_current();
+});
+
+do_something();
+
+call_if_defined&lt;special&gt;([&amp;](auto *p)
+{
+  using special = std::decay_t&lt;decltype(*p)&gt;;
+
+  special::set_current(s);
+});
+</pre>
+<p>¹ Who names these things?</p>
+
+
+</body>

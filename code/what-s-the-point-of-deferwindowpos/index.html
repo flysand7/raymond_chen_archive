@@ -1,0 +1,150 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What’s the point of DeferWindowPos?</h1>  <!-- .entry-meta -->
+
+<p><p>
+The purpose of
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/Windows/WindowReference/WindowFunctions/DeferWindowPos.asp">
+the <code>DeferWindowPos</code> function</a>
+is to move multiple child windows at one go.
+This reduces somewhat the amount of repainting that goes on
+when windows move around.
+<p>
+</p>
+Take
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/04/20/410031.aspx">
+that DC brush sample from a few months ago</a>
+and make the following changes:
+</p>
+<pre>
+<font color="blue">HWND g_hwndChildren[2];</font></pre></p>
+<p>BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ <font color="blue">const static COLORREF s_rgclr[2] =
+    { RGB(255,0,0), RGB(0,255,0) };
+ for (int i = 0; i &lt; 2; i++) {
+  g_hwndChildren[i]</font> = CreateWindow(TEXT(“static”), NULL,
+        WS_VISIBLE | WS_CHILD, 0, 0, 0, 0,
+        hwnd, <font color="blue">(HMENU)IntToPtr(s_rgclr[i])</font>, g_hinst, 0);
+  if (!<font color="blue">g_hwndChildren[i]</font>) return FALSE;
+ <font color="blue">}</font>
+ return TRUE;
+}
+
+<p>
+Notice that I’m using the control ID to hold the desired color.
+We retrieve it when choosing our background color.
+</p>
+<pre>
+HBRUSH OnCtlColor(HWND hwnd, HDC hdc, HWND hwndChild, int type)
+{
+  <font color="blue">Sleep(500);</font>
+  SetDCBrushColor(hdc, <font color="blue">(COLORREF)GetDlgCtrlID(hwndChild)</font>);
+  return GetStockBrush(DC_BRUSH);
+}</pre></p>
+<p>    HANDLE_MSG(hwnd, WM_CTLCOLORSTATIC, OnCtlColor);
+
+<p>
+I threw in a half-second sleep.
+This will make the painting a little easier to see.
+</p>
+<pre>
+void
+OnSize(HWND hwnd, UINT state, int cx, int cy)
+{
+  <font color="blue">int cxHalf = cx/2;
+  SetWindowPos(g_hwndChildren[0],
+               NULL, 0, 0, cxHalf, cy,
+               SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+  SetWindowPos(g_hwndChildren[1],
+               NULL, cxHalf, 0, cx-cxHalf, cy,
+               SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);</font>
+}
+</pre>
+<p>
+We place the two child windows side by side in our client area.
+For our first pass, we’ll use
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/Windows/WindowReference/WindowFunctions/SetWindowPos.asp">
+the <code>SetWindowPos</code> function</a>
+to position the windows.
+</p>
+<p>
+Compile and run this program, and once it’s up, click the maximize box.
+Observe carefully which parts of the green rectangle get repainted.
+</p>
+<p>
+Now let’s change our positioning code to use
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/Windows/WindowReference/WindowFunctions/DeferWindowPos.asp">
+the <code>DeferWindowPos</code> function</a>.
+The usage pattern for the deferred window positioning functions is
+as follows:
+</p>
+<pre>
+HDWP hdwp = BeginDeferWindowPos(n);
+if (hdwp) hdwp = DeferWindowPos(hdwp, …); // 1 [fixed 7/7]
+if (hdwp) hdwp = DeferWindowPos(hdwp, …); // 2
+if (hdwp) hdwp = DeferWindowPos(hdwp, …); // 3
+…
+if (hdwp) hdwp = DeferWindowPos(hdwp, …); // n
+if (hdwp) EndDeferWindowPos(hdwp);
+</pre>
+<p>
+There are some key points here.
+</p>
+<ul>
+<li>The value you pass to
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/windows/windowreference/windowfunctions/begindeferwindowpos.asp">
+the <code>BeginDeferWindowPos</code> function</a>
+is the number of windows you intend to move.
+It’s okay if you get this value wrong, but getting it right
+will reduce the number of internal reallocations.
+<li>The return value from <code>DeferWindowPos</code> is stored
+back into the <code>hdwp</code> because the return value is not
+necessarily the same as the value originally passed in.
+If the deferral bookkeeping needs to perform a reallocation,
+the <code>DeferWindowPos</code> function returns a handle to the
+new defer information; the old defer information is no longer valid.
+What’s more, if the deferral fails, the old defer information is
+<strong>destroyed</strong>.  This is different from the
+<code>realloc</code> function which leaves the original object
+unchanged if the reallocation fails.
+The pattern <code>p = realloc(p, …)</code> is a memory leak,
+but the pattern <code>hdwp = DeferWindowPos(hdwp, …)</code>
+is not.
+</li></li></ul>
+<p>
+That second point is important.
+<a href="http://msdn.microsoft.com/library/en-us/dnwui/html/msdn_chicoapp.asp">
+Many people get it wrong</a>.
+</p>
+<p>
+Okay, now that you’re all probably scared of this function,
+let’s change our repositioning code to take advantage of deferred
+window positioning.
+It’s really not that hard at all.
+(Save these changes to a new file, though. We’ll want to run the old
+and new versions side by side.)
+</p>
+<pre>
+void
+OnSize(HWND hwnd, UINT state, int cx, int cy)
+{
+  <font color="blue">HDWP hdwp = BeginDeferWindowPos(2);</font>
+  int cxHalf = cx/2;
+  <font color="blue">if (hdwp) hdwp = DeferWindowPos(hdwp,</font> g_hwndChildren[0],
+               NULL, 0, 0, cxHalf, cy,
+               SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+  <font color="blue">if (hdwp) hdwp = DeferWindowPos(hdwp,</font> g_hwndChildren[1],
+               NULL, cxHalf, 0, cx-cxHalf, cy,
+               SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+  <font color="blue">if (hdwp) EndDeferWindowPos(hdwp);</font>
+}
+</pre>
+<p>
+Compile and run this program, and again, once it’s up, maximize
+the window and observe which regions repaint.  Observe that there
+is slightly less repainting in the new version compared to the old version.
+</p></p>
+
+
+</body>

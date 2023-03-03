@@ -1,0 +1,263 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C# static constructors are called on demand, not at startup</h1>  <!-- .entry-meta -->
+
+<p>
+One of the differences between C++ and C# is when static constructors run.
+In C++, static constructors are the first thing run in a module,
+even before the <code>DllMain</code> function
+runs.¹
+In C#, however, static constructors
+<a href="http://msdn.microsoft.com/library/en-us/csspec/html/vclrfcsharpspec_10_11.asp">
+don’t run until you use the class for the first time</a>.
+If your static constructor has side effects,
+you may find yourself experiencing those side effects in strange ways.
+</p>
+<p>
+Consider the following program.
+It’s rather contrived and artificial,
+but it’s based on an actual program that encountered the same problem.
+</p>
+<pre>
+using System;
+using System.Runtime.InteropServices;
+class Program {
+ [DllImport("kernel32.dll", SetLastError=true)]
+ public static extern bool SetEvent(IntPtr hEvent);
+ public static void Main()
+ {
+  if (!SetEvent(IntPtr.Zero)) {
+   System.Console.WriteLine("Error: {0}", Trace.GetLastErrorFriendlyName());
+  }
+ }
+}
+</pre>
+<p>
+This program tries to set an invalid event, so the call to
+<code>SetEvent</code> is expected to fail with an invalid handle error.
+We print the last error code using a function in this helper class:
+The details of this method aren’t important.
+In fact, for illustrative purposes, I’m going to skip
+the call to <code>FormatMessage</code> and just return an ugly
+name.²
+</p>
+<pre>
+class Trace {
+ public static string GetLastErrorFriendlyName()
+ {
+  return Marshal.GetLastWin32Error().ToString();
+ }
+}
+</pre>
+<p>
+Run this program, and you should get this output:
+</p>
+<pre>
+Error: 6
+</pre>
+<p>
+Six is the expected error code, since that is the numeric value of
+<code>ERROR_INVALID_HANDLE</code>.
+</p>
+<p>
+You don’t think much of this program until one day you run it
+and instead of getting error 6, you get something like this:
+</p>
+<pre>
+Error: 126
+</pre>
+<p>
+What happened?
+</p>
+<p>
+While you weren’t paying attention, somebody decided to do
+some enhancements to the <code>Trace</code> class,
+maybe added some new methods and stuff,
+and in particular, a static constructor got added:
+</p>
+<pre>
+class Trace {
+ public static string GetLastErrorFriendlyName()
+ {
+  return Marshal.GetLastWin32Error().ToString();
+ }
+ <font color="blue">[DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Auto)]
+ public static extern IntPtr LoadLibrary(string dll);
+ static Trace() { LoadLibrary("enhanced_logging.dll"); }</font>
+}
+</pre>
+<p>
+It’s not important what the static constructor does;
+the point is that we have a static constructor now.
+In this case, the static constructor tries to load a helper DLL
+which presumably does something fancy so we can get better trace logging,
+something like that, the details aren’t important.
+</p>
+<p>
+The important thing is that the constructor has a side effect.
+Since it uses a p/invoke, the value of
+<code>Marshal.GetLastWin32Error()</code> is overwritten by the
+error code returned by the <code>LoadLibrary</code>,
+which in our case is error 126, <code>ERROR_MOD_NOT_FOUND</code>.
+</p>
+<p>
+Now let’s look at what happens in our program.
+</p>
+<p>
+First, we call <code>SetEvent</code>, which fails and sets the
+Win32 error code to 6.
+Next, we call <code>Trace.GetLastErrorFriendlyName</code>,
+but wait!
+This is the first call to a method in the <code>Trace</code> class,
+so we have to run the static constructor first.
+</p>
+<p>
+The static constructor tries to load the <code>enhanced_logging.dll</code>
+module, and it fails, setting the last error code to 126.
+This <i>overwrites the previous value</i>.
+</p>
+<p>
+After the static constructor returns, we return to our program already
+in progress and call <code>Trace.GetLastErrorFriendlyName</code>,
+but it’s too late.
+The damage has been done.
+The last error code has been corrupted.
+</p>
+<p>
+And that’s why we get 126 instead of 6.
+</p>
+<p>
+What’s really scary is that problems with static constructors running
+at inopportune times are often extremely hard to identify.
+For one thing, there is no explicit indication in the source code that
+there’s any static constructor funny business going on.
+Indeed, somebody could just recompile the assembly containing the
+<code>Trace</code> class without modifying your program, and the problem
+will rear its head.
+“But I didn’t change anything.
+The timestamp on <code>program.exe</code> is the same as the one that
+still works!”
+</p>
+<p>
+A side effect you might not consider is synchronization.
+If the static constructor takes any locks,
+you have to keep an eye on your lock hierarchy, or one of those
+locks might trigger a deadlock.
+This is insidious, because you can stare at the code all you want;
+you won’t see anything.
+You’ll have a method like
+</p>
+<pre>
+class Trace {
+ ...
+ public static string GetFavoriteColor() { return "blue"; }
+}
+</pre>
+<p>
+and yet when you try to step over a call to
+<code>Trace.GetFavoriteColor</code>,
+your program hangs!
+“This makes no sense.
+How can <code>Trace.GetFavoriteColor</code> hang?
+It just returns a constant!”
+</p>
+<p>
+Another factor that makes this problem baffling is that
+the problem occurs only the first time you call
+a method in the <code>Trace</code> class.
+We saw it here only because the very first thing we did with
+<code>Trace</code> was display an error.
+If you happened to call, say,
+<code>Trace.GetFavoriteColor()</code> before calling
+<code>Trace.GetLastErrorFriendlyName()</code>,
+then you wouldn’t have seen this problem.
+In fact, that’s how the program that inspired today’s entry stumbled
+across this problem.
+They deleted a call into the <code>Trace</code> class from some unrelated
+part of the program,
+which meant that the static constructor
+ran at a different time than it used to,
+and unfortunately, the new time was less hospitable to static construction.
+</p>
+<p>
+“I’m sorry, did I call you at a bad time?”
+</p>
+<p>
+<b>Footnotes</b>³
+</p>
+<p>
+¹This is not strictly true.
+In reality, it’s a bit of
+sleight-of-hand performed by the C runtime library.⁴
+</p>
+<p>
+²For a less ugly name,
+you can use this class instead:</p>
+<pre>
+class Trace {
+ [DllImport("kernel32.dll", SetLastError=true)]
+ public static extern IntPtr LocalFree(IntPtr hlocal);
+ [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Auto)]
+ public static extern int FormatMessage(int flags, IntPtr unused1,
+    int error, int unused2, ref IntPtr result, int size, IntPtr unused3);
+ static int FORMAT_MESSAGE_ALLOCATE_BUFFER = 0x00000100;
+ static int FORMAT_MESSAGE_IGNORE_INSERTS  = 0x00000200;
+ static int FORMAT_MESSAGE_FROM_SYSTEM     = 0x00001000;
+ public static string GetLastErrorFriendlyName()
+ {
+  string result = null;
+  IntPtr str = IntPtr.Zero;
+  if (FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                    FORMAT_MESSAGE_IGNORE_INSERTS  |
+                    FORMAT_MESSAGE_FROM_SYSTEM, IntPtr.Zero,
+                    Marshal.GetLastWin32Error(), 0,
+                    ref str, 0, IntPtr.Zero) &gt; 0) {
+   try {
+    result = Marshal.PtrToStringAuto(str);
+   } finally {
+    LocalFree(str);
+   }
+  }
+  return result;
+ }
+}
+</pre>
+<p>
+Note that there may be better ways of accomplishing this.
+I’m not the expert here.
+</p>
+<p>
+³Boring footnote symbols from now on.
+You guys sure know how to take the fun out of blogging.
+(I didn’t realize that blogs were held to academic writing standards.
+Silly me.)
+Now you can go spend your time telling
+<a href="http://scobleizer.com/">Scoble</a>
+that he wrote a run-on sentence or something.
+</p>
+<p>
+⁴Although this statement is written as if it were a fact,
+it is actually my interpretation of how the C runtime works
+and is
+<a href="http://blogs.msdn.com/oldnewthing/archive/2007/08/10/4315707.aspx#4327521">
+not an official position</a>
+of the Visual Studio team
+nor Microsoft Corporation,
+and that interpretation may ultimately prove incorrect.
+Similar remarks apply to other statements of fact in this article.
+</p>
+<p>
+<b>Postscript</b>:
+Before you start pointing fingers and saying,
+“Hah hah, we don’t have this problem in Win32!”—it turns out that you do!
+As we noted in the introduction,
+static constructors run when the DLL is loaded.
+The granularity in Win32 is not as fine,
+being at the module level rather than the class level,
+but the problem is still there.
+If you use delay-loading,
+then the first call to a function in a delay-loaded DLL
+will load the target DLL, and its static constructors will run,
+possibly when your program wasn’t expecting it.</p>
+
+
+</body>

@@ -1,0 +1,76 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Giving a single object multiple COM identities, part 3</h1>  <!-- .entry-meta -->
+
+<p>Last time, we left off our investigation of how to <a href="/code/giving-a-single-object-multiple-com-identities-part-2" title="Giving a single object multiple COM identities, part 2"> give a single object multiple COM identities</a> without any data overhead, by tricking the compiler into generating the adjustor thunks automatically. We had managed to build the callbacks into base classes, using base classes means that we’re back to the problem of having multiple implementations of <code>IUnknown</code>, which the C++ language does not permit to implement separately. We saw that the standard workaround for this is to move the <code>ICallback</code> into a member variable.</p>
+<pre>template&lt;auto Callback&gt;
+struct CallbackWrapper
+{
+    template&lt;typename Outer&gt; static Outer outer_type(void(Outer::*)());
+    using Outer = typename decltype(outer_type(Callback))::Outer;
+
+    struct Wrapper : ICallback
+    {
+        HRESULT QueryInterface(REFIID riid, void** ppv)
+        {
+            if (riid == IID_IUnknown || riid == IID_ICallback) {
+                *ppv = static_cast&lt;ICallback*&gt;(this);
+                AddRef();
+                return S_OK;
+            }
+            *ppv = nullptr;
+            return E_NOINTERFACE;
+        }
+
+        ULONG AddRef() { return outer()-&gt;AddRef(); }
+        ULONG Release() { return outer()-&gt;Release(); }
+
+        HRESULT Invoke() noexcept { return (outer()-&gt;*Callback)(); }
+
+        private:
+        Outer* outer() {
+            return static_cast&lt;Outer*&gt;(
+                reinterpret_cast&lt;CallbackWrapper*&gt;(this));
+        }
+    } callback;
+
+    ICallback* GetCallback() { return &amp;callback; }
+};
+</pre>
+<p>This code makes the assumption that the first instance data member of a class with no virtual methods be pointer-interconvertible with the class itself. According to the standard, this assumption is valid only for standard-layout types, and <code>CallbackWrapper</code> is not a standard layout type because it has a member <code>callback</code> which is not a standard-layout type. On the other hand, in practice the assumption holds. We can add some extra assertions to verify this:</p>
+<pre>template&lt;auto Callback&gt;
+struct CallbackWrapper
+{
+    ...
+    
+    <span style="color: blue;">CallbackWrapper() {
+        assert(reinterpret_cast&lt;void*&gt;(this) == &amp;callback);
+    }</span>
+};
+
+template&lt;auto Callbacks...&gt;
+struct CallbackWrapper : CallbackWrapper&lt;Callbacks&gt;...
+{
+    <span style="color: blue;">static_assert(((offsetof(CallbackWrapper&lt;Callbacks&gt;, callback) == 0) &amp;&amp; ...));</span>
+    template&lt;auto Callback&gt;
+    ICallback* GetCallback() {
+        return static_cast&lt;CallbackWrapper&lt;Callback&gt;*&gt;(this);
+    }
+};
+</pre>
+<p>We add a static assertion that verifies that the member variable <code>callback</code> has the same address as the containing class <code>Callback­Wrapper</code> in all of the base classes. The proliferation of parentheses comes from the language rules for fold expressions:</p>
+<pre>    (expr &amp;&amp; ...)
+</pre>
+<p>The outer parentheses around the fold expression are mandatory. Furthermore, the <code>expr</code> must be a <i>cast-expression</i>. The equality comparison operator is lower precedence than a cast, so we need to parenthesize it to turn it into a higher-priority <i>primary-expression</i>. And the final extra set of parentheses come from the syntax of <code>static_assert</code> itself, which requires that its argument be parenthesized.</p>
+<p>Now, this compile-time check is not standard-conforming, because the <code>offsetof</code> macro supports only standard-layout types (although it works well enough in practice), so we supplement it with a runtime assertion.¹</p>
+<p>With all these changes, the resulting code generation is quite efficient:</p>
+<pre>CallbackWrapper&lt;&amp;WidgetImpl&lt;Widget&gt;::OnCallback1&gt;::OnCallback1:
+    sub     rcx, 8
+    jmp     Widget::OnCallback1
+</pre>
+<p>If you throw in link-time code generation, then the compiler will even notice that <code>Widget::<wbr/>OnCallback1</code> is called from only one place, so it will inline it into the <code>Callback­Wrapper</code>, resulting in the wrapper ending up with no cost at all. (The adjustment of the <code>this</code> pointer can be reduced to zero cost by folding it into the subsequent member offsets.)</p>
+<p>Having to create the <code>MethodWrapper</code> class is a bit of an annoyance, though. You have to put into that class every function you might want to forward. (Fortunately, it’s okay to have methods corresponding to functions you never use, since they will never be instantiated, and therefore the compiler will never notice that the forwarded-to function doesn’t exist.)</p>
+<p>We’ll try to simplify that next time.</p>
+<p>¹ The standard does require that a union be pointer-interconvertible with its members, so we could have made the <code>Callback­Wrapper</code> be a union with the <code>Wrapper</code> as its sole member. However, unions cannot be base classes, so that messes up the “Derive from this thing” step.</p>
+
+
+</body>

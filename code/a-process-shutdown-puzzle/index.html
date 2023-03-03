@@ -1,0 +1,123 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A process shutdown puzzle</h1>  <!-- .entry-meta -->
+
+<p><p>
+In honor of National Puzzle Day,
+I leave you today with a puzzle
+based on an actual customer problem.
+</p>
+<p>
+<b>Part One</b>: The customer explains the problem.
+</p>
+<blockquote class="q">
+<p>
+We have this DLL, and during its startup, it creates a thread
+with the following thread procedure:
+</p>
+<pre>
+DWORD CALLBACK ThreadFunction(void *)
+{
+  HANDLE HandleArray[2];
+  HandleArray[0] = SetUpStuff();
+  if (HandleArray[0]) {
+    HandleArray[1] = ShutdownEvent;
+    while (WaitForMultipleObjects(2, HandleArray,
+                             FALSE, INFINITE) == WAIT_OBJECT_0) {
+      ProcessStuff();
+    }
+    CleanUpStuff(HandleArray[0]);
+  }
+  SetEvent(ThreadCompleteEvent);
+  FreeLibraryAndExitThread(ThisLibrary, 0);
+}
+</pre>
+<p>
+During process shutdown, the following function is called
+as part of <code>DLL_PROCESS_DETACH</code> handling:
+</p>
+<pre>
+void StopWorkerThread()
+{
+  // tell the thread to stop
+  SetEvent(ShutdownEvent);</pre></blockquote></p>
+<p>  // wait for it to stop
+  WaitForSingleObject(ThreadCompleteEvent, INFINITE);</p>
+<p>  // Clean up
+  CloseHandle(ShutdownEvent);
+  ShutdownEvent = NULL;</p>
+<p>  CloseHandle(ThreadCompleteEvent);
+  ThreadCompleteEvent = NULL;
+}
+
+<p>
+The above function is hanging at the call to
+<code>WaitForSingleObject</code>.
+If we break in, we see that the thread that is supposed
+to be running the <code>ThreadFunction</code> is gone.
+I verified that the thread was successfully created,
+but by the time we get around to waiting for it, it’s already gone.
+</p>
+<p>
+I checked, and nobody sets the <code>ThreadCompleteEvent</code>
+except the <code>StopWorkerThread</code> function.
+I stepped through <code>SetUpStuff</code>, and it succeeded.
+However, a breakpoint on <code>CleanUpStuff</code> was never hit.
+No exceptions were thrown either.
+</p>
+<p>
+I am completely stumped as to how this thread disappeared.
+</p>
+
+<p>
+You already know enough to explain how the thread disappeared.
+</p>
+<p>
+<b>Part Two</b>: After providing your explanation, the customer
+came up with this solution.
+</p>
+<blockquote class="q">
+<p>
+Thank you for your explanation.
+We’ve made the following changes to fix the problem.
+Again, thank you for your help.
+</p>
+<pre>
+DWORD CALLBACK ThreadFunction(void *)
+{
+  HANDLE HandleArray[2];
+  HandleArray[0] = SetUpStuff();
+  if (HandleArray[0]) {
+    HandleArray[1] = ShutdownEvent;
+    while (WaitForMultipleObjects(2, HandleArray,
+                             FALSE, INFINITE) == WAIT_OBJECT_0) {
+      ProcessStuff();
+    }
+    CleanUpStuff(HandleArray[0]);
+  }
+  <font color="blue"><strike>// SetEvent(ThreadCompleteEvent);</strike></font>
+  FreeLibraryAndExitThread(ThisLibrary, 0);
+}</pre></blockquote></p>
+<p>void StopWorkerThread()
+{
+  // tell the thread to stop
+  SetEvent(ShutdownEvent);</p>
+<p>  // wait for <font color="blue">the thread</font>
+  WaitForSingleObject(<font color="blue">ThreadHandle</font>, INFINITE);</p>
+<p>  // Clean up
+  CloseHandle(ShutdownEvent);
+  ShutdownEvent = NULL;
+}
+
+
+<p>
+Criticize this proposed solution.
+</p>
+<p>
+<b>Part Three</b>:
+Even though the proposed solution is flawed,
+explain why it doesn’t cause a problem in practice.
+(I.e., explain why the customer is always lucky.)
+</p></p>
+
+
+</body>

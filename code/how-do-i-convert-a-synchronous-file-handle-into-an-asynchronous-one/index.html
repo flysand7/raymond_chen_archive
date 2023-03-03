@@ -1,0 +1,73 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I convert a synchronous file handle into an asynchronous one?</h1>  <!-- .entry-meta -->
+
+<p>
+Say you opened a file in synchronous mode,
+and then you realize that you want to issue asynchronous I/O on it, too.
+One way to do this is to call
+<code>Create­File</code> a second time with the
+<code>FILE_FLAG_OVERLAPPED</code>,
+but this requires you to know the file name,
+and the file name
+may not be readily available to the function that
+wants to do the conversion,
+or it may not even be valid any longer if the file has
+been renamed in the meantime.
+</p>
+<p>
+Enter <code>Re­Open­File</code>.
+This basically lets you do a <code>Create­File</code>
+based on another handle rather than a file name.
+It differs from <code>Duplicate­Handle</code> because
+it actually goes and opens the file again
+(as opposed to merely creating another reference to the same
+file object in the kernel).
+This means that you have the opportunity to choose new
+handle attributes, like whether you want the handle
+to be synchronous or asynchronous.
+</p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+int __cdecl main(int, char **)
+{
+ HANDLE h = CreateFile("test", GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+ HANDLE h2 = ReOpenFile(h, GENERIC_READ, FILE_SHARE_READ |
+                        FILE_SHARE_WRITE, FILE_FLAG_OVERLAPPED);
+ DWORD cbResult;
+ WriteFile(h, "!", 1, &amp;cbResult, NULL);
+ OVERLAPPED o = { 0 };
+ o.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+ char ch = 0;
+ BOOL fRc = ReadFile(h2, &amp;ch, 1, &amp;cbResult, &amp;o);
+ if (fRc) {
+  printf("read completed synchronously\n");
+ } else if (GetLastError() == ERROR_IO_PENDING) {
+  printf("read proceeding asynchronously\n");
+ } else {
+  printf("read failed\n");
+ }
+ GetOverlappedResult(h2, &amp;o, &amp;cbResult, TRUE);
+ printf("Result was %c\n", ch);
+ CloseHandle(o.hEvent);
+ CloseHandle(h2);
+ CloseHandle(h);
+ return 0;
+}
+</pre>
+<p>
+The program opens a test file for writing,
+and then uses the
+<code>Re­Open­File</code> function to open the same file
+for reading.
+(Since you are opening the file twice,
+be careful to choose compatible sharing modes.)
+We synchronously write an exclamation point to the file via the first handle,
+and then we asynchronously read it back with the second handle.
+</p>
+<p>
+It’s really not that exciting.</p>
+
+
+</body>

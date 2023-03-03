@@ -1,0 +1,225 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Adding a Ctrl+arrow accelerator for moving the trackbar by just one unit, part 1: Initial plunge</h1>  <!-- .entry-meta -->
+
+<p>When you create a <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/bb760149(v=vs.85).aspx">trackbar common control</a>, you can specify how far the arrow keys will change the trackbar position (default: 1 unit) and how far the <kbd>PgUp</kbd> and <kbd>PgDn</kbd> keys will change the trackbar position (default: one fifth of the range). </p>
+<p>If you change the default distance for the arrow keys to, say, five units, then you probably want to add a keyboard accelerator for moving by just one units, so that somebody can use <code>PgUp</code> and <code>PgDn</code> to get in the general area they want to be, then the arrow keys to get close, and then finally the <kbd>Ctrl</kbd>+arrow keys to get the exact value. </p>
+<p>Take <a href="https://blogs.msdn.microsoft.com/oldnewthing/20030723-00/?p=43073">the scratch program</a> and make the following changes: </p>
+<pre>
+<font color="blue">#include &lt;strsafe.h&gt;</font>
+
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ <font color="blue">g_hwndChild = CreateWindow(TRACKBAR_CLASS, TEXT(""),
+    WS_CHILD | WS_VISIBLE,
+    0, 0, 100, 100,
+    hwnd, (HMENU)100, g_hinst, 0);
+
+  SendMessage(g_hwndChild, TBM_SETLINESIZE, 0, 5);
+  SendMessage(g_hwndChild, TBM_SETPAGESIZE, 0, 20);</font>
+
+  return TRUE;
+}
+</pre>
+<p>We start by creating a trackbar control and setting the line size to 5 units and page size to 20 units. </p>
+<pre>
+<font color="blue">void OnHScroll(HWND hwnd, HWND hwndCtl, UINT code, int pos)
+{
+ if (hwndCtl == g_hwndChild) {
+  TCHAR buf[128];
+  pos = (int)SendMessage(hwndCtl, TBM_GETPOS, 0, 0);
+  StringCchPrintf(buf, ARRAYSIZE(buf), TEXT("pos = %d"), pos);
+  SetWindowText(hwnd, buf);
+ }
+}
+
+    HANDLE_MSG(hwnd, WM_HSCROLL, OnHScroll);</font>
+</pre>
+<p>And we respond to the <code>WM_</code><code>HSCROLL</code> message by displaying the trackbar’s new position. </p>
+<p>If you run this program, you’ll see a happy trackbar, and you can use the keyboard to move the thumb by 20 units (with <code>PgUp</code> and <code>PgDn</code>), or by 5 units (with the left and right arrow keys). But there’s no way to move the thumb by just one unit. </p>
+<p>Let’s fix that. </p>
+<p>But how? </p>
+<p>The first thing that comes to mind is to subclass the trackbar control and add a new keyboard accelerator. So let’s do that. </p>
+<pre>
+<font color="blue">LRESULT CALLBACK TrackbarKeyProc(
+    HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+ if (uMsg == WM_KEYDOWN &amp;&amp; GetKeyState(VK_CONTROL) &lt; 0) {
+  int delta = 0;
+  if (wParam == VK_LEFT) {
+   delta = -1;
+  } else if (wParam == VK_RIGHT) {
+   delta = +1;
+  }
+
+  if (delta) {
+   auto pos = SendMessage(hwnd, TBM_GETPOS, 0, 0);
+   pos += delta;
+   SendMessage(hwnd, TBM_SETPOS, TRUE, pos);
+   FORWARD_WM_HSCROLL(GetParent(hwnd), hwnd,
+    delta &lt; 0 ? TB_LINEUP : TB_LINEDOWN, 0, SendMessage);
+   return 0;
+  }
+ }
+ return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+}</font>
+
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ g_hwndChild = CreateWindow(TRACKBAR_CLASS, TEXT(""),
+    WS_CHILD | WS_VISIBLE, 0, 0, 100, 100,
+    hwnd, (HMENU)100, g_hinst, 0);
+
+  SendMessage(g_hwndChild, TBM_SETLINESIZE, 0, 5);
+  SendMessage(g_hwndChild, TBM_SETPAGESIZE, 0, 20);
+
+  <font color="blue">SetWindowSubclass(g_hwndChild, TrackbarKeyProc, 0, 0);</font>
+  return TRUE;
+}
+
+void
+OnDestroy(HWND hwnd)
+{
+  <font color="blue">RemoveWindowSubclass(g_hwndChild, TrackbarKeyProc, 0);</font>
+  PostQuitMessage(0);
+}
+</pre>
+<p>With this version, you can hold the <kbd>Ctrl</kbd> key when pressing the left or right arrow keys, and the position will change by just one unit. </p>
+<p>Mission accomplished? </p>
+<p>Not quite. There’s still a lot of stuff missing. You may not notice it right away, but you will eventually, probably when one of your customers reports a problem that makes you have to scramble a fix. </p>
+<p>For example, this code doesn’t manage keyboard focus indicators. Let’s fix that. </p>
+<pre>
+LRESULT CALLBACK TrackbarKeyProc(
+    HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+ if (uMsg == WM_KEYDOWN &amp;&amp; GetKeyState(VK_CONTROL) &lt; 0) {
+  ...
+  if (delta) {
+   ...
+   FORWARD_WM_HSCROLL(GetParent(hwnd), hwnd,
+    delta &lt; 0 ? TB_LINEUP : TB_LINEDOWN, 0, SendMessage);
+   <font color="blue">SendMessage(hwnd, WM_CHANGEUISTATE,
+    MAKELONG(UIS_CLEAR, UISF_HIDEFOCUS), 0);</font>
+   return 0;
+  }
+ }
+ return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+}
+</pre>
+<p>Next, this version doesn’t support vertical trackbars at all. If you add the <code>TBS_</code><code>VERT</code> style to the <code>Create­Window</code> call, you’ll have a vertical scroll bar, and we haven’t been doing anything with the up and down arrows. </p>
+<p>In related news, the trackbar allows you to use the up and down arrows to change the position of horizontal scroll bars. The up arrow behaves like the right arrow, and the down arrow behaves like the left arrow. Maybe you have customers who rely on this behavior, say, because that’s what their accessibility tool uses. </p>
+<p>Fortunately, one set of changes covers both of these issues. </p>
+<pre>
+LRESULT CALLBACK TrackbarKeyProc(
+    HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+ if (uMsg == WM_KEYDOWN &amp;&amp; GetKeyState(VK_CONTROL) &lt; 0) {
+  int delta = 0;
+  if (wParam == VK_LEFT <font color="blue">|| wParam == VK_UP</font>) {
+   delta = -1;
+  } else if (wParam == VK_RIGHT <font color="blue">|| wParam == VK_DOWN</font>) {
+   delta = +1;
+  }
+  ...
+ }
+ return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+}
+</pre>
+<p>But wait, there’s also the <code>TBS_</code><code>DOWN­IS­LEFT</code> style that changes the mapping between vertical and horizontal. If the style is set, then the up arrow acts like the left arrow, and the down arrow acts like the right arrow. </p>
+<p>Okay, so let’s fix that too. </p>
+<pre>
+<font color="blue">WPARAM SwapKeys(WPARAM wParam, UINT vk1, UINT vk2)
+{
+  if (wParam == vk1) return vk2;
+  if (wParam == vk2) return vk1;
+  return wParam;
+}</font>
+
+LRESULT CALLBACK TrackbarKeyProc(
+    HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+ if (uMsg == WM_KEYDOWN &amp;&amp; GetKeyState(VK_CONTROL) &lt; 0) {
+  <font color="blue">DWORD style = GetWindowStyle(hwnd);
+  if (style &amp; TBS_DOWNISLEFT) {
+   if (style &amp; TBS_VERT) {
+    wParam = SwapKeys(wParam, VK_LEFT, VK_RIGHT);
+   } else {
+    wParam = SwapKeys(wParam, VK_UP, VK_DOWN);
+   }
+  }</font>
+
+  int delta = 0;
+  if (wParam == VK_LEFT || wParam == VK_UP) {
+   delta = -1;
+  } else if (wParam == VK_RIGHT || wParam == VK_DOWN) {
+   delta = +1;
+  }
+
+  if (delta) {
+   auto pos = SendMessage(hwnd, TBM_GETPOS, 0, 0);
+   pos += delta;
+   SendMessage(hwnd, TBM_SETPOS, TRUE, pos);
+   FORWARD_WM_HSCROLL(GetParent(hwnd), hwnd,
+    delta &lt; 0 ? TB_LINEUP : TB_LINEDOWN, 0, SendMessage);
+   SendMessage(hwnd, WM_CHANGEUISTATE,
+    MAKELONG(UIS_CLEAR, UISF_HIDEFOCUS), 0);
+   return 0;
+  }
+ }
+ return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+}
+</pre>
+<p>Okay, are we done now? </p>
+<p>Nope, you still have right-to-left languages to deal with. In those cases, we want to flip the meanings of the left and right arrows. </p>
+<pre>
+LRESULT CALLBACK TrackbarKeyProc(
+    HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+ if (uMsg == WM_KEYDOWN &amp;&amp; GetKeyState(VK_CONTROL) &lt; 0) {
+  <font color="blue">if (GetWindowExStyle(hwnd) &amp; WS_EX_LAYOUTRTL) {
+   wParam = SwapKeys(wParam, VK_LEFT, VK_RIGHT);
+  }</font>
+
+  DWORD style = GetWindowStyle(hwnd);
+  if (style &amp; TBS_DOWNISLEFT) {
+   if (style &amp; TBS_VERT) {
+    wParam = SwapKeys(wParam, VK_LEFT, VK_RIGHT);
+   } else {
+    wParam = SwapKeys(wParam, VK_UP, VK_DOWN);
+   }
+  }
+
+  int delta = 0;
+  if (wParam == VK_LEFT || wParam == VK_UP) {
+   delta = -1;
+  } else if (wParam == VK_RIGHT || wParam == VK_DOWN) {
+   delta = +1;
+  }
+
+  if (delta) {
+   auto pos = SendMessage(hwnd, TBM_GETPOS, 0, 0);
+   pos += delta;
+   SendMessage(hwnd, TBM_SETPOS, TRUE, pos);
+   FORWARD_WM_HSCROLL(GetParent(hwnd), hwnd,
+    delta &lt; 0 ? TB_LINEUP : TB_LINEDOWN, 0, SendMessage);
+   SendMessage(hwnd, WM_CHANGEUISTATE,
+    MAKELONG(UIS_CLEAR, UISF_HIDEFOCUS), 0);
+   return 0;
+  }
+ }
+ return DefSubclassProc(hwnd, uMsg, wParam, lParam);
+}
+</pre>
+<p>Okay, <i>now</i> are we done? </p>
+<p>Maybe. I think that covers the remaining issues, but maybe I missed something. </p>
+<p>Y’know, this started out as a simple fix, but all the special cases turned it into a complicated mess. And maybe a future version of the trackbar control will add yet another style that introduces another special case. What we really want to do is hook into the control after it has decided what to do with the keyboard and before it changes the trackbar position. </p>
+<p>Let’s work on that next time. </p>
+
+
+</body>

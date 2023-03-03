@@ -1,0 +1,194 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Managing the reference count of the coroutine state</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/c-coroutines-awaiting-the-simple-task" title="C++ coroutines: Awaiting the simple_task"> hooked up the <code>co_await</code> of the <code>simple_<wbr/>task</code></a> and we had a brief glimpse into the the management of the reference count on the promise (and therefore also the coroutine state). Today we’ll fill in the rest of the story.</p>
+<pre>        // ⟦simple_promise_base reference count methods⟧ ≔
+
+        void increment_ref() noexcept
+        {
+            m_refcount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        auto as_handle() noexcept
+        {
+            return std::experimental::coroutine_handle&lt;Promise&gt;::
+                from_promise(*as_promise());
+        }
+
+        void decrement_ref() noexcept
+        {
+            auto count = m_refcount.fetch_sub(1,
+                std::memory_order_release) - 1;
+            if (count == 0)
+            {
+                std::atomic_thread_fence(std::memory_order_acquire);
+                as_handle().destroy();
+            }
+        }
+</pre>
+<p>Incrementing the reference count can be done with relaxed ordering because there is no real dependency on memory accesses. The client could equally well have accessed the fields before or after incrementing the reference count. But decrementing it is trickier.</p>
+<p>The client cannot access the object after decrementing the reference count, because once it decrements the reference count, the object could disappear. This means that we have to use release memory order on the release so that any final updates to the object are retired before the object becomes eligible for destruction.</p>
+<p>You might think that the release memory ordering is needed only when decrementing to zero, but that’s not true. For example, the current thread might decrement to one, and another thread decrements to zero and destroys the object. If any writes from the current thread were delayed, they would be modifying memory after it was freed, corrupting the heap, and creating a very bad week for a future developer who is trying to track down a rare memory corruption bug.</p>
+<p>If we realize that we are the one who decremented the reference count to zero, we take an acquire memory fence to ensure that the state of the coroutine is properly suspended before we destroy it. We don’t want to have advanced any reads of the coroutine state because those might have occurred before the coroutine fully suspended itself.</p>
+<p>Destroying the coroutine state uses some helper functions we haven’t seen before. Let’s go back to our old diagram of the coroutine state:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: solid 1px black;">Compiler bookkeeping</td>
+<td>←</td>
+<td><code>address</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black;">Promise object</td>
+<td>←</td>
+<td><code>promise*</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black;">Coroutine “stack frame”</td>
+</tr>
+</tbody>
+</table>
+<p>There are three ways of referring to the coroutine state. There’s the <code>coroutine_<wbr/>handle</code>, which is an object that represents the coroutine state. You can convert between <code>coroutine_<wbr/>handle</code> and a a <code>void*</code>, which is known as the <code>address</code>. And you can also convert between <code>coroutine_<wbr/>handle</code> and the corresponding <code>promise</code>.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td> </td>
+<td colspan="2" style="border: solid 1px black; text-align: center;"><code>Promise</code></td>
+<td> </td>
+</tr>
+<tr>
+<td align="right"><code>coroutine_handle&lt;Promise&gt;::from_promise()</code></td>
+<td align="left">↓</td>
+<td align="right">↑</td>
+<td align="left"><code>handle.promise()</code></td>
+</tr>
+<tr>
+<td> </td>
+<td colspan="2" style="border: solid 1px black; text-align: center;"><code>coroutine_handle</code></td>
+<td> </td>
+</tr>
+<tr>
+<td align="right"><code>coroutine_handle&lt;&gt;::from_address()</code></td>
+<td align="left">↑</td>
+<td align="right">↓</td>
+<td align="left"><code>handle.address()</code></td>
+</tr>
+<tr>
+<td> </td>
+<td colspan="2" style="border: solid 1px black; text-align: center;"><code>void*</code></td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>Converting to and from a raw address is handy when you want to pass a coroutine handle through an ABI that uses a raw pointer, such as a thread pool callback function.</p>
+<p>And converting to and from a promise is handy in cases like this where the promise wants to talk about its own coroutine state, or conversely when you have a coroutine state and want to access data stored in the promise.</p>
+<p>The rest of the reference counting is pretty boring. The <code>promise_<wbr/>ptr</code> is just a smart wrapper around the reference-counted raw promise pointer. Sadly, it’s also a lot of code.</p>
+<pre>    // ⟦implement promise_ptr⟧ ≔
+    template&lt;typename T&gt;
+    struct promise_ptr
+    {
+        using promise_t = simple_promise&lt;T&gt;;
+        promise_t* promise;
+        promise_ptr(promise_t* initial = nullptr) noexcept
+            : promise(initial) {}
+
+        promise_ptr(promise_ptr const&amp; other) noexcept
+            : promise(other.promise)
+        {
+            increment_promise_ref(promise);
+        }
+        promise_ptr(promise_ptr&amp;&amp; other) noexcept
+            : promise(std::exchange(other.promise, nullptr))
+        {
+        }
+
+        ~promise_ptr()
+        {
+            decrement_promise_ref(promise);
+        }
+
+        promise_ptr&amp; operator=(promise_ptr const&amp; other)
+        {
+            if (promise != other.promise)
+            {
+                increment_promise_ref(promise);
+                decrement_promise_ref(
+                    std::exchange(promise, other.promise));
+            }
+            return *this;
+        }
+        promise_ptr&amp; operator=(promise_ptr&amp;&amp; other) noexcept
+        {
+            if (promise != other.promise)
+            {
+                decrement_promise_ref(std::exchange(promise,
+                    std::exchange(other.promise, nullptr)));
+            }
+            return *this;
+        }
+
+        void swap(promise_ptr&amp; other) noexcept
+        {
+            std::swap(promise, other.promise);
+        }
+
+        promise_t* operator-&gt;() const noexcept
+        {
+            return promise;
+        }
+
+        static void increment_promise_ref(
+            promise_t* promise) noexcept
+        {
+            if (promise) promise-&gt;increment_ref();
+        }
+
+        static void decrement_promise_ref(
+            promise_t* promise)
+        {
+            if (promise) promise-&gt;decrement_ref();
+        }
+    };
+</pre>
+<p>This is fairly straightforward stuff. There’s an amusing chain of <code>std::exchange</code> calls in the rvalue assignment operator.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td><code>nullptr</code></td>
+</tr>
+<tr>
+<td>↓</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>other.promise</code></td>
+</tr>
+<tr>
+<td>↓</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>promise</code></td>
+</tr>
+<tr>
+<td>↓</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>decrement_<wbr/>promise_<wbr/>ref</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <code>nullptr</code> displaces the <code>other.promise</code>, which trickles down to <code>promise</code>, and the displaced old <code>promise</code> goes to <code>decrement_<wbr/>promise_<wbr/>ref</code> for disposal.</p>
+<p>That fills in the last of the placeholders for our <code>simple_<wbr/>task</code>. We now have a promise and task that can be used to create new coroutines.</p>
+<pre>async_helpers::simple_task&lt;int&gt; Step1();
+async_helpers::simple_task&lt;int&gt; Step2();
+
+async_helpers::simple_task&lt;int&gt; CalculateAsync()
+{
+    auto part1 = co_await Step1();
+    auto part2 = co_await Step2();
+    co_return part1 + part2;
+}
+</pre>
+<p>Next time, we’ll discuss some of the caveats with this class and how the assumed usage pattern influenced the design.</p>
+
+
+</body>

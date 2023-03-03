@@ -1,0 +1,68 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Windows Runtime delegates and object lifetime in C# and other GC languages</h1>  <!-- .entry-meta -->
+
+<p>In C# and other GC languages such as JavaScript, delegates (most typically used as event handlers) capture strong references to objects in their closures. This means that you can create reference cycles that are beyond the ability of the GC to collect.</p>
+<pre>using Windows.Devices.Enumeration;
+
+class Circular
+{
+  DeviceWatcher watcher;
+
+  public Circular()
+  {
+    watcher = DeviceInformation.CreateWatcher();
+    watcher.Added += OnDeviceAdded;
+  }
+
+  void OnDeviceAdded(DeviceWatcher sender, DeviceInformation info)
+  {
+    ...
+  }
+}
+</pre>
+<p>The <code>Circular</code> class contains a reference to a <code>Device­Watcher</code>, which in turn contains a reference (via the delegate) back to the <code>Circular</code>. This circular reference will never be collected because one of the participants is a <code>DeviceWatcher</code>, which is beyond the knowledge of the garbage collector.</p>
+<p>From the garbage collector’s point of view, the system looks like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td style="border: dotted 1px black; width: 5em;">?</td>
+<td>→</td>
+<td style="border: solid 1px black; width: 5em; background-color: #77dd77;">delegate</td>
+<td>→</td>
+<td style="border: solid 1px black; width: 5em; background-color: #77dd77;">Circular</td>
+<td>→</td>
+<td style="border: dotted 1px black; width: 5em;">DeviceWatcher</td>
+</tr>
+</tbody>
+</table>
+<p>The garbage collector has full knowledge of the green boxes “delegate” and “Circular” because they are CLR objects. The garbage collector does not know about the dotted-line boxes because they are external objects beyond the scope of the CLR.</p>
+<p>What the garbage collector knows is that there is an outstanding reference to the delegate from some unknown external source, and it knows that that delegate has a reference to the <code>Circular</code> object, and it knows that the <code>Circular</code> object has a reference to some external object that goes by the name of <code>Device­Watcher</code>. but it has no insight into what the <code>Device­Watcher</code> object may have references to, because the <code>Device­Watcher</code> is not a CLR object. It has no idea that the <code>Device­Watcher</code> was in fact the question mark the whole time.¹</p>
+<p>To avoid a memory leak, you will have to break this circular reference. Ideally, there is some natural place to do this cleanup. For example, if you are a <code>Page</code>, you can clean up in your <code>On­Navigated­From</code> method, or in response to the <code>Unloaded</code> event. Less ideally, you could add a cleanup method, possibly codified in the <code>IDisposable</code> pattern.</p>
+<p>There is a special case: The XAML framework has a secret deal with the CLR, whereby XAML shares more detailed information about the references it holds. This information makes it possible for the CLR to break certain categories of circular references that are commonly-encounted in XAML code. For example, this circular reference can be detected by the CLR with the assistance of information provided by the XAML framework:</p>
+<pre>&lt;!-- XAML --&gt;
+&lt;Page x:Name="AwesomePage" ...&gt;
+  ...
+  &lt;Button x:Name="SomeNamedButton" ... &gt;
+  ...
+&lt;/Page&gt;
+
+// C# code-behind
+partial class AwesomePage : Page
+{
+  AwesomePage()
+  {
+    InitializeComponent();
+    SomeNamedButton.Click += SomeNamedButton_Click;
+  }
+
+  void SomeNamedButton_Click(object sender, RoutedEventArgs e)
+  {
+    ...
+  }
+}
+</pre>
+<p>There is a circular reference here between the <code>Awesome­Page</code> and the <code>Some­Named­Button</code>, but the extra information provided by the XAML framework gives the CLR enough information to recognize the cycle and collect it when it becomes garbage.</p>
+<p>¹ “It was the question mark all along” sounds like the spoiler to a bad M. Night Shyamalan movie.</p>
+
+
+</body>

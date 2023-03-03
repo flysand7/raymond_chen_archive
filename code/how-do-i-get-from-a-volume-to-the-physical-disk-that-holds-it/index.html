@@ -1,0 +1,98 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I get from a volume to the physical disk that holds it?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we saw <a href="/code/how-do-i-get-from-a-file-path-to-the-volume-that-holds-it" title="How do I get from a file path to the volume that holds it?"> how to get from a file path to the volume that holds it</a>. The next step is to get from the volume to the physical disk.</p>
+<p>The lazy way is to ask for the device number:</p>
+<pre>STORAGE_DEVICE_NUMBER number;
+DeviceIoControl(handle,
+    IOCTL_STORAGE_GET_DEVICE_NUMBER,
+    nullptr, 0, // no input
+    &amp;number, sizeof(number), // output goes here
+    &amp;bytesWritten,
+    nullptr);
+DWORD physicalDriveNumber = number.DeviceNumber;
+</pre>
+<p>This is lazy for multiple reasons:</p>
+<ul>
+<li>It fails to account for the case where the volume spans multiple physical drives.</li>
+<li>In my experience, if the volume is a CD-ROM drive with no disk in the drive, the call reports that the physical drive number is 0, which is almost certainly incorrect.</li>
+</ul>
+<p>In practice, it seems that if the volume spans multiple physical drives, the <code>IOCTL_</code><code>STORAGE_</code><code>GET_</code><code>DEVICE_</code><code>NUMBER</code> fails (with <code>ERROR_</code><code>INVALID_</code><code>FUNCTION</code>, it seems, which is the Win32 manifestation of the NT status code <code>STATUS_</code><code>INVALID_</code><code>DEVICE_</code><code>REQUEST</code>), so at least you don’t get <i>wrong</i> answers. You just get <i>no</i> answer.</p>
+<p>The less lazy (and more likely to be correct) way is to ask the volume for its disk extents. This one is a bit annoying because it returns a variable-sized structure, so you need to ask twice. The first time tells you how big a structure you need, and the second time actually gets the structure.</p>
+<p>Since nearly all volumes have only one extent, we can optimize slightly for that case by passing an initial buffer big enough to hold a single extent. If that works, then there’s no need to try a second time.</p>
+<pre>VOLUME_DISK_EXTENTS* extents = nullptr;
+
+// Anticipate common case where there is only one extent.
+VOLUME_DISK_EXTENTS singleExtent;
+
+// But also have a place to manage allocated data.
+std::unique_ptr&lt;BYTE[]&gt; lifetime;
+
+DWORD bytesWritten;
+if (DeviceIoControl(handle, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+        nullptr, 0,
+        &amp;singleExtent, sizeof(singleExtent),
+        &amp;bytesWritten,
+        nullptr)) {
+  // Worked on the first try. Use the preallocated buffer.
+  extents = &amp;singleExtent;
+} else {
+  VOLUME_DISK_EXTENTS* lastQuery = &amp;singleExtent;
+  while (GetLastError() == ERROR_MORE_DATA) {
+    assert(RTL_CONTAINS_FIELD(lastQuery, bytesWritten, NumberOfDiskExtents));
+    DWORD extentCount = lastQuery-&gt;NumberOfDiskExtents;
+    DWORD allocatedSize = FIELD_OFFSET(VOLUME_DISK_EXTENTS, Extents[extentCount]);
+    lifetime.reset(new BYTE[allocatedSize]);
+    lastQuery = (VOLUME_DISK_EXTENTS*)lifetime.get();
+    if (DeviceIoControl(handle, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+          nullptr, 0,
+          lastQuery, allocatedSize,
+          &amp;bytesWritten,
+          nullptr)) {
+      extents = lastQuery;
+      break;
+    }
+  }
+}
+
+if (extents) {
+  // process the extents
+}
+</pre>
+<p>The extents tell you which physical drives the volume draws its storage from, and which bytes on those physical drives are devoted to the volume. But for this exercise, we just want the physical drives.</p>
+<p>Once you have the physical drive numbers, you can convert them to physical drive handles by building a path of the form <code>\\.\PhysicalDrive#</code> where the <code>#</code> is the decimal expansion of the drive number.</p>
+<pre>wchar_t physicalDrivePath[80];
+wsprintf_s(physicalDrivePath, L"\\\\.\\PhysicalDrive%d", physicalDriveNumber);
+driveHandle = CreateFile(physicalVolumePath,
+        0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, 0, nullptr);
+</pre>
+<p>Okay, great, now you have a physical drive handle.</p>
+<p>Next time, we’ll see that there’s a shortcut available for all this.</p>
+<p><b>Bonus chatter</b>: If you are interested only in the first physical drive of a multi-drive volume, you can do it much more simply, because the ioctl will fill in as much of the buffer as it can. Passing a buffer that can hold one physical drive will give you the first physical drive. (Mind you, the drives don’t appear to be in any particular, order, so really, you’re just grabbing one at random.)</p>
+<pre>wil::unique_hfile GetFirstPhysicalDiskHandleForVolume(HANDLE volume)
+{
+  VOLUME_DISK_EXTENTS extents;
+  if (!DeviceIoControl(volume, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+        nullptr, 0,
+        &amp;extents, sizeof(extents),
+        &amp;bytesWritten,
+        nullptr) &amp;&amp; GetLastError() != ERROR_MORE_DATA) {
+    THROW_LAST_ERROR();
+  }
+
+  wchar_t physicalDrivePath[80];
+  swprintf_s(physicalDrivePath, L"\\\\.\\PhysicalDrive%u",
+             extents.Extents[0].DiskNumber);
+
+  wil::unique_hfile result{ CreateFile(physicalDrivePath, 0,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                      nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr) };
+  THROW_LAST_ERROR_IF(!result);
+  return result;
+}
+</pre>
+<p><b>Bonus bonus chatter</b>: It seems that the I/O subsystem can’t decide whether the number is a physical <i>device</i> number, a physical <i>disk</i> number, or a a physical <i>drive</i> number.</p>
+
+
+</body>

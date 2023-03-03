@@ -1,0 +1,82 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Debugging a GDI resource leak: Case study</h1>  <!-- .entry-meta -->
+
+<p>I was asked to help debug a problem. A program was leaking GDI bitmaps like crazy, and after a while, the GDI resource handle count reached 9,999, at which point GDI said, “That’s it, I’m cutting you off.” </p>
+<p>The problem isn’t discovered until after the limit has been reached. </p>
+<p>To debug this, I’m gong to use different <a href="https://blogs.msdn.microsoft.com/oldnewthing/20050815-11/?p=34583">poor man’s way of identifying memory leaks</a>. We begin the story with a GDI handle that has been identified as leaked: <code>0x13054e2f</code>. My first step is to get some basic information about this GDI object by simulating a call to <code>Get­Object</code>. </p>
+<pre>
+0:061&gt; .dvalloc 1
+Allocated 1000 bytes starting at 00000000`03610000
+</pre>
+<p>First, I allocated some memory that I can use to hold the <code>BITMAP</code> structure. </p>
+<pre>
+ntdll!DbgBreakPoint:
+00007ffb`65ef7570 int     3
+0:061&gt; t
+ntdll!DbgBreakPoint:
+00007ffb`65ef7571 ret
+0:061&gt; r rip=gdi32!GetObjectW
+0:061&gt; r r8=0x00000000`03610000
+0:061&gt; r rdx=0x68
+0:061&gt; r rcx=0x13054e2f
+0:061&gt; r
+GDI32!GetObjectW:
+00007ff9`9658e2f0 mov     qword ptr [rsp+8],rbx
+</pre>
+<p>Next, I <a href="https://blogs.msdn.microsoft.com/oldnewthing/20151016-00/?p=91341">simulate a call to the <code>Get­ObjectW</code> function</a>¹ by setting up the inbound parameter registers: <code>rcx</code> is the GDI object we are geting information about, <code>rdx</code> is the size of the output buffer, <code>r8</code> is the output buffer itself (which we just allocated). </p>
+<p>I’m pulling a super-sneaky trick here. Normally, we reserve shadow space for the outbound call, and then simulate the <code>call</code> instruction by pushing the return address on the stack. But we didn't do any of that here. We just moved <code>rip</code> directly to the function we wanted to call. But I can skip those steps because I stepped to the <code>ret</code> instruction. This means that the stack is already set up the way it would be immediately upon entry to the function. We are reusing the stack frame of the <code>Dbg­Break­Point</code> function! We are reusing the shadow space provided by the caller, and we are taking advantage of the proper stack alignment established by the caller. </p>
+<pre>
+0:061&gt; gu
+ntdll!DbgUiRemoteBreakin+0x34:
+00007ff9`9730f4f4 jmp     ntdll!DbgUiRemoteBreakin+0x36 (00007ff9`9730f4f6)
+0:061&gt; r
+rax=0000000000000020 rbx=00007ff99730f4c0 rcx=00007ff9965b877a
+rdx=0000000000000000 rsi=0000000000000000 rdi=0000000000000000
+rip=00007ff99730f4f4 rsp=0000000007a7f7e0 rbp=0000000000000000
+ r8=0000000007a7f7a8  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000206 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl nz na pe nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000202
+ntdll!DbgUiRemoteBreakin+0x34:
+00007ff9`9730f4f4 jmp     ntdll!DbgUiRemoteBreakin+0x36 (00007ff9`9730f4f6)
+0:061&gt; dd 0x00000000`03610000 L8
+00000000`03610000  00000000 00000010 00000010 00000002
+00000000`03610010  00010001 fffff901 00000000 00000000
+0:061&gt; dt contoso!BITMAP 0x00000000`03610000
+   +0x000 bmType           : 0n0
+   +0x004 bmWidth          : 0n16
+   +0x008 bmHeight         : 0n16
+   +0x00c bmWidthBytes     : 0n2
+   +0x010 bmPlanes         : 1
+   +0x012 bmBitsPixel      : 1
+   +0x018 bmBits           : (null)
+</pre>
+<p>I run the <code>Get­ObjectW</code> function with the <code>gu</code> command, which means "go until the current function returns". When it returns, I verify that the call succeeded (by checking the return value in <code>rax</code>), and the dump the <code>BITMAP</code> structure. </p>
+<p>This tells me that I have a 16×16 monochrome bitmap. Monochrome bitmaps are rarely-used in Windows nowadays. One place you'll see them is in icons, since an icon consists of two bitmaps: A monochrome mask and a color image. </p>
+<p>So let's assume that we're leaking the mask of an icon. These things come out of two functions: <code>Get­Icon­Info</code> and <code>Get­Icon­Info­Ex</code>, so I set breakpoints on both. (Actually three functions since <code>Get­Icon­Info­Ex</code> has both Unicode and ANSI variations.) </p>
+<pre>
+0:061&gt; bp user32!geticoninfo
+0:061&gt; bp user32!geticoninfoexw
+0:061&gt; bp user32!geticoninfoexa
+0:061&gt; g
+</pre>
+<p>The breakpoint hits pretty quickly. </p>
+<pre>
+Breakpoint 0 hit
+USER32!GetIconInfo:
+00007ff9`96cf1dd0 sub     rsp,38h
+0:005&gt; kc3
+Call Site
+USER32!GetIconInfo
+contoso!CNotificationIcon::IsIconCorrectSize+0x42
+contoso!CNotificationIcon::Modify::__l6::
+    &lt;lambda_5a5c6bde8a112e005a026c6f34886eee&gt;::operator()+0x1f
+</pre>
+<p>Going back to the source code for <code>Is­Icon­Correct­Size</code> confirms that this function calls <code>Get­Icon­Info</code> (presumably to get the size of the icon) and forgets to delete the two bitmaps. </p>
+<p>Root cause identified. The fix is to delete those bitmaps. </p>
+<p>Forgetting to delete the bitmaps that come out of the <code>Get­Icon­Info</code> family of functions is a common mistake. </p>
+<p>¹ The <code>ntsd</code> debugger doesn't have a C compiler built-in, so we have to build these things manually. </p>
+
+
+</body>

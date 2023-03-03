@@ -1,0 +1,27 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Resource Compiler’s preprocessor is not the same as the C preprocessor</h1>  <!-- .entry-meta -->
+
+<p>A customer had a project written in Visual C++, and the Build step failed with an error from the Resource Compiler: </p>
+<pre>
+Fatal error RC1015: cannot open include file 'vcruntime.h'
+</pre>
+<p>For reasons known (or perhaps not) only to the original developer of the project, this particular RC file had an enormous number of <code>#include</code>d header files, with many levels of nesting. Most of the header files employed the <code>#pragma once</code> directive to avoid multiple inclusion. But upon reading of the documentation for the Resource Compiler, it seems that the <code>RC.EXE</code> compiler doesn’t recognize <code>#pragma once</code>. </p>
+<p>The customer was able to replicate the problem by creating a pair of mutually-including header files: </p>
+<pre>
+// file1.h
+#include "file2.h"
+
+// file2.h
+#include "file1.h"
+</pre>
+<p>which produced the same “cannot open include file” error message. </p>
+<p>From this investigation, we are fairly confident that this is the root cause of the original error message. If this had been a problem with include files arise in C++ code, we could have used the <code>/showincludes</code> command line switch to troubleshoot the problem, but the <code>RC.EXE</code> compiler does not provide any switches for diagnosing problems with include files. </p>
+<p>The customer wanted us to confirm their conclusions, and also to indicate whether the behavior with <code>RC.EXE</code> is by design, or whether they should file a defect report. </p>
+<p>The Resource Compiler’s preprocessor is not the same as the C preprocessor, even though they superficially resemble each other. In particular, <code>#pragma</code> is conspiciously missing from <a href="https://msdn.microsoft.com/library/windows/desktop/aa381033(v=vs.85).aspx">the table of supported preprocessor directives</a>. </p>
+<p>In order to get the effect of <code>#pragma once</code> in the Resource Compiler, you need to use the old-fashioned <a href="https://en.wikipedia.org/wiki/Include_guard">include guard</a> technique. </p>
+<p>Or better would be to avoid including so much junk. Many header files use <code>#ifdef RC_INVOKED</code> to detect whether they are being included by the Resource Compiler. When included by the Resource Compiler, they define only the identifiers needed for resource files and skip over all the other junk. </p>
+<p><b>Bonus chatter</b>: The Resource Compiler differs from the C preprocessor in another significant way: As noted <a href="https://msdn.microsoft.com/library/windows/desktop/aa381033(v=vs.85).aspx">on the same page that has the list of preprocessor directives</a>, if a file has the extension <code>.c</code> or <code>.h</code>, then the Resource Compiler ignores all lines that aren’t preprocessor directives. If you want to include another file that has resource content, you need to give it another extension. Typically, that extensions is <code>.rc</code>, although you may find the extension <code>.dlg</code> in older code. </p>
+<p><b>Bonus bonus chatter</b>: The Resource Compiler has <i>two</i> expression evaluators. The one used by the preprocessor follows the C language rules. But the one used by the resource parser follows its own weird rules. For example, in resource files, you can say <code>3 | NOT 2</code>, which is equivalent to <code>3 &amp; ~2</code>. It means that in resource files, the <code>|</code> operator is  not symmetric! </p>
+
+
+</body>

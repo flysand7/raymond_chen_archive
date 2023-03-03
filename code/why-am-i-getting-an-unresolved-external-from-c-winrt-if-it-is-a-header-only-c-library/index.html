@@ -1,0 +1,26 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why am I getting an unresolved external from C++/WinRT if it is a header-only C++ library?</h1>  <!-- .entry-meta -->
+
+<p>A customer was getting unresolved external errors from their C++/WinRT code. How is that possible? C++/WinRT is a header-only library; there is no static library that needs to be linked in. I mean, the way to resolve an unresolved external from a header is to link in the associated static or dynamic library, but for header-only libraries, there is no associated <i>anything</i> to link in. So how can something be unresolved?</p>
+<p>C++/WinRT is not just one header, but a series of headers. To reduce compile times, the C++/WinRT headers for a particular component are split into multiple layers of headers. The lowest layer provides forward declarations for types, but almost no definitions. As you go higher up the layers, you get a little more: Maybe a class gets a definition, but the methods don’t get implemented until a still higher layer.</p>
+<p>When you include a C++/WinRT header file, it includes declarations, definitions, and implementations for everything for which that header file is responsible, as well as its parent namespaces, but no more.</p>
+<p>Consider:</p>
+<pre>namespace Contoso.Widgets
+{
+    runtimeclass Widget
+    {
+        Widget();
+        Contoso.Gadgets.Gadget GetGadget();
+        void Reset();
+    }
+}
+</pre>
+<p>If you include <code>winrt/Contoso.Widgets.h</code>, you get everything you need to create a <code>Widget</code> and call its methods. However, you <i>don’t</i> get everything you need to operate on <code>Gadget</code> objects. You do have enough to call the <code>GetGadget()</code> method, but you can’t do anything with the gadget until you include <code>winrt/Contoso.Gadgets.h</code>.</p>
+<p>Normally, when you make this mistake, you get a compile-time error thanks to <a href="/code/why-does-my-c-winrt-project-get-errors-of-the-form-consume-something-function-that-returns-auto-cannot-be-used-before-it-is-defined"> a trick</a>: Declare the methods as <code>auto</code>. An <code>auto</code> method must be defined before it can be called, and that’s the language feature that the trick relies on.¹</p>
+<p>However, this trick doesn’t work for constructors and destructors, since they don’t have return values that can be <code>auto</code>-ized. If you use a constructor for a type without having included the corresponding namespace header file, the code will compile, and you’ll get a linker error later.²</p>
+<p>Sorry.</p>
+<p>¹ The methods are, however, defined with a return value in the normal way if <code>__INTELLISENSE__</code> is defined, so that you get more useful feedback from IntelliSense.</p>
+<p>² Well, if you’re lucky and some other translation unit included the namespace header file and used the constructor, then you will get a definition, but that’s only because you were relying on the kindness of strangers.</p>
+
+
+</body>

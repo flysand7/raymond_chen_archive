@@ -1,0 +1,207 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Finding a printer, and then creating a shortcut to that printer</h1>  <!-- .entry-meta -->
+
+<p><p>
+Today’s “Little Program”
+does two things:
+It looks for a printer in the Printers folder,
+and then once it finds it, it creates a shortcut to that printer.
+</p>
+<p>
+As is common with “Little Programs”,
+I don’t bother with error checking.
+I’ll leave you to do that.
+</p>
+<p>
+Second part first, since it is handy on its own:
+Creating a shortcut to an arbitrary item in the shell namespace,
+provided either in the form of an ID list or a shell item.
+(The ID list is the thing that identifies an item in the shell namespace.)
+</p>
+<pre>
+void CreateShortcutToIDList(PCWSTR pszName, PCUIDLIST_ABSOLUTE pidl)
+{
+ CComPtr&lt;IShellLink&gt; spsl;
+ spsl.CoCreateInstance(CLSID_ShellLink);
+ spsl-&gt;SetIDList(pidl);
+ CComQIPtr&lt;IPersistFile&gt;(spsl)-&gt;Save(pszName, TRUE);
+}</pre></p>
+<p>void CreateShortcutToItem(PCWSTR pszName, IShellItem *pitem)
+{
+ CComHeapPtr&lt;ITEMIDLIST_ABSOLUTE&gt; spidl;
+ CComQIPtr&lt;IPersistIDList&gt;(pitem)-&gt;GetIDList(&amp;spidl);
+ CreateShortcutToIDList(pszName, spidl);
+}
+
+<p>
+Neither of these is particular complicated.
+To create a shortcut given an ID list:
+</p>
+<ul>
+<li>Create a brand new <code>Shell­Link</code> object.
+<li>Tell that shell link object to point to our desired ID list.
+<li>Save the shell link.
+</li></li></li></ul>
+<p>
+To create a shortcut given a shell item:
+</p>
+<ul>
+<li>Ask the <code>IShell­Item</code> for its ID list.
+<li>Create a shortcut to that ID list.
+</li></li></ul>
+<p>
+Okay, now the first half:
+Finding the printer.
+That is a matter of binding to the Printers folder
+and enumerating its contents.
+When we find the one whose name matches the target printer,
+we declare victory.
+</p>
+<pre>
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+ CComPtr&lt;IShellItem&gt; spPrinters;
+ SHGetKnownFolderItem(FOLDERID_PrintersFolder, KF_FLAG_DEFAULT,
+                      nullptr, IID_PPV_ARGS(&amp;spPrinters));
+ CComPtr&lt;IEnumShellItems&gt; spEnum;
+ spPrinters-&gt;BindToHandler(nullptr, BHID_EnumItems,
+                              IID_PPV_ARGS(&amp;spEnum));
+ for (CComPtr&lt;IShellItem&gt; spPrinter;
+      spEnum-&gt;Next(1, &amp;spPrinter, nullptr) == S_OK;
+      spPrinter.Release()) {
+  CComHeapPtr&lt;wchar_t&gt; spszName;
+  spPrinter-&gt;GetDisplayName(SIGDN_NORMALDISPLAY, &amp;spszName);
+  wprintf(L”Found printer \”%ls\”\n”, spszName);
+  if (lstrcmpiW(spszName, argv[1]) == 0) {
+   wprintf(L”Creating shortcut as \”%ls\”\n”, argv[2]);
+   CreateShortcutToItem(argv[2], spPrinter);
+  }
+ }
+ return 0;
+}
+</pre>
+<p>
+This is a little trickier, but not by much.
+</p>
+<ul>
+<li>Initialize COM.
+<li>Get the <code>IShell­Item</code> for the Printers folder.
+<li>Get the enumerator for the Printers folder.
+<li>For each item in the Printers folder:
+    <ul>
+<li>Get its name and print it just for diagnostic purposes.
+    <li>If the name matches the one we’re looking for,
+        then create the shortcut.
+    </li></li></ul>
+</li></li></li></li></ul>
+<p>
+Here are the header files I used:
+</p>
+<pre>
+#define <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/01/24/10387757.aspx">STRICT_TYPED_ITEMIDS</a> // enable stricter type checking on ITEMIDs
+#include &lt;windows.h&gt;
+#include &lt;atlbase.h&gt;        // for CComPtr, CComQIPtr
+#include &lt;atlalloc.h&gt;       // for CComHeapPtr
+#include &lt;shlobj.h&gt;         // for shell interfaces
+#include &lt;knownfolders.h&gt;   // for FOLDERID_PrintersFolder
+#include &lt;stdio.h&gt;          // for wprintf
+</pre>
+<p>
+For those of you who prefer to work with CSIDLs,
+the change is relatively minor.
+Replace the <code>SHGet­Known­Folder­Item</code>
+call with
+</p>
+<pre>
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/08/31/10203215.aspx">BindToCsidlItem</a>(CSIDL_PRINTERS, &amp;spPrinters);
+</pre>
+<p>
+You may have noticed that I used
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/12/27/10251210.aspx">
+the for-if anti-pattern</a>.
+I could’ve gone for the item directly by using
+<code>SHCreate­Item­From­Relative­Name</code>:
+&lt;!–
+<code>IShell­Folder::Parse­Display­Name</code>:
+–&gt;
+</p>
+<pre>
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ CCoInitialize init;
+ CComPtr&lt;IShellItem&gt; spPrinters;
+ SHGetKnownFolderItem(FOLDERID_PrintersFolder, KF_FLAG_DEFAULT,
+                      nullptr, IID_PPV_ARGS(&amp;spPrinters));
+ CComPtr&lt;IShellItem&gt; spPrinter;
+ SHCreateItemFromRelativeName(spPrinters, argv[1], nullptr,
+                              IID_PPV_ARGS(&amp;spPrinter));
+ CreateShortcutToItem(argv[2], spPrinter);
+ return 0;
+}
+</pre>
+<p>
+As before,
+if you’re the sort of person who prefers to do things
+old-school, you can parse the name yourself,
+at which point you may as well give up on shell items,
+hike up your pants,
+and do it
+<a href="http://www.simpsoncrazy.com/lists/grampa-stories">
+with an onion on your belt</a>:
+</p>
+<pre>
+HRESULT BindToIDList(PCUIDLIST_ABSOLUTE pidl,
+                     REFIID riid, void **ppv)
+{
+ *ppv = nullptr;
+ CComPtr&lt;IShellFolder&gt; spsfDesktop;
+ HRESULT hr = SHGetDesktopFolder(&amp;spsfDesktop);
+ if (SUCCEEDED(hr)) {
+  if (pidl-&gt;mkid.cb) {
+   hr = spsfDesktop-&gt;BindToObject(pidl, nullptr, riid, ppv);
+  } else {
+   hr = spsfDesktop-&gt;QueryInterface(riid, ppv);
+  }
+ }
+ return hr;
+}</pre></p>
+<p>int __cdecl wmain(int argc, wchar_t **argv)
+{
+ CCoInitialize init;
+ CComHeapPtr&lt;ITEMIDLIST_ABSOLUTE&gt; spidlPrinters;
+ SHGetSpecialFolderLocation(nullptr,
+                  CSIDL_PRINTERS, &amp;spidlPrinters);
+ CComPtr&lt;IShellFolder&gt; spsfPrinters;
+ BindToIDList(spidlPrinters, IID_PPV_ARGS(&amp;spsfPrinters));</p>
+<p> ULONG cchEaten;
+ DWORD dwAttributes = 0;
+ CComHeapPtr&lt;ITEMIDLIST_RELATIVE&gt; spidl;
+ spsfPrinters-&gt;ParseDisplayName(nullptr, nullptr, argv[1],
+                        &amp;cchEaten, &amp;spidl, &amp;dwAttributes);</p>
+<p> CComHeapPtr&lt;ITEMIDLIST_ABSOLUTE&gt; spidlPrinter;
+ spidlPrinter.Attach(ILCombine(spidlPrinters, spidl));
+ CreateShortcutToIDList(argv[2], spidlPrinter);
+ return 0;
+}
+
+<p>
+The
+<code>Bind­To­ID­List</code> function is nothing
+special;
+we already saw the guts of it when we wrote
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/08/31/10203215.aspx">
+<code>Bind­To­Csidl­Item</code></a>.
+</p>
+<p>
+The main program proceeds in three steps:
+</p>
+<ul>
+<li>Get the ID list for the Printers folder and bind to it.
+<li>Parse the printer name, producing a printer ID list.
+<li>Create a shortcut to the ID list for the printers folder
+    combined with the printer ID list.
+</li></li></li></ul></p>
+
+
+</body>

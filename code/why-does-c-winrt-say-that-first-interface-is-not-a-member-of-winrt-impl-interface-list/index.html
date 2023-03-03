@@ -1,0 +1,61 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does C++/WinRT say that <code>first_interface</code> is not a member of <code>winrt::impl::interface_list&lt;&gt;</code>?</h1>  <!-- .entry-meta -->
+
+<p>A customer was trying to use C++/WinRT to implement a classic COM interface, but was getting the error</p>
+<pre style="white-space: pre-wrap;">error C2039: 'first_interface': is not a member of 'winrt::impl::interface_list&lt;&gt;'
+see declaration of 'winrt::impl::interface_list&lt;&gt;'
+see reference to class template instantiation 'winrt::impl::implements_default_interface&lt;D,void&gt;' being compiled
+with
+[
+    D=Widget
+]
+see reference to function template instantiation 'auto winrt::make&lt;Widget&gt;()' being compiled
+</pre>
+<p>from the following code:</p>
+<pre>struct Widget : winrt::implements&lt;Widget, IPersist&gt;
+{
+    Widget(int length) : m_length(length) { }
+
+    // IPersist methods
+    STDMETHODIMP GetClassID(CLSID* clsid) noexcept override
+    { *clsid = CLSID_NULL; return S_OK; }
+};
+</pre>
+<p>What is going on? What does the error mean?</p>
+<p>The error message is saying, rather obviously, that an empty list of interfaces has no first interface. Which is true, but where is this empty list of interfaces coming from, and why do we care about it?</p>
+<p>The list of interfaces is generated from the template arguments to the <code>winrt::implements</code> template type. C++/WinRT looks through the template type arguments (starting from the second one) and keeps the ones that look like interfaces. Those are the ones that C++/WinRT will respond to in its <code>Query­Interface</code> implementation.</p>
+<p>In this case, there’s only one candidate: <code>IPersist</code>. Why didn’t C++/WinRT think this was an interface?</p>
+<p>C++/WinRT by default considers something an interface if it derives from <code>winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IUnknown</code>. Ah, but <code>IPersist</code> doesn’t derive from <code>winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IUnknown</code>. It derives from <code>::IUnknown</code>. That doesn’t count.</p>
+<p>Okay, but wait, I’ve seen people do this. So how come they can do it but I can’t?</p>
+<p>I noted that <i>by default</i> C++/WinRT requires interfaces to derive from <code>winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>IUnknown</code>. You can activate nondefault behavior by including the <code>unknwn.h</code> header file <i>before</i> including any C++/WinRT header files, in which case C++/WinRT will also recognize types which derives from classic COM <code>IUnknown</code> as interfaces.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Include order</th>
+<th>Result</th>
+</tr>
+<tr>
+<td><code>#include &lt;unknwn.h&gt;</code><br/>
+<code>#include &lt;winrt/base.h&gt;</code></td>
+<td>Classic COM support active in C++/WinRT</td>
+</tr>
+<tr>
+<td><code>#include &lt;winrt/base.h&gt;</code><br/>
+<code>#include &lt;unknwn.h&gt;</code></td>
+<td>Classic COM support not active in C++/WinRT</td>
+</tr>
+</tbody>
+</table>
+<p>A very common way to get <code>unknwn.h</code> is to include <code>windows.h</code>, since <code>windows.h</code> includes <code>unknwn.h</code> by default.</p>
+<p>Note that all the code in your module must agree on whether or not classic COM support is active. If there is disagreement, then you have an ODR violation, and the resulting behavior is undefined.</p>
+<p>Next time, we’ll take a peek behind the curtain of C++/WinRT so we can understand how C++/WinRT detects which interfaces are implemented.</p>
+<p><b>Bonus chatter</b>: If you are using the <a href="https://github.com/microsoft/wil"> Windows Implementation Library</a>, then you should include <code>wil/cppwinrt.h</code> before including any other C++/WinRT headers. In addition to making sure that <code>unknwn.h</code> is included first, it also activates a bunch of other features in both WIL and C++/WinRT so that they understand each other’s exceptions, for example.</p>
+<p><b>Bonus bonus chatter</b>: <a href="https://github.com/microsoft/cppwinrt/pull/1022"> PR #1022</a> improves support for classic COM in two ways:</p>
+<ul>
+<li>For consuming classic COM interfaces, the ordering requirement between <code>unknwn.h</code> and C++/WinRT header files has been removed. You just have to include <code>unknwn.h</code> at some point, either before or after including C++/WinRT. And in practice, you will, because you need to include that header file in order to declare any classic COM interfaces in the first place!</li>
+<li>To implement classic COM interfaces, you still have to include <code>unknwn.h</code> before including any C++/WinRT header files, but now you get a helpful diagnostic if you forget: “To implement classic COM interfaces, you must #include &lt;unknwn.h&gt; before including C++/WinRT headers.”¹</li>
+</ul>
+<p>¹ It’s surprising how much work in writing a library consists of <a href="/code/why-does-my-c-winrt-project-get-errors-of-the-form-consume-something-function-that-returns-auto-cannot-be-used-before-it-is-defined"> error message hacking</a>.</p>
+
+
+</body>

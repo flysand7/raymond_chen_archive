@@ -1,0 +1,40 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The C++/CX <code>String^</code> is not an object, even though it wears a hat</h1>  <!-- .entry-meta -->
+
+<p>C++/CX refers to Windows Runtime strings as <code>Platform::<wbr/>String^</code> with a hat instead of a star. But even though the string wears a hat, it is not an <code>Object^</code>.</p>
+<p>The <code>String^</code> type is a representation of the Windows Runtime <code>HSTRING</code>. And of the <a href="/code/raymond-s-complete-guide-to-hstring-semantics"> rules of <code>HSTRING</code></a> is that a null pointer is a valid <code>HSTRING</code>, and it represents the empty string, that is, a string with no characters.</p>
+<p>This makes <code>String^</code> a strange sort of beast.</p>
+<pre>String^ s = L""; // sets s = nullptr
+</pre>
+<p>If you assign an empty string to it, you get <code>nullptr</code> back.</p>
+<pre>void f(String ^s)
+{
+    if (s) { /* string is not empty */ }
+}
+</pre>
+<p>Testing a <code>String^</code> against <code>nullptr</code> tests whether the string is empty.</p>
+<pre>String ^s = nullptr; // represents empty string
+auto data = s-&gt;Data(); // legal! returns pointer to L""
+auto length = s-&gt;Length(); // legal! returns 0.
+auto equal = s-&gt;Equals(L"nope"); // legal! returns false.
+</pre>
+<p>That’s right: I dereferenced a null pointer <i>and it felt good</i>.</p>
+<p>Calling methods on a null <code>String^</code> pointer is legal, and the operations are performed on an empty string.</p>
+<p>This weird behavior of null <code>String^</code> pointers has consequences beyond just strings. If you convert a null <code>String^</code> to <code>Object^</code> (a boxing operation), the null-ness is <i>preserved</i>:</p>
+<pre>String^ s = L""; // s is nullptr
+Object^ o = s; // o is nullptr!
+</pre>
+<p>This differs from the behavior in other projections like C#, JavaScript, and C++/WinRT, where boxing an empty string produces a non-null object (that in turn holds an empty string).</p>
+<p>The fact that a <code>String^</code> is not an <code>Object^</code> means that you cannot reinterpret between them.</p>
+<pre>String^ s = /* some value */;
+Object^ o = reinterpret_cast&lt;Object^&gt;(s); // crash
+</pre>
+<p>The <code>reinterpret_cast</code> will treat a <code>String^</code> as an <code>Object^</code>. But a <code>String^</code> is secretly a <code>HSTRING</code>, whereas an <code>Object^</code> is secretly an <code>IInspectable*</code>. The reinterpret-cast tells the compiler to treat this <code>HSTRING</code> as if it were an <code>IInspectable*</code>, and bad things happen, since the compiler is going to try to call the <code>AddRef</code> method from the <code>IInspectable</code>‘s vtable, but <code>HSTRING</code>s don’t have a vtable, much less a vtable with <code>AddRef</code> in slot 1.</p>
+<p>What you need to do is box the string into an object and unbox the object back into a string.</p>
+<pre>Object^o = s; // box the string into an object
+String^s = static_cast&lt;String^&gt;(o); // unbox the object into a string
+</pre>
+<p><b>Bonus chatter</b>: C++/CX delegates are also not objects, even though they too wear hats.</p>
+
+
+</body>

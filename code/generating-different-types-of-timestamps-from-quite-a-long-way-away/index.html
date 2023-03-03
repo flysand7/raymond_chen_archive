@@ -1,0 +1,68 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Generating different types of timestamps from quite a long way away</h1>  <!-- .entry-meta -->
+
+<p>Today’s Little Program does the reverse of <a href="http://blogs.msdn.com/b/oldnewthing/archive/2015/07/06/10624290.aspx">what we had last time</a>. It takes a point in time and then generates timestamps in various formats. </p>
+<pre>
+using System;
+
+class Program
+{
+ static void TryFormat(string format, Func&lt;long&gt; func)
+ {
+  try {
+   long l = func();
+   if ((ulong)l &gt; 0x00000000FFFFFFFF) {
+       Console.WriteLine("{0} 0x{1:X16}", format, l);
+   } else {
+       Console.WriteLine("{0} 0x{1:X08}", format, l);
+   }
+  } catch (ArgumentException) {
+   Console.WriteLine("{0} - invalid", format);
+  }
+ }
+</pre>
+<p>Like last time, the <code>Try­Format</code> method executes the passed-in function inside a try/catch block. If the function executes successfully, then we print the result. There is a tiny bit of cleverness where we choose the output format depending on the number of bits in the result. </p>
+<pre>
+ static long DosDateTimeFromDateTime(DateTime value)
+ {
+  int result = ((value.Year - 1980) &lt;&lt; 25) |
+               (value.Month &lt;&lt; 21) |
+               (value.Day &lt;&lt; 16) |
+               (value.Hour &lt;&lt; 11) |
+               (value.Minute &lt;&lt; 5) |
+               (value.Second &gt;&gt; 1);
+  return (uint)result;
+ }
+</pre>
+<p>The <code>Dos­Date­Time­From­Date­Time</code> converts the <code>Date­Time</code> into a 32-bit date/time stamp in MS-DOS format. This is not quite correct because MS-DOS format date/time stamps are in local time, but we are not converting the incoming <code>Date­Time</code> to local time. It’s up to you to understand what’s going on. </p>
+<pre>
+ public static void Main(string[] args)
+ {
+  int[] parts = new int[7];
+  for (int i = 0; i &lt; 7; i++) {
+   parts[i] = args.Length &gt; i ? int.Parse(args[i]) : 0;
+  }
+
+  DateTime value = new DateTime(parts[0], parts[1], parts[2],
+                                parts[3], parts[4], parts[5],
+                                parts[6], DateTimeKind.Utc);
+
+  Console.WriteLine("Timestamp {0} UTC", value);
+
+  TryFormat("Unix time",
+    () =&gt; <a href="http://blogs.msdn.com/b/brada/archive/2003/07/30/50205.aspx">value.ToFileTimeUtc() / 10000000 - 11644473600</a>);
+  TryFormat("UTC FILETIME",
+    () =&gt; value.ToFileTimeUtc());
+  TryFormat("Binary DateTime",
+    () =&gt; value.ToBinary());
+  TryFormat("MS-DOS Date/Time",
+    () =&gt; DosDateTimeFromDateTime(value));
+  TryFormat("OLE Date/Time",
+    () =&gt; <a href="http://blogs.msdn.com/b/oldnewthing/archive/2015/06/22/10623021.aspx">BitConverter.DoubleToInt64Bits</a>(value.ToOADate()));
+ }
+}
+</pre>
+<p>The parameters on the command line are the year, month, day, hour, minute, second, and millisecond; any omitted parameters are taken as zero. We create a UTC <code>Date­Time</code> from it, and then try to convert that <code>Date­Time</code> into the other formats. </p>
+
+
+</body>

@@ -1,0 +1,53 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How to get your C++/WinRT asynchronous operations to respond more quickly to cancellation, part 1</h1>  <!-- .entry-meta -->
+
+<p>C++/WinRT provides an implementation for Windows Runtime asynchronous actions and operations, and they even support cancellation, even if your code doesn’t realize it.</p>
+<p>Whenever¹ your coroutine performs a <code>co_await</code>, the C++/WinRT library checks whether the coroutine has already been cancelled.² If so, then it abandons the coroutine and goes to the <code>Canceled</code> state.</p>
+<pre>IAsyncAction ProcessAllWidgetsAsync()
+{
+    auto widgets = co_await GetAllWidgetsAsync();
+    for (auto&amp;&amp; widget : widgets) {
+        ProcessWidget(widget);
+    }
+    co_await ReportStatusAsync(WidgetsProcessed);
+}
+</pre>
+<p>This function gathers all the widgets and then processes them one by one. But say there are thousands of widgets, and you try to <code>Cancel</code> the operation:</p>
+<pre>IAsyncAction DoOperationAsync()
+{
+    // Remember the operation so we can cancel it.
+    operation = ProcessAllWidgetsAsync();
+
+    co_await operation;
+}
+
+void CancelOperation()
+{
+    operation.Cancel();
+}
+</pre>
+<p>When the <code>Cancel</code> is called, the C++/WinRT library remembers that the coroutine has been cancelled and looks for a chance to stop the coroutine. But right now, the coroutine is busy running the loop inside <code>Process­All­Widgets</code>, and the C++/WinRT library doesn’t get control until the <code>co_await</code> when it comes time to report the status. Once that happens, the coroutine stops executing and reports its cancellation.³</p>
+<p>That could be hours from now.</p>
+<p>You can hasten the cancellation process in your coroutine by polling for cancellation.</p>
+<pre>IAsyncAction ProcessAllWidgetsAsync()
+{
+    <span style="color: blue;">auto cancellation = co_await get_cancellation_token();</span>
+
+    auto widgets = co_await GetAllWidgetsAsync();
+    for (auto&amp;&amp; widget : widgets) {
+        <span style="color: blue;">if (cancellation()) co_return;</span>
+        ProcessWidget(widget);
+    }
+    co_await ReportStatusAsync(WidgetsProcessed);
+}
+</pre>
+<p>The <code>co_await get_<wbr/>cancellation_<wbr/>token()</code> produces a cancellation token for the current coroutine.⁴</p>
+<p>Before processing each widget, we check if we have been cancelled. If so, then we just give up immediately. The <code>co_return</code> is another point where the C++/WinRT library regains control, and that also processes the pending cancellation.</p>
+<p>But wait, what if the caller tries to cancel the operation while the <code>Get­All­Widgets­Async</code> is in progress? Control is now inside that other asynchronous operation, and it could take a very long time to get all of the widgets. Next time, we’ll look at how to propagate the cancellation into dependent coroutines.</p>
+<p>¹ There are a few exceptions to this rule, but it’s true enough.</p>
+<p>² I spell <i>cancelled</i> with two L’s.</p>
+<p>³ This highlights the importance of using RAII types for all of your cleanup. If the coroutine stops executing due to cancellation, then its automatic objects are destructed according to the usual rules of C++, and that’s where your abnormal cleanup happens. We’ll talk more about this soon.</p>
+<p>⁴ The <code>co_await get_<wbr/>cancellation_<wbr/>token()</code> is one of the exceptions to the rule that <code>co_await</code> always checks for cancellation. In this case, <code>co_await get_<wbr/>cancellation_<wbr/>token()</code> doesn’t actually “await” anything. Rather, it’s a backdoor into the C++/WinRT library. We’ll learn more about how these backdoors work when we look at how to implement your own coroutines in C++20, at some unspecified point in the future.</p>
+
+
+</body>

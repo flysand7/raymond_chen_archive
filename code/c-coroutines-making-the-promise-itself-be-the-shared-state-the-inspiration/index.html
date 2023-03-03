@@ -1,0 +1,142 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Making the promise itself be the shared state, the inspiration</h1>  <!-- .entry-meta -->
+
+<p>Earlier, we <a href="/code/c-coroutines-the-initial-and-final-suspend-and-improving-our-return-value-method" title="C++ coroutines: The initial and final suspend, and improving our return_value method"> improved our simple coroutine promise by delaying the resumption of awaiting coroutines until local variables have destructed</a>. This time, we’ll look at another improvement.</p>
+<p>Recall that our coroutine is structured like this:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<th>Coroutine state</th>
+<td> </td>
+<td> </td>
+<td> </td>
+<th>Caller</th>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td>promise</td>
+<td style="margin-right: 1ex;">
+
+</td>
+<td style="border: solid 1px black; border-top: none;"><code>holder</code></td>
+<td>→</td>
+<td style="border: solid 1px black;"><code>result_<wbr/>holder</code> state</td>
+<td>←</td>
+<td style="border: solid 1px black;"><code>holder</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">stack frame</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>There are two allocations, one for the coroutine state, and one for the shared state internal to the <code>result_<wbr/>holder</code>. But what if we put the <code>result_<wbr/>holder</code> shared state inside the promise? In other words, what if we made the promise <i>be</i> the <code>result_<wbr/>holder</code> shared state?¹</p>
+<p>This trick takes advantage of the fact that you are permitted to suspend in the <code>final_<wbr/>suspend</code>. This lets you pause the coroutine execution before it gets to the point where it destroys the coroutine state.</p>
+<p>The idea is that we move into the promise object all of the <code>result_<wbr/>holder</code> shared state, including the reference count hiding inside the <code>shared_ptr</code>.</p>
+<p>Let’s make the original diagram a bit more honest about the shared pointer control block. Recall that a <code>shared_ptr</code> is a pair of pointers, one to a control block and one to the shared data, and the control block consists of two reference counts, one for strong references and one for weak references.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<th>Coroutine state</th>
+<td> </td>
+<td> </td>
+<td> </td>
+<th>Caller</th>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">bookkeeping</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td>promise</td>
+<td style="margin-right: 1ex;">
+
+</td>
+<td style="border: solid 1px black; border-top: none;"><code>holder</code></td>
+<td>→<br/>
+→</td>
+<td style="border: solid 1px black;">refcounts<br/>
+<code>result_<wbr/>holder</code> state</td>
+<td>←<br/>
+←</td>
+<td style="border: solid 1px black;"><code>holder</code></td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">stack frame</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>What we’re doing is moving the shared pointer control block and the shared state into the promise.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td> </td>
+<td> </td>
+<th>Coroutine state</th>
+<td> </td>
+<th>Caller</th>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">bookkeeping</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td rowspan="2">promise</td>
+<td rowspan="2" style="margin-right: 1ex;">
+
+</td>
+<td style="border: 1px black; border-style: none solid;">refcount</td>
+<td>←</td>
+<td style="border: solid 1px black;"><code>holder</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black; border-top: none;"><code>result_<wbr/>holder</code> state</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black;">stack frame</td>
+<td> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>We don’t need to support weak references at all, so we are down to just one reference count.</p>
+<p>A running coroutine has a reference to its own state, and any outstanding <code>holder</code> objects also have a reference to the coroutine state. Only when all references go away do we destroy the coroutine state.</p>
+<p>We’re going to have to rewrite a bunch of stuff basically from scratch, seeing as we’re abandoning the entire <code>shared_ptr</code> model that we had been using up until now. Let’s hope it’s worth it.</p>
+<p><b>Bonus chatter</b>: I figured I’d do the whole <code>shared_ptr</code> thing first, since it makes the several-week-long path to this point easier to follow. If I had started directly with the “result holder state embedded in the coroutine state”, it would probably have been too confusing.</p>
+<p>¹ Thanks to Gor Nishanov for providing this inspiration.</p>
+
+
+</body>

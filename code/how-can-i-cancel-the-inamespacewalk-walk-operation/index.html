@@ -1,0 +1,102 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I cancel the <code>INamespace­Walk::</code><code>Walk</code> operation?</h1>  <!-- .entry-meta -->
+
+<p>We saw that <a href="https://blogs.msdn.microsoft.com/oldnewthing/20171108-00/?p=97365">you can stop a <code>INamespace­Walk::</code><code>Walk</code> operation by returning a COM error code from the <code>Enter­Folder</code> or <code>Found­Item</code> callback</a>. </p>
+<p>So let’s do that in order to add a timeout to the namespace walk operation. At each callback, we’ll check how much time has elapsed since the operation started, and if it’s too long, then we return <code>HRESULT_</code><code>FROM_</code><code>WIN32(</code><code>ERROR_</code><code>CANCELLED)</code>. </p>
+<pre>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;wrl/client.h&gt;
+#include &lt;wrl/implements.h&gt;
+#include &lt;stdio.h&gt; // Horrors! Mixing stdio and C++!
+
+namespace wrl = Microsoft::WRL;
+
+class WalkCallback : public wrl::RuntimeClass&lt;
+  wrl::RuntimeClassFlags&lt;wrl::ClassicCom&gt;,
+  INamespaceWalkCB&gt;
+{
+public:
+  // INamespaceWalkCB
+  IFACEMETHODIMP FoundItem(IShellFolder *,
+   PCUITEMID_CHILD) override
+   { m_itemCount++; return TimeoutStatus(); }
+
+  IFACEMETHODIMP EnterFolder(IShellFolder *,
+   PCUITEMID_CHILD) override
+   { m_folderCount++; return TimeoutStatus(); }
+
+  IFACEMETHODIMP LeaveFolder(IShellFolder *,
+   PCUITEMID_CHILD) override { return S_OK; }
+
+  IFACEMETHODIMP InitializeProgressDialog(PWSTR *ppszTitle,
+    PWSTR *ppszCancel) override
+    { *ppszTitle = nullptr; *ppszCancel = nullptr;
+      return E_NOTIMPL; }
+
+  int ItemCount() const { return m_itemCount; }
+  int FolderCount() const { return m_folderCount; }
+
+private:
+  bool IsTimedOut()
+    { return <a href="https://blogs.msdn.microsoft.com/oldnewthing/20050531-22/?p=35493">GetTickCount() - m_startTime</a> &gt; 1000; }
+
+  HRESULT TimeoutStatus()
+    { return IsTimedOut() ?
+      HRESULT_FROM_WIN32(ERROR_CANCELLED) : S_OK; }
+
+  DWORD m_startTime = GetTickCount();
+  int m_itemCount = 0;
+  int m_folderCount = 0;
+};
+</pre>
+<p>Our callback object implements <code>INamespace­Walk­CB</code> by tallying the number of items and folders it encounters. When we find an item or folder, we increment the appropriate counter and check whether we have reached the timeout. If so, we return <code>HRESULT_</code><code>FROM_</code><code>WIN32(</code><code>ERROR_</code><code>CANCELLED)</code> to stop the operation. </p>
+<p>Let’s take it for a spin. </p>
+<pre>
+int __cdecl wmain(int argc, PWSTR argv[])
+{
+  <a href="https://devblogs.microsoft.com/oldnewthing/">CCoInitialize</a> coinit;
+
+  wrl::ComPtr&lt;INamespaceWalk&gt; walk;
+  CoCreateInstance(CLSID_NamespaceWalker, nullptr,
+    CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&amp;walk));
+
+  wrl::ComPtr&lt;IShellItem&gt; root;
+  SHCreateItemFromParsingName(argv[1], nullptr,
+    IID_PPV_ARGS(&amp;root));
+
+  auto callback = wrl::Make&lt;WalkCallback&gt;();
+
+  HRESULT hr = walk-&gt;Walk(root.Get(), NSWF_DEFAULT,
+    100, callback.Get());
+
+  printf("Walk completed with result 0x%08x\n", hr);
+  printf("Found %d items and %d folders\n",
+   callback-&gt;ItemCount(), callback-&gt;FolderCount());
+
+  return 0;
+}
+</pre>
+<p>When I ran this on a small directory tree, I got </p>
+<pre>
+Walk completed with result 0x00000000
+Found 43 items and 6 folders
+</pre>
+<p>The walk completed in less than one second, so the walk operation completed with <code>S_OK</code>. </p>
+<p>I repeated the exercise on <code>C:\Users</code> and got </p>
+<pre>
+Walk completed with result 0x80070005
+Found 0 items and 2 folders
+</pre>
+<p>The walk operation encountered an <code>E_ACCESS</code><code>DENIED</code> error before one second elapsed. </p>
+<p>Next, I tried it with my own home directory. </p>
+<pre>
+Walk completed with result 0x800704c7
+Found 3940 items and 2990 folders
+</pre>
+<p>It found 3940 items and 2990 folders before it ran out of time. </p>
+<p>Next time, we’ll dig a little bit deeper into cancellation. </p>
+
+
+</body>

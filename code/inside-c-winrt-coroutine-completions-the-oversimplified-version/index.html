@@ -1,0 +1,47 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Inside C++/WinRT: Coroutine completions: The oversimplified version</h1>  <!-- .entry-meta -->
+
+<p>C++/WinRT coroutines use the <code>Completed</code> delegate property to be notified when an asynchronous operation is complete. There are multiple parts of the completion handler. Today we’ll look at an oversimplified version, and then we will gradually build it up.</p>
+<pre>template &lt;typename Async&gt;
+struct await_adapter
+{
+    await_adapter(Async const&amp; async) : async(async) { }
+
+    Async const&amp; async;
+
+    bool await_ready() const noexcept
+    {
+        return false;
+    }
+
+    void await_suspend(std::experimental::coroutine_handle&lt;&gt; handle) const
+    {
+        async.Completed([handle](auto&amp;&amp; ...)
+        {
+            handle.resume();
+        });
+    }
+
+    auto await_resume() const
+    {
+        return async.GetResults();
+    }
+};
+</pre>
+<p>To <code>co_await</code> an <code>IAsyncAction</code> or <code>IAsyncOperation</code>, we register a completion callback that resumes the awaiting coroutine. When the coroutine resumes, it will call <code>await_resume()</code> to obtain the result of the <code>co_await</code>, and we propagate the result of the <code>GetResults()</code> method.</p>
+<p>We don’t particularly care about the parameters passed to the completion delegate: Those tell us whether the asynchronous work completed successfully, was cancelled, or failed outright, but we don’t need to remember that information because <code>GetResults()</code> will report the information again: If the asynchronous work did not complete successfully, then <code>GetResults()</code> will thrown an exception describing why it was not successful.</p>
+<p>As things go, this is a fairly standard implementation of a coroutine awaiter, although there is a race condition we need to fix:</p>
+<pre>    void await_suspend(std::experimental::coroutine_handle&lt;&gt; handle) const
+    {
+        <span style="color: #08f;">auto extend_lifetime = async;</span>
+        async.Completed([handle](auto&amp;&amp; ...)
+        {
+            handle.resume();
+        });
+    }
+</pre>
+<p>If the completion handler runs before <code>Completed()</code> returns, then we end up destroying the <code>async</code> while there is still an active call on it. This is a problem I called out <a href="/code/c-coroutines-getting-started-with-awaitable-objects" title="C++ coroutines: Getting started with awaitable objects"> at the start of my coroutine series</a>. To fix this, we make a local copy of the <code>async</code> to extend its lifetime to the end of the <code>await_suspend</code> function.</p>
+<p>This is just the starting point for C++/WinRT coroutine completion handlers. Next time, we’ll add apartment-preserving behavior.</p>
+
+
+</body>

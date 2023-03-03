@@ -1,0 +1,143 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The various patterns for passing C-style arrays across the Windows Runtime ABI boundary</h1>  <!-- .entry-meta -->
+
+<p>The Windows Runtime supports C-style arrays. These are contiguous blocks of memory that consist of multiple consecutive instances of the same type. (This is not to be confused with a Windows Runtime <i>vector</i>, which is an interface that resembles an array but which does not require any particular storage format.)</p>
+<p>Arrays are kind of weird, because they aren’t “objects” (there is no identity), but they aren’t scalars either (they are variable-sized). And there are multiple patterns for passing these arrays across the ABI boundary, depending on who is allocating the memory, whether the size is known to the caller, and whether the memory is being passed into or out of the function.</p>
+<ul>
+<li><i>PassArray</i>: The caller passes a read-only array, and the implementation reads from it.</li>
+<li><i>FillArray</i>: The caller passes a write-only array, and the implementation fills it with data.</li>
+<li><i>ReceiveArray</i>: The implementation allocates a block of memory for the array and the caller receives a pointer to that block of memory, as well as the number of elements in the array.</li>
+</ul>
+<p>Here’s a table, since people tend to like tables.</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th rowspan="2"> </th>
+<th rowspan="2">PassArray</th>
+<th rowspan="2">FillArray</th>
+<th colspan="2">ReceiveArray</th>
+</tr>
+<tr>
+<th>Parameter</th>
+<th>Return value</th>
+</tr>
+<tr>
+<th>Allocated by</th>
+<td>Caller</td>
+<td>Caller</td>
+<td>Callee</td>
+<td>Callee</td>
+</tr>
+<tr>
+<th>Size</th>
+<td>Caller decides</td>
+<td>Caller decides</td>
+<td>Callee decides</td>
+<td>Callee decides</td>
+</tr>
+<tr>
+<th>Freed by</th>
+<td>Caller</td>
+<td>Caller</td>
+<td>Caller</td>
+<td>Caller</td>
+</tr>
+<tr>
+<th>Allocator</th>
+<td>Caller decides</td>
+<td>Caller decides</td>
+<td>COM allocator</td>
+<td>COM allocator</td>
+</tr>
+<tr>
+<th>Policy</th>
+<td>Read-only</td>
+<td>Write-only</td>
+<td>Write-only</td>
+<td>Write-only</td>
+</tr>
+<tr>
+<th>IDL</th>
+<td style="font-size: 80%;"><code>void M(T[] value);</code></td>
+<td style="font-size: 80%;"><code>void M(<br/>
+  ref T[] value);</code></td>
+<td style="font-size: 80%;"><code>void M(<br/>
+  out T[] value);</code></td>
+<td style="font-size: 80%;"><code>T[] M();</code></td>
+</tr>
+<tr>
+<th>ABI</th>
+<td style="font-size: 80%;"><code>HRESULT M(<br/>
+                UINT32 size,<br/>
+                _In_reads_(size)<br/>
+                T* value);</code></td>
+<td style="font-size: 80%;"><code>HRESULT M(<br/>
+                UINT32 size,<br/>
+                _Out_writes_all_(<br/>
+                  size) T* value);</code></td>
+<td colspan="2" style="font-size: 80%;"><code>HRESULT M(<br/>
+                _Out_ UINT32* size,<br/>
+                _Outptr_result_buffer_all_(<br/>
+                  *size) T** value);</code></td>
+</tr>
+<tr>
+<th>C++/WinRT</th>
+<td style="font-size: 80%;"><code>void M(<br/>
+ array_view&lt;T const&gt;<br/>
+ value);</code></td>
+<td style="font-size: 80%;"><code>void M(<br/>
+ array_view&lt;T&gt; value);</code></td>
+<td style="font-size: 80%;"><code>void M(<br/>
+  com_array&lt;T&gt;&amp;<br/>
+  value);</code></td>
+<td style="font-size: 80%;"><code>com_array&lt;T&gt; M();</code></td>
+</tr>
+<tr>
+<th>C++/CX</th>
+<td style="font-size: 80%;"><code>void M(<br/>
+  const Array&lt;T&gt;^<br/>
+  value);</code></td>
+<td style="font-size: 80%;"><code>void M(<br/>
+  WriteOnlyArray&lt;T&gt;^<br/>
+  value);</code></td>
+<td style="font-size: 80%;"><code>void M(<br/>
+  Array&lt;T&gt;&amp;<br/>
+  value);</code></td>
+<td style="font-size: 80%;"><code>Array&lt;T&gt;^ M();</code></td>
+</tr>
+<tr>
+<th>C#</th>
+<td style="font-size: 80%;"><code>void M(T[] value);</code></td>
+<td style="font-size: 80%;"><code>void M(T[] value);</code></td>
+<td style="font-size: 80%;"><code>void M(<br/>
+  out T[] value);</code></td>
+<td style="font-size: 80%;"><code>T[] M();</code></td>
+</tr>
+<tr>
+<th>VB</th>
+<td style="font-size: 80%;"><code>Sub M(value As T[])</code></td>
+<td style="font-size: 80%;"><code>Sub M(value As T[])</code></td>
+<td style="font-size: 80%;"><code>Sub M(ByRef value<br/>
+  As T[])</code></td>
+<td style="font-size: 80%;"><code>Function M()<br/>
+  As T[]</code></td>
+</tr>
+<tr>
+<th>JS</th>
+<td style="font-size: 80%;"><code>function M(value<br/>
+  : TypedArray)</code></td>
+<td style="font-size: 80%;"><code>function M(value<br/>
+  : TypedArray)</code></td>
+<td style="font-size: 80%;"><code>function M()<br/>
+ : TypedArray</code></td>
+<td style="font-size: 80%;"><code>Function M()<br/>
+ : TypedArray</code></td>
+</tr>
+</tbody>
+</table>
+<p>I gave the JavaScript prototypes in TypeScript notation so I could annotate the data types. The case of an <code>out</code> parameter in JavaScript is a bit more complicated than it looks. I’ll save that topic for <a href="/code/how-does-javascript-represent-output-parameters-in-the-windows-runtime" title="How does JavaScript represent output parameters in the Windows Runtime"> another day</a>.</p>
+<p>Note that in the case of PassArray, the formal parameter at the ABI level is not declared <code>const T*</code>, even though the buffer is read-only.</p>
+<p><b>Update</b>: “Freed by” and “Allocator” rows <a href="https://devblogs.microsoft.com/oldnewthing/20201203-00/?p=104507"> added later</a>.</p>
+
+
+</body>

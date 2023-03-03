@@ -1,0 +1,40 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I get the name of the function that crashed given just a module name and offset?</h1>  <!-- .entry-meta -->
+
+<p>The only information a customer had regarding a crash was the following: </p>
+<blockquote class="q"><p>Faulting application name: Contoso.exe, version: 1.0.0.0, time stamp: 0x4a425e19<br/>Faulting module name: Contoso.exe, version: 1.0.0.0, time stamp: 0x4a425e19<br/>Exception code: 0xc0000005<br/>Fault offset: 0x000050d0<br/>Faulting process id: 0x1910<br/>Faulting application start time: 1cad18414e63580 </p></blockquote>
+<p>They wanted to know what function crashed. </p>
+<p>This is an application of <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/11/15/10468136.aspx">techniques for restoring symbols to a stack trace that was generated without symbols</a>, but in the simplified case where there is only one address, not an entire stack trace (so you need to do the work only once), and in the special case where all you have is a module name and an offset. </p>
+<p>The first step is to find the correct executable. The time stamp in the event log is <code>0x4a425e19</code>, which <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/09/05/54806.aspx">we recognize</a> as a UNIX style timestamp. <a href="http://www.onlineconversion.com/unix_time.htm">This handy online converter</a> says that it’s June 24, 2009 at 17:10:49 GMT. Dig into your archives and find a build generated around that time and check the time stamp in the file header. The <code>link /dump /headers</code> command will tell you: </p>
+<pre>
+FILE HEADER VALUES
+             14C machine (x86)
+               3 number of sections
+        <font color="blue">4A1ECBC2</font> time date stamp Thu May 28 10:37:06 2009
+</pre>
+<p>Okay, that’s the wrong one since the time stamps don’t match. Keep looking until you find the right one, and also grab its matching symbol file (<code>contoso.pdb</code>). </p>
+<p>Once you do, you can load it up in the debugger. </p>
+<pre>
+C:\&gt; ntsd -z contoso.exe
+
+ModLoad: <font color="blue">00100000</font> 00130000   contoso.exe
+
+0:001&gt; u 0x00100000+0x50d0 L1
+contoso!CViewReportTask::Run+0x102:
+001050d0 8a18             mov     bl,[eax]  
+</pre>
+<p>Okay, so at least you know that the crash was in the <code>CView­Report­Task::Run</code> method. You can also ask for line number information: </p>
+<pre>
+0:001&gt; .lines
+Line number information will be loaded
+0:001&gt; u 0x00100000+0x50d0 L1
+contoso!CViewReportTask::Run+0x102 [viewreporttask.cpp @ 250]:
+001050d0 8a18             mov     bl,[eax]  
+</pre>
+<p>We see that the crash was on line 250. </p>
+<p>To figure out what part of line 250, you’ll have to dig into the disassembly and reverse-compile the code to see exactly which part of line 250 is being executed at <code>001050d0</code>. You don’t know what value is in any of the registers, so all you know is that the pointer is invalid; you don’t know whether it is null or wild, or how it got that way. </p>
+<p><b>Bonus chatter</b>: You probably should sign up for <a href="https://msdn.microsoft.com/en-us/library/windows/hardware/dn641144.aspx">Windows Error Reporting</a> so that you will receive crash dumps automatically, which provide a full stack trace instead of a single address, and it also captures register values and limited contents of the stack. You can also ask for more information to be captured in future crash dumps. </p>
+<p><b>Bonus exercise</b>: Use your time stamp recognition skills to determine what <i>Faulting application start time</i> corresponds to. </p>
+
+
+</body>

@@ -1,0 +1,79 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Uninitialized floating point variables can be deadly</h1>  <!-- .entry-meta -->
+
+<p><p>
+A colleague of mine related to me this story about uninitialized
+floating point variables.
+He had a function that went something like this,
+simplified for expository purposes.
+The <code>infoType</code> parameter specified which piece of
+information you’re requesting,
+and depending on what you’re asking for,
+one or the other of the output parameters may not contain a
+meaningful result.
+</p>
+<pre>
+BOOL GetInfo(int infoType, int *intResult, double *dblResult)
+{
+ int intValue;
+ double dblValue;</pre></p>
+<p> switch (infoType) {
+ case NUMBER_OF_GLOBS:
+  intValue = …;
+  break;</p>
+<p> case AVERAGE_GLOB_SIZE:
+  dblValue = …;
+  break;
+ …
+ }
+ *intResult = intValue;
+ *dblResult = dblValue;
+ …
+}
+
+<p>
+After the product shipped, they started geting crash reports.
+This was in the days before Windows Error Reporting,
+so all they had to work from was the faulting address,
+which implicated the line
+<code>*dblResult = dblValue</code>.
+</p>
+<p>
+My colleague initially suspected that <code>dblResult</code>
+was an invalid pointer, but a search of the entire code base
+ruled out that possibility.
+</p>
+<p>
+The problem was the use of an uninitialized floating point
+variable.
+Unlike integers, not all bit patterns are valid for use as
+floating point values.
+There is a category of values
+known as <i>signaling NaNs</i>,
+or
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/06/11/8590589.aspx#8592966">
+<code>SNaN</code> for short</a>,
+which are special “not a number” values.
+If you ask the processor to,
+it will keep an eye out for these signaling NaNs
+and raise an “invalid operand” exception when one
+is encountered.
+(This, after all, is the whole reason why it’s called a <i>signaling</i>
+NaN.)
+</p>
+<p>
+The problem was that, if you are sufficiently unlucky,
+the leftover values in the memory assigned to the
+<code>dblValue</code> will happen to 
+have a bit pattern corresponding to a <code>SNaN</code>.
+And then when the processor tries to copy it to
+<code>dblResult</code>, then exception is raised.
+</p>
+<p>
+There’s another puzzle lurking behind this one:
+Why wasn’t this problem caught in internal testing?
+We’ll learn about that next time.
+</p></p>
+
+
+</body>

@@ -1,0 +1,36 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: What does it mean when I declare my coroutine as noexcept?</h1>  <!-- .entry-meta -->
+
+<p>Suppose you want a coroutine that terminates on unhandled exceptions, or equivalently (looking at it from the consumer side) a coroutine that never throws an exception when awaited. For regular functions, the way to say this is to put the <code>noexcept</code> exception specification on your function declaration:</p>
+<pre>int GetValue() noexcept
+{
+    return LoadValue();
+}
+</pre>
+<p>If the <code>Load­Value()</code> function raises an exception, the exception propagation stops at the <code>noexcept</code> and turns into a <code>std::terminate</code>, which is a fatal error that terminates the application.</p>
+<p>Looking at the contract from the other side, the <code>noexcept</code> specification tells the caller that no exceptions can escape the <code>Get­Value()</code> function, so the caller can optimize accordingly. <code>Get­Value()</code> will get you a value or die trying.</p>
+<p>Okay, so what happens when you apply this to a coroutine?</p>
+<pre>simple_task&lt;int&gt; GetValueAsync() noexcept
+{
+    co_return LoadValue();
+}
+</pre>
+<p>If an exception is thrown by the <code>Load­Value()</code> function, the exception is captured into the <code>simple_task</code> and is rethrown when the task is <code>co_await</code>ed.</p>
+<p>Wait a second. I put the <code>noexcept</code> keyword on this function. Certainly that means that any unhandled exception in the function terminates the program, right?</p>
+<p>Yes, that’s what it means, but your coroutine isn’t the function.</p>
+<p>The function is the thing that returns a <code>simple_task</code>. And the <code>noexcept</code> says that the <code>Get­Value­Async()</code> function can successfully return a <code>simple_task</code> without raising an exception.</p>
+<p>Look at this from the caller’s point of view: The caller sees only</p>
+<pre>simple_task&lt;int&gt; GetValueAsync() noexcept;
+</pre>
+<p>This is not a coroutine definition. This is just a function prototype. The caller doesn’t know how GetValueAsync() is going to produce that <code>simple_task</code>. The implementation could be</p>
+<pre>simple_task&lt;int&gt; GetValueAsync() noexcept
+{
+    return simple_task&lt;int&gt;(constructor parameters);
+}
+</pre>
+<p>Just the usual case of returning a constructed object. No coroutines involved at all.</p>
+<p>If <code>Get­Value­Async()</code> is implemented as a coroutine, then any unhandled exception is passed to the coroutine promise’s <code>unhandled_<wbr/>exception</code> method, and it’s up to the promise to decide what to do next.</p>
+<p>So what can you do if you really want your coroutine to terminate on unhandled exception? We’ll look at that next time.</p>
+
+
+</body>

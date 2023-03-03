@@ -1,0 +1,60 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I write a program that monitors another window for a change in size or position?</h1>  <!-- .entry-meta -->
+
+<p>A few days ago, a reader bemoaned, “<a href="https://devblogs.microsoft.com/oldnewthing/20201228-00/?p=104610#comment-137587">There’s no way to update the position/aspect ratio of live window thumbnails unless you poll</a>.”</p>
+<p>Today’s Little Program monitors another window for a change in its size and position, without polling. It’s basically another variation on the basic “window monitoring” pattern. This time, instead of <a href="https://devblogs.microsoft.com/oldnewthing/20180601-00/?p=98895" title="How can I write a program that monitors another window for a title change?"> monitoring the title</a>, we monitor the location (which is the combination of size, position, and shape).</p>
+<pre>#define UNICODE
+#define <a href="https://devblogs.microsoft.com/oldnewthing/20040212-00/?p=40643">_UNICODE</a>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+
+HWND g_hwndMonitor;
+
+void CALLBACK WinEventProc(
+  HWINEVENTHOOK hook,
+  DWORD event,
+  HWND hwnd,
+  LONG idObject,
+  LONG idChild,
+  DWORD idEventThread,
+  DWORD time)
+{
+  if (hwnd == g_hwndMonitor &amp;&amp;
+      idObject == OBJID_WINDOW &amp;&amp;
+      idChild == CHILDID_SELF &amp;&amp;
+      event == EVENT_OBJECT_LOCATIONCHANGE) {
+    RECT rc;
+    if (GetWindowRect(g_hwndMonitor, &amp;rc)) {
+        printf("window rect is (%d,%d)-(%d,%d)\n",
+            rc.left, rc.top, rc.right, rc.bottom);
+    }
+  }
+}
+
+int __cdecl main(int, char**)
+{
+  g_hwndMonitor = FindWindow(L"Awesome Program", nullptr);
+  DWORD processId;
+  DWORD threadId = GetWindowThreadProcessId(g_hwndMonitor, &amp;processId);
+  HWINEVENTHOOK hook = SetWinEventHook(
+    EVENT_OBJECT_LOCATIONCHANGE,
+    EVENT_OBJECT_LOCATIONCHANGE,
+    nullptr,
+    WinEventProc,
+    processId,
+    threadId,
+    WINEVENT_OUTOFCONTEXT);
+  MessageBox(nullptr, L"Press OK when bored", L"Title", MB_OK);
+
+  UnhookWinEvent(hook);
+  return 0;
+}
+</pre>
+<p>The program starts by identifying the window it wants to monitor. This is your application’s business logic, so I’ll just fake it with a <code>Find</code><code>Window</code>.</p>
+<p>We get the thread and process ID for the window and use it to register a thread-specific accessibility event hook, filtered to location changes.</p>
+<p>In the event callback, we see if the notification is for the window we are monitoring. If so, we get the window bounds and print it. The attempt to get the window bounds might fail if the window has been destroyed, so watch out for that.¹</p>
+<p>¹ One way to track object destruction is with, yup, another accessibility hook, this time watching for <code>EVENT_<wbr/>OBJECT_<wbr/>DESTROY</code>.</p>
+
+
+</body>

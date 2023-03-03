@@ -1,0 +1,78 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a co_await awaitable signal that can be awaited multiple times, part 6</h1>  <!-- .entry-meta -->
+
+<p>So far, we’ve <a href="/code/creating-a-co-await-awaitable-signal-that-can-be-awaited-multiple-times-part-5" title="Creating a co_await awaitable signal that can be awaited multiple times, part 5"> created an awaitable signal that can be awaited multiple times</a>. I noted last time that there was still a lot left to discuss. So let’s discuss those things.</p>
+<p>In all of the implementations we’ve created in this series, if resuming a coroutine raises an exception, the unresumed coroutines remain permanently suspended. Fortunately, that’s not a problem in practice with non-generator coroutines. (More on that in a future entry.)</p>
+<p>Furthermore, even though we tried to preserve fairness by resuming the waiting coroutines in FIFO order, the unfairness has not been completely eradicated: A late-coming coroutine that waits on the event after it has been signaled will be allowed to pass through immediately instead of waiting for the resumption of the coroutines that had previously been waiting patiently on the event.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th style="border: solid 1px black; border-top-style: none;">Coroutine 1</th>
+<th style="border: solid 1px black; border-top-style: none;">Coroutine 2</th>
+<th style="border: solid 1px black; border-top-style: none;">Coroutine 3</th>
+<th style="border: solid 1px black; border-top-style: none;">Coroutine 4</th>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid;">Wait on event</td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;">Wait on event</td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;">Set event</td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;">Resume<br/>
+waiting coroutines</td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;">Wait on event</td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;">Continues executing</td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid;">Continues executing</td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+</tr>
+<tr>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;">Continues executing</td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+<td style="border: 1px black; border-style: none solid;"> </td>
+</tr>
+</tbody>
+</table>
+<p>This is the case where there is a line of people waiting to get into the building, and once the doors are unlocked, some latecomer just runs through the open door, past all the people who had been waiting in line. We could try to fix this by making newly-waiting coroutines check both whether the event is set <i>and</i> whether the previous waiters are still being released. If so, then append the current coroutine to the end of the list of coroutines being woken. (This is the coroutine version of sending the latecomer to the back of the line.)</p>
+<p>However, we won’t do that, because it introduces extra complexity, leads to convoys, and this type of unfairness is probably not entirely unexpected.</p>
+<p>All of our implementations resume the coroutines sequentially. This can be a problem if one of the coroutines resumes and begins doing long-running work, since it will starve out the other coroutines awaiting resumption. We can fix this by queueing all the resumptions to the thread pool. We should still queue them in FIFO order so that they are more likely to be resumed in that order.</p>
+<p>Which ties into the next observation: The resumption of the coroutines happens on an arbitrary thread. The way we’ve been coding it up, the resumption occurs on the thread that signals the event. If we queue resumptions to the thread pool, then they run on a thread pool thread. Callers need to be aware that the <code>co_await</code> can change thread contexts.</p>
+<p>And then there’s the matter of abandonment. If a coroutine is destroyed while waiting for the event, we corrupt the linked list. Should we have the awaiter’s destructor unlink itself from the event’s linked list at destruction?</p>
+<p>After thinking about this problem for a while, I eventually convinced myself that we do <i>not</i> need to defend against this, or at least don’t need to try very hard.</p>
+<p>A coroutine can be destroyed only when it is in the suspended state. Therefore, in principle, a caller could destroy the coroutine while it is suspended, waiting for the event to be signaled. However, the caller would have no way of knowing whether it is safe to do so, because immediately before the caller decides to destroy the coroutine, another coroutine might have signaled the event, thereby resuming the about-to-be-destroyed coroutine.</p>
+<p>The only way the caller can be sure that destroying the coroutine is safe is if they also control the event and can ensure that the event is definitely not signaled. This means that we don’t have to defend against the case where a coroutine is destroyed at the same time that an event is being signaled, which is a good thing because that race condition also turns into a race condition in our bookkeeping.</p>
+<p>We’ll start generalizing this solution to other types of synchronization objects, and I’ll remember to include abandonment in that generalization.</p>
+<p><b>Bonus chatter</b>: Lewis Baker’s excellent <a href="https://github.com/lewissbaker/cppcoro"> coroutine library</a> doesn’t deal with the case where an awaiting coroutine is destroyed while suspended. So maybe I’m being a bit too paranoid about this?</p>
+
+
+</body>

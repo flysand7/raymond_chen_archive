@@ -1,0 +1,83 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Determining how each Explorer window is sorted</h1>  <!-- .entry-meta -->
+
+<p>Today’s Little Program lists all the open Explorer windows and their current sort criteria. (I will refrain from mentioning how auto-sort makes this meaningful.) Remember that Little Programs do little to no error checking. </p>
+<pre>
+#define STRICT
+#include &lt;windows.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;shlobj.h&gt;
+#include &lt;shdispid.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;atlalloc.h&gt;
+#include &lt;stdio.h&gt;
+
+void ProcessOneWindow(IUnknown *punk)
+{
+ CComPtr&lt;IShellBrowser&gt; spsb;
+ if (FAILED(IUnknown_QueryService(punk, SID_STopLevelBrowser,
+                                  IID_PPV_ARGS(&amp;spsb)))) return;
+
+ CComPtr&lt;IShellView&gt; spsv;
+ if (FAILED(spsb-&gt;QueryActiveShellView(&amp;spsv))) return;
+
+ CComQIPtr&lt;IFolderView2&gt; spfv(spsv);
+ if (!spfv) return;
+
+ CComHeapPtr&lt;WCHAR&gt; spszLocation;
+ if (FAILED(<a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/06/10/10424662.aspx">GetLocationFromView</a>(spsb, &amp;spszLocation))) return;
+
+ printf("Location = %ls\n", static_cast&lt;PCWSTR&gt;(spszLocation));
+
+ int cColumns;
+ if (FAILED(spfv-&gt;GetSortColumnCount(&amp;cColumns))) return;
+ if (cColumns &gt; 10) cColumns = 10;
+
+ SORTCOLUMN rgColumns[10]; // arbitrary number
+ spfv-&gt;GetSortColumns(rgColumns, cColumns);
+
+ for (int i = 0; i &lt; cColumns; i++) {
+  PCWSTR pszDir = rgColumns[0].direction &gt; 0 ? L"ascending"
+                                             : L"descending";
+  PCWSTR pszName;
+  CComHeapPtr&lt;WCHAR&gt; spszName;
+  WCHAR szName[PKEYSTR_MAX];
+  if (SUCCEEDED(PSGetNameFromPropertyKey(rgColumns[0].propkey,
+                                         &amp;spszName))) {
+   pszName = spszName;
+  } else {
+   PSStringFromPropertyKey(rgColumns[0].propkey,
+                           szName, ARRAYSIZE(szName));
+   pszName = szName;
+  }
+  printf("Column = %ls, direction = %ls\n", pszName, pszDir);
+ }
+}
+
+int __cdecl wmain(int, wchar_t **)
+{
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+ CComPtr&lt;IShellWindows&gt; spShellWindows;
+ spShellWindows.CoCreateInstance(CLSID_ShellWindows);
+
+ CComPtr&lt;IUnknown&gt; spunkEnum;
+ spShellWindows-&gt;_NewEnum(&amp;spunkEnum);
+ CComQIPtr&lt;IEnumVARIANT&gt; spev(spunkEnum);
+
+ for (CComVariant svar;
+      spev-&gt;Next(1, &amp;svar, nullptr) == S_OK;
+      svar.Clear()) {
+  ProcessOneWindow(svar.pdispVal);
+ }
+ return 0;
+}
+</pre>
+<p>To process a window, we first ask for the top-level browser, and from that we ask for the active shell view, then convert it to an <code>IFolder­View2</code>. We ask for the 2 because that’s the one that lets us query sort columns. </p>
+<p>If anything goes wrong up to this point, it’s probably because the window doesn’t support sorting, so we won’t bother printing it. </p>
+<p>We print the location of the window using a helper function from a long time ago. </p>
+<p>Now the interesting part: We ask for the number of sort columns, then ask for those columns. </p>
+<p>That’s it. The rest is boring again: We print each of the sort columns and the sort direction. </p>
+<p>The main program loops through all the open Shell windows (which includes both Explorer and Internet Explorer) and processes each one. </p>
+
+
+</body>

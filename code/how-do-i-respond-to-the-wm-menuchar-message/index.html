@@ -1,0 +1,91 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I respond to the WM_MENUCHAR message?</h1>  <!-- .entry-meta -->
+
+<p>Today, for no particular reason, I’ll demonstrate how to handle the <code>WM_</code><code>MENU­CHAR</code> message. </p>
+<p>The system sends you the message <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ms646349(v=vs.85).aspx">when a menu is active and the user presses a key that does not correspond to any mnemonic or accelerator key</a>. The typical case for needing to handle this message is when you have a bitmap menu item and want to provide a mnemonic for it. </p>
+<p>Let’s take our <a href="https://blogs.msdn.microsoft.com/oldnewthing/20030723-00/?p=43073">scratch program</a> and make these changes: </p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ <font color="blue">HICON hico = LoadIcon(nullptr, IDI_INFORMATION);
+ ICONINFO ii;
+ GetIconInfo(hico, &amp;ii);
+ DeleteBitmap(ii.hbmMask);
+ ModifyMenu(GetMenu(hwnd), 103, MF_BYCOMMAND | MF_BITMAP,
+            103, (LPCTSTR)ii.hbmColor);</font>
+ return TRUE;
+}
+
+BOOL
+InitApp(void)
+{
+ ...
+ wc.lpszMenuName = <font color="blue">MAKEINTRESOURCE(1)</font>;
+ ...
+}
+
+// resource file
+<font color="blue">1 MENU
+BEGIN
+  POPUP "&amp;File"
+  BEGIN
+    MENUITEM "&amp;Something", 101
+    MENUITEM "&amp;Blah", 102
+    MENUITEM "", 103
+    MENUITEM "E&amp;xit", 104
+  END
+END</font>
+</pre>
+<p>We added a simple menu to our scratch program consisting of four options. Three are textual menu options: “Something”, “Blah”, and “Exit”. One is a bitmap, which we initialize in the <code>OnCreate</code> method to be the informational icon. </p>
+<p>Note that we leak the bitmap. This is just a demonstration. </p>
+<p>Note also that we don’t work particularly hard at scaling the bitmap to match the user’s screen DPI. This is just a demonstration. </p>
+<p>Note further that we don’t do anything with the mask, so the transparent parts of the icon will show up as black. This is just a demonstration. </p>
+<p>The program doesn’t do anything in response to the menu items. That’s not the point of the demonstration. </p>
+<p>When you open the File menu, observe that you can use the keyboard shortcuts <kbd>S</kbd>, <kbd>B</kbd>, and <kbd>X</kbd> to invoke the corresponding menu items. The system recognizes the <tt>&amp;</tt> prefix as indicating which character you want to treat as the mnemonic for that menu item. </p>
+<p>But there is no keyboard shortcut for the information icon. It’s just a bitmap. The system has no insight into the contents of the bitmap and come up with some sort of suitable mnemonic. </p>
+<p>Let’s fix that. Let’s say that the mnemonic for the information icon should be <kbd>I</kbd>. </p>
+<pre>
+<font color="blue">int GetMenuItemPos(HMENU hmenu, UINT id)
+{
+ int pos;
+ for (pos = GetMenuItemCount(hmenu) - 1; pos &gt;= 0; pos--) {
+  if (GetMenuItemID(hmenu, pos) == id) break;
+ }
+ return pos;
+}
+
+DWORD OnMenuChar(HWND hwnd, UINT ch, UINT flags, HMENU hmenu)
+{
+ if ((flags &amp; MF_POPUP) &amp;&amp;
+     (hmenu == GetSubMenu(GetMenu(hwnd), 0))) {
+  switch (ch) {
+  case 'I':
+   return MAKELONG(GetMenuItemPos(hmenu, 104), MNC_SELECT);
+  }
+ }
+ return MAKELONG(0, MNC_IGNORE);
+}
+
+    HANDLE_MSG(hwnd, WM_MENUCHAR, OnMenuChar);</font>
+</pre>
+<p>When we get the <code>WM_</code><code>MENU­CHAR</code> message, we verify that the current menu is the File menu by comparing the menu handles. (In a real program, we probably would cache the popup menu handle so we didn’t have to digging for it each time.) If so, then we say that we want to select the information icon by returning a value that is a combination of </p>
+<ul>
+<li>The value <code>MNC_</code><code>SELECT</code>,     indicating that we want the item to be selected, and</li>
+<li>The index of the menu item to select.</li>
+</ul>
+<p>To get the index of the menu item, we use a helper function <code>Get­Menu­Item­Pos</code> which looks up the position of a menu item given its ID. </p>
+<p>With this change, you can how press <kbd>I</kbd> to select the information icon. It doesn’t execute the item, though; it merely selects it. You could do this if, say, there were two information icons and you wanted to let the user cycle between them, the same way the selection cycles among multiple textual menu items with the same mnemonic. </p>
+<p>If you want pressing <kbd>I</kbd> to invoke the menu item, then just make this change: </p>
+<pre>
+   return MAKELONG(GetMenuItemPos(hmenu, 104), <font color="blue">MNC_EXECUTE</font>);
+</pre>
+<p>Note that the <code>WM_</code><code>MENU­CHAR</code> message is sent only if the user presses a key that matches no textual menu item. If we change the last menu item to </p>
+<pre>
+    MENUITEM "Ex&amp;it", 104
+</pre>
+<p>so that its accelerator is also <kbd>I</kbd>, then pressing the <kbd>I</kbd> goes straight to that menu item, and there is no <code>WM_</code><code>MENU­CHAR</code> message. Your information icon bitmap menu item is a second-class citizen. </p>
+<p>Sorry. </p>
+
+
+</body>

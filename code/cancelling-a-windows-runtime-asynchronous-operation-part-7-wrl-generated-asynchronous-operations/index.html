@@ -1,0 +1,35 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Cancelling a Windows Runtime asynchronous operation, part 7: WRL-generated asynchronous operations</h1>  <!-- .entry-meta -->
+
+<p>Last time, we saw that <a href="/code/cancelling-a-windows-runtime-asynchronous-operation-part-6-c-winrt-generated-asynchronous-operations"> if a C++/WinRT asynchronous operation is cancelled, the result is an <code>hresult_<wbr/>canceled</code>.</a> Today, we’ll look at another implementation library for asynchronous operations: The Windows Runtime Template Library (WRL).</p>
+<p>WRL is a bit out of fashion nowadays, but back in its heyday, it was the stuff everybody used for creating Windows Runtime objects and asynchronous operations.</p>
+<pre>class AsyncBase&lt; ... &gt; : ...
+{
+    inline HRESULT CheckValidStateForResultsCall()
+    {
+        Details::AsyncStatusInternal current = Details::_Undefined;
+        CurrentStatus(&amp;current);
+
+        if (current == Details::_Error)
+        {
+            ...
+        }
+
+        if (resultType == SingleResult)
+        {
+            if (current != Details::_Completed)
+            {
+                <span style="color: blue;">::RoOriginateError(E_ILLEGAL_METHOD_CALL, nullptr);
+                return E_ILLEGAL_METHOD_CALL;</span>
+            }
+        }
+        ...
+    }
+};
+</pre>
+<p>The <code>Check­Valid­State­For­Results­Call</code> method does what is says: It validates that the operation is in a correct state for a call to <code>Get­Results()</code>. In the case where the operation has been canceled, we fail the first test (which propagates any explicit error code), but make it into the second part. This is a single-result operation¹ and a cancelled operation is not complete, so it returns <code>E_<wbr/>ILLEGAL_<wbr/>METHOD_<wbr/>CALL</code>, which propagates back into C++/WinRT as <code>hresult_<wbr/>illegal_<wbr/>method_<wbr/>call</code>.</p>
+<p>And that solves the mystery of why some cancelled operations throw an <code>hresult_<wbr/>illegal_<wbr/>method_<wbr/>call</code> exception. It took us a week to get here, but we finally made it. The propagation of cancellation is a delicate dance between the the operation and the awaiter, and it’s easy to stumble.</p>
+<p>¹ Nearly all Windows Runtime asynchronous operations are single-result. There’s another rarely-seen variant called the multiple-result asynchronous operation, which lets you call <code>Get­Results</code> before the operation has completed, and it gives you the result-so-far. I am not aware of any operations that do this, but the code supports.</p>
+
+
+</body>

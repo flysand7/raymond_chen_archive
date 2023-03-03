@@ -1,0 +1,83 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why can’t you treat a FILETIME as an __int64?</h1>  <!-- .entry-meta -->
+
+<p><p>
+<a href="http://msdn.microsoft.com/library/en-us/sysinfo/base/filetime_str.asp">
+The FILETIME structure</a> represents a 64-bit value in two parts:
+</p>
+<pre>
+typedef struct _FILETIME {
+  DWORD dwLowDateTime;
+  DWORD dwHighDateTime;
+} FILETIME, *PFILETIME;
+</pre>
+<p>
+You may be tempted to take the entire <code>FILETIME</code> structure
+and access it directly
+as if it were an <code>__int64</code>.
+After all, its memory layout exactly matches
+that of a 64-bit (little-endian) integer.
+<a href="http://www.codeproject.com/datetime/winapi_datetime_ops.asp">
+Some people have written sample code that does exactly this</a>:
+<pre>
+<i>pi = (__int64*)&amp;ft; // WRONG
+(*pi) += (__int64)num*datepart; // WRONG</i>
+</pre>
+<p>
+Why is this wrong?
+</p>
+<p>
+Alignment.
+</p>
+<p>
+Since a <code>FILETIME</code> is a structure containing two
+<code>DWORD</code>s, it requires
+only 4-byte alignment, since that is sufficient to put
+each <code>DWORD</code>
+on a valid <code>DWORD</code> boundary.
+There is no need for the first <code>DWORD</code>
+to reside on an 8-byte boundary.  And in fact, you’ve probably already
+used a structure where it doesn’t:
+<a href="http://msdn.microsoft.com/library/en-us/fileio/base/win32_find_data_str.asp">
+The WIN32_FIND_DATA structure</a>.
+</p>
+<pre>
+typedef struct _WIN32_FIND_DATA {
+    DWORD dwFileAttributes;
+    FILETIME ftCreationTime;
+    FILETIME ftLastAccessTime;
+    FILETIME ftLastWriteTime;
+    DWORD nFileSizeHigh;
+    DWORD nFileSizeLow;
+    DWORD dwReserved0;
+    DWORD dwReserved1;
+    TCHAR  cFileName[ MAX_PATH ];
+    TCHAR  cAlternateFileName[ 14 ];
+} WIN32_FIND_DATA, *PWIN32_FIND_DATA, *LPWIN32_FIND_DATA;
+</pre>
+<p>
+Observe that the three <code>FILETIME</code> structures appear at offsets 4,
+12, and 20 from the beginning of the structure.  They have been
+thrown off 8-byte alignment by the <code>dwFileAttributes</code> member.
+</p>
+<p>
+Casting a <code>FILETIME</code> to
+an <code>__int64</code> therefore can (and in the <code>WIN32_FIND_DATA</code>
+case, <strong>will</strong>) create a misaligned pointer.
+Accessing a misaligned pointer will raise a
+<code>STATUS_DATATYPE_MISALIGNMENT</code> exception on architectures which
+require alignment.
+</p>
+<p>
+Even if you are on a forgiving platform that
+performs automatic alignment fixups, you can still run into trouble.
+More on this and other consequences of alignment in the next few entries.
+</p>
+<p>
+<strong>Exercise</strong>: Why are the
+<code>LARGE_INTEGER</code> and
+<code>ULARGE_INTEGER</code> structures not affected?
+</p></p>
+
+
+</p></body>

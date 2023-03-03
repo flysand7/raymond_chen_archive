@@ -1,0 +1,79 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Inside <code>std::function</code>, part 1: The basic idea</h1>  <!-- .entry-meta -->
+
+<p>The C++ language standard library comes with a <code>std::function</code> template type which represents a “thing you can invoke”. It can hold any callable, such as</p>
+<ul>
+<li>Function pointer.</li>
+<li>Lambda.</li>
+<li>Other object with <code>operator()</code>.</li>
+</ul>
+<p>The way this is done is with the assistance of a polymorphic helper object that understands the specific callable it is wrapping.</p>
+<p>Here’s a sketch. For concreteness, let’s say we’re implementing <code>std::function&lt;bool(int, char*)&gt;</code>. For readability, I’ve de-uglified¹ the identifiers.</p>
+<pre>struct callable_base
+{
+  callable_base() = default;
+  virtual ~callable_base() { }
+  virtual bool invoke(int, char*) = 0;
+  virtual unique_ptr&lt;callable_base&gt; clone() = 0;
+};
+
+template&lt;typename T&gt;
+struct callable : callable_base
+{
+  T m_t;
+
+  callable(T const&amp; t) : m_t(t) {}
+  callable(T&amp;&amp; t) : m_t(move(t)) {}
+
+  bool invoke(int a, char* b) override
+  {
+    return m_t(a, b);
+  }
+
+  unique_ptr&lt;callable_base&gt; clone() override
+  {
+    return make_unique&lt;callable&gt;(m_t);
+  }
+};
+
+struct function
+{
+  std::unique_ptr&lt;callable_base&gt; m_callable;
+
+  template&lt;typename T&gt;
+  function(T&amp;&amp; t) :
+    m_callable(new callable&lt;decay_t&lt;T&gt;&gt;
+                (forward&lt;T&gt;(t)))
+  {
+  }
+
+  function(const function&amp; other) :
+    m_callable(other.m_callable ?
+               other.m_callable-&gt;clone() : nullptr)
+  {
+  }
+
+  function(function&amp;&amp; other) = default;
+
+  bool operator()(int a, char* b)
+  {
+    // TODO: bad_function_call exception
+    return m_callable-&gt;invoke(a, b);
+  }
+};
+</pre>
+<p>The idea is that each <code>function</code> has a <code>callable_base</code>, which is an interface that allows us to perform basic operations on callable objects: Create a copy, invoke it, and destroy it. Invoking the <code>function</code> forwards the invoke to the <code>callable_base</code>. Copying the <code>function</code> requires a special <code>clone</code> method on the <code>callable_base</code>, because <code>unique_ptr</code> is not copyable.</p>
+<p>Constructing the <code>function</code> is a matter of creating a custom <code>callable</code> for the specific functor. It’s conceptually simple, but the C++ language makes us write out a bunch of stuff to get it to work. We just want a callable that wraps the thing that was passed to the constructor.</p>
+<p>The <code>std::function</code> in the standard library is basically like this, but with additional optimizations to avoid an allocation in the case of a small <code>callable</code>. Said optimizations are in fact mandatory by the standard if the callable is a plain function pointer or a <code>reference_wrapper</code>.</p>
+<p>We’ll look at that optimization next time, because it gives us some insight into how we can do similar things with our own types.</p>
+<p>¹ Uglification is the process of taking readable names and transforming them into names that are reserved for the implemenmtation. Different libraries have different uglification conventions. For the Microsoft Visual C++ implementation of the standard library, the uglifications tend to be</p>
+<ul>
+<li><code>_My</code> prefix for member variables.</li>
+<li><code>_Ty</code> prefix for type names.</li>
+<li><code>_Fn</code> prefix for functors.</li>
+<li><code>_P</code> prefix for pointers.</li>
+<li><code>_</code> (and capital first letter) for most other things.</li>
+</ul>
+
+
+</body>

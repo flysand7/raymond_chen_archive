@@ -1,0 +1,75 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++11 braced initialization made the impossible possible (and how to fix it so it stays impossible)</h1>  <!-- .entry-meta -->
+
+<p>Suppose you have a private nested type. You might use this because you need your constructor to be public in order to work with some framework,¹ but you don’t want people to do their own <code>make_</code><code>unique</code>; you want them to go through your factory.</p>
+<pre>class Package
+{
+  struct private_constructor { };
+
+public:
+  // Do not call constructor directly. Use CreatePackage instead.
+  Package(int id, private_constructor);
+
+  static Package CreatePackage(int id, int flavor)
+  {
+    Package package(id, private_constructor());
+    ... do other stuff that gets the package ready ...
+    return package;
+  }
+};
+
+void bad_boy()
+{
+  // This doesn't work. Wrong number of parameters.
+  Package package(3);
+
+  // This doesn't work. private_constructor is a private type.
+  Package package(3, Package::private_constructor());
+}
+</pre>
+<p>But C++11 introduced braced initialization, and the bad boy can use that to construct the type without naming it.</p>
+<pre>void bad_boy_got_through()
+{
+  // Bad boy uses empty braces to sneak past the gate!
+  Package package(3, {});
+}
+</pre>
+<p>To prevent this, you need to give your private type an explicit constructor so it cannot be used implicitly.</p>
+<pre>class Package
+{
+  struct private_constructor
+    { <span style="color: blue;">explicit private_constructor() = default;</span> };
+
+public:
+  // Do not call constructor directly. Use CreatePackage instead.
+  Package(int id, private_constructor);
+
+  ...
+};
+</pre>
+<p>With this change, the bad boy has been foiled.</p>
+<pre>void bad_boy_foiled()
+{
+  // Can't sneak in with empty braces.
+  Package package(3, {});
+}
+</pre>
+<p>From Visual C++:</p>
+<pre style="whitespace: pre-wrap;">error C2664: 'Package::Package(Package &amp;&amp;)': cannot convert argument 2 from 'initializer list' to 'Package::private_constructor'
+</pre>
+<p>From clang:</p>
+<pre>error: converting to 'Package::private_constructor' from initializer list would use explicit constructor 'constexpr Package::private_constructor::private_constructor()'
+</pre>
+<p>And the explicit constructor is inaccessible.</p>
+<pre>void bad_boy_foiled()
+{
+  // Can't use explicit constructor.
+  Package package(3, Package::private_constructor{});
+}
+
+// error: cannot access private struct
+</pre>
+<p>¹ For example, <code>std::</code><code>make_</code><code>unique</code> requires that the object have a public constructor.</p>
+
+
+</body>

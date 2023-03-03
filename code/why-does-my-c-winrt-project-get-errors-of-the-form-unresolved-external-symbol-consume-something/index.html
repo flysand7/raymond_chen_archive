@@ -1,0 +1,55 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does my C++/WinRT project get errors of the form “unresolved external symbol … consume_Something”?</h1>  <!-- .entry-meta -->
+
+<p>You set up a new C++/WinRT project and build it, and everything looks great.</p>
+<pre>#include &lt;winrt/Windows.Gaming.Input.h&gt;
+
+void CheckGamepads()
+{
+    auto gamepads =
+        winrt::Windows::Gaming::Input::Gamepad::Gamepads();
+    for (auto&amp;&amp; gamepad : gamepads)
+    {
+        check(gamepad);
+    }
+}
+</pre>
+<p>The code builds just fine except that you get a linker error that makes no sense. (Let’s face it, most linker errors make no sense until you put on your linker-colored glasses.)</p>
+<pre style="white-space: pre-wrap;">error LNK2019: unresolved external symbol <!--
+-->"public: struct winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>Collections::<wbr/>IIterator&lt;struct <!--
+-->winrt::<wbr/>Windows::<wbr/>Gaming::<wbr/>Input::<wbr/>Gamepad&gt; <!--
+-->__thiscall winrt::<wbr/>impl::<wbr/>consume_<wbr/>Windows_<wbr/>Foundation_<wbr/>Collections_<wbr/>IIterable&lt;struct <!--
+-->winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>Collections::<wbr/>IIterable&lt;struct <!--
+-->winrt::<wbr/>Windows::<wbr/>Gaming::<wbr/>Input::<wbr/>Gamepad&gt;,struct <!--
+-->winrt::<wbr/>Windows::<wbr/>Gaming::<wbr/>Input::<wbr/>Gamepad&gt;::<wbr/>First(void)const <!--
+-->" (?First@<wbr/>?$consume_<wbr/>Windows_<wbr/>Foundation_<wbr/>Collections_<wbr/>IIterable@<wbr/>U?$IIterable@<wbr/>W4Gamepad@<wbr/>Gaming@<wbr/>Input@<wbr/>Windows@<wbr/>winrt@@@<wbr/>Collections@<wbr/>Foundation@<wbr/>Windows@<wbr/>winrt@@<wbr/>W4Gamepad@<wbr/>Gaming@<wbr/>Input@<wbr/>45@@<wbr/>impl@<wbr/>winrt@@<wbr/>QBE?<wbr/>AU?<wbr/>$IIterator@<wbr/>W4Gamepad@<wbr/>Gaming@<wbr/>Input@<wbr/>Windows@<wbr/>winrt@@@<wbr/>Collections@<wbr/>Foundation@<wbr/>Windows@<wbr/>3@<wbr/>XZ) <!--
+-->referenced in function "struct winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>Collections::<wbr/>IIterator&lt;struct <!--
+-->winrt::<wbr/>Windows::<wbr/>Gaming::<wbr/>Input::<wbr/>Gamepad&gt; <!--
+-->__stdcall winrt::<wbr/>impl::<wbr/>begin&lt;struct <!--
+-->winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>Collections::<wbr/>IIterable&lt;struct <!--
+-->winrt::<wbr/>Windows::<wbr/>Gaming::<wbr/>Input::<wbr/>Gamepad&gt;,0&gt;(struct winrt::<wbr/>Windows::<wbr/>Foundation::<wbr/>Collections::<wbr/>IIterable&lt;struct <!--
+-->winrt::<wbr/>Windows::<wbr/>Gaming::<wbr/>Input::<wbr/>Gamepad&gt; const &amp;)" (??$begin@<wbr/>U?$IIterable@<wbr/>W4Gamepad@<wbr/>Gaming@<wbr/>Input@<wbr/>Windows@<wbr/>winrt@@@<wbr/>Collections@<wbr/>Foundation@<wbr/>Windows@<wbr/>winrt@@<wbr/>$0A@@<wbr/>impl@<wbr/>winrt@@<wbr/>YG?AU?$<wbr/>IIterator@<wbr/>W4Gamepad@<wbr/>Gaming@<wbr/>Input@<wbr/>Windows@<wbr/>winrt@@@<wbr/>Collections@<wbr/>Foundation@<wbr/>Windows@<wbr/>1@<wbr/>ABU?$<wbr/>IIterable@<wbr/>W4Gamepad@<wbr/>Gaming@<wbr/>Input@<wbr/>Windows@<wbr/>winrt@@@<wbr/>3451@@Z)
+</pre>
+<p>What the heck is going on here?</p>
+<p>Take away all the decorations and it boils down to this:</p>
+<pre style="white-space: pre-wrap;">unresolved external symbol "winrt::<wbr/>impl::<wbr/>consume_<wbr/>...<wbr/>IIterable&lt;...&gt;::<wbr/>First()" <!--
+-->referenced in function "begin(winrt::<wbr/>IIterable&lt;...&gt; const&amp;)."
+</pre>
+<p>The linker couldn’t find a definition for the <code>First</code> method.</p>
+<p>The answer from the linker’s point of view is obvious: You called this <code>consume_BlahBlah</code> method but never defined it.</p>
+<p>Yeah, so tell me something I don’t know.</p>
+<p>Each C++/WinRT header file contains the information needed to call methods on the classes in that namespace. In our case, we included <code>Windows.Gaming.Input.h</code>, which tells us how to call methods on <code>winrt::</code><code>Windows::</code><code>Gaming::</code><code>Input::Gamepad</code> objects. That made it possible to call <code>Gamepad::</code><code>Gamepads()</code>. The resulting <code>gamepads</code> variable is a <code>winrt::</code><code>Windows::</code><code>Foundation::</code><code>Collections::</code><code>IVectorView&lt;Gamepad&gt;</code>. We then use a ranged <code>for</code> statement to enumerate them, and that means that we’re calling methods on the <code>gamepads</code> object, which means that we’re calling methods on a <code>winrt::</code><code>Windows::</code><code>Foundation::</code><code>Collections::</code><code>IVectorView</code> object.</p>
+<p>Ah, but we never told the compiler how to call the methods of <code>IVectorView</code>. The <code>Windows.Gaming.Input.h</code> header file included only the information to allow the methods of <code>Gamepad</code> to be called. “Okay, I got you all set up for <code>Gamepad</code>.” Any types required from other interfaces were left as forward declarations. “If you need them, you can get the definitions yourself.”¹</p>
+<p>We used those forward declarations without ever defining them, hence the linker error.</p>
+<p>The solution is to include the required header file for the namespace.</p>
+<pre>#include &lt;winrt/Windows.Foundation.Collections.h&gt;
+</pre>
+<p>This is one of those rookie mistakes that make you scratch your head the first time you encounter it. The need to include the header file is mentioned <a href="https://docs.microsoft.com/en-us/windows/uwp/cpp-and-winrt-apis/consume-apis"> in a big green box in the documentation</a>, but that’s not much consolation after you lost a few hours trying to figure it out.</p>
+<p>There’s some good news and bad news about this error message.</p>
+<p>The good news is that this error message is going away. The bad news is that it’s being replaced with a different error message. (But hopefully the new one is easier to understand.) More details <a href="http://devblogs.microsoft.com/oldnewthing/20190530-00/?p=102529">next time</a>.</p>
+<p>¹ The idea is that you pay only for the namespaces you use. If every header file included its transitive closure of dependencies, (1) you would create circular dependencies, and (2) including a single header file would end up including all the other header files when you chased through all the dependencies.</p>
+<p>The idea of “pay for play” is not unique to C++/WinRT. The C++ standard library follows the same principle. If you want <code>std::string</code>, <a href="https://stackoverflow.com/a/22724103/902497"> you need to <code>#include &lt;string&gt;</code></a>. If you include a header file that has a method that takes a string, you will end up with only enough information to call that method. It doesn’t mean that you get all of <code>&lt;string&gt;</code> automatically.</p>
+<p> </p>
+
+
+</body>

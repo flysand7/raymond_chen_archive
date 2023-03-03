@@ -1,0 +1,153 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I get a high resolution icon for a file?</h1>  <!-- .entry-meta -->
+
+<p>
+Today’s Little Program obtains a high resolution icon for a file.
+</p>
+<p>
+Start with our
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+and make these changes.
+Remember, Little Programs do little or no error checking.
+This week’s smart pointer class is (rolls dice)
+<code>_com_ptr_t</code>!
+</p>
+<pre>
+...
+#include &lt;shlwapi.h&gt;
+<font color="blue">#include &lt;commoncontrols.h&gt;
+#include &lt;comip.h&gt;
+#include &lt;comdef.h&gt;
+_COM_SMARTPTR_TYPEDEF(IImageList, __uuidof(IImageList));</font>
+HICON g_hico;
+HINSTANCE g_hinst;                          /* This application's HINSTANCE */
+...
+<font color="blue">int GetIconIndex(PCTSTR pszFile)
+{
+  SHFILEINFO sfi;
+  SHGetFileInfo(pszFile, 0, &amp;sfi, sizeof(sfi), SHGFI_SYSICONINDEX);
+  return sfi.iIcon;
+}
+HICON GetJumboIcon(int iImage)
+{
+  IImageListPtr spiml;
+  SHGetImageList(SHIL_JUMBO, IID_PPV_ARGS(&amp;spiml));
+  HICON hico;
+  spiml-&gt;GetIcon(iImage, ILD_TRANSPARENT, &amp;hico);
+  return hico;
+}</font>
+</pre>
+<p>
+The
+<code>Get­Icon­Index</code> function does nothing new.
+It simply retrieves the system image list icon index for a file’s icon.
+</p>
+<p>
+The
+<code>Get­Jumbo­Icon</code> retrieves an icon by its
+system image list index.
+First, it asks
+<code>SHGet­Image­List</code> for the jumbo image list,
+then it asks the jumbo image list
+for the icon.
+</p>
+<p>
+Now all we have to do is hook the functions up.
+</p>
+<pre>
+void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+  <font color="blue">DrawIconEx(pps-&gt;hdc, 50, 50, g_hico,
+             0, 0, 0, nullptr, DI_NORMAL);</font>
+}
+    ...
+    if (SUCCEEDED(CoInitialize(NULL))) {/* In case we use COM */
+        <font color="blue">g_hico = GetJumboIcon(GetIconIndex(lpCmdLine));</font>
+        ...
+        <font color="blue">DestroyIcon(g_hico);</font>
+        CoUninitialize();
+    }
+    ...
+</pre>
+<p>
+Run this program and pass the full path to a file on the command line.
+(No quotation marks, even if it contains spaces!)
+Result: A gigantic icon for the file appears.
+</p>
+<p>
+Instead of converting the system imagelist index into an icon,
+we could just ask the jumbo imagelist to render it directly.
+</p>
+<pre>
+<font color="blue">int g_iImage;</font>
+void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+  <font color="blue">IImageListPtr spiml;
+  SHGetImageList(SHIL_JUMBO, IID_PPV_ARGS(&amp;spiml));
+  IMAGELISTDRAWPARAMS ildp = { sizeof(ildp) };
+  ildp.himl = IImageListToHIMAGELIST(spiml);
+  ildp.i = g_iImage;
+  ildp.hdcDst = pps-&gt;hdc;
+  ildp.x = 50;
+  ildp.y = 50;
+  ildp.rgbBk = CLR_NONE;
+  ildp.fStyle = ILD_TRANSPARENT;
+  spiml-&gt;Draw(&amp;ildp);</font>
+}
+    ...
+    if (SUCCEEDED(CoInitialize(NULL))) {/* In case we use COM */
+        <font color="blue">g_iImage = GetIconIndex(lpCmdLine);</font>
+        ...
+        <font color="red">// no cleanup necessary</font>
+        CoUninitialize();
+    }
+    ...
+</pre>
+<p>
+This is how Explorer deals with icons most of the time.
+It doesn’t create actual icons;
+it merely remembers indices into the system imagelist,
+and when it needs to draw an icon,
+it calls the <code>Draw</code> method on the imagelist whose
+size corresponds to the image it wants.
+</p>
+<p>
+<b>Bonus chatter</b>:
+The system imagelists come in four sizes (as of this writing).
+And yet
+<i>large</i> is one of the smallest available ones.
+Why is that?
+</p>
+<p>
+The
+<a href="http://msdn.microsoft.com/en-us/library/windows/desktop/bb762185%28v=vs.85%29.aspx">
+system imagelist sizes</a>
+are
+</p>
+<ul>
+<li>Small
+<li>Large
+<li>Extra-Large
+<li>Jumbo
+</li></li></li></li></ul>
+<p>
+The first two (<i>small</i>
+and <i>large</i>) were the only ones available in
+Windows 95.
+Windows XP added a size larger than large,
+which was named <i>extra-large</i>.
+And then Windows Vista added another size even larger
+than extra-large,
+which I named <i>jumbo</i>.
+</p>
+<p>
+It’s an artifact of history that one of the smallest
+icon sizes has the name <i>large</i>.
+It was the largest icon size at the time,
+but things got even larger since then.</p>
+
+
+</body>

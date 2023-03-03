@@ -1,0 +1,101 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the orphaned critical section despite being managed by an RAII type</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, I was enlisted to help debug an elusive deadlock. Studying a sampling of process memory dumps led to the conclusion that a critical section had been orphaned. Sometimes, the thread that owned the critical section had already exited, but sometimes the thread was still running, but it was running code completely unrelated to the critical section. It was as if the code that acquired the critical section had simply forgotten to release it before returning. </p>
+<p>The thing is, all attempts to acquire the critical section were managed by an RAII type, so there should be no way that the critical section could have been forgotten. And yet it was. </p>
+<p>When would the destructor for an RAII object by bypassed? One possibility is that somebody did an <code>Exit­Thread</code> or (horrors) <code>Terminate­Thread</code>. But this doesn’t match the evidence, because as noted above, in some of the crash dumps, the critical section owner is still alive and running, but unaware that it owns the critical section. </p>
+<p>On all platforms other than x86, exception unwind information is kept in tables in a rarely-used portion of the image, so that we don’t waste memory on exception unwind information until an exception actually occurs: When an exception occurs, the system pages in the unwind tables and does a table lookup to see which unwind handler should run. But on x86, the exception unwind state is maintained manually in the code. This is a bad thing for x86 performance, but a good thing for getting inside the head of the compiler. </p>
+<blockquote class="m"><p>Bonus reading: <a href="https://github.com/CppCon/CppCon2018/blob/master/Presentations/unwinding_the_stack_exploring_how_cpp_exceptions_work_on_windows/unwinding_the_stack_exploring_how_cpp_exceptions_work_on_windows__james_mcnellis__cppcon_2018.pdf">Unwinding the Stack: Exploring How C++ Exceptions Work on Windows</a>.<br/>— <a href="https://cppcon2018.sched.com/event/FnLD/unwinding-the-stack-exploring-how-c-exceptions-work-on-windows">James McNellis</a>, CppCon 2018 </p></blockquote>
+<p>The unwind checkpoint is a 32-bit value, usually stored at <code>[ebp-4]</code>. The compiler uses it to keep track of what needs to get unwound if an exception occurs. If the compiler can deduce that no exception can occur between two checkpoints, then it can optimize out the first checkpoint. </p>
+<p>There are four functions that enter the critical section in question. The code that does so looks like this:</p>
+<pre>
+{
+  auto guard = SystemChangeListenerCS.Lock();
+  ... some code ...
+} // guard destructor releases the lock
+</pre>
+<p>Finding the exact point where the guards are created is made easier with the assistance of the <code>#</code> debugger command, which means “Disassemble until you see this string in the disassembly.” </p>
+<p><pre>
+0:000&gt; #SystemChangeListenerCS SystemChangeListenerThreadProc
+SystemChangeListenerThreadProc+0x7c:
+1003319c mov     ecx,offset SystemChangeListenerCS (100b861c)
+0:000&gt;
+</pre>
+<p>Okay, so the debugger found a line of assembly that mentions <code>System­Change­Listener­CS</code>. Let’s look to see whether there is an unwind checkpoint after the lock is taken. </p>
+<pre>
+0:000&gt; u 1003319c
+ChangeMonitorThreadProc+0x7c:
+1003319c mov     ecx,offset contoso!SystemChangeListenerCS (100b861c)
+100331a1 push    eax
+100331a2 call    Microsoft::WRL::Wrappers::CriticalSection::Lock (1002a863)
+100331a7 mov     byte ptr [ebp-4],5
+</pre>
+<p>We see that immediately after acquiring the lock, the code updates <code>[ebp-4]</code> to remember that it needs to destruct the lock guard in case an exception occurs. </p>
+<p><b>Exercise</b>: I said that the unwind state is recorded in a 32-bit value stored at <code>[ebp-4]</code>, but the code here updates only a byte. Why only a byte? </p>
+<p>The lock is acquired again later in that same function, so we’ll search some more. If you leave off the second parameter to the <code>#</code> command, it continues searching where the previous search left off. </p>
+<pre>
+0:000&gt; #SystemChangeListenerCS
+SystemChangeListenerThreadProc+0x487:
+100335a7 mov     ecx,offset contoso!SystemChangeListenerCS (100b861c)
+0:000&gt; u 100335a7
+contoso!SystemChangeListenerThreadProc+0x487:
+100335a7 mov     ecx,offset contoso!SystemChangeListenerCS (100b861c)
+100335ac push    eax
+100335ad call    Microsoft::WRL::Wrappers::CriticalSection::Lock (1002a863)
+100335b2 mov     byte ptr [ebp-4],0Dh
+</pre>
+<p>Okay, so this lock guard is also marked for unwinding. </p>
+<p>The next function that uses the critical section is <code>Reset­Widgets</code>. </p>
+<pre>
+0:000&gt; #SystemChangeListenerCS ResetWidgets
+ResetWidgets+0x133:
+10033fcc mov     ecx,offset SystemChangeListenerCS (100b861c)
+0:000&gt; u 10033fcc l4
+ResetWidgets+0x133:
+10033fcc mov     ecx,offset SystemChangeListenerCS (100b861c)
+10033fd1 push    eax
+10033fd2 call    Microsoft::WRL::Wrappers::CriticalSection::Lock (1002a863)
+10033fd7 call    Microsoft::WRL::ComPtr&lt;IStream&gt;::Reset (10039932)
+10033fdc call    Microsoft::WRL::ComPtr&lt;Widget&gt;::Reset (10039142)
+10033fe1 cmp     dword ptr [ebp-4Ch],0
+10033fe5 je      ResetWidgets+0x157 (10033ff0)
+10033fe7 push    dword ptr [ebp-4Ch]
+</pre>
+<p>Hm, this function doesn’t create an unwind checkpoint after taking the lock. This means that the compiler believes that no exception can occur between the point the guard is created and the next thing that would require updating the unwind checkpoint (in our case, that would be the point the lock is destructed). </p>
+<p>We repeat this analysis with the other two functions. One of them creates an unwind checkpoint; the other doesn’t. </p>
+<p>Why does the compiler believe that no exceptions can occur in the guarded block? Well, inside the block it calls <a href="https://docs.microsoft.com/en-us/cpp/windows/comptr-class?view=vs-2017#reset"><code>ComPtr::</code><code>Reset</code></a> twice, and it does some other stuff. The <code>Reset</code> method is declared like this: </p>
+<pre>
+template&lt;typename T&gt;
+class ComPtr {
+unsigned long Reset() { return InternalRelease(); }
+unsigned long InternalRelease() throw() { ... }
+...
+};
+</pre>
+<p>Observe that <a href="https://docs.microsoft.com/en-us/cpp/windows/comptr-class?view=vs-2017#internalrelease">the <code>Internal­Release</code> method</a> uses the deprecated <code>throw()</code> specifier, which says that the method never throws an exception. The compiler then inferred that the <code>Reset</code> method also never throws an exception, since it does nothing that could result in an exception. </p>
+<p>This code was compiled before the Microsoft C++ compiler added the <code>/std:C++17</code> switch, so it uses <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180928-00/?p=99855">the old rules for the <code>throw()</code> specifier</a>, which for the Microsoft C++ compiler boils down to “I’m trusting you never to throw an exception.” </p>
+<p>My theory is that the <code>Reset</code> actually did throw an exception. Since the compiler didn’t create an unwind checkpoint, the lock guard did not get unwound. The exception was caught higher up the stack, so the process didn’t crash. </p>
+<p>Digging into the two objects wrapped inside the <code>ComPtr</code> revealed that the first one was a <code>Widget­Monitor</code> object. </p>
+<p><b>Exercise</b>: The first was really an <code>IWidget­Monitor</code> interface, so why did it disassemble as <code>ComPtr&lt;IStream&gt;</code>? </p>
+<p>The <code>Widget­Monitor</code>‘s destructor went like this: </p>
+<pre>
+WidgetMonitor::~WidgetMonitor()
+{
+ Uninitialize();
+}
+
+void WidgetMonitor::Uninitialize()
+{
+ blah blah;
+ ThrowIfFailed(m_monitor.Deactivate());
+ blah blah;
+ ThrowIfFailed(m_monitor.Disconnect());
+ blah blah;
+}
+</pre>
+<p>Now you see the problem. If the <code>Uninitialize</code> method throws an exception, the exception will propagate out of the destructor. (This code is so old that it predates C++11’s rule that destructors are <code>noexcept</code> by default where possible.) And then it will propagate out of <code>ComPtr::</code><code>Internal­Release</code>, and then out of <code>ComPtr::</code><code>Reset</code>, and then out of <code>Reset­Widgets</code>. And unwinding out of <code>Reset­Widgets</code> will not run the lock guard’s destructor because the compiler assumed that no exception could be thrown, thanks to the <code>throw()</code> specifier on the <code>ComPtr::</code><code>Internal­Release</code> method. </p>
+<p>As is often the case, it’s usually a lot easier to find something once you know what you’re looking for. The team dug into its telemetry to see that, yes indeed, the systems that encountered the problem had also thrown an exception from <code>Widget­Monitor::</code><code>Uninitialize</code>, thus confirming the theory. </p>
+<p>Now they could work on fixing the problem: Fix the destructor so it doesn’t throw any exceptions. In this specific case, the exception was thrown because they were deactivating an object that hadn’t been fully activated. Since <a href="https://blogs.msdn.microsoft.com/oldnewthing/20080107-00/?p=23913">cleanup functions cannot fail</a>, the best you can do is to <a href="https://blogs.msdn.microsoft.com/oldnewthing/20140807-00/?p=313">just soldier on and clean up as much as you can</a>. </p>
+
+
+</p></body>

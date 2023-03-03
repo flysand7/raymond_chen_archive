@@ -1,0 +1,240 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I call a method on a derived class from a base class, say, to get a strong reference to the containing object?</h1>  <!-- .entry-meta -->
+
+<p>Suppose you have a base class, and you want to get a strong reference to your derived class. You may need to do this, for example, if your base class has a method which is a coroutine, and it needs to retain a strong reference to itself so that it can extend its lifetime into the coroutine body, thereby preventing the object from being destroyed after the coroutine reaches its first suspension point.</p>
+<pre>// C++/WinRT style
+
+struct Base
+{
+    winrt::IAsyncAction DoSomethingAsync()
+    {
+        auto lifetime = get_strong(); // ????
+
+        co_await this-&gt;step1();
+
+        this-&gt;step2();
+    }
+};
+
+struct Derived : DerivedT&lt;Derived&gt;, Base
+{
+};
+
+// PPL style
+
+struct Base
+{
+    Concurrency::task&lt;void&gt; DoSomethingAsync()
+    {
+        auto lifetime = shared_from_this(); // ????
+
+        co_await this-&gt;step1();
+
+        this-&gt;step2();
+    }
+};
+
+struct Derived : std::enable_shared_from_this&lt;Derived&gt;, Base
+{
+};
+</pre>
+<p>First, let’s forget about coroutines. They are the motivation for the question, but they aren’t really relevant to the solution.</p>
+<p>If you have an instance of a base class and you want to get an instance of the derived class, what can you do?</p>
+<p>Well, if you know what the derived class is, you can downcast to it.</p>
+<pre>// C++/WinRT style
+struct Base
+{
+    void BaseMethod()
+    {
+        auto lifetime = <span style="color: #08f;">static_cast&lt;Derived*&gt;(this)-&gt;</span>get_strong();
+
+        ...
+    }
+};
+
+// PPL style
+
+struct Base
+{
+    void BaseMethod()
+    {
+        auto lifetime = <span style="color: #08f;">static_cast&lt;Derived*&gt;(this)-&gt;</span>shared_from_this();
+
+        ...
+    }
+};
+</pre>
+<p>This trick works only if you are absolutely certain that the <code>Base</code> is the base portion of a <code>Derived</code>. Now, maybe you want to use the <code>Base</code> as the base of multiple derived classes. In that case, you can pass the derived class as a template parameter, turning this into a case of CRTP:</p>
+<pre>// C++/WinRT style
+
+<span style="color: #08f;">template&lt;typename D&gt;</span>
+struct Base
+{
+    void BaseMethod()
+    {
+        auto lifetime = <span style="color: #08f;">static_cast&lt;D*&gt;(this)-&gt;</span>get_strong();
+
+        ...
+    }
+};
+
+struct Derived : DerivedT&lt;Derived&gt;, <span style="color: #08f;">Base&lt;Derived&gt;</span>
+{
+};
+
+// PPL style
+
+<span style="color: #08f;">template&lt;typename D&gt;</span>
+struct Base
+{
+    void BaseMethod()
+    {
+        auto lifetime = <span style="color: #08f;">static_cast&lt;D*&gt;(this)-&gt;</span>shared_from_this();
+
+        ...
+    }
+};
+
+struct Derived : std::enable_shared_from_this&lt;Derived&gt;, <span style="color: #08f;">Base&lt;Derived&gt;</span>
+{
+};
+</pre>
+<p>Another solution is to give the <code>Base</code> a weak reference to the container. This removes the need to know what the container is.</p>
+<pre>// C++/WinRT style
+
+struct Base
+{
+    winrt::weak_ptr&lt;IInspectable&gt; derived_weak;
+
+    void BaseMethod()
+    {
+        auto lifetime = <span style="color: #08f;">derived_weak.get()</span>;
+
+        ...
+    }
+};
+
+struct Derived : DerivedT&lt;Derived&gt;, Base
+{
+    Derived()
+    {
+        <span style="color: #08f;">derived_weak = get_weak();</span>
+    }
+};
+
+// PPL style
+
+<span style="color: #08f;">template&lt;typename D&gt;</span>
+struct Base
+{
+    std::weak_ptr&lt;void&gt; derived_weak;
+
+    void BaseMethod()
+    {
+        auto lifetime = <span style="color: #08f;">derived_weak.lock()</span>;
+
+        ...
+    }
+};
+
+struct Derived : std::enable_shared_from_this&lt;Derived&gt;, Base
+{
+    Derived()
+    {
+        // doesn't work!
+    }
+};
+</pre>
+<p>Uh-oh, we’re kind of stuck in the PPL case because the weak pointer hiding inside <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code> is not initialized at the point the <code>Derived</code> is constructed. (It gets set by <code>std::make_<wbr/>shared</code> after the object has been constructed.)</p>
+<p>Another option is to have a pure virtual method which derived classes must implement in order to provide the necessary strong pointer.</p>
+<pre>// C++/WinRT style
+
+struct Base
+{
+    virtual winrt::IInspectable derived_strong() const = 0;
+
+    void BaseMethod()
+    {
+        auto lifetime = derived_strong();
+
+        ...
+    }
+};
+
+struct Derived : DerivedT&lt;Derived&gt;, Base
+{
+    winrt::IInspectable derived_strong() const override
+    {
+        return *this;
+    }
+};
+
+// PPL style
+
+struct Base
+{
+    virtual std::shared_ptr&lt;const void&gt; derived_strong() const = 0;
+
+    void BaseMethod()
+    {
+        auto lifetime = derived_strong();
+
+        ...
+    }
+};
+
+struct Derived : std::enable_shared_from_this&lt;Derived&gt;, Base
+{
+    std::shared_ptr&lt;const void&gt; derived_strong() const override
+    {
+        return shared_from_this();
+    }
+};
+</pre>
+<p>And C++23’s “deducing this” adds another option:</p>
+<pre>// C++/WinRT style
+
+struct Base
+{
+    <span style="color: #08f;">template&lt;typename Derived&gt;</span>
+    winrt::IAsyncAction DoSomethingAsync(<span style="color: #08f;">this Derived&amp;&amp; self</span>)
+    {
+        auto lifetime = <span style="color: #08f;">self.</span>get_strong();
+
+        co_await this-&gt;step1();
+
+        this-&gt;step2();
+    }
+}
+
+struct Derived : DerivedT&lt;Derived&gt;, Base
+{
+};
+
+// PPL style
+
+struct Base
+{
+    <span style="color: #08f;">template&lt;typename Derived&gt;</span>
+    Concurrency::task&lt;void&gt; DoSomethingAsync(<span style="color: #08f;">this Derived&amp;&amp; self</span>)
+    {
+        auto lifetime = <span style="color: #08f;">self.</span>shared_from_this();
+
+        co_await this-&gt;step1();
+
+        this-&gt;step2();
+    }
+};
+
+struct Derived : std::enable_shared_from_this&lt;Derived&gt;, Base
+{
+};
+</pre>
+<p>Which should you choose?</p>
+<p>Well, it’s up to you. My preference is to use the CRTP pattern for C++/WinRT types, since that avoids extra data members and vtables, and it is consistent with other C++/WinRT patterns. And that leads me to prefer the CRTP pattern for the PPL case, too, for consistency.</p>
+<p>And if you can assume C++23, then the “deducing this” form lets you get the benefits of CRTP without having to do CRTP. So that’s my first choice.</p>
+<p>But that’s just my opinion. You might prefer something else.</p>
+<p><b>Bonus chatter</b>: You might think of having <code>Base</code> derive from <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code>. That would work, but it also means that <code>Derived</code> cannot derive from <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code>, and it also means that <code>Derived</code> cannot derive from both <code>Base1</code> and <code>Base2</code> if both of the base classes derive from <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code>. The general convention is that the most derived class is the one that gets to derive from <code>enable_<wbr/>shared_<wbr/>from_<wbr/>this</code>.</p>
+
+
+</body>

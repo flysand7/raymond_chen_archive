@@ -1,0 +1,49 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Static hooking through predefinition</h1>  <!-- .entry-meta -->
+
+<p>A customer had a program that incorporated source code from two different third parties, let’s call them Contoso and LitWare. These libraries were originally written for Linux, and they are trying to port them to Windows. </p>
+<p>Contoso’s library implements some useful feature that they want to use. LitWare’s library implements some fancy memory management and wants to intercept all calls to <code>malloc</code>, <code>free</code>, and related functions. In particular, it wants to intercept the calls from Contoso. </p>
+<p>The customer knew that they could use Detours to do the intercepting, but that would require them to obtain a professional license, and the cost was a concern. </p>
+<p>Fortunately, since the customer is building all the libraries themselves, they can make changes to the code and recompile. </p>
+<p>I suggested using this header file: </p>
+<pre>
+// interceptable.h
+extern void* (*intercepted_malloc)(size_t);
+#define malloc interceptable_malloc
+
+extern void (*intercepted_free)(void*);
+#define free interceptable_free
+
+... repeat as necessary ...
+</pre>
+<p>Include this header file after <code>stdlib.h</code> so that all calls to the functions you care about are redirected to the <code>intercepted_...</code> wrappers. </p>
+<p>The implementation file is simple: </p>
+<pre>
+// interceptable.c
+#undef malloc
+void* (*intercepted_malloc)(size_t) = malloc;
+
+#undef free
+void (*intercepted_free)(void*) = free;
+
+... repeat as necessary ...
+</pre>
+<p>When the LitWare library wants to intercept the functions of interest, it does this: </p>
+<pre>
+void* (*original_malloc)(size_t);
+
+void* replacement_malloc(size_t size)
+{
+ ... replacement can call original_malloc() ...
+}
+
+void install_malloc_wrapper()
+{
+  original_malloc = intercepted_malloc;
+  intercepted_malloc = replacement_malloc;
+}
+</pre>
+<p>Now, when the Contoso library calls <code>intercepted_malloc</code>, it ends up calling <code>replacement_malloc</code>, which can do whatever it wants (including calling the original <code>malloc</code>). </p>
+
+
+</body>

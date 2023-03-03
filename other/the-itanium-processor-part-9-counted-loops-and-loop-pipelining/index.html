@@ -1,0 +1,380 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Itanium processor, part 9: Counted loops and loop pipelining</h1>  <!-- .entry-meta -->
+
+<p>There is a dedicated register named <var>ar.lc</var> for counted loops. <span id="more-91161"></span>The <var>br.cloop</var> instruction acts like this: </p>
+<pre>
+    if (ar.lc != 0) { ar.lc = ar.lc - 1; goto branch; }
+</pre>
+<p>Consider this loop to increment every 32-bit integer in an array. </p>
+<pre>
+extern int array[2000];
+
+void IncrementEachElement()
+{
+ for (int i = 0; i &lt; 2000; i++) {
+  array[i]++;
+ }
+}
+</pre>
+<p>This could be compiled as </p>
+<pre>
+    mov r30 = ar.lc         // save original value of ar.lc
+    addl r29 = gp, -205584  // calculate start of array
+    addl r31 = r0, 1999 ;;  // r31 = 1999
+    mov ar.lc = r31         // loop 1999 times
+again:
+    ld4 r31 = [r29] ;;      // load the next integer
+    adds r31 = r31, 1 ;;    // increment the value
+    st4 [r29] = r31, 4      // store it and autoincrement
+    br.cloop again ;;       // do it 1999 more times
+    mov ar.lc = r30         // restore ar.lc
+    br.ret.sptk.many rp     // return
+</pre>
+<p>Note that the <var>ar.lc</var> register is initialized to one fewer than the number of iterations desired. That’s because it counts the number of times the <var>br.cloop</var> instruction will branch. Since we used fall-through to initiate the loop, one of the times through the loop was already performed, and we want <var>br.cloop</var> to branch only 1999 times. </p>
+<p>The <var>ar.lc</var> register must be preserved across calls, so if you intend to use it in your function, you need to save its original value and restore it when done. (You also need to record in the unwind table where you saved it, so it’s easier to do it up front; otherwise, you have to go to the extra work of encoding <!-- backref: The Itanium processor, part 4: The Windows calling convention, leaf functions -->how you shrink-wrapped the function.) </p>
+<p>For the sake of illustration, let’s say that the CPU can fetch memory from cache in two cycles, and each cycle it can issue one load and one store. (If the memory access is not in cache, <a href="http://www.overbyte.com.au/misc/Lesson3/CacheFun.html">it takes basically forever</a>, in which case it doesn’t really matter how we optimize the rest of the code, so we may as well assume that all memory accesses are cache hits.) Each iteration of the loop performs a fetch (two cycles), an addition (one cycle), then a store in parallel with a conditional jump (one cycle), for a total of four cycles per iteration. </p>
+<p>Let’s try to do better. </p>
+<p>First, let’s simplify to the case where the array has only four elements. We could do it like this: </p>
+<pre>
+    alloc r36 = ar.pfs, 0, 5, 0, 0 // set up frame
+    addl r29 = gp, -205584  // calculate start of array
+    addl r28 = r29, 0 ;;    // put it in both r28 and r29
+
+    ld4 r32 = [r29], 4 ;;   // crazy stuff
+    ld4 r33 = [r29], 4 ;;
+    adds r32 = r32, 1
+    ld4 r34 = [r29], 4 ;;
+    st4 [r28] = r32, 4
+    adds r33 = r33, 1
+    ld4 r35 = [r29], 4 ;;
+    st4 [r28] = r33, 4
+    adds r34 = r34, 1 ;;
+    st4 [r28] = r34, 4
+    adds r35 = r35, 1 ;;
+    st4 [r28] = r35, 4 ;;
+
+    mov ar.pfs = r36
+    br.ret.sptk.many rp     // return
+</pre>
+<p>(In reality, we would reorder the instructions in order to match the templates better, but I’ll leave them in this order for now.) </p>
+<p>That is kind of hard to understand, so let me rewrite the crazy middle part like this, putting all the instructions from an instruction group on one line, adding some separator lines, and putting instructions into columns carefully chosen to highlight the structure of the code. </p>
+<table border="0" cellpadding="0" style="border-collapse: collapse">
+<tr>
+<td align="right">1</td>
+<td rowspan="8" style="border-right: 1px solid black"> </td>
+<td style="padding: 0ex 1ex;border-top: dotted 1px black"><code>ld4 r32 = [r29], 4</code></td>
+<td rowspan="8" style="border-right: 1px solid black"></td>
+<td> </td>
+<td rowspan="8" style="border-right: 1px solid black"></td>
+<td> </td>
+<td rowspan="8" style="border-right: 1px solid black"></td>
+<td> </td>
+<td rowspan="8" style="border-right: 1px solid black"></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">2</td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: dotted 1px black"><code>ld4 r33 = [r29], 4</code></td>
+<td> </td>
+<td> </td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">3</td>
+<td style="padding: 0ex 1ex"><code>adds r32 = r32, 1</code></td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: dotted 1px black"><code>ld4 r34 = [r29], 4</code></td>
+<td> </td>
+<td><code>;;</code></td>
+
+</tr>
+<tr>
+<td align="right">4</td>
+<td style="padding: 0ex 1ex;border-bottom: dotted 1px black"><code>st4 [r28] = r32, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r33 = r33, 1</code></td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: dotted 1px black"><code>ld4 r35 = [r29], 4</code></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">5</td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-bottom: dotted 1px black"><code>st4 [r28] = r33, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r34 = r34, 1</code></td>
+<td> </td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">6</td>
+<td> </td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-bottom: dotted 1px black"><code>st4 [r28] = r35, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r35 = r35, 1</code></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">7</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-bottom: dotted 1px black"><code>st4 [r28] = r35, 4</code></td>
+<td><code>;;</code></td>
+</tr>
+</table>
+<p>The first thing to observe is that this sequence completes in just seven cycles, as opposed to the 16 cycles of the original version. That’s over double the performance! </p>
+<p>Notice that each column performs one iteration of the loop. Each column uses a different register to do the calculation, and they share register <code>r29</code> to hold the address of the next value to read and <code>r28</code> to hold the address of the next value to write. Each column also waits two cycles after each read before consuming the result, thereby avoiding memory stalls. </p>
+<p>The idea here is to run multiple iterations of the loop in parallel, but setting each one to begin one cycle after the start of the previous iteration. Staggering the starts keeps us from overloading the memory controller. (Otherwise, everybody would issue load requests in cycle 1, and the memory controller would stall.) </p>
+<p>Now, the Itanium has a lot of registers, but it doesn’t have 2000 of them. Fortunately, we don’t need 2000 of them. Observe that starting at cycle 5, we can reuse register <code>r32</code> because the previous iteration doesn’t need it any more. So if we need to increment ten elements, we can do it this way: </p>
+<table border="0" cellpadding="0" style="border-collapse: collapse">
+<tr>
+<td align="right">1</td>
+<td rowspan="13" style="border-right: 1px solid black"> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r32 = [r29], 4</code></td>
+<td rowspan="13" style="border-right: 1px solid black"></td>
+<td> </td>
+<td rowspan="13" style="border-right: 1px solid black"></td>
+<td> </td>
+<td rowspan="13" style="border-right: 1px solid black"></td>
+<td> </td>
+<td rowspan="13" style="border-right: 1px solid black"></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">2</td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r33 = [r29], 4</code></td>
+<td> </td>
+<td> </td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">3</td>
+<td style="padding: 0ex 1ex"><code>adds r32 = r32, 1</code></td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r34 = [r29], 4</code></td>
+<td> </td>
+<td><code>;;</code></td>
+
+</tr>
+<tr>
+<td align="right">4</td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r32, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r33 = r33, 1</code></td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r35 = [r29], 4</code></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">5</td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r32 = [r29], 4</code></td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r33, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r34 = r34, 1</code></td>
+<td> </td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">6</td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: dotted 1px black"><code>ld4 r33 = [r29], 4</code></td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r34, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r35 = r35, 1</code></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">7</td>
+<td style="padding: 0ex 1ex"><code>adds r32 = r32, 1</code></td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r34 = [r29], 4</code></td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r35, 4</code></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">8</td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r32, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r33 = r33, 1</code></td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r35 = [r29], 4</code></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">9</td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r32 = [r29], 4</code></td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r33, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r34 = r34, 1</code></td>
+<td> </td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">10</td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: dotted 1px black"><code>ld4 r33 = [r29], 4</code></td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r34, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r35 = r35, 1</code></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">11</td>
+<td style="padding: 0ex 1ex"><code>adds r32 = r32, 1</code></td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"></td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r35, 4</code></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">12</td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r32, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r33 = r33, 1</code></td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">13</td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"></td>
+<td style="padding: 0ex 1ex;border-bottom: 1px dotted black"><code>st4 [r28] = r33, 4</code></td>
+<td> </td>
+<td> </td>
+<td><code>;;</code></td>
+</tr>
+</table>
+<p>We incremented ten elements in 13 cycles instead of 40. In general, we can increment <var>n</var> elements in <var>n</var> + 3 cycles instead of 4<var>n</var>. For large values of <var>n</var> this is a four-fold speed-up over the original version. </p>
+<p>The pattern above breaks down into three natural sections. </p>
+<table border="0" cellpadding="0" style="border-collapse: collapse">
+<tbody style="background: #E1E1FF">
+<tr>
+<td align="right">1</td>
+<td rowspan="3" style="border-right: 1px solid black"> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r32 = [r29], 4</code></td>
+<td rowspan="3" style="border-right: 1px solid black"></td>
+<td> </td>
+<td rowspan="3" style="border-right: 1px solid black"></td>
+<td> </td>
+<td rowspan="3" style="border-right: 1px solid black"></td>
+<td> </td>
+<td rowspan="3" style="border-right: 1px solid black"></td>
+<td><code>;;</code></td>
+<td rowspan="3">Warm-up</td>
+</tr>
+<tr>
+<td align="right">2</td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r33 = [r29], 4</code></td>
+<td> </td>
+<td> </td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">3</td>
+<td style="padding: 0ex 1ex"><code>adds r32 = r32, 1</code></td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r34 = [r29], 4</code></td>
+<td> </td>
+<td><code>;;</code></td>
+
+</tr>
+</tbody>
+<tbody style="background: #D6F8DE">
+<tr>
+<td align="right">4</td>
+<td rowspan="7" style="border-right: 1px solid black"> </td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r32, 4</code></td>
+<td rowspan="7" style="border-right: 1px solid black"></td>
+<td style="padding: 0ex 1ex"><code>adds r33 = r33, 1</code></td>
+<td rowspan="7" style="border-right: 1px solid black"></td>
+<td> </td>
+<td rowspan="7" style="border-right: 1px solid black"></td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r35 = [r29], 4</code></td>
+<td rowspan="7" style="border-right: 1px solid black"></td>
+<td><code>;;</code></td>
+<td rowspan="7">Cruise</td>
+</tr>
+<tr>
+<td align="right">5</td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r32 = [r29], 4</code></td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r33, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r34 = r34, 1</code></td>
+<td> </td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">6</td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: dotted 1px black"><code>ld4 r33 = [r29], 4</code></td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r34, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r35 = r35, 1</code></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">7</td>
+<td style="padding: 0ex 1ex"><code>adds r32 = r32, 1</code></td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r34 = [r29], 4</code></td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r35, 4</code></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">8</td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r32, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r33 = r33, 1</code></td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r35 = [r29], 4</code></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">9</td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"><code>ld4 r32 = [r29], 4</code></td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r33, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r34 = r34, 1</code></td>
+<td> </td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">10</td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: dotted 1px black"><code>ld4 r33 = [r29], 4</code></td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r34, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r35 = r35, 1</code></td>
+<td><code>;;</code></td>
+</tr>
+</tbody>
+<tbody style="background: #FFCECE">
+<tr>
+<td align="right">11</td>
+<td rowspan="3" style="border-right: 1px solid black"> </td>
+<td style="padding: 0ex 1ex"><code>adds r32 = r32, 1</code></td>
+<td rowspan="3" style="border-right: 1px solid black"></td>
+<td> </td>
+<td rowspan="3" style="border-right: 1px solid black"></td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"></td>
+<td rowspan="3" style="border-right: 1px solid black"></td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r35, 4</code></td>
+<td rowspan="3" style="border-right: 1px solid black"></td>
+<td><code>;;</code></td>
+<td rowspan="3">Cool-down</td>
+</tr>
+<tr>
+<td align="right">12</td>
+<td style="padding: 0ex 1ex"><code>st4 [r28] = r32, 4</code></td>
+<td style="padding: 0ex 1ex"><code>adds r33 = r33, 1</code></td>
+<td> </td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"></td>
+<td><code>;;</code></td>
+</tr>
+<tr>
+<td align="right">13</td>
+<td style="padding: 0ex 1ex;border-top: 1px dotted black"></td>
+<td style="padding: 0ex 1ex;border-bottom: 1px dotted black"><code>st4 [r28] = r33, 4</code></td>
+<td> </td>
+<td> </td>
+<td><code>;;</code></td>
+</tr>
+</tbody>
+</table>
+<p>The first three cycles comprise the warm-up phase (formally known as the <i>prologue</i>). At the start, no registers are doing any work, but during the course of the warm-up phase, they get into the act one at a time. At the end of the warm-up phase, all the registers are busy doing work. </p>
+<p>Most of the time is spent in the middle cruise phase (formally known as the <i>kernel</i>), wherein all four registers are busy carrying out one of the iterations. Note that during every cycle of the cruise phase, there is a load, an increment, and a store, with the registers taking turns performing each of the operations. </p>
+<p>The last three cycles are the cool-down phase (formally known as the <i>epilogue</i>), where the registers start draining their last bits of work and no new work is started. </p>
+<p>Okay, now that we understand how the above code works, we’re going to turn it on its side next time. Stay tuned for the thrilling conclusion! </p>
+
+
+</body>

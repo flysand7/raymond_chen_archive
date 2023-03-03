@@ -1,0 +1,207 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Another different type of dialog procedure</h1>  <!-- .entry-meta -->
+
+<p>
+The other method of using a window-procedure-like dialog box is
+to change the rules of the game.
+Normally, the window procedure for a dialog box is
+the <code>DefDlgProc</code> function, which calls the dialog
+procedure and then takes action if the dialog procedure indicated
+that it desired the default action to take place.
+</p>
+<p>
+The dialog procedure is subservient to <code>DefDlgProc</code>,
+providing advice when requested.
+The kernel of the idea for this technique is to “turn the tables”.
+Make <code>DefDlgProc</code> be the one who gives advice and you
+be the one that asks for the advice when you want it.
+</p>
+<p>
+We do this by making the window procedure be our own function
+which decides whether or not it wants the default action to happen.
+If so, it calls <code>DefDlgProc</code> to do it, after giving
+the dialog a dummy dialog procedure that always says “Just do the
+default”.
+</p>
+<p>
+Here’s the flow diagram:
+</p>
+<pre>
+Message delivered
+-&gt; WLWndProc
+   -&gt; your WLDlgProc
+      decide what to do
+      want to do the default action
+      -&gt; DefDlgProc
+         -&gt; dummy dialog procedure
+         &lt;- always returns FALSE
+         DefDlgProc does default action
+      &lt;- returns result of default behavior
+      you do other stuff (perhaps modify
+      default behavior after it occurred)
+   &lt;- returns result
+&lt;- returns result
+</pre>
+<p>
+To do this, we need to register a custom dialog class.
+You always wondered what that was for: Now you know.
+</p>
+<pre>
+BOOL
+InitApp(void)
+{
+  WNDCLASS wc;
+  wc.style = CS_DBLCLKS | CS_SAVEBITS | CS_BYTEALIGNWINDOW;
+  wc.lpfnWndProc = WLWndProc;
+  wc.cbClsExtra = 0;
+  wc.cbWndExtra = DLGWINDOWEXTRA + sizeof(WLDLGPROC);
+  wc.hInstance = g_hinst;
+  wc.hIcon = NULL;
+  wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+  wc.hbrBackground = NULL;
+  wc.lpszMenuName = NULL;
+  wc.lpszClassName = TEXT("WLDialog");
+  if (!RegisterClass(&amp;wc)) return FALSE;
+  return TRUE;
+}
+</pre>
+<p>
+This creates a new window class called “WLDialog” which we will use
+as our custom dialog class. When you create a custom dialog class, you
+must set the cbWndExtra to DLGWINDOWEXTRA bytes, plus any additional
+bytes you wish to use for yourself.  We need to store an extra
+WLDLGPROC, so we add that in.
+</p>
+<p>
+To use our custom dialog procedure, the dialog template must use the
+“CLASS” keyword to specify the custom dialog class:</p>
+<pre>
+1 DIALOGEX DISCARDABLE  0, 0, 200,200
+STYLE DS_SHELLFONT | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CLASS "WLDialog"
+CAPTION "sample"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    DEFPUSHBUTTON "&amp;Bye", IDCANCEL, 7,4,50,14, WS_TABSTOP
+END
+</pre>
+<p>
+This is exactly the same as a regular dialog box template, except
+that there is a “CLASS” entry which specifies that this dialog box
+should use our new class.  Paralleling the <code>DialogBoxParam</code>
+function we have our own:
+</p>
+<pre>
+typedef LRESULT (CALLBACK* WLDLGPROC)(HWND, UINT, WPARAM, LPARAM);
+struct WLDIALOGINFO {
+  WLDLGPROC wldp;
+  LPARAM lParam;
+};
+INT_PTR
+WLDialogBoxParam(HINSTANCE hinst, LPCTSTR pszTemplate,
+  HWND hwndParent, WLDLGPROC wldp, LPARAM lParam)
+{
+  WLDIALOGINFO wldi = { wldp, lParam };
+  return DialogBoxParam(hinst, pszTemplate,
+           hwndParent, WLDlgProc, (LPARAM)&amp;wldi);
+}
+</pre>
+<p>
+This packages up the WndProc-Like dialog procedure and its reference
+data so we can recover it in our window procedure:
+</p>
+<pre>
+LRESULT CALLBACK
+WLWndProc(HWND hdlg, UINT uiMsg, WPARAM wParam, LPARAM lParam)
+{
+  if (uiMsg == WM_INITDIALOG) {
+    WLDIALOGINFO *pwldi = (WLDIALOGINFO*)lParam;
+    SetWindowLongPtr(hdlg, DLGWINDOWEXTRA, (LONG_PTR)pwldi-&gt;wldp);
+    lParam = pwldi-&gt;lParam;
+  }
+  WLDLGPROC wldp = (WLDLGPROC)GetWindowLongPtr(hdlg, DLGWINDOWEXTRA);
+  if (wldp) {
+    return wldp(hdlg, uiMsg, wParam, lParam);
+  } else {
+    return DefDlgProc(hdlg, uiMsg, wParam, lParam);
+  }
+}
+</pre>
+<p>
+This is the window procedure for the custom dialog.  When the
+<code>WM_INITDIALOG</code> message comes in, we recover the original
+parameters to <code>WLDialogBoxParam</code>.
+The <code>WLDLGPROC</code> we save in the extra bytes we reserved,
+and the original <code>LPARAM</code> becomes the <code>lParam</code>
+that we pass to the <code>WLDLGPROC</code>.  Then for each message
+that comes in, we pass the message and its parameters directly to
+the <code>WLDLGPROC</code> and return the value directly.
+No <code>DWLP_MSGRESULT</code> necessary.
+</p>
+<p>
+The last piece of the puzzle is the dialog procedure we actually hand
+to the dialog manager:
+</p>
+<pre>
+INT_PTR CALLBACK
+WLDlgProc(HWND hdlg, UINT uiMsg, WPARAM wParam, LPARAM lParam)
+{
+  return FALSE;
+}
+</pre>
+<p>
+All it says is, “Do the default thing.”
+</p>
+<p>
+Okay so let’s write yet another version of our sample program,
+using this new architecture:
+</p>
+<pre>
+LRESULT CALLBACK SampleWLDialogProc(
+HWND hdlg, UINT uiMsg, WPARAM wParam, LPARAM lParam)
+{
+  switch (uiMsg) {
+  case WM_INITDIALOG:
+    break;
+  case WM_COMMAND:
+    switch (GET_WM_COMMAND_ID(wParam, lParam)) {
+    case IDCANCEL:
+      MessageBox(hdlg, TEXT("Bye"), TEXT("Title"), MB_OK);
+      EndDialog(hdlg, 1);
+      break;
+    }
+    break;
+  case WM_SETCURSOR:
+    if (LOWORD(lParam) == HTCAPTION) {
+      SetCursor(LoadCursor(NULL, IDC_SIZEALL));
+      return TRUE;
+    }
+    break;
+  }
+  return DefDlgProc(hdlg, uiMsg, wParam, lParam);
+}
+int WINAPI WinMain(HINSTANCE hinst, HINSTANCE hinstPrev,
+                   LPSTR lpCmdLine, int nShowCmd)
+{
+  InitApp();
+  WLDialogBoxParam(hinst, MAKEINTRESOURCE(1),
+            NULL, SampleWLDialogProc, 0);
+  return 0;
+}
+</pre>
+<p>
+In this style of WndProc-Like dialog, we just write our
+dialog procedure as if it were a window procedure,
+calling <code>DefDlgProc()</code> to perform default behavior.
+And to get this new behavior, we use <code>WLDialogBoxParam</code>
+instead of <code>DialogBoxParam</code>
+</p>
+<p>
+So now I've developed two quite different
+ways you can write WndProc-Like dialog procedures.
+You may not like either one of them, so go ahead and write a third
+way if you prefer.  But at least I hope you
+learned a little more about how Windows works.</p>
+
+
+</body>

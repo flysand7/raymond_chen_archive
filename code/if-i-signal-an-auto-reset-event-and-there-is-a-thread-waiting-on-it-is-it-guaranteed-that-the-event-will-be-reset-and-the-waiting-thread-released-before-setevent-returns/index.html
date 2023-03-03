@@ -1,0 +1,120 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">If I signal an auto-reset event and there is a thread waiting on it, is it guaranteed that the event will be reset and the waiting thread released before SetEvent returns?</h1>  <!-- .entry-meta -->
+
+<p>
+Let’s go straight to the question:
+</p>
+<blockquote class="q">
+<p>
+I have two programs that take turns doing something.
+Right now, I manage the hand-off with two auto-reset events.
+In Thread A,
+after it finishes doing some work, it
+signals Event B and then immediately waits on
+Event A.
+Thread B does the converse:
+When its wait on Event B completes, it does some work,
+then signals Event A and then immediately waits
+on Event B.
+</p>
+<p>
+This works great, but I’m wondering if I can save myself
+an event and use the same event to hand control back and forth.
+Is it guaranteed that when Thread A signals Event B,
+that this will release Thread B and reset the event
+(since it is auto-reset) before the call to
+<code>Set­Event</code> returns?
+If so, then I can just have one event and use it to bounce
+control back and forth.
+</p>
+</blockquote>
+<p>
+Let’s try it!
+</p>
+<pre>
+<i>#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+HANDLE h;
+DWORD CALLBACK ThreadProc(void *msg)
+{
+ for (;;) {
+  SetEvent(h);
+  // The theory is that the above SetEvent does not return
+  // until the other thread has positively completed its wait,
+  // so this upcoming wait will not complete until the other
+  // thread calls SetEvent.
+  WaitForSingleObject(h, INFINITE);
+  puts((LPSTR)msg);
+ }
+}
+int __cdecl main(int, char**)
+{
+ DWORD id;
+ h = CreateEvent(0, FALSE, TRUE, 0);
+ CloseHandle(CreateThread(0, 0, ThreadProc, "T1", 0, &amp;id));
+ CloseHandle(CreateThread(0, 0, ThreadProc, "T2", 0, &amp;id));
+ Sleep(INFINITE);
+ return 0;
+}
+</i></pre>
+<p>
+If you run this program,
+you’ll see that the two threads come nowhere near taking turns.
+Instead, you see stretches where
+thread T1 gets to run a whole bunch of iterations
+in a row, and stretches where
+thread T2 gets to run a whole bunch of iterations in a row.
+</p>
+<p>
+Okay, so we have demonstrated by experiment that this technique
+does not work.
+(You can use experimentation to show that something doesn’t always work,
+but you can’t use it to show that something always <i>will</i> work.
+For that you need to read some contracts and put on your thinking
+cap.)
+But why doesn’t it work?
+</p>
+<p>
+The lawyerly explanation for why it doesn’t work is that there
+is nothing in the contract that says that it <i>does</i> work.
+Perfectly correct, but not particularly insightful.
+</p>
+<p>
+Signaling an event makes all waiting threads eligible to run,
+but that doesn’t mean that they actually <i>will</i> run.
+One of the waiting threads is woken to say
+“Hey, now’s your chance.”
+But that thread might be groggy and slow to wake,
+and in the meantime, another thread can swoop in and steal the event signal.
+And then that groggy thread shuffles downstairs to the breakfast
+table to find that somebody ate his pancake.
+(Actually, in principle, the kernel could just make it a total free-for-all
+and wake <i>all</i> the waiting threads, but I suspect it just picks one.)
+</p>
+<p>
+We saw earlier that the thread that you would expect to run next
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2005/01/05/346888.aspx">
+might be temporarily unavailable and miss its chance to claim
+what it thinks is rightfully his</a>.
+And more recent versions of Windows have exacerbated the problem
+by
+<a href="http://www.bluebytesoftware.com/blog/PermaLink,guid,e40c2675-43a3-410f-8f85-616ef7b031aa.aspx">
+abandoning fairness</a>
+in order to improve throughput
+and avoid lock convoys.
+Now, in principle, the kernel could have reset the event when it woke
+the waiting thread, thereby assigning the wake to the thread at signal time,
+but that would have reintroduced the problem that unfairness was trying to
+solve.
+</p>
+<p>
+The irony here is that what you’re doing here is
+intentionally trying to <i>create</i> a convoy,
+and you’re running into the scheduler’s convoy-resistance.
+</p>
+<p>
+Just use the two-event pattern.
+That makes it explicit what you want.</p>
+
+
+</body>

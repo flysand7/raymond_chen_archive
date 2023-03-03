@@ -1,0 +1,114 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I provide data to the sharing pane from a Win32 desktop application?</h1>  <!-- .entry-meta -->
+
+<p>Last time, we were able to show the sharing pane from a Win32 desktop application, but we didn’t provide any information to the sharing pane, so all it did was offer to share a screen shot. Today, let’s provide some data. </p>
+<p>This is a continuation of the interop pattern. Repeating the table we had from last time: </p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tr>
+<th>XxxStatics</th>
+<th>XxxInterop</th>
+</tr>
+<tr>
+<td>Get­For­Current­View</td>
+<td>Get­For­Window</td>
+</tr>
+<tr>
+<td>Do­Something (implied “for current view”)</td>
+<td>Do­Something­For­Window</td>
+</tr>
+</table>
+<p>Last time, we used the second case, converting <code>Show­Sharing­UI</code> to <code>Show­Sharing­UI­For­Window</code>. Today we’re going to use the first case: Converting <code>Get­For­Current­View</code> to <code>Get­For­Window</code>. </p>
+<p>Start with a blank <a href="https://blogs.msdn.microsoft.com/oldnewthing/20030723-00/?p=43073">scratch program</a> and make these changes. (Remember, Little Programs do little to no error checking.) </p>
+<pre>
+#include &lt;wrl/client.h&gt;
+#include &lt;wrl/event.h&gt;
+#include &lt;wrl/wrappers/corewrappers.h&gt;
+#include &lt;windows.applicationmodel.datatransfer.h&gt;
+#include &lt;shlobj.h&gt; // IDataTransferManagerInterop
+#include &lt;tchar.h&gt; // Huh? Why are you still using ANSI?
+#include &lt;roapi.h&gt;
+
+namespace WRL = Microsoft::WRL;
+namespace awf = ABI::Windows::Foundation;
+namespace dt = ABI::Windows::ApplicationModel::DataTransfer;
+
+using Microsoft::WRL::Wrappers::HStringReference;
+
+WRL::ComPtr&lt;IDataTransferManagerInterop&gt; g_dtmInterop;
+WRL::ComPtr&lt;DT::IDataTransferManager&gt; g_dtm;
+EventRegistrationToken g_dataRequestedToken;
+</pre>
+<p>Note that in real life, these global variables would be instance variables of some C++ class. </p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+  RoGetActivationFactory(HStringReference(
+    RuntimeClass_Windows_ApplicationModel_DataTransfer_DataTransferManager)
+                         .Get(), IID_PPV_ARGS(&amp;g_dtmInterop));
+
+  g_dtmInterop-&gt;GetForWindow(hwnd, IID_PPV_ARGS(&amp;g_dtm));
+
+  auto callback = WRL::Callback&lt;WF::ITypedEventHandler&lt;
+    DT::DataTransferManager*, DT::DataRequestedEventArgs*&gt;&gt;(
+        [](auto&amp;&amp;, DT::IDataRequestedEventArgs* e)
+    {
+      WRL::ComPtr&lt;DT::IDataRequest&gt; request;
+      e-&gt;get_Request(&amp;request);
+
+      WRL::ComPtr&lt;DT::IDataPackage&gt; data;
+      request-&gt;get_Data(&amp;data);
+
+      WRL::ComPtr&lt;DT::IDataPackagePropertySet&gt; properties;
+      data-&gt;get_Properties(&amp;properties);
+
+      // Title is mandatory
+      properties-&gt;put_Title(HStringReference(L"Title from Win32").Get());
+
+      // Description is optional
+      properties-&gt;put_Description(HStringReference(L"This text came from a Win32 app").Get());
+
+      data-&gt;SetText(HStringReference(L"Text from Win32 app!").Get());
+
+      return S_OK;
+    });
+
+  g_dtm-&gt;add_DataRequested(callback.Get(), &amp;g_dataRequestedToken);
+
+  return TRUE;
+}
+
+void
+OnDestroy(HWND hwnd)
+{
+    g_dtm-&gt;remove_DataRequested(g_dataRequestedToken);
+    g_dtm.Reset();
+    g_dtmInterop.Reset();
+    PostQuitMessage(0);
+}
+
+
+void OnChar(HWND hwnd, TCHAR ch, int cRepeat)
+{
+  switch (ch) {
+  case TEXT(' '):
+    g_dtmInterop-&gt;ShowShareUIForWindow(hwnd);
+    }
+    break;
+  }
+}
+
+HANDLE_MSG(hwnd, WM_CHAR, OnChar);
+</pre>
+<p>Okay, let’s see what happened here. </p>
+<p>When the window is created, we get the interop interface and save it in the global variable for later use. We then call <code>Get­For­Window</code> to obtain the <code>Data­Transfer­Manager</code> for our window. In WinRT this would have been a call to <code>Get­For­Current­View</code>. </p>
+<p>That’s all for the interop part of this exercise. Everything else is just operating on the WinRT objects at the ABI level instead of at the projection level. </p>
+<p>Next we create a callback handler for the <code>Data­Requested</code> event. We’ll look at the body of the handler later. </p>
+<p>We then register the handler for the event by calling <code>add_Data­Requested</code> and save the registration token so we can unregister later. </p>
+<p>Okay, now to look inside the callback: This is a direct translation of <code>Data­Transfer­Manager</code> from projection back into ABI. Reading a property becomes a call to the <code>get_PropertyName</code> method, and writing a property becomes a call to the <code>put_PropertyName</code> method. In our case, we take the <code>Data­Requested­Event­Args</code> and get the <code>Request</code> property, which is an <code>IData­Request</code>. From the <code>IData­Request</code> we set the <code>Title</code> and <code>Description</code> properties, and use the <code>SetText</code> method to provide the text that we are sharing. </p>
+<p>At destruction, we unregister the event and release the objects. </p>
+<p>The final snippet of code is what we saw last time: When the user hits the space bar, open the share pane. But this time, the share pane actually shows something interesting, because our <code>Data­Requested</code> event handler provides text to be shared. </p>
+<p>Of course, in a real program, you would presumably offer text or other content that is based on the current state or selection rather than just spitting out hard-coded content, but this is just a Little Program. </p>
+
+
+</body>

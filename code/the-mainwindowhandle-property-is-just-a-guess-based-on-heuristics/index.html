@@ -1,0 +1,48 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The MainWindowHandle property is just a guess based on heuristics</h1>  <!-- .entry-meta -->
+
+<p>A customer had a program written in Windows Forms that wanted the following behavior:</p>
+<ul>
+<li>When the user minimizes the app, it hides the window.</li>
+<li>When the user relaunches the app, the second instance finds the existing (hidden) window and makes it visible again.</li>
+</ul>
+<p>They got the “Hide when minimized” part working, but were not having success with the “Find the existing window and make it visible again.” Here’s their code:</p>
+<pre>Private Sub RestoreHiddenInstance
+    For Each process As Process In Process.GetProcesses()
+        If process.ProcessName.StartsWith("Contoso") Then
+            If proceess.StartTime &lt;&gt; Process.GetCurrentProcess.StartTime Then
+                ShowWindow(process.MainWindowHandle, SW_RESTORE)
+                ShowWindow(process.MainWindowHandle, SW_SHOW)
+                ShowWindow(process.MainWindowHandle, SW_SHOWDEFAULT)
+                SetForegroundWindow(process.MainWindowHandle)
+            End If
+        End If
+    Next
+End Sub
+</pre>
+<p>They didn’t provide any debugging details about what “didn’t work.” All they said was that it “didn’t work.”</p>
+<p>We noted some time ago that <a href="/code/why-can-t-findwindowex-find-another-program-s-window-by-name"> the <code>Main­Window­Handle</code> property is just a guess based on heuristics</a>. There is no formal definition of a “main window” for a process. It’s a synthetic property driven by enumerating all the top-level of the windows that belong to the process and trying to guess which one is the main one.</p>
+<p>And if you <a href="https://referencesource.microsoft.com/#System/services/monitoring/system/diagnosticts/ProcessManager.cs,49"> go to the reference source</a>, you’ll see how the BCL decides whether a window is the main window:</p>
+<pre>bool IsMainWindow(IntPtr handle)
+{
+    if (NativeMethods.GetWindow(new HandleRef(this, handle),
+                                NativeMethods.GW_OWNER) != (IntPtr)0 ||
+        !NativeMethods.IsWindowVisible(new Handleref(this, handle)))
+        return false;
+
+    return true;
+}
+</pre>
+<p>According to the BCL heuristics, any unowned visible window is a candidate for being the “main” window.</p>
+<p>Since the Contoso program hid all of its windows, there are no “main” windows as far as the <code>Main­Window­Handle</code> property is concerned. The <code>process.<wbr/>Main­Window­Handle</code> property is <code>null</code>, and naturally that means that the code doesn’t actually do anything with the main window of the previous instance.</p>
+<p>You need to move away from the heuristic-based window-detection and design something more deterministic. Here are some ideas.</p>
+<ul>
+<li>Give the main window a unique class name like <code>Contoso_<wbr/>Main­Window</code>. Enumerate the top-level windows owned by the previous instance and look for one that has the correct class name. (This solution won’t work for this particular customer because the class name for Windows Forms windows cannot be customized.)</li>
+<li>Register a custom message like <code>Is­Contoso­Main­Window</code>. Have your main window respond <code>TRUE</code> to that message, and have the second instance send this message to each candidate, and see which one returns <code>TRUE</code>.</li>
+<li>Create a named shared memory block and put the window handle in it.</li>
+<li>Find some other shared data storage that you can use to hold the window handle.</li>
+</ul>
+<p>This list is far from exhaustive, but gives you an idea of the sort of thinking you need to engage in.</p>
+
+
+</body>

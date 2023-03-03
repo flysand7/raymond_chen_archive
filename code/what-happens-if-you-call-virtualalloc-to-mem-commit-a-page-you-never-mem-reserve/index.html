@@ -1,0 +1,28 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What happens if you call VirtualAlloc to MEM_COMMIT a page you never MEM_RESERVE?</h1>  <!-- .entry-meta -->
+
+<p>A customer reported that while trying to solve a problem with their program, they noticed that they had been calling <code>Virtual­Alloc</code> incorrectly for years. They were able to reduce it into a simple program: </p>
+<pre>
+#include &lt;windows.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;tchar.h&gt;
+
+int _tmain(int argc, _TCHAR* argv[])
+{
+ LPVOID base = VirtualAlloc(NULL, 4096, MEM_COMMIT, PAGE_READWRITE);
+ _tprintf(TEXT("Allocated at %p\n"), base);
+ return 0;
+}
+</pre>
+<p>First of all, thank you for <a href="http://blogs.msdn.com/b/oldnewthing/archive/2013/10/18/10457796.aspx">reducing</a> your program. That really focuses the investigation. </p>
+<p>The customer noted that their code was passing the <code>MEM_COMMIT</code> flag without the <code>MEM_RESERVE</code> flag, a scenario that is specifically called out in the documentation: </p>
+<blockquote class="q"><p>The function fails if you attempt to commit a page that has not been reserved.  The resulting error code is <b>ERROR_INVALID_ADDRESS</b>. </p></blockquote>
+<p>But their call to <code>Virtual­Alloc</code> was succeeding! The customer suspected that this was not actually the source of their problem, but they wanted to double-check that perhaps their incorrect use of <code>Virtual­Alloc</code> was somehow indirectly contributing to it. Specifically, they were wondering if what they’re doing is okay, or whether they should always use <code>MEM_RESERVE | MEM_COMMIT</code>. </p>
+<p>What the customer found is a compatibility hack. A lot of application forget to set the <code>MEM_RESERVE</code> flag when they <code>MEM_COMMIT</code>, so the memory manager lets it slide if they also pass <code>lpAddress = NULL</code>, indicating that they are requesting a new allocation rather than modifying an existing one. </p>
+<p>The problem is that MSDN fell into the trap of over-documenting. Instead of documenting the contract, MSDN documented the implementation. The contract is “A page being committed must also be reserved.” If you try to commit a page that is not also reserved, then the behavior is unspecified. It is therefore valid for the implementation to treat the violation as “Sorry, you lose,” or “Okay, I’ll let you do it, but just this time.” </p>
+<p>It appears that some time after this issue was identified, the MSDN documentation was revised. But they didn’t revise it by documenting the contract. They revised it by documenting the implementation <i>more precisely</i>. </p>
+<blockquote class="q"><p>Attempting to commit a specific address range by specifying <b>MEM_COMMIT</b> without <b>MEM_RESERVE</b> and a non-<b>NULL</b> <i>lpAddress</i> fails unless the entire range has already been reserved. The resulting error code is <b>ERROR_INVALID_ADDRESS</b>. </p></blockquote>
+<p>My recommendation to the customer was to switch to <code>MEM_RESERVE | MEM_COMMIT</code>, since that is the preferred behavior and therefore the one least likely to trigger compatibility behavior. But the fact that they were accidentally omitting the <code>MEM_RESERVE</code> was not related to their problem, and they should keep looking. </p>
+
+
+</body>

@@ -1,0 +1,103 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Blitting between color and monochrome DCs</h1>  <!-- .entry-meta -->
+
+<p>
+When blitting between color and monochrome DCs,
+The text foreground and background colors play a role.
+We saw earlier that
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/08/02/446605.aspx">
+when blitting from a monochrome DC to a color DC,
+the color black in the source turns into the destination’s text color,
+and the color white in the source turns into the destination’s background
+color</a>.
+This came in handy when we wanted to colorize a monochrome bitmap.
+</p>
+<p>
+This trick works in reverse, too.
+If you blit from a color DC to a monochrome DC,
+then all pixels in the source that are equal to the background color
+will turn white, and all other pixels will turn black.
+In other words, GDI considers a monochrome bitmap to be
+<a href="http://www.sciencebob.com/lab/q-zebrastripes.html">
+black pixels on a white background</a>.
+</p>
+<p>
+This trick comes in handy when you want to convert a bitmap with
+color-keyed transparency into a color bitmap and a mask.
+Select the color bitmap into the DC <code>hdcColor</code>,
+and create a monochrome bitmap with the same dimensions and select
+it into the DC <code>hdcMask</code>.
+Then the following operations will construct the mask:
+</p>
+<pre>
+// let's say that the upper left pixel is the transparent color
+COLORREF clrTransparent = GetPixel(hdcColor, 0, 0);
+COLORREF clrBkPrev = SetBkColor(hdcColor, clrTransparent);
+BitBlt(hdcMono, 0, 0, cx, cy, hdcColor, 0, 0, SRCCOPY);
+SetBkColor(hdcColor, clrBkPrev);
+</pre>
+<p>
+We can see this in action in our
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/07/23/54576.aspx">
+scratch program</a>
+by making the following changes:
+</p>
+<pre>
+void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+  <font color="blue">
+  HBITMAP hbmMono = CreateBitmap(100, 100, 1, 1, NULL);
+  HDC hdcMono = CreateCompatibleDC(pps-&gt;hdc);
+  HBITMAP hbmPrev = SelectBitmap(hdcMono, hbmMono);
+  HDC hdcScreen = GetDC(NULL);
+  SetBkColor(hdcScreen, GetSysColor(COLOR_DESKTOP));
+  BitBlt(hdcMono, 0, 0, 100, 100, hdcScreen, 0, 0, SRCCOPY);
+  SetTextColor(pps-&gt;hdc, RGB(0xFF,0,0));
+  SetBkColor(pps-&gt;hdc, RGB(0,0x80,0));
+  BitBlt(pps-&gt;hdc, 0, 0, 100, 100, hdcMono, 0, 0, SRCCOPY);
+  ReleaseDC(NULL, hdcScreen);
+  SelectBitmap(hdcMono, hbmPrev);
+  DeleteDC(hdcMono);
+  DeleteObject(hbmMono);</font>
+}
+</pre>
+<p>
+We start by creating a 100 × 100 monochrome bitmap
+and selecting it into a memory DC. This will become our mask.
+Next, we take a screen DC and set its background color to the
+desktop color and blit from the screen to the monochrome bitmap.
+This creates a bitmap which is white where the screen has the desktop
+color and black where the screen has some other color.
+We show off we show off this new bitmap by painting it into our
+client area, but just for fun, I made the foreground pixels
+(black pixels in the monochrome bitmap)
+bright red and the background pixels
+(white pixels in the monochrome bitmap)
+dark green.
+</p>
+<p>
+Minimize your windows so the upper left corner of the desktop is
+visible, and turn off your wallpaper (so the desktop color actually
+means something).
+Run this program and observe a copy of your desktop drawn in the
+window’s client area,
+but with your desktop color turned to green and all the other pixels
+turned to red.
+</p>
+<p>
+The rest of the job of drawing a color bitmap with transparency
+is now comparatively straightforward.
+I’ll leave it as an exercise.
+Hint:
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/08/03/447131.aspx">
+Raster operation 0x00220326 (DSna)
+will probably be handy</a>.
+</p>
+<p>
+Next time, we’ll look at DIB sections as a way of doing
+fast color manipulation, thereby avoiding the need to
+perform the DSna ROP entirely.</p>
+
+
+</body>

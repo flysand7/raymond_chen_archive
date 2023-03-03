@@ -1,0 +1,126 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">As random as I wanna be: Why cmd.exe's %RANDOM% isn't so random</h1>  <!-- .entry-meta -->
+
+<p>
+Somebody on my team reported that
+a particular script in our project’s build process
+would fail with bizarre output maybe
+once in fifty tries.
+This script was run from a <code>makefile</code>,
+and the result was a failed build.
+Rerunning <i>make</i> fixed the problem,
+but that’s not much consolation when the build lab encounters it
+approximately every other day.
+The strange thing about the bizarre output was that it appeared
+to contain a mix of two different runs.
+How could the output of two runs be mixed into one output file?
+</p>
+<p>
+The script was a batch file, and it generated its output in
+a few different steps,
+storing the intermediate output in randomly-named temporary files,
+taking advantage of the
+<a href="http://technet.microsoft.com/en-us/library/bb490954.aspx">
+<code>%RANDOM%</code></a>
+pseudovariable to generate the name of those temporary files.
+(They were <code>%TEMP%\%RANDOM%.tmp1</code>,
+<code>%TEMP%\%RANDOM%.tmp2</code>, you get the idea.)
+</p>
+<p>
+Cutting to the chase: The reason for the mixed output was that
+the <code>%RANDOM%</code> pseudo-variable wasn’t random enough.
+If two copies of the script are running at the same time,
+they will get the <i>same</i> “random” number and end up
+mixing their output together.
+(And running multiple builds at the same time is something the
+people in the build lab are wont to do.)
+</p>
+<p>
+It turns out that the Windows command processor uses
+<a href="http://taeb-nethack.blogspot.com/2009/03/predicting-and-controlling-nethacks.html">
+the standard naïve algorithm for seeding the random number generator</a>:
+</p>
+<pre>
+   srand((unsigned)time(NULL));
+</pre>
+<p>
+Since <code>time</code> has a resolution of one second,
+two command prompts launched in rapid succession have a good
+chance of seeding the random number generator with the same
+timestamp, which means that they will have the same random number
+stream.
+</p>
+<pre>
+C&gt; copy con notsorandom.cmd
+@pause
+@echo %RANDOM%
+^Z
+        1 file(s) copied.
+C&gt; for /l %i in (1,1,3000) do @cmd /c notsorandom.cmd
+// hold down the space bar
+Press any key to continue . . .
+14153
+Press any key to continue . . .
+14153
+Press any key to continue . . .
+14153
+Press any key to continue . . .
+14153
+Press any key to continue . . .
+14156
+Press any key to continue . . .
+14156
+Press any key to continue . . .
+14156
+Press any key to continue . . .
+14156
+Press any key to continue . . .
+14156
+Press any key to continue . . .
+14160
+Press any key to continue . . .
+14160
+Press any key to continue . . .
+14160
+</pre>
+<p>
+Notice that the <code>%RANDOM%</code> pseudovariable generates
+the same “random” number until the clock ticks over another second.
+(Notice also that the “random” numbers don’t look all that random.)
+</p>
+<p>
+We fixed the script so it generated its temporary file in the
+project’s output directory rather than in the (shared) <code>%TEMP%</code>
+directory.
+That way, even if two copies of the project are building at the same
+time, they will generate their temporary files in different directories
+and not step on each other.
+</p>
+<p>
+<b>Exercise</b>: There is much subtlety in that <code>for</code>
+command.
+Describe alternative formulations of the <code>for</code> command,
+both those that work and those that don’t.
+To get you started: Explain the output of this variation:
+</p>
+<pre>
+<code>for /l %i in (1,1,300) do @(pause&amp;echo %RANDOM%)</code>
+</pre>
+<p>
+<b>Obligatory batch file bashing</b>:
+Every time I write an entry about batch files,
+you can count on people complaining about how insane
+the batch programming language is.
+The batch language wasn’t designed; it evolved.
+(And according to commenter Daev,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2008/08/06/8835317.aspx#8841279">
+it followed a form of parallel evolution</a> from what most people
+are familiar with.)
+I doubt anybody actually enjoy writing batch files.
+At best you tolerate it.
+I’m just trying to make it slightly more tolerable.
+I bet these are the same people who complain to their tax preparer
+about the complexity of tax law.</p>
+
+
+</body>

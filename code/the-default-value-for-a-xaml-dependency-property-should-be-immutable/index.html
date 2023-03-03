@@ -1,0 +1,112 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The default value for a XAML dependency property should be immutable</h1>  <!-- .entry-meta -->
+
+<p>When you define a custom XAML dependency property, one of the things you do is specify the default value. You can do this by providing the default value directly:</p>
+<pre>DependencyProperty.Register("MyProperty",
+    propertyType, ownerType,
+    new PropertyMetadata(defaultValue));
+</pre>
+<p>UWP XAML also lets you provide a callback that produces the default value:</p>
+<pre>DependencyProperty.Register("MyProperty",
+    propertyType, ownerType,
+    PropertyMetadata.Create(createDefaultValue));
+</pre>
+<p>What’s not entirely obvious is that the default value statically provided at registration or provided dynamically at runtime should be an immutable object, if you know what’s good for you.</p>
+<p>The default value of a dependency property is the value used if no value has been set: Nobody has explicitly assigned a value, there is no active binding, no active animation, no active style, nothing.</p>
+<p>When XAML needs the default value of the dependency property, it uses the static default property, if provided. Otherwise, it calls the <code>create­Default­Value</code> delegate, if provided. Otherwise, it uses <code>null</code>.</p>
+<p>For concreteness, let’s say that we have a <code>Widget</code> object and a dependency property of type <code>Light</code>.</p>
+<p>Let’s first look at the case where you provide a static mutable value for the default value of the dependency property.</p>
+<pre>// Code in italics is wrong.
+class Light
+{
+  public Color Color { get; set; }; // read-write property
+}
+
+class Widget
+{
+ ...
+
+ public Widget()
+ {
+  InitializeComponent();
+ }
+
+ // The default is a red light.
+ public static readonly DependencyProperty FrontLightProperty =
+    DependencyProperty.Register("FrontLight",
+    typeof(Light), typeof(Widget),
+    <i>new PropertyMetadata(new Light { Color = Color.Red })</i>);
+
+ // Provide convenient access to the dependency property.
+ public Light FrontLight {
+  get =&gt; (Light)GetValue(FrontLightProperty);
+  set =&gt; SetValue(FrontLightProperty, value);
+ }
+}
+
+void Example()
+{
+  var a = new Widget();
+  var b = new Widget();
+
+  var aColor = a.FrontLight.Color; // aColor is Red
+  var bColor = b.FrontLight.Color; // bColor is Red
+
+  a.FrontLight.Color = Color.Blue;
+  var bColor2 = b.FrontLight.Color; // bColor2 is Blue (!)
+}
+</pre>
+<p>Since no custom value of <code>Front­Light</code> has been set, <code>a</code><code>.FrontLight</code> and <code>b</code><code>.FrontLight</code> both contain the default value, which is the red <code>Light</code> provided to the <code>Property­Metadata</code> constructor.</p>
+<p>But since <code>Light</code> objects are mutable, the properties of that default value can be changed, and those changes are visible to both <code>a</code> and <code>b</code>, because <code>a</code><code>.FrontLight</code> and <code>b</code><code>.FrontLight</code> are the same object.</p>
+<p>“Aha,” you may think, “that’s where the callback version comes in handy.” If you set up the callback to produce a unique object, then <code>a</code><code>.FrontLight</code> and <code>b</code><code>.FrontLight</code> will be different objects, and they won’t affect each other.</p>
+<pre>// Code in italics is wrong.
+class Widget
+{
+ ...
+
+ public Widget()
+ {
+  InitializeComponent();
+ }
+
+ // The default is a red light.
+ public static readonly DependencyProperty FrontLightProperty =
+    DependencyProperty.Register("FrontLight",
+    typeof(Light), typeof(Widget),
+    <span style="color: blue;"><i>PropertyMetadata.Create(() =&gt; new Light { Color = Color.Red })</i></span>);
+
+ // Provide convenient access to the dependency property.
+ public Light FrontLight {
+  get =&gt; (Light)GetValue(FrontLightProperty);
+  set =&gt; SetValue(FrontLightProperty, value);
+ }
+}
+
+void Example()
+{
+  var aColor = a.FrontLight.Color; // aColor is Red
+  var bColor = b.FrontLight.Color; // bColor is Red
+
+  a.FrontLight.Color = Color.Blue;
+  var bColor2 = b.FrontLight.Color; // bColor2 is Red
+
+  var aColor2 = a.FrontLight.Color; // aColor2 is Red (!)
+
+  if (a.FrontLight != a.FrontLight) TheWorldHasGoneMad(); // executes!
+}
+</pre>
+<p>This time, we have the callback create a brand new red <code>Light</code>. When we evaluate <code>a</code><code>.FrontLight</code><code>.Color</code>, the first thing that XAML needs to do is obtain the value of <code>a</code><code>.FrontLight</code>, and since nobody has set a value, XAML asks the callback to produce the default. The callback creates a fresh red <code>Light</code> and returns it, and that brand new light is the value of the <code>a</code><code>.FrontLight</code> property. The <code>Example</code> function reads the color and gets <code>Red</code>.</p>
+<p>The same thing happens when you read the color from <code>b</code><code>.FrontLight</code><code>.Color</code>.</p>
+<p>So far so good. The <code>a</code> and <code>b</code> objects each have separate <code>FrontLight</code> lights.</p>
+<p>Okay, now things get interesting: When we try to change the color of <code>a</code>‘s <code>Front­Light</code> to <code>Blue</code>, the assignment succeeds, and it doesn’t affect the color of <code>b</code>‘s <code>Front­Light</code>, but when we try to read the color of <code>a</code>‘s <code>Front­Light</code>, we get <code>Red</code> again. What happened?</p>
+<p>In the assignment <code>a</code><code>.FrontLight</code><code>.Color = Color</code><code>.Blue</code>, the first thing that happens is the fetch of the <code>FrontLight</code> property of the <code>a</code> object. And since we <i>still</i> haven’t set a value for the <code>FrontLight</code> property, XAML uses the default value. And XAML does that by calling the callback, and the callback creates a brand new <code>Light</code>. Until a value for the <code>FrontLight</code> property is set, <i>every attempt to read the <code>FrontLight</code> property will produce a new red <code>Light</code></i>. In other words, the default value is not cached. XAML calls the callback each time it needs the default value.</p>
+<p>The code sets the color of this brand new light to <code>Blue</code>. But that brand new light isn’t being saved anywhere. It doesn’t become the value of the <code>FrontLight</code> property. It ends up orphaned, waiting for the next GC to clean it up.</p>
+<p>Later, you read <code>a</code><code>.FrontLight</code><code>.Color</code>. Again, the first step is to retrieve the <code>FrontLight</code> property from <code>a</code>, and since no value has been set yet, XAML asks the callback to produce the default value, and the callback creates a brand new red <code>Light</code>. Every fetch of the <code>FrontLight</code> property produces a brand new red <code>Light</code>.</p>
+<p>This also explains why the final statement reports that the world has gone mad: The two reads of the <code>FrontLight</code> property each produced a different red <code>Light</code>.</p>
+<p>Producing a brand new object in response to the default value callback is a bad idea.</p>
+<p>The intended purpose of the callback is to let you have a default value that is itself a dependency object. Since dependency objects have thread affinity, you cannot use the same object for all callers, because the callers may come from different threads. The callback lets you look in some per-thread storage to obtain the correct object for that thread. In the worst case, you can have your own private cache of objects indexed by thread.¹</p>
+<p>Okay, but what if the dependency property’s type is a mutable type. One solution is to make <code>null</code> the default value of the property. As immutable things go, <code>null</code> looks quite immutable. Everybody who wants to change the <code>FrontLight</code> color must first provide a <code>FrontLight</code>. But what if you want the default value to be non-null? We’ll look at this <a href="/code/what-if-i-want-the-default-value-for-a-xaml-dependency-property-to-be-a-mutable-object"> next time</a>.</p>
+<p>¹ <a href="https://blogs.msdn.microsoft.com/oldnewthing/20060502-07/?p=31333"> A cache with a bad policy is another name for a memory leak</a>. One way to avoid this problem is to put weak references in the cache, so that the objects remain alive only as long as somebody is observing them. Scavenge dead slots in the dictionary periodically to clean out the tombstones. For example, you might scavenge after a certain number of objects have been added to the cache.</p>
+
+
+</body>

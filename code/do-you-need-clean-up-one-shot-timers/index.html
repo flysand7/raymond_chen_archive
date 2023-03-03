@@ -1,0 +1,84 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Do you need clean up one-shot timers?</h1>  <!-- .entry-meta -->
+
+<p><p>
+<a href="http://msdn.microsoft.com/library/en-us/dllproc/base/createtimerqueuetimer.asp">
+The <code>CreateTimerQueueTimer</code> function</a> allows you to create
+one-shot timers by passing
+the <code>WT_EXECUTEONLYONCE</code> flag.
+The documentation says that
+you need to call
+<a href="http://msdn.microsoft.com/library/en-us/dllproc/base/deletetimerqueuetimer.asp">
+the <code>DeleteTimerQueueTimer</code> function</a>
+when you no longer need the timer.
+</p>
+<p>
+Why do you need to clean up one-shot timers?
+</p>
+<p>
+To answer this, I would like to introduce you to one of my
+favorite rhetorical questions when trying to puzzle out
+API design:
+“What would the world be like if this were true?”
+</p>
+<p>
+Imagine what the world would be like if you didn’t need to
+clean up one-shot timers.
+</p>
+<p>
+Well, for one thing, it means that the behavior of the
+function would be confusing.  The caller of the
+the <code>CreateTimerQueueTimer</code> function would have
+to keep track of whether the timer was one-shot or not,
+to know whether or not the handle needed to be deleted.
+</p>
+<p>
+But far, far worse is that if one-shot timers were self-deleting,
+it would be impossible to use them correctly.
+</p>
+<p>
+Suppose you have an object that creates a one-shot timer,
+and you want to clean it up in your destructor if it hasn’t fired yet.
+If one-shot timers were self-deleting,
+then it would be impossible to write this object.
+</p>
+<pre>
+class Sample {
+ HANDLE m_hTimer;
+ Sample() : m_hTimer(NULL) { CreateTimerQueueTimer(&amp;m_hTimer, …); }
+ ~Sample() { … what to write here? … }
+};
+</pre>
+<p>
+You might say, “Well, I’ll have my callback null out the
+<code>m_hTimer</code> variable. That way, the destructor
+will know that the timer has fired.”
+</p>
+<p>
+Except that’s a race condition.
+</p>
+<pre>
+Sample::Callback(void *context)
+{
+  /// RACE WINDOW HERE
+  ((Sample*)context)-&gt;m_hTimer = NULL;
+  …
+}
+</pre>
+<p>
+If the callback is pre-empted during the race window
+and the object is destructed,
+and one-shot timers were self-deleting,
+then the object would attempt to use an invalid handle.
+</p>
+<p>
+This race window is uncloseable
+since the race happens even before
+you get a chance to execute a single line of code.
+</p>
+<p>
+So be glad that you have to delete handles to one-shot timers.
+</p></p>
+
+
+</body>

@@ -1,0 +1,51 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a non-agile delegate in C++/WinRT, part 5: Waiting synchronously from a thread that may already be the right thread</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/creating-a-non-agile-delegate-in-c-winrt-part-4-waiting-synchronously-from-a-background-thread"> Last time</a>, we looked at how we could build a delegate which, when invoked from a background thread, synchronously does work on a UI thread, but making the background thread wait until the UI work is complete. We did this by dispatching the work to the UI thread and performing a synchronous <code>get()</code> on the asynchronous activity.</p>
+<p>Here’s where we left things:</p>
+<pre>template&lt;typename TLambda&gt;
+void RunSyncOnDispatcher(
+    CoreDispatcher const&amp; dispatcher,
+    TLambda&amp;&amp; lambda)
+{
+  [&amp;]() -&gt; winrt::IAsyncAction
+  {
+    co_await winrt::resume_foreground(dispatcher);
+    lambda();
+  }().get();
+}
+
+deviceWatcher.Added(
+    [=](auto&amp;&amp; sender, auto&amp;&amp; info)
+    {
+        RunSyncOnDispatcher(Dispatcher(), [&amp;]()
+        {
+            viewModel.Append(winrt::make&lt;DeviceItem&gt;(info));
+        });
+    });
+</pre>
+<p>There’s a catch here, though.</p>
+<p>What if you accidentally call this from the UI thread?</p>
+<p>In that case, <code>Run­Sync­On­Dispatcher</code> will dispatch the work to the dispatcher (which is the current thread), and then block waiting for the work to run. But the work can’t run because it needs the current thread, which is blocked waiting for the work to run.</p>
+<p>To solve this problem, we need to check whether we are already on the target thread, in which case we just run the lambda immediately.</p>
+<pre>template&lt;typename TLambda&gt;
+void RunSyncOnDispatcher(
+    CoreDispatcher const&amp; dispatcher,
+    TLambda&amp;&amp; lambda)
+{
+  <span style="color: blue;">if (dispatcher.HasThreadAccess()) {
+    lambda();
+  } else</span> {
+    [&amp;]() -&gt; winrt::IAsyncAction
+    {
+      co_await winrt::resume_foreground(dispatcher);
+      lambda();
+    }().get();
+  }
+}
+</pre>
+<p>Remember, this entire week was dedicated to discussing a fringe corner case of Windows Runtime event handling. It may not be interesting in its own right, but it does demonstrate some techniques and gotchas that you may want to consider when writing your own custom coroutines.</p>
+<p> </p>
+
+
+</body>

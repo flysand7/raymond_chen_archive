@@ -1,0 +1,152 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why is there a CSIDL_DESKTOP value if you need the desktop in order to get it anyway?</h1>  <!-- .entry-meta -->
+
+<p>
+John asks
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/07/30/9852685.aspx#9853402">
+why there is a special constant <code>CSIDL_DESKTOP</code>
+defined for the desktop</a>.
+After all, in order to use <code>CSIDL_DESKTOP</code>,
+you need to call <code>SHGet­Desktop­Folder</code> and then
+bind to it.
+What’s the point of having an <code>ITEM­ID­LIST</code> that
+represents the desktop if, in order to use it,
+you first need to get the desktop?
+</p>
+<p>
+It’s like asking why the file system uses
+<code>.</code> (dot)
+to refer to the current directory.
+You’re already <i>in</i> the current directory.
+In order to resolve <code>.</code> (dot), you already need to have
+the current directory, so why bother with the dot at all?
+</p>
+<p>
+Because it is often convenient to give a name to your starting point.
+</p>
+<p>
+Suppose somebody wants to save a file to the desktop.
+How would you represent this as an <code>ITEM­ID­LIST</code>?
+If the only thing you can do is fill in the blank in the
+sentence,
+“Start with the desktop folder, then go to ________, then
+save the file there,”
+then you need a way to say “where you are now.”
+</p>
+<p>
+And that’s what <code>CSIDL_DESKTOP</code> gives you.
+An <code>ITEM­ID­LIST</code> that says “Where you are now.”
+</p>
+<p>
+Besides, if <code>CSIDL_DESKTOP</code> weren’t defined,
+somebody would have invented it.
+Say your program has a list of directories it wants to operate on,
+say, the Documents folder, the Music folder,
+and the Shared Documents folder.
+Great, so let me write a function:
+</p>
+<pre>
+void DoItIn(HWND hwnd, int csidl)
+{
+ PIDLIST_ABSOLUTE pidl;
+ if (SUCCEEDED(SHGetSpecialFolderLocation(
+                     hwnd, csidl, &amp;pidl))) {
+  IShellFolder *psf;
+  if (SUCCEEDED(SHBindToObject(NULL, pidl, NULL,
+                    IID_PPV_ARGS(&amp;psf)))) {
+   ...
+   psf-&gt;Release();
+  }
+  CoTaskMemFree(pidl);
+ }
+}
+void DoItInStandardPlaces(HWND hwnd)
+{
+ const static int csidls[] = {
+  CSIDL_MYDOCUMENTS,
+  CSIDL_MYMUSIC,
+  CSIDL_COMMON_DOCUMENTS,
+ };
+ for (int i = 0; i &lt; ARRAYSIZE(csidls); i++) {
+  DoItIn(hwnd, csidls[i]);
+ }
+}
+</pre>
+<p>
+Now you want to add the desktop folder.
+Oh wait, there is no <code>CSIDL</code> value for the desktop,
+so I’ll have to make one up.
+</p>
+<pre>
+// Our custom CSIDLs use the high word. None of the CSIDLs we use
+// set any bits in the high word, so we can use the high word to
+// detect whether we have a standard CSIDL or a custom CSIDL.
+#define CUSTOMCSIDL_DESKTOP 0x00010000
+#define ISCUSTOMCSIDL(csidl) HIWORD(csidl)
+#define STANDARDCSIDLOF(csidl) LOWORD(csidl)
+HRESULT MyGetSpecialFolderLocation(
+    HWND hwnd, int csidl, PIDLIST_ABSOLUTE *ppidl)
+{
+ HRESULT hr;
+ if (ISCUSTOMCSIDL(csidl)) {
+  *ppidl = (PIDLIST_ABSOLUTE)CoTaskMemAlloc(sizeof(WORD));
+  if (*ppidl) {
+   ppidl-&gt;mkid.cb = 0;
+   hr = S_OK;
+  } else {
+   hr = E_OUTOFMEMORY;
+  }
+ } else {
+  hr = SHGetSpecialFolderLocation(hwnd, STANDARDCSIDLOF(csidl), ppidl);
+ }
+ return hr;
+}
+</pre>
+<p>
+Okay, cool, now I can add
+</p>
+<pre>
+ const static int csidls[] = {
+  CSIDL_MYDOCUMENTS,
+  CSIDL_MYMUSIC,
+  CSIDL_COMMON_DOCUMENTS,
+  <font color="blue">CUSTOMCSIDL_DESKTOP,</font>
+ };
+</pre>
+<p>
+Oh wait, I also have to have a custom version of
+<code>SHBind­To­Object</code> that knows how to bind to
+this special new type of pidl that means “where you are now.”
+</p>
+<pre>
+HRESULT MyBindToObject(IShellFolder *psf, PCUIDLIST_RELATIVE pidl,
+  IBindCtx *pbc, REFIID riid, void **ppv)
+{
+ HRESULT hr;
+ if (pidl-&gt;mkid.cb == 0) {
+  *ppv = NULL;
+  if (psf == NULL) {
+   hr = SHGetDesktopFolder(&amp;psf);
+   if (SUCCEEDED(hr)) {
+    hr = psf-&gt;QueryInterface(riid, ppv);
+    psf-&gt;Release();
+   }
+  } else {
+   hr = psf-&gt;QueryInterface(riid, ppv);
+  }
+ } else {
+  hr = SHBindToObject(psf, pidl, pbc, riid, ppv);
+ }
+ return hr;
+}
+</pre>
+<p>
+Congratulations, you just reinvented <code>CSIDL_DESKTOP</code>.
+</p>
+<p>
+It can be
+<a href="http://en.wikipedia.org/wiki/Null_Object_pattern">
+very convenient to have a name for the null action</a>.</p>
+
+
+</body>

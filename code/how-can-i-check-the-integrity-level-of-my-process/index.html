@@ -1,0 +1,52 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I check the integrity level of my process?</h1>  <!-- .entry-meta -->
+
+<p>Integrity levels capture the sense of “running as a regular Win32 process”, “running elevated”, “running in a sandbox process”, that sort of thing. They describe what degree of security enforcement is applied to the process and how protected the process is from other processes.</p>
+<p>You can inspect a process’s integrity level by calling <code>Get­Token­Information</code> and asking for <code>Token­Integrity­Level</code>. For this trick, I’m going to use the magic <code>Get­Current­Process­Token()</code> function to save me the trouble of hunting down the process token (and then closing it when done). And I’ll use the <code>wil::<wbr/>get_<wbr/>token_<wbr/>information</code> helper function from the <a href="https://github.com/microsoft/wil/"> Windows Implementation Library</a> to do the grunt work of calling <code>Get­Token­Information</code> twice, once to get the buffer size, and again to fill it.</p>
+<pre>#include &lt;wil/token_helpers.h&gt;
+
+DWORD GetCurrentProcessIntegrityLevel()
+{
+  auto info = wil::get_token_information&lt;TokenIntegrityLevel&gt;(
+    GetCurrentProcessToken());
+  auto sid = info-&gt;Label.Sid;
+  return *GetSidSubAuthority(sid, 
+    *GetSidSubAuthorityCount(sid)-1);
+}
+</pre>
+<p>To get the integrity level, we obtain the <code>Token­Integrity­Level</code> information, which takes the form of a <code>TOKEN_<wbr/>MANDATORY_<wbr/>LABEL</code>. That structure consists of a <code>Label</code>, and in the <code>Label</code> is a <code>Sid</code>. That’s where the integrity level is.</p>
+<p>The integrity level is encoded in the SID as the relative identifier (the final subauthority). So we ask how many subauthorities there are and ask for the last one.</p>
+<p>All that’s left is mapping that integer to a semantic range.</p>
+<pre>auto integrityLevel = GetCurrentProcessIntegrityLevel();
+if (integrityLevel &gt;= SECURITY_MANDATORY_SYSTEM_RID) {
+  print("System integrity");
+} else if (integrityLevel &gt;= SECURITY_MANDATORY_HIGH_RID) {
+  print("High integrity");
+} else if (integrityLevel &gt;= SECURITY_MANDATORY_MEDIUM_RID) {
+  print("Medium integrity");
+} else if (integrityLevel &gt;= SECURITY_MANDATORY_LOW_RID) {
+  print("Low integrity");
+} else {
+  print("Below low integrity?");
+}
+</pre>
+<p>Alternatively, we can check from low to high, but the tests look weird because we’re testing the upper boundary of the range, which is named after the <i>next</i> range.</p>
+<pre>auto integrityLevel = GetCurrentProcessIntegrityLevel();
+if (integrityLevel &lt; SECURITY_MANDATORY_LOW_RID) {
+  print("Below low integrity?");
+} else if (integrityLevel &lt; SECURITY_MANDATORY_MEDIUM_RID) {
+  print("Low integrity");
+} else if (integrityLevel &lt; SECURITY_MANDATORY_HIGH_RID) {
+  print("Medium integrity");
+} else if (integrityLevel &lt; SECURITY_MANDATORY_SYSTEM_RID) {
+  print("High integrity");
+} else {
+  print("System integrity");
+}
+</pre>
+<p>Note the importance of using range checks rather than direct equality checks. That way, you will successfully handle new integrity levels that are created inside an existing range, such as <code>SECURITY_<wbr/>MANDATORY_<wbr/>MEDIUM_<wbr/>PLUS_<wbr/>RID</code>, which is an integrity level inserted into the “Medium” range, above the regular <code>SECURITY_<wbr/>MANDATORY_<wbr/>MEDIUM_<wbr/>RID</code>. There’s also an unnamed integrity level that is <code>SECURITY_<wbr/>MANDATORY_<wbr/>MEDIUM_<wbr/>RID</code> + <code>0x10</code> which is <a href="https://docs.microsoft.com/en-us/previous-versions/dotnet/articles/bb625963(v=msdn.10)#uiaccess-for-ui-automation-applications
+  TITLE="> assigned to medium integrity applications with UIAccess rights</a>.</p>
+<p><a href="https://docs.microsoft.com/en-us/previous-versions/dotnet/articles/bb625966(v=msdn.10)" title="Appendix D: Getting the Integrity Level for an Access Token"> The sample code in the archived content almost gets it right</a>, but it forgets to handle the case of an integrity level less than <code>SECURITY_<wbr/>MANDATORY_<wbr/>LOW_<wbr/>RID</code>.</p>
+
+
+</body>

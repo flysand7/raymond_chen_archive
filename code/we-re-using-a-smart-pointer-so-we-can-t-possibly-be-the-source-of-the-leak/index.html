@@ -1,0 +1,95 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">We're using a smart pointer, so we can't possibly be the source of the leak</h1>  <!-- .entry-meta -->
+
+<p>
+A customer reported that there was a leak in the shell,
+and they included the output from
+<a href="http://msdn.microsoft.com/en-us/library/ms220948.aspx">
+Application Verifier</a>
+as proof.
+And yup, the memory that was leaked was in fact allocated
+by the shell:
+</p>
+<pre>
+VERIFIER STOP 00000900 : pid 0x3A4: A heap allocation was leaked.
+        497D0FC0 : Address of the leaked allocation.
+        002DB580 : Adress to the allocation stack trace.
+        0D65CFE8 : Address of the owner dll name.
+        6F560000 : Base of the owner dll.
+1: kd&gt; du 0D65CFE8
+0d65cfe8  "SHLWAPI.dll"
+1: kd&gt; !heap -p -a 497D0FC0
+...
+    ntdll!RtlpAllocateHeap+0x0003f236
+    ntdll!RtlAllocateHeap+0x0000014f
+    Kernel32!LocalAlloc+0x0000007c
+    shlwapi!CreateMemStreamEx+0x00000043
+    shlwapi!CreateMemStream+0x00000012
+    &lt;Unloaded_xyz.dll&gt;+0x000642de
+    &lt;Unloaded_xyz.dll&gt;+0x0005e2af
+    &lt;Unloaded_xyz.dll&gt;+0x0002d49a
+    &lt;Unloaded_xyz.dll&gt;+0x0002a0fd
+    &lt;Unloaded_xyz.dll&gt;+0x000289cb
+    &lt;Unloaded_xyz.dll&gt;+0x0002a25c
+    &lt;Unloaded_xyz.dll&gt;+0x00027225
+    &lt;Unloaded_xyz.dll&gt;+0x0002252b
+    &lt;Unloaded_xyz.dll&gt;+0x00025394
+    &lt;Unloaded_xyz.dll&gt;+0x0004d70f
+    Kernel32!BaseThreadInitThunk+0x0000000d
+    ntdll!RtlUserThreadStart+0x0000001d
+1: kd&gt; dps 002DB580
+shlwapi!CreateMemStreamEx+0x43
+shlwapi!CreateMemStream+0x12
+&lt;Unloaded_xyz.dll&gt;+0x642de
+&lt;Unloaded_xyz.dll&gt;+0x5e2af
+&lt;Unloaded_xyz.dll&gt;+0x2d49a
+&lt;Unloaded_xyz.dll&gt;+0x2a0fd
+&lt;Unloaded_xyz.dll&gt;+0x289cb
+&lt;Unloaded_xyz.dll&gt;+0x2a25c
+&lt;Unloaded_xyz.dll&gt;+0x27225
+&lt;Unloaded_xyz.dll&gt;+0x2252b
+&lt;Unloaded_xyz.dll&gt;+0x25394
+&lt;Unloaded_xyz.dll&gt;+0x4d70f
+Kernel32!BaseThreadInitThunk+0xd
+ntdll!RtlUserThreadStart+0x1d
+</pre>
+<p>
+On the other hand, <code>SHCreateMemStream</code> is
+an object creation function,
+so it’s natural that the function allocate some memory.
+The responsibility for freeing the memory belongs to the caller.
+</p>
+<p>
+We suggested that the customer appears to have leaked the
+interface pointer.
+Perhaps there’s a hole where they called <code>AddRef</code>
+and managed to avoid the matching <code>Release</code>.
+</p>
+<p>
+“Oh no,” the customer replied,
+“that’s not possible.
+We call this function in only one place,
+and we use a smart pointer,
+so a leak is impossible.”
+The customer was kind enough to include a code snippet
+and even highlighted the lines that proved they weren’t
+leaking.
+</p>
+<pre>
+<font color="red">CComPtr&lt;IStream&gt; pMemoryStream;</font>
+CComPtr&lt;IXmlReader&gt; pReader;
+UINT nDepth = 0;
+//Open read-only input stream
+<font color="red">pMemoryStream = ::SHCreateMemStream(utf8Xml, cbUtf8Xml);</font>
+</pre>
+<p>
+The exercise for today is to identify the irony in the
+highlighted lines.
+</p>
+<p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2008/06/23/8640472.aspx">
+Hint</a>.
+Answers (and more discussion) tomorrow.</p>
+
+
+</body>

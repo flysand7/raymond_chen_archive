@@ -1,0 +1,88 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The dialog manager, part 7: More subtleties in message loops</h1>  <!-- .entry-meta -->
+
+<p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/04/05/405518.aspx">
+Last time, we solved the problem with
+the <code>EndManualModalDialog</code> function
+by posting a harmless message</a>.
+Today, we’re going to solve the problem in an entirely
+different way.
+</p>
+<p>
+The idea here is to make sure the modal message loop
+regains control, even if all that happened were incoming
+sent messages, so that it can detect that the <code>fEnded</code>
+flag is set and break out of the modal loop.
+</p>
+<p>
+Instead of changing
+the <code>EndManualModalDialog</code> function,
+we will change the modal message loop.
+</p>
+<pre>
+int DoModal(HWND hwnd)
+{
+ DIALOGSTATE ds = { 0 };
+ HWND hdlg = CreateDialogParam(g_hinst, MAKEINTRESOURCE(1),
+             hwnd, DlgProc, reinterpret_cast&lt;LPARAM&gt;(&amp;ds));
+ if (!hdlg) {
+  return -1;
+ }
+ EnableWindow(hwnd, FALSE);
+ MSG msg;
+ msg.message = WM_NULL; // anything that isn't WM_QUIT
+ while (<font color="blue">!ds.fEnded</font>) {
+  <font color="blue">if (PeekMessage(&amp;msg, NULL, 0, 0, PM_REMOVE)) {
+   if (msg.message == WM_QUIT) { /*  fixed 8am */
+    break;
+   } else</font> if (!IsDialogMessage(hdlg, &amp;msg)) {
+    TranslateMessage(&amp;msg);
+    DispatchMessage(&amp;msg);
+   } /* fixed 10am */
+  <font color="blue">} else if (!ds.fEnded) {
+   WaitMessage();
+  }</font>
+ }
+ if (msg.message == WM_QUIT) {
+  PostQuitMessage((int)msg.wParam);
+ }
+ EnableWindow(hwnd, TRUE);
+ DestroyWindow(hdlg);
+ return ds.iResult;
+}
+</pre>
+<p>
+We changed the call to <code>GetMessage</code>
+into a call to
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/MessagesandMessageQueues/MessagesandMessageQueuesReference/MessagesandMessageQueuesFunctions/PeekMessage.asp">
+the <code>PeekMessage</code> function</a>,
+asking to remove the peeked message if any.
+Like <code>GetMessage</code>,
+this delivers any incoming sent messages,
+then checks if there are any posted messages in the queue.
+The difference is that whereas <code>GetMessage</code>
+keeps waiting if there are no posted message,
+<code>PeekMessage</code> returns and tells you that there
+were no posted messages.
+</p>
+<p>
+That’s the control we want.
+If <code>PeekMessage</code> says that it couldn’t
+find a posted message, we check our <code>fEnded</code>
+flag once again, in case an incoming sent message
+set the <code>fEnded</code> flag.
+If not, then we call
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/messagesandmessagequeues/messagesandmessagequeuesreference/messagesandmessagequeuesfunctions/waitmessage.asp">
+the <code>WaitMessage</code> function</a>
+to wait until there is something to do
+(either an incoming sent message or a posted message).
+</p>
+<p>
+Exercise: If the whole point was to regain control
+after sent messages are delivered, why isn’t there a test
+of the <code>fEnded</code> flag immediately after
+<code>DispatchMessage</code> returns?</p>
+
+
+</body>

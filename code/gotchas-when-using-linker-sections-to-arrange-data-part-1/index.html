@@ -1,0 +1,192 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Gotchas when using linker sections to arrange data, part 1</h1>  <!-- .entry-meta -->
+
+<p>We saw <a href="/code/using-linker-segments-and-declspec-allocate-to-arrange-data-in-a-specific-order"> last time</a> that you can use linker sections to arrange the order in which data appears in the module. We ended with a diagram like this:</p>
+<table border="0" cellpadding="3" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: solid 1px black;"><code>mydata$a</code></td>
+<td style="border: solid 1px black;"><code>firstInitializer</code></td>
+<td style="border: solid 1px black;"><code>main.obj</code></td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black;"><code>mydata$g</code></td>
+<td style="border: solid 1px black;"><code>DoThisSooner3</code></td>
+<td style="border: solid 1px black;"><code>file3.obj</code></td>
+<td rowspan="2" style="border: solid black; border-width: 1px 0px;">unspecified<br/>
+order</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>DoThisSooner4</code></td>
+<td style="border: solid 1px black;"><code>file4.obj</code></td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td rowspan="3" style="border: solid 1px black;"><code>mydata$m</code></td>
+<td style="border: solid 1px black;"><code>Function2</code></td>
+<td style="border: solid 1px black;"><code>file2.obj</code></td>
+<td rowspan="3" style="border: solid black; border-width: 1px 0px;">unspecified<br/>
+order</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>Function1</code></td>
+<td style="border: solid 1px black;"><code>file1.obj</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>Function3</code></td>
+<td style="border: solid 1px black;"><code>file3.obj</code></td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black;"><code>mydata$t</code></td>
+<td style="border: solid 1px black;"><code>DoThisLater2</code></td>
+<td style="border: solid 1px black;"><code>file2.obj</code></td>
+<td rowspan="2" style="border: solid black; border-width: 1px 0px;">unspecified<br/>
+order</td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>DoThisLater4</code></td>
+<td style="border: solid 1px black;"><code>file4.obj</code></td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>mydata$z</code></td>
+<td style="border: solid 1px black;"><code>lastInitializer</code></td>
+<td style="border: solid 1px black;"><code>main.obj</code></td>
+</tr>
+</tbody>
+</table>
+<p>Based on this table, we would be tempted to write code like this:</p>
+<pre>// Code in italics is wrong.
+<i>void NaiveInitializeAllTheThings()
+{
+    const INITIALIZER* initializer = &amp;firstInitializer + 1;
+    while (initializer &lt; &amp;lastInitializer) {
+      (*initializer++)();
+    }
+}</i>
+</pre>
+<p>From a language lawyer standpoint, this code is not valid because it dereferences a pointer beyond the end of an object, and because it compares two pointers which are not part of the same aggregate. We can fix this by switching to <code>uintptr_t</code> as our currency.</p>
+<pre>// Code in italics is still wrong.
+<i>void LessNaiveInitializeAllTheThings()
+{
+    auto begin = (uintptr_t)&amp;firstInitializer
+                 + sizeof(firstInitializer);
+    auto end = (uintptr_t)&amp;lastInitializer;
+    for (auto current = begin; current &lt; end;
+         current += sizeof(INITIALIZER)) {
+      auto initializer = *(const INITIALIZER*)current;
+      initializer();
+    }
+}</i>
+</pre>
+<p>The conversion between pointers and <code>uintptr_t</code> is implementation-defined (rather than undefined), so this avoids the undefined behavior problems of using pointers to walk between two global variables.</p>
+<p>But the code is still not right, because it fails to take into account another detail of linker sections: intra-section padding.</p>
+<p>The linker will add padding after a fragment in order to satisfy any alignment requirements of the subsequent fragment. That’s expected.</p>
+<p>What most people aren’t aware of is that the linker is permitted but not required to add padding after each fragment, up to the section’s alignment. In practice, you are likely to see this “unnecessary” padding when using <a href="https://docs.microsoft.com/en-us/cpp/build/reference/incremental-link-incrementally"> incremental linking</a>.</p>
+<p>In all cases, the padding bytes (if any) will be zero.</p>
+<table border="0" cellpadding="3" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td rowspan="2" style="border: solid 1px black;"><code>mydata$a</code></td>
+<td style="border: solid 1px black;"><code>firstInitializer</code></td>
+<td style="border: solid 1px black;"><code>main.obj</code></td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; text-align: center;">Optional padding</td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td rowspan="4" style="border: solid 1px black;"><code>mydata$g</code></td>
+<td style="border: solid 1px black;"><code>DoThisSooner3</code></td>
+<td style="border: solid 1px black;"><code>file3.obj</code></td>
+<td rowspan="4" style="border: solid black; border-width: 1px 0px;">unspecified<br/>
+order</td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; text-align: center;">Optional padding</td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>DoThisSooner4</code></td>
+<td style="border: solid 1px black;"><code>file4.obj</code></td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; text-align: center;">Optional padding</td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td rowspan="6" style="border: solid 1px black;"><code>mydata$m</code></td>
+<td style="border: solid 1px black;"><code>Function2</code></td>
+<td style="border: solid 1px black;"><code>file2.obj</code></td>
+<td rowspan="6" style="border: solid black; border-width: 1px 0px;">unspecified<br/>
+order</td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; text-align: center;">Optional padding</td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>Function1</code></td>
+<td style="border: solid 1px black;"><code>file1.obj</code></td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; text-align: center;">Optional padding</td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>Function3</code></td>
+<td style="border: solid 1px black;"><code>file3.obj</code></td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; text-align: center;">Optional padding</td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td rowspan="4" style="border: solid 1px black;"><code>mydata$t</code></td>
+<td style="border: solid 1px black;"><code>DoThisLater2</code></td>
+<td style="border: solid 1px black;"><code>file2.obj</code></td>
+<td rowspan="4" style="border: solid black; border-width: 1px 0px;">unspecified<br/>
+order</td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; text-align: center;">Optional padding</td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td style="border: solid 1px black;"><code>DoThisLater4</code></td>
+<td style="border: solid 1px black;"><code>file4.obj</code></td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; text-align: center;">Optional padding</td>
+<td style="border: none;"> </td>
+</tr>
+<tr>
+<td rowspan="2" style="border: solid 1px black;"><code>mydata$z</code></td>
+<td style="border: solid 1px black;"><code>lastInitializer</code></td>
+<td style="border: solid 1px black;"><code>main.obj</code></td>
+</tr>
+<tr>
+<td colspan="2" style="border: solid 1px black; text-align: center;">Optional padding</td>
+<td style="border: none;"> </td>
+</tr>
+</tbody>
+</table>
+<p>To accommodate padding, we need to skip over any possible null pointers.</p>
+<pre>void InitializeAllTheThings()
+{
+    auto begin = (uintptr_t)&amp;firstInitializer
+                 + sizeof(firstInitializer);
+    auto end = (uintptr_t)&amp;lastInitializer;
+    for (auto current = begin; current &lt; end;
+         current += sizeof(INITIALIZER)) {
+      auto initializer = *(const INITIALIZER*)current;
+      <span style="color: blue;">if (initializer)</span> initializer();
+    }
+}
+</pre>
+<p>We’ll look at another consequence of padding <a href="https://devblogs.microsoft.com/oldnewthing/20181109-00/?p=100175"> next time</a>.</p>
+
+
+</body>

@@ -1,0 +1,128 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I get the effect of C#’s async void in a C++ coroutine? Part 3: Simplifying the boilerplate</h1>  <!-- .entry-meta -->
+
+<p><a href="/code/how-do-i-get-the-effect-of-c-s-async-void-in-a-c-coroutine-part-2-keeping-track-of-the-lifetimes"> Last time</a>, we figured out how to use a coroutine in a place where the caller expects a function returning <code>void</code>. It required some wrapping, and our research led to this pattern:</p>
+<pre>void MyClass::MyEventHandler(int a, int b)
+{
+  [](auto lambda1)
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   co_await lambda1();
+  }([=, lifetime = std::shared_from_this(this)]()
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   // actual work goes here
+   GetReady(a);
+   co_await GetSetAsync(b);
+   Go(a, b);
+  });
+}
+</pre>
+<p>You might think “Maybe I can macro-ize this thing so I don’t have to repeat the boilerplate all the time.”</p>
+<pre><span style="color: blue;">#define INVOKE_ASYNC_LAMBDA(lambda) \
+  [](auto lambda1) \
+   -&gt; Concurrency::task&lt;void&gt; \
+  { \
+   co_await lambda1(); \
+  }(lambda)</span>
+
+void MyClass::MyEventHandler(int a, int b)
+{
+  <span style="color: blue;">INVOKE_ASYNC_LAMBDA</span>(
+   [=, lifetime = std::shared_from_this(this)]()
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   GetReady(a);
+   co_await GetSetAsync(b);
+   Go(a, b);
+  });
+}
+</pre>
+<p>But then you realize that you’ve gone too far, because you’ve created a macro that requires people to pass a lambda as a macro parameter, <a href="https://devblogs.microsoft.com/oldnewthing/20190115-00/?p=100705"> and that road leads to sadness</a>.</p>
+<p>So you might wrack your brains for a while to see if there’s a way to get the boilerplate code generated without requiring the lambda as a macro parameter. Maybe something like this:</p>
+<pre>#define INVOKE_ASYNC_LAMBDA \
+  [](auto lambda1) \
+   -&gt; Concurrency::task&lt;void&gt; \
+  { \
+   co_await lambda1(); \
+  }
+</pre>
+<p>Since all we do with the lambda is spit it back out, including parentheses, and the regurgitation is as the very last tokens of the macro expansion we can cheat and avoid capturing the parameter at all. The macro spits out the boilerplate, and then what looks like the argument to the macro is actually just text that comes after the macro, and a parenthesized lambda happens to be exactly what we want to come next, so <i>jackpot</i>.</p>
+<p>But then you remember the <a href="https://github.com/isocpp/CppCoreGuidelines/blob/master/CppCoreGuidelines.md"> C++ Core Guidelines</a> which says,</p>
+<blockquote class="q">
+<p>Scream when you see a macro that isn’t just used for source control (e.g., <code>#ifdef</code>)</p>
+</blockquote>
+<p>Is there a way to do this that avoids macros entirely?</p>
+<p>Indeed there is, but you have to back up a step. The step prior to our “final” version went like this:</p>
+<pre>void MyClass::MyEventHandler(int a, int b)
+{
+  auto lambda2 = [](auto lambda1)
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   co_await lambda1();
+  };
+
+  lambda2([=, lifetime = std::shared_from_this(this)]()
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   GetReady(a);
+   co_await GetSetAsync(b);
+   Go(a, b);
+  });
+}
+</pre>
+<p>The captureless lambda can be factored out into a templated free function.</p>
+<pre><span style="color: blue;">template&lt;typename TLambda&gt;
+Concurrency::task&lt;void&gt;
+invoke_async_lambda(TLambda lambda)
+{
+  co_await lambda();
+}</span>
+
+void MyClass::MyEventHandler(int a, int b)
+{
+  <span style="color: blue;">invoke_async_lambda</span>(
+  [=, lifetime = std::shared_from_this(this)]()
+   -&gt; Concurrency::task&lt;void&gt;
+  {
+   GetReady(a);
+   co_await GetSetAsync(b);
+   Go(a, b);
+  });
+}
+</pre>
+<p>And then we can generalize the function further by having it return the same type of task that the lambda does.¹</p>
+<pre>template&lt;typename TLambda&gt;
+auto invoke_async_lambda(TLambda lambda)
+ -&gt; decltype(lambda())
+{
+  co_return co_await lambda();
+}
+</pre>
+<p>Now you can use it for async lambdas that return any kind of awaitable object, like a <code>Concurrency::</code><code>task&lt;int&gt;</code>, or a <code>winrt::</code><code>Windows::</code><code>Foundation::</code><code>IAsync­Action</code>, or a <code>std::</code><code>experimental::</code><code>future&lt;</code><code>std::</code><code>string&gt;</code>. And since it returns the resulting coroutine, you can continue operating with it.</p>
+<pre>Concurrency::task&lt;void&gt;
+DoThreeThingsAsync()
+{
+ std::array&lt;Concurrency::task&lt;void&gt;, 3&gt; tasks =
+ {
+  invoke_async_lambda([=] -&gt; Concurrency::task&lt;void&gt;
+  {
+   ... first task ...
+  }),
+  invoke_async_lambda([=] -&gt; Concurrency::task&lt;void&gt;
+  {
+   ... second task ...
+  }),
+  invoke_async_lambda([=] -&gt; Concurrency::task&lt;void&gt;
+  {
+   ... third task ...
+  })
+ };
+
+ return Concurrency::when_all(begin(tasks), end(tasks));
+}
+</pre>
+<p>¹ The result is one of those cryptic functions that doesn’t seem to do anything, but in fact does quite a bit, but in a very subtle way. The C++ standard library has a lot of functions like that, such as <code>std::move</code>, <code>std::forward</code>, and <code>std::launder</code>.</p>
+
+
+</body>

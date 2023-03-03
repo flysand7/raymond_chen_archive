@@ -1,0 +1,68 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Is there a way that my macro can detect that it’s running in a C++ coroutine?</h1>  <!-- .entry-meta -->
+
+<p>Say you are writing a macro that wants to behave differently depending on whether it is expanded inside a coroutine or not. Specifically, you want to expand to <code>return</code> in a regular function, but <code>co_return</code> in a coroutine.</p>
+<pre>template&lt;T&gt;
+T&amp;&amp; TraceValue(T&amp;&amp; v);
+
+// NOTE: Just a sketch. A real macro would have to do more work,
+// but we are focusing on the IF_IN_COROUTINE part.
+#define TRACE_RETURN() \
+    TraceExit(); IF_IN_COROUTINE(co_return, return)
+
+#define TRACE_RETURN_VALUE(v) \
+    IF_IN_COROUTINE(co_return TraceExitValue(v), return TraceExitValue(v))
+
+bool TestSomething()
+{
+    TRACE_ENTER();
+    TRACE_RETURN_VALUE(IsSomethingReady()); // want "return"
+}
+
+task&lt;bool&gt; TestSomethingAsync()
+{
+    TRACE_ENTER();
+    TRACE_RETURN_VALUE(IsSomethingReady()); // want "co_return"
+}
+</pre>
+<p>Is it possible to write the magic <code>IF_<wbr/>IN_<wbr/>COROUTINE</code> macro which expands either its first or second parameter?</p>
+<p>It’s not possible in general, because the decision as to whether a function body is a regular function body or a coroutine function body depends on what is inside the body. Specifically, if the body it contains any <code>co_await</code> or co_return statements, then it is a coroutine body. Otherwise, it is a regular function body.</p>
+<p>Since the macro is expanded as part of the function body, the decision about whether it is a coroutine or not hasn’t yet been made. In fact, the macro’s expansion might be the thing that determines whether the function body is a coroutine!</p>
+<p>In the second example above, the function body expands to something like this:</p>
+<pre>task&lt;bool&gt; TestSomethingAsync()
+{
+    TraceEnter(__func__, __FILE_, __LINE__);
+#if in coroutine
+    co_return TraceExitValue(IsSomethingReady());
+#else
+    return TraceExitValue(IsSomethingReady());
+#endif
+}
+</pre>
+<p>Whether this is a coroutine depends on what the macro chooses!</p>
+<p>If the macro detects that this is a coroutine, then the body expands to <code>co_return TraceExitValue(...)</code>, and it is that <code>co_return</code> that makes the function body a coroutine. But if the macro detects that it’s not a coroutine, then the body says <code>return TraceExitValue(...)</code>, and since there is no <code>co_return</code> or <code>co_await</code> statement, the function body is a regular function body.</p>
+<p>You thought your macro was passively detecting whether it was in a coroutine, but in fact it is actively controlling the decision!</p>
+<p>Now, you might think, “Well, can I just base my decision on the function return type?”</p>
+<p>Even if you could detect the return type from a macro (I’m not sure you can), that still wouldn’t be good enough. The <code>task&lt;bool&gt;</code> might support construction from a <code>bool</code>, say to represent an already-completed task, and therefore both <code>co_return boolValue</code> and <code>return boolValue</code> are legal in the function body.</p>
+<p>Basically, you are trying to be a passive predictor of a future that you inadvertently influence. That doesn’t work well in science fiction, and it doesn’t work well here either.</p>
+<p><b>Bonus paradox</b>: Imagine writing the opposite macro:</p>
+<pre>#define TRACE_RETURN_VALUE(v) \
+    IF_IN_COROUTINE(return TraceExitValue(v), co_return TraceExitValue(v))
+</pre>
+<p>This macro tries to be contrary and says, “Use <code>return</code> if I’m in a coroutine, but <code>co_return</code> if I’m not.”</p>
+<p>We could call this <a href="https://en.wikipedia.org/wiki/Russell%27s_paradox"> Russell’s</a> macro since it creates a similar paradox:</p>
+<pre>task&lt;bool&gt; TestSomethingAsync()
+{
+    TraceEnter(__func__, __FILE_, __LINE__);
+#if in coroutine
+    return TraceExitValue(IsSomethingReady());
+#else
+    co_return TraceExitValue(IsSomethingReady());
+#endif
+}
+</pre>
+<p>If the coroutine detector says, “This is a coroutine”, then the macro expands to <code>return</code>, which makes the function body <i>not</i> a coroutine. But if the coroutine detector says, “This is not a coroutine”, then the macro expands to <code>co_return</code>, which makes the function body a coroutine after all!</p>
+<p>Proof by logical contradiction that a perfect coroutine-detector macro is impossible to write.</p>
+
+
+</body>

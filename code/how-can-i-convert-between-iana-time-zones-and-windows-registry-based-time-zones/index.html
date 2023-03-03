@@ -1,0 +1,128 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I convert between IANA time zones and Windows registry-based time zones?</h1>  <!-- .entry-meta -->
+
+<p>A customer wanted to be able to convert from IANA time zones and Windows registry-based time zones. Is there a function for doing that?</p>
+<p>Yes, but it’s not somewhere you might think to look.</p>
+<p>The Windows globalization team emphasizes that what you should <i>not</i> do is take the information from <a href="http://cldr.unicode.org/"> CLDR</a>, use it to produce a translation table, and hard-code that table into your application. Time zones are notoriously fickle, and there’s <a href="https://www.wired.com/story/microsoft-time-lords/"> a team of people inside Microsoft whose full-time job is to keep track of time zone changes worldwide</a>.</p>
+<p>What you need to do is delegate the work of updating time zone information to somebody else.</p>
+<p>One such <i>somebody else</i> is ICU, the <a href="http://site.icu-project.org/"> International Components for Unicode</a>.</p>
+<p>A copy of ICU has been included with Windows since Windows 10 Version 1703 (build 15063). All you have to do is include <code>icu.h</code>, and you’re off to the races. An advantage of using the version that comes with Windows is that it is actively maintained and updated by the Windows team. If you need to run on older systems, you can build your own copy from <a href="https://github.com/microsoft/icu"> their fork of the ICU repo</a>, but the job of servicing the project is now on you.</p>
+<p>Here’s a proof-of-concept program that shows how to convert between IANA time zones and Windows time zones.</p>
+<pre>#include &lt;windows.h&gt;
+#define UCHAR_TYPE wchar_t
+#include &lt;icu.h&gt;
+
+int wmain(int argc, wchar_t** argv)
+{
+    wchar_t buffer[128];
+    UErrorCode status = U_ZERO_ERROR;
+    if (argc == 2) {
+        auto result = ucal_getWindowsTimeZoneID(
+            argv[1], -1, buffer, ARRAYSIZE(buffer), &amp;status);
+        if (U_SUCCESS(status)) {
+            printf("result = %d, IANA %ls -&gt; Windows %ls\n",
+                   result, argv[1], buffer);
+        }
+    } else if (argc == 3) {
+        char region[64];
+        if (WideCharToMultiByte(CP_UTF8, 0, argv[2], -1,
+                                region, 64, 0, nullptr)) {
+            auto result = ucal_getTimeZoneIDForWindowsID(
+                argv[1], -1, region, buffer, ARRAYSIZE(buffer), &amp;status);
+            if (U_SUCCESS(status)) {
+                printf("result = %d, Windows %ls:%s -&gt; IANA %ls\n",
+                       result, argv[1], region, buffer);
+            }
+        }
+    }
+    return 0;
+}
+</pre>
+<p>By default, the <code>icu.h</code> header uses <code>char16_t</code> to represent UTF-16 code units. Windows, however, uses <code>wchar_t</code>, so we define <code>UCHAR_TYPE</code> to get the type we want.</p>
+<p>If you run the program with a single command line parameter, then we treat it as an IANA time zone and ask <code>ucal_<wbr/>get­Windows­Time­Zone­ID</code> to convert it to a Windows time zone.</p>
+<pre>C:\&gt; scratch America/Vancouver
+result = 21, IANA America/Vancouver -&gt; Windows Pacific Standard Time
+</pre>
+<p>If you run it with two command line parameters, then we treat the first as the Windows time zone and the second as the region, and convert the pair to an IANA time zone.</p>
+<pre>C:\&gt; scratch "Pacific Standard Time" US
+result = 19, Windows Pacific Standard Time:US -&gt; IANA America/Los_Angeles
+
+C:\&gt; scratch "Pacific Standard Time" CA
+result = 17, Windows Pacific Standard Time:CA -&gt; IANA America/Vancouver
+</pre>
+<p>To resolve these calls to the system-provided <code>ICU.DLL</code>, link either with <code>icu.lib</code> or with the umbrella library <code>windowsapp.lib</code>.</p>
+<p><b>Bonus chatter</b>: The Windows globalization team also strongly recommends that programs use IANA time zones and use the Windows registry-based time zones only for legacy interop purposes.</p>
+<p><b>Important bonus chatter</b>: Even though support arrived in Windows 10 Version 1703 (build 15063), using ICU prior to Windows 10 Version 1903 (build 18362) is a little trickier. When it was introduced, the ICU library was added as two system DLLs:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Feature</th>
+<th>Header file</th>
+<th>Library</th>
+<th>DLL</th>
+</tr>
+<tr>
+<td>Common</td>
+<td><code>icucommon.h</code></td>
+<td><code>icuuc.lib</code></td>
+<td><code>icuuc.dll</code></td>
+</tr>
+<tr>
+<td>Internationalization</td>
+<td><code>icui18n.h</code></td>
+<td><code>icuin.lib</code></td>
+<td><code>icuin.dll</code></td>
+</tr>
+</tbody>
+</table>
+<p>In Windows 10 Version 1709, the two header files were combined into a single <code>icu.h</code> header file.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Feature</th>
+<th>Header file</th>
+<th>Library</th>
+<th>DLL</th>
+</tr>
+<tr>
+<td>Common</td>
+<td rowspan="2"><code>icu.h</code></td>
+<td><code>icuuc.lib</code></td>
+<td><code>icuuc.dll</code></td>
+</tr>
+<tr>
+<td>Internationalization</td>
+<td><code>icuin.lib</code></td>
+<td><code>icuin.dll</code></td>
+</tr>
+</tbody>
+</table>
+<p>The separate header files still remain for source code backward compatibility, but no new features will be added to the separate header files.</p>
+<p>And in Windows 10 Version 1903, the separate LIBs and DLLs were also combined:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Feature</th>
+<th>Header file</th>
+<th>Library</th>
+<th>DLL</th>
+</tr>
+<tr>
+<td>Common</td>
+<td rowspan="2"><code>icu.h</code></td>
+<td rowspan="2"><code>icu.lib</code></td>
+<td rowspan="2"><code>icu.dll</code></td>
+</tr>
+<tr>
+<td>Internationalization</td>
+</tr>
+</tbody>
+</table>
+<p>Again, the old LIBs and DLLs remain for backward compatibility. (The old DLLs are now forwarders to the combined <code>icu.dll</code>.)</p>
+<p>This change was triggered by a breaking change in the underlying ICU library that moved one of the functions from Common to Internationalization. Since the ICU team had to do some architectural work to accommodate the breaking change, they took the time to do some other tidying.</p>
+<p>Combining two DLLs into one DLL allowed for a reduction in the overall footprint of ICU. They also removed the requirement that you call <code>Co­Initialize­Ex</code> before calling any ICU functions. (In earlier versions, if you failed to call <code>Co­Initialize­Ex</code>, then the default ICU locale is always <tt>en_US</tt> and the default time zone is always <tt>Etc/UTC</tt>.)</p>
+<p>TL;DR: If you want to support versions prior to Windows 10 Version 1903, you should load the appropriate separately-named DLL and make sure to call <code>Co­Initialize­Ex</code>.</p>
+<p>To be sure you’re getting the one that doesn’t require COM to be initialized, go straight to <code>icu.dll</code>. (That’s <a href="https://github.com/dotnet/runtime/blob/1d9e50cb4735df46d3de0cee5791e97295eaf588/src/libraries/Native/Unix/System.Globalization.Native/pal_icushim.c#L96"> what .NET Core does</a>.)</p>
+
+
+</body>

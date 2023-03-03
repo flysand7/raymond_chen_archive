@@ -1,0 +1,278 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The dialog manager, part 2: Creating the frame window</h1>  <!-- .entry-meta -->
+
+<p>The dialog template describes what the dialog box should look like,
+so the dialog manager walks the template and follows the
+instructions therein.  It’s pretty straightforward; there isn’t
+much room for decision-making. You just do what the template says.</p>
+<p>
+For simplicity, I’m going to assume that the dialog template
+is an
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/DialogBoxes/DialogBoxReference/DialogBoxStructures/DLGTEMPLATEEX.asp">
+extended dialog template</a>.  This is a superset of the
+classic
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/DialogBoxes/DialogBoxReference/DialogBoxStructures/DLGTEMPLATE.asp">
+DLGTEMPLATE</a>, so there is no loss of generality.</p>
+<p>
+Furthermore, I will skip over some of the esoterica
+(like the
+<a href="http://msdn.microsoft.com/library/en-us/winui/WinUI/WindowsUserInterface/Windowing/DialogBoxes/DialogBoxReference/DialogBoxMessages/WM_ENTERIDLE.asp">
+WM_ENTERIDLE</a> message)
+because that would just
+be distracting from the main point.
+</p>
+<p>
+<strong>I am also going to ignore error-checking for the same reason</strong>.
+</p>
+<p>
+Finally, I’m going to assume you already understand the structure of
+the various dialog templates and ignore the parsing issues.
+(If you’ve forgotten, you can go back and re-read my series from
+last June.
+Most important are parts
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/06/21/161375.aspx">2</a>
+and
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/06/21/163596.aspx">4</a>,
+and the
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/06/24/164737.aspx">summary table</a>
+is a handy quick-reference.)
+</p>
+<p>Okay, here we go.
+</p>
+<p>
+The first order of business is to study the dialog styles and
+translate the <code>DS_*</code> styles into <code>WS_*</code> and
+<code>WS_EX_*</code> styles.
+</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border: 0pt;border-collapse: collapse">
+<tr>
+<th>Dialog style</th>
+<th>Window style</th>
+<th>Extended window style</th>
+</tr>
+<tr>
+<td valign="top"><code>DS_MODALFRAME</code></td>
+<td> </td>
+<td valign="top">add <code>WS_EX_DLGMODALFRAME</code><br/>
+        add <code>WS_EX_WINDOWEDGE</code></td>
+</tr>
+<tr>
+<td valign="top"><code><code>DS_CONTEXTHELP</code></code></td>
+<td> </td>
+<td valign="top">add <code>WS_EX_CONTEXTHELP</code></td>
+</tr>
+<tr>
+<td valign="top"><code>DS_CONTROL</code></td>
+<td valign="top">remove <code>WS_CAPTION</code><br/>
+        remove <code>WS_SYSMENU</code></td>
+<td valign="top">add <code>WS_EX_CONTROLPARENT</code></td>
+</tr>
+</table>
+<p>
+<b>Question</b>: Why does the <code>DS_CONTROL</code> style remove the
+<code>WS_CAPTION</code> and <code>WS_SYSMENU</code> styles?
+</p>
+<p>
+<b>Answer</b>: To make it easier for people to convert an
+existing dialog into a <code>DS_CONTROL</code> sub-dialog
+by simply adding a single style flag.
+</p>
+<p>
+If the template includes a menu, the menu is loaded from
+the instance handle passed as part of the creation parameters.
+</p>
+<pre>
+  hmenu = LoadMenu(hinst, &lt;resource identifier in template&gt;);
+</pre>
+<p>
+This is a common theme in dialog creation:  The instance handle
+you pass to the dialog creation function is used for all resource-related
+activities during dialog creation.
+</p>
+<p>
+The algorithm for getting the dialog font goes like this:
+</p>
+<pre>
+  if (DS_SETFONT) {
+    use font specified in template
+  } else if (DS_FIXEDSYS) {
+    use GetStockFont(SYSTEM_FIXED_FONT);
+  } else {
+    use GetStockFont(SYSTEM_FONT);
+  }
+</pre>
+<p>
+Notice that <code>DS_SETFONT</code> takes priority over
+<code>DS_FIXEDFONT</code>.
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/02/07/368423.aspx">
+We saw the reason for this a few weeks ago</a>.
+</p>
+<p>
+Once the dialog manager has the font, it is measured so
+that its dimensions can be used to convert
+dialog units (DLUs) to pixels.
+Everything in dialog box layout is done in DLUs.
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/dialogboxes/dialogboxreference/dialogboxfunctions/mapdialogrect.asp">
+Here’s a reminder if you’ve forgotten the formula that converts
+DLUs to pixels</a>.  In explicit terms:
+</p>
+<pre>
+// 4 xdlu = 1 average character width
+// 8 ydlu = 1 average character height
+#define XDLU2Pix(xdlu) MulDiv(xdlu, AveCharWidth, 4)
+#define YDLU2Pix(ydlu) MulDiv(ydlu, AveCharHeight, 8)
+</pre>
+<p>
+The dialog box size come from the template.
+</p>
+<pre>
+cxDlg = XDLU2Pix(DialogTemplate.cx);
+cyDlg = YDLU2Pix(DialogTemplate.cy);
+</pre>
+<p>
+The dialog size in the template is the size of the
+<em>client area</em>, so we need to add in the nonclient
+area too.
+</p>
+<pre>
+  RECT rcAdjust = { 0, 0, cxDlg, cyDlg };
+  AdjustWindowRectEx(&amp;rcAdjust, dwStyle, hmenu != NULL, dwExStyle);
+  int cxDlg = rcAdjust.right - rcAdjust.left;
+  int cyDlg = rcAdjust.bottom - rcAdjust.top;
+</pre>
+<p>
+How do I know that it’s the client area instead of the full
+window including nonclient area?  Because if it were the
+full window rectangle, then it would be impossible to design
+a dialog!
+The template designer doesn’t know what nonclient
+metrics the end-user’s system will be set to and therefore
+cannot take it into account at design time.
+</p>
+<p>
+(This is a special case of a more general rule:
+If you’re not sure whether something is true, ask yourself,
+“What would the world be like if it were true?”
+If you find a logical consequence
+that is obviously wrong, then you have
+just proven [by contradiction]
+that the thing you’re considering is indeed not true.
+This is an important logical
+principle that I will come back to again
+and again.
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/02/15/372995.aspx">
+In fact, you saw it just a few days ago</a>.
+)
+</p>
+<p>
+Assuming the <code>DS_ABSALIGN</code> style is not set,
+the coordinates given in the dialog template are
+relative to the dialog’s parent.
+</p>
+<pre>
+  POINT pt = { XDLU2Pix(DialogTemplate.x),
+               YDLU2Pix(DialogTemplate.y) };
+  ClientToScreen(hwndParent, &amp;pt);
+</pre>
+<p>
+But what if the caller passed <code>hwndParent = NULL</code>?
+In that case, the dialog position is relative to the upper left
+corner of the primary monitor.
+But <strong>don’t do this</strong>.
+</p>
+<ul>
+<li>On a multiple-monitor system, it puts the dialog box on
+    the primary monitor, even if your program is running on
+    a secondary monitor.
+<li>The user may have docked their taskbar at the top or left
+    edge of the screen, which will cover your dialog.
+<li>Even on a single-monitor system, your program might be running
+    in the lower-right corner of the screen.  Putting your dialog
+    at the upper left corner doesn’t create a meaningful connection
+    between the two.
+<li>If two copies of your program are running, their dialog boxes
+    will cover each other precisely.
+    <a href="http://blogs.msdn.com/oldnewthing/archive/2005/03/14/395271.aspx">
+    We saw the dangers of this in a previous entry</a>.
+</li></li></li></li></ul>
+<p>
+Moral of the story: Always pass a <code>hwndParent</code> window
+so that the dialog appears in a meaningful location relative to
+the rest of your program.
+(And
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/02/24/79212.aspx">
+don’t just grab <code>GetDesktopWindow</code> either</a>!)
+</p>
+<p>
+Okay, we are now all ready to create the dialog:
+We have its class, its font, its menu, its size
+and position…
+</p>
+<p>
+Oh wait, we have to deal with that subtlety
+of dialog box creation discussed earlier:
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/03/11/87941.aspx">
+The dialog box is always created initially hidden</a>.
+</p>
+<pre>
+  BOOL fWasVisible = dwStyle &amp; WS_VISIBLE;
+  dwStyle &amp;= ~WS_VISIBLE;
+</pre>
+<p><p>
+The dialog class and title come from the template.
+Pretty much everyone just uses the default dialog class,
+<a href="http://blogs.msdn.com/oldnewthing/archive/2003/11/13/55662.aspx">
+although I explained in an earlier article how
+you might use a custom dialog class</a>.
+</p>
+<p>Okay, now we have the information necessary to create the window.
+</p>
+<pre>
+ HWND hdlg = CreateWindowEx(dwExStyle, pszClass,
+      pszCaption, dwStyle &amp; 0xFFFF0000, pt.x, pt.y,
+      cxDlg, cyDlg, hwndParent, hmenu, hinst, NULL);
+</pre>
+<p>
+Notice that we filter
+out all the low style bits (per-class) since we already
+translated the <code>DS_*</code> styles into “real” styles.
+</p>
+<p>
+This is why your dialog procedure doesn’t get
+the window creation messages like <code>WM_CREATE</code>.
+At the time the frame is created, the dialog procedure
+hasn’t yet entered the picture.
+Only after the frame is created can the dialog manager
+attach the dialog procedure.
+</p>
+<pre>
+ // Set the dialog procedure
+ SetWindowLongPtr(hdlg, DWLP_DLGPROC, (LPARAM)lpDlgProc);
+</pre>
+<p>
+The dialog manager does some more fiddling at
+this point, based on the dialog template styles.
+The template may have asked for a window context help ID.
+And if the template did not specify window styles that
+permit resizing, maximizing or minimizing, the associated
+menu items are removed from the dialog box’s system menu.
+</p>
+<p>
+And it sets the font.</p>
+<pre>
+  SetWindowFont(hdlg, hf, FALSE);
+</pre>
+<p>
+This is why the first message your dialog procedure
+receives happens to be <code>WM_SETFONT</code>: It is the first
+message sent after the <code>DWLP_DLGPROC</code> has been set.
+Of course, this
+behavior can change in the future; you shouldn’t
+rely on message ordering.
+</p>
+<p>
+Okay, the dialog frame is now open for business.
+Next up: Creating the controls.</p>
+
+
+</p></body>

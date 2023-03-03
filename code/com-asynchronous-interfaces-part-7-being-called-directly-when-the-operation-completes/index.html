@@ -1,0 +1,132 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">COM asynchronous interfaces, part 7: Being called directly when the operation completes</h1>  <!-- .entry-meta -->
+
+<p>Last time, we learned how we could <a href="/code/com-asynchronous-interfaces-part-6-learning-about-completion-without-polling" title="COM asynchronous interfaces, part 6: Learning about completion without polling"> wait on the internal event handle that is signaled when an asynchronous call completes</a>. But that’s still an indirect discovery of completion. You can register a threadpool wait on the handle, but when your wait callback runs, it’s running on the threadpool, and if you were operating in a single-threaded apartment, you’ll have to get control back into that apartment (say by using an <code>IContext­Callback</code>).</p>
+<p>But there’s a way to tell the COM marshaling infrastructure to call you back directly, and it even respects your object’s agility, so if you want to run code in the original apartment, you can do that by providing a non-agile object.</p>
+<p>The way to ask for a direct callback is to <i>aggregate</i> the call object into your custom outer object. Effectively, you <i>become</i> the call object through the magic of aggregation, so all the things that normally are done to the call object are instead done to <i>you</i>.</p>
+<p>The COM infrastructure uses the <code>ISynchronize</code> interface to communicate the state of the call to the call object. If you aggregate the call object, you can take over the responsibilities of <code>ISynchronize</code>.</p>
+<p>The <code>ISynchronize</code> interface models a kernel event handle. The methods are called as follows:</p>
+<ul>
+<li><code>ISynchronize::Reset</code>: COM calls this method when the asynchronous call starts. The idea is that it’s resetting the kernel event, to indicate that the call has not completed.</li>
+<li><code>ISynchronize::Signal</code>: COM calls this method when the asynchronous call completes. The idea is that it’s setting the kernel event, to indicate that the call is now complete.</li>
+<li><code>ISynchronize::Wait</code>: COM calls this method when the client calls the <code>Finish_</code> method, indicating that it wants to wait for the call to complete (if it hasn’t completed already). When the <code>Wait</code> method returns, COM assumes that the call has completed and returns the answer that was saved in the call object.</li>
+</ul>
+<p>You can substitute any other object that follows this same pattern. You don’t even have to have a real kernel object. You just need something that can <i>pretend</i> to be a kernel object enough to satisfy the <code>ISynchronize</code> contract.</p>
+<pre>struct MySynchronize : winrt::implements&lt;MySynchronize, ::ISynchronize&gt;
+{
+  winrt::com_ptr&lt;::IUnknown&gt; m_inner;
+  int32_t query_interface_tearoff(winrt::guid const&amp; id, void** object)
+    const noexcept override {
+    if (m_inner) return m_inner.as(id, object);
+    return E_NOINTERFACE;
+  }
+
+  wil::slim_event ready;
+
+  STDMETHODIMP Reset() { ready.ResetEvent(); return S_OK; }
+  STDMETHODIMP Signal() { ready.SetEvent();
+    printf("Call completed!\n"); // do cool stuff here
+    return S_OK; }
+  STDMETHODIMP Wait(DWORD flags, DWORD timeout) {
+    assert(is_mta()); // we won't be pumping messages
+    assert(!(flags &amp; COWAIT_ALERTABLE)); // we won't be waiting alertably
+    return ready.wait(timeout) ? S_OK : RPC_S_CALLPENDING;
+  }
+
+  static bool is_mta() {
+    APTTYPE type;
+    APTTYPEQUALIFIER qualifier;
+    THROW_IF_FAILED(CoGetApartmentType(&amp;type, &amp;qualifier));
+    return type == APTTYPE_MTA;
+  }
+};
+</pre>
+<p>The <code>My­Synchronize</code> class starts with one of the common aggregation outer object patterns: It has an inner object (<code>m_inner</code>), and we want to aggregate all the interfaces of the inner object. Therefore, our custom <code>query_<wbr/>interface_<wbr/>tearoff</code> method forwards <i>all</i> interface queries to the inner object.</p>
+<p>After that comes our custom implementation of <code>ISynchronize</code>. Our version doesn’t use a real kernel object. It uses the lightweight event-like object built out of <code>Wait­On­Address</code> as provided by the Windows Implementation Library.</p>
+<p>One of the tricky parts here is the <code>Wait</code> method: Most of the flags relate to how the method should wait if running on an STA. We don’t want to deal with any of that nonsense, so we just decide not to support them, nor do we support alertable waits.</p>
+<p>Mind you, this decision not to support STA or alertable waits needs to be done in coordination with the clients of the call object. But if you yourself are the client, then you know whether you ever use it from an STA or with an alertable wait. (COM always calls with <code>COWAIT_<wbr/>DEFAULT</code> from the thread that called the <code>Finish_</code> method.)</p>
+<p>A simpler way is to delegate the <code>ISynchronize</code> methods back to the call object:</p>
+<pre>struct MySynchronize :
+    winrt::implements&lt;MySynchronize, ::ISynchronize, winrt::non_agile&gt;
+{
+  winrt::com_ptr&lt;::IUnknown&gt; m_inner;
+  int32_t query_interface_tearoff(winrt::guid const&amp; id, void** object)
+    const noexcept override {
+    if (m_inner) return m_inner.as(id, object);
+    return E_NOINTERFACE;
+  }
+
+  auto Sync() { return m_inner.as&lt;ISynchronize&gt;(); }
+
+  STDMETHODIMP Reset() { return Sync()-&gt;Reset(); }
+  STDMETHODIMP Signal() {
+    auto hr = return Sync()-&gt;Signal();
+    printf("Call completed!\n"); // do cool stuff here
+    return hr;
+  }
+  STDMETHODIMP Wait(DWORD flags, DWORD timeout) {
+    return Sync()-&gt;Wait(flags, timeout);
+  }
+};
+</pre>
+<p>Let’s take this out for a spin.</p>
+<pre>int main(int, char**)
+{
+  winrt::init_apartment(winrt::apartment_type::multi_threaded);
+
+  auto pipe = CreateSlowPipeOnOtherThread();
+
+  <span style="color: blue;">auto outer = winrt::make_self&lt;MySynchronize&gt;();</span>
+  auto factory = pipe.as&lt;ICallFactory&gt;();
+  winrt::check_hresult(factory-&gt;CreateCall(
+    __uuidof(::AsyncIPipeByte), <span style="color: blue;">winrt::get_unknown(*outer)</span>,
+    __uuidof(<span style="color: blue;">::IUnknown</span>), <span style="color: blue;">outer-&gt;m_inner.put()</span>));
+  <span style="color: blue;">auto call = outer.as&lt;::AsyncIPipeByte&gt;();</span>
+
+  printf("Beginning the Pull\n");
+  winrt::check_hresult(call-&gt;Begin_Pull(100));
+
+  printf("Doing something else for a while...\n");
+  Sleep(100);
+
+  printf("Getting the answer\n");
+  BYTE buffer[100];
+  ULONG actual;
+  winrt::check_hresult(call-&gt;Finish_Pull(buffer, &amp;actual));
+  printf("Pulled %lu bytes\n", actual);
+
+  return 0;
+}
+</pre>
+<p>When the call completes, the <code>ISynchronize::<wbr/>Signal</code> method on the outer object is called, and we can take that opportunity to do some work. Our <code>My­Synchronize</code> object is marked as non-agile, so this call is made in the same apartment in which it was created, which is convenient if the <code>Signal</code> method wants to access other objects with apartment affinity.</p>
+<p>Note that we forward the call into the inner object first, before doing our work. That way, our work is done while the event is signaled. If we didn’t do that, then if the work calls <code>Finish_</code> to get the results of the call that just completed, it will deadlock because the <code>Finish_</code> is going to wait for the call to be signaled as complete.</p>
+<p>So there’s a practical use for COM aggregation: It lets you become part of another object and respond to its methods.</p>
+<p><b>Bonus chatter</b>: I cheated a bit and used a throwing method when forwarding the <code>ISynchronize</code> methods. COM methods are not allowed to throw C++ exceptions (because C++ exceptions are not part of the ABI), so we need to convert them back to <code>HRESULT</code>s.</p>
+<pre>struct MySynchronize :
+    winrt::implements&lt;MySynchronize, ::ISynchronize, winrt::non_agile&gt;
+{
+  winrt::com_ptr&lt;::IUnknown&gt; m_inner;
+  int32_t query_interface_tearoff(winrt::guid const&amp; id, void** object)
+    const noexcept override {
+    if (m_inner) return m_inner.as(id, object);
+    return E_NOINTERFACE;
+  }
+
+  auto Sync() { return m_inner.as&lt;ISynchronize&gt;(); }
+
+  STDMETHODIMP Reset() <span style="color: blue;">try</span> { return Sync()-&gt;Reset(); }
+    <span style="color: blue;">catch (...) { return winrt::to_hresult(); }</span>
+  STDMETHODIMP Signal() <span style="color: blue;">try</span> {
+    auto hr = return Sync()-&gt;Signal();
+    printf("Call completed!\n"); // do cool stuff here
+    return hr;
+  } <span style="color: blue;">catch (...) { return winrt::to_hresult(); }</span>
+  STDMETHODIMP Wait(DWORD flags, DWORD timeout) <span style="color: blue;">try</span> {
+    return Sync()-&gt;Wait(flags, timeout);
+  } <span style="color: blue;">catch (...) { return winrt::to_hresult(); }</span>
+};
+</pre>
+<p><b>Bonus bonus chatter</b>: Note how this differs from <i>containment</i>, which is the more usual pattern for combining objects. If the outer object <i>contained</i> a call object, then queries on the call object would be satisfied by the call object. The outer object never gets a chance to take over the <code>ISynchronize</code>.</p>
+
+
+</body>

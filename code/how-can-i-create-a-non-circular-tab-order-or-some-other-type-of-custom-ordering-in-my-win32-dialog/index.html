@@ -1,0 +1,76 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I create a non-circular tab order, or some other type of custom ordering in my Win32 dialog?</h1>  <!-- .entry-meta -->
+
+<p>Normally, the tab order in a dialog follows a fixed sequence: Hitting the <kbd>Tab</kbd> key moves forward through the sequence, and hitting <kbd>Shift</kbd>+<kbd>Tab</kbd> moves backward through the sequence, wrapping around when the beginning or end of the sequence is reached. In other words, what you have is a circle.</p>
+<p>The order is based on the order in which the controls are given in the dialog template, which need not match the physical layout of the controls. In other words, if you list a control near the bottom of the dialog ahead of a control near the top, then hitting the <kbd>Tab</kbd> key will move from the bottom control to the top control. This can be handy if you want the tab order to move vertically through columns, say.</p>
+<p>But sometimes a circular order isn’t good enough.</p>
+<p>Say you have a dialog box that looks in part like this:</p>
+
+<p>The idea is that the user enters the customer ID into the edit box, and then clicks the <i>Locate</i> button. This looks up the customer record, and the user can then use other buttons on the dialog to view details of the customer or make changes.</p>
+<p>Based on end-user feedback, you come to the conclusion that it would be better if tabbing backward from the <i>Change</i> button went straight to the <i>Customer ID</i> field, rather than to the <i>Locate</i> button. After all, there’s no point clicking the <i>Locate</i> button without first making a change to the customer ID.</p>
+<p>You can do this by overriding the tab behavior for the <i>Change</i> button.</p>
+<pre>INT_PTR CALLBACK CustomerDlgProc(
+    HWND hdlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+  switch (message) {
+  case WM_INITDIALOG:
+    <span style="color: blue;">SetWindowSubclass(GetDlgItem(hDlg, IDC_CHANGENAME),
+                      TabBackwardSubclassProc, 0, 0);</span>
+    ... other initialization ...
+    return TRUE;
+
+  case ...
+  }
+  return FALSE;
+}
+
+INT_PTR CALLBACK TabBackwardSubclassProc(
+    HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
+    UINT_PTR subclassId, DWORD_PTR)
+{
+  switch (message) {
+  case WM_NCDESTROY:
+    RemoveWindowSubclass(hwnd, TabBackwardSubclassProc,
+                         subclassId);
+    break;
+
+  <span style="color: blue;">case WM_GETDLGCODE:
+    return DefSubclassProc(hwnd, message, wParam, lParam) |
+           DLGC_WANTTAB;
+
+  case WM_KEYDOWN:
+    if (wParam == VK_TAB) {
+      HWND hdlg = GetParent(hwnd);
+      if (GetKeyState(VK_SHIFT) &lt; 0) {
+        // Tabbing backward - go to the Customer ID.
+        HWND tabDestination = GetDlgItem(hdlg,
+                                         IDC_CUSTOMERID);
+        SendMessage(hdlg, WM_NEXTDLGCTL,
+                    (WPARAM)tabDestination, TRUE);
+      } else {
+        // Do the normal tabbing thing.
+        SendMessage(hdlg, WM_NEXTDLGCTL, FALSE, FALSE);
+      }
+      return 0;
+    }
+    break;
+
+    case WM_CHAR:
+      if (wParam == VK_TAB) return 0;
+      break;
+    }</span>
+
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+</pre>
+<p>During dialog box initialization, we subclass the control for which we want a custom tab destination. In our case, it’s the <i>Change</i> button.</p>
+<p>In the subclass procedure, there is the usual boilerplate about removing the subclass when the window is destroyed. But the interesting part starts with the <code>WM_</code><code>GET­DLG­CODE</code> message.</p>
+<p>As I noted some time ago, <a href="/code/other-tricks-with-wm-getdlgcode"> the <code>WM_</code><code>GET­DLG­CODE</code> message lets you influence the behavior of the dialog manager</a>. We handle this message by taking the behavior requested by the original control, and also saying that we want to customize the behavior of the <kbd>Tab</kbd> key.</p>
+<p>Doing so allows the <code>VK_TAB</code> key to flow into the <code>WM_</code><code>KEY­DOWN</code>, <code>WM_</code><code>KEY­UP</code>, and <code>WM_</code><code>CHAR</code> messages.</p>
+<p>When a key goes down, we trigger our custom navigation when the <kbd>Tab</kbd> key is pressed. If the <kbd>Shift</kbd> key is also pressed, then we use the <a href="https://devblogs.microsoft.com/oldnewthing/20040802-00/?p=38283"> <code>WM_</code><code>NEXT­DLG­CTL</code> message</a> to move focus to an explicit control: Passing an <code>lParam</code> of <code>TRUE</code> means that we are specifying the window to go to, and we give it the <i>Customer ID</i> control.</p>
+<p>If the <kbd>Shift</kbd> key is not pressed, then we pass an <code>lParam</code> of <code>FALSE</code>, meaning “Do default tab navigation.” Passing <code>FALSE</code> as the <code>wParam</code> means that we should go to the default <i>next</i> control. (Passing <code>TRUE</code> would request going to the default <i>previous</i> control.)</p>
+<p>The last bit of cleanliness is that we need to grab the <code>WM_</code><code>CHAR</code> message and swallow the <kbd>Tab</kbd> character, so that the control itself won’t try to respond to it, say, by inserting a tab into the edit control.</p>
+<p>And there you have it. We customized tabbing backward from the <i>Change</i> button in a way that resulted in a tab order that isn’t circular.</p>
+
+
+</body>

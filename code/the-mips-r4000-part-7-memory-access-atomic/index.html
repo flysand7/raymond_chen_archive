@@ -1,0 +1,41 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The MIPS R4000, part 7: Memory access (atomic)</h1>  <!-- .entry-meta -->
+
+<p>Atomic memory access on the MIPS R4000 is performed with the load-linked and store-conditional instructions. This pattern shouldn’t be much of a surprise because <a href="https://blogs.msdn.microsoft.com/oldnewthing/20170817-00/?p=96835">we already encountered it on the Alpha AXP</a>. </p>
+<pre>
+    LL      rd, disp16(rs)  ; load linked
+    SC      rs, disp16(rd)  ; store conditional
+</pre>
+<p>The <code>LL</code> instruction loads a value from memory and monitors the memory address to see if another processor writes to it. The <code>SC</code> instruction stores the value to memory, provided there have been no writes¹ to the monitored memory address² and no exceptions have occurred.³ If the store succeeds, then <var>rs</var> is set to one; otherwise it is set to zero. </p>
+<p>In both cases, the memory address must be word-aligned. </p>
+<p>The intended usage pattern is </p>
+<pre>
+retry:
+    LL      r1, disp16(r2)  ; load linked
+    ADDIU   r1, r1, 1       ; increment
+    SC      r1, disp16(r2)  ; store conditional
+    BEQ     r1, 0, retry    ; if failed, then retry
+    NOP                     ; (we'll learn about this later)
+</pre>
+<p>The state created by the <code>LL</code> is ephemeral, and the subsequent <code>SC</code> is permitted (but not required) to fail if any of the following occur prior to the <code>SC</code>: </p>
+<ul>
+<li>A memory access is performed.</li>
+<li>A branch is taken.</li>
+<li>More than 512 instructions are executed.</li>
+</ul>
+<p>Furthermore, after the <code>SC</code> (either successful or unsuccessful), all subsequent <code>SC</code> instructions are required to fail until a new <code>LL</code> is executed. </p>
+<p>If the <code>LL</code> from an address is followed by <code>SC</code> which does not write to the same address, then it is unspecified whether the <code>SC</code> succeeds. So don’t do that. </p>
+<p>It is legal to execute the <code>LL</code> instruction and not follow it with the <code>SC</code> instruction. This can happen if you want to perform a conditional atomic operation, and you discover that the condition is not met. </p>
+<p>Before and after the <code>LL</code>/<code>SC</code> operation, you probably want to do a </p>
+<pre>
+    SYNC            ; memory barrier
+</pre>
+<p>All memory operations that precede the <code>SYNC</code> must complete before any operations that follow the <code>SYNC</code> can begin. </p>
+<p>Note that atomic operations are supported only on aligned words. For aligned sub-word objects, you can perform the atomic operation on the containing word. But if the object is not aligned, then you’re out of luck. </p>
+<p>Next time, we enter the exciting world of control transfer. That’s where the <code>NOP</code> above gets its moment to shine. </p>
+<p>¹ Note that if another processor writes the value that is already there back to the memory, or if there is an ABA condition where another processor changes the value, and then changes it back, then the conditional store will fail, even though the value in memory is the same value you started with. This is one cause for the mysterious case of the <a href="https://www.youtube.com/watch?v=ZQFzMfHIxng#t=33m03s"><code>compare_</code><code>exchange_</code><code>weak</code> spurious failure</a>. </p>
+<p>² The architecture permits implementations to be sloppy with the detection of a write. In particular, any modification on the same 4<a href="https://blogs.msdn.microsoft.com/oldnewthing/20090611-00/?p=17933">KB</a> page as the locked address is permitted to cause the subsequent store conditional instruction to fail. Mind you, an implementation that was this sloppy would not be a very good implementation, but it is technically legal. </p>
+<p>³ This last clause is actually an operating system convention, not something inherent in the processor architecture. One of the things that kernel mode does before returning to user mode is execute the <code>SC</code> instruction with a scratch writable memory location. The <code>SC</code> might succeed, it might not, but it doesn’t matter. The reason for the <code>SC</code> is to ensure that if the next atomic memory operation performed by user-mode code is <code>SC</code>, then that operation <i>definitely</i> fails. This is important in the case where the interrupt occurred after the user-mode code performed the <code>LL</code> but before it could execute the subsequent <code>SC</code>. Without it, the <code>SC</code> in user mode might succeed accidentally. </p>
+
+
+</body>

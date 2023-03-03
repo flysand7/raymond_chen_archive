@@ -1,0 +1,121 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Detecting in C++ whether a type is defined, part 4: Predeclaring things you want to probe</h1>  <!-- .entry-meta -->
+
+<p><b>Note to those who got here via a search engine</b>: This is the last part of the core portion of the series, but there are still parts to come. For the impatient, here’s the stuff to copy-paste:</p>
+<pre>template&lt;typename, typename = void&gt;
+constexpr bool is_type_complete_v = false;
+
+template&lt;typename T&gt;
+constexpr bool is_type_complete_v
+    &lt;T, std::void_t&lt;decltype(sizeof(T))&gt;&gt; = true;
+
+template&lt;typename... T, typename TLambda&gt;
+void call_if_defined(TLambda&amp;&amp; lambda)
+{
+  if constexpr ((... &amp;&amp; is_complete_type_v&lt;T&gt;)) {
+    lambda(static_cast&lt;T*&gt;(nullptr)...);
+  }
+}
+</pre>
+<p><a href="/code/detecting-in-c-whether-a-type-is-defined-part-3-sfinae-and-incomplete-types">Last time</a>, we used SFINAE to detect whether a type had a definition, and we used that in combination with <code>if constexpr</code> and generic lambdas so that code could use the type if it is defined, while still being accepted by the compiler (and being discarded) if the type is not defined.</p>
+<p>However, our usage had a few issues, some minor annoyance, some more frustrating.</p>
+<ul>
+<li>You had to say <code>struct</code> all the time.</li>
+<li>If the type didn’t exist, the act of naming it caused the type to be injected into the <i>current</i> namespace, not the namespace you expected the type to be in.</li>
+<li>You must use the <code>struct</code> technique with an unqualified name. You can’t use it to probe a type that you didn’t import into the current namespace.</li>
+</ul>
+<p>We can fix all three of the problems with a single solution: Predeclare the type in the desired namespace.</p>
+<pre>// awesome.h
+namespace awesome
+{
+  // might or might not contain
+  struct special { ... };
+}
+
+// your code
+
+namespace awesome
+{
+  // ensure declarations for types we
+  // conditionalize on.
+  struct special;
+}
+</pre>
+<p>Once you’ve done this, you don’t need to say <code>struct</code> because the struct definitely has been declared. Your use of it as a template type parameter in <code>call_</code><code>if_</code><code>defined</code> will not create a new declaration, because it has already been declared. And since it has been declared, you can access it via its unqualified name, its full namespace name, or anything in between. Also a type alias or dependent type. (Sorry, those aren’t in between.)</p>
+<pre>namespace app
+{
+  void foo()
+  {
+    call_if_defined&lt;<span style="color: blue;">awesome::special</span>&gt;([&amp;](auto* p)
+    {
+       // this code is compiled only if "awesome::special"
+       // is defined. Create a local name for "special"
+       // by inferring it from the dummy parameter.
+       using special = std::decay_t&lt;decltype(*p)&gt;;
+
+       // You can now use the local name "special" to access
+       // the features of "awesome::special".
+       special::do_something();
+    });
+  }
+}
+</pre>
+<p>For those who have been following the series from the beginning, you may have noticed that the <code>call_</code><code>if_</code><code>defined</code> method is not quite the same as the version we wrote earlier. The new version supports multiple type parameters and calls the lambda only if all of the types are defined.</p>
+<p>Let’s take a closer look:</p>
+<pre>template&lt;typename... T, typename TLambda&gt;
+void call_if_defined(TLambda&amp;&amp; lambda)
+{
+  if constexpr ((... &amp;&amp; is_complete_type_v&lt;T&gt;)) {
+    lambda(static_cast&lt;T*&gt;(nullptr)...);
+  }
+}
+</pre>
+<p>The double-parentheses in the <code>if constexpr ((...))</code> look weird, but they’re required. The outer parentheses are required by the <code>if constexpr</code> statement, and the inner parentheses are required by the <a href="https://en.cppreference.com/w/cpp/language/fold"> fold expression</a>. The fold expression expands to</p>
+<pre>  if constexpr (
+    (is_complete_type_v&lt;T1&gt; &amp;&amp;
+     is_complete_type_v&lt;T2&gt; &amp;&amp;
+     ...
+     is_complete_type_v&lt;Tn&gt;))
+</pre>
+<p>The invoke of the lambda uses a <a href="https://en.cppreference.com/w/cpp/language/parameter_pack"> parameter pack expansion</a>:</p>
+<pre>    lambda(static_cast&lt;T*&gt;(nullptr)...);
+</pre>
+<p>This expands to</p>
+<pre>    lambda(static_cast&lt;T1*&gt;(nullptr),
+           static_cast&lt;T2*&gt;(nullptr),
+           ...,
+           static_cast&lt;Tn*&gt;(nullptr));
+</pre>
+<p>where the <code>static_</code><code>cast&lt;T*&gt;(nullptr)</code> is repeated once for each type.</p>
+<p>As I noted earlier, we can use this function to call a lambda if <i>all</i> the types are defined:</p>
+<pre>void foo(Source const&amp; source)
+{
+  call_if_defined&lt;special, magic&gt;(
+    [&amp;](auto* p1, auto* p2)
+    {
+      using special = std::decay_t&lt;decltype(*p1)&gt;;
+      using magic = std::decay_t&lt;decltype(*p2)&gt;;
+
+      auto s = source.try_get&lt;special&gt;();
+      if (s) magic::add_magic(s);
+    });
+}
+</pre>
+<p>C++20 allows you to write this as</p>
+<pre>void foo(Source const&amp; source)
+{
+  call_if_defined&lt;special, magic&gt;(
+    [&amp;]&lt;typename special, typename magic&gt;
+    (special*, magic*)
+    {
+      auto s = source.try_get&lt;special&gt;();
+      if (s) magic::add_magic(s);
+    });
+}
+</pre>
+<p>which lets you name the template type, thereby saving you the trouble of having to re-derive it by playing <code>std::decay_t</code> games.</p>
+<p>Next time, we’ll use this as a springboard and extend the pattern.</p>
+<p> </p>
+
+
+</body>

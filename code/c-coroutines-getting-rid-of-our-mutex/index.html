@@ -1,0 +1,89 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Getting rid of our mutex</h1>  <!-- .entry-meta -->
+
+<p>Our <a href="/code/c-coroutines-basic-implementation-of-a-promise-type" title="C++ coroutines: Basic implementation of a promise type"> coroutine implementation</a> uses a mutex to guard against the race condition where a coroutine completes at the same time another thread tries to wait for its completion. The race condition in question is this one:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th style="text-align: center; border: solid 1px black; border-style: none solid solid none;">Awaiter</th>
+<th style="text-align: center; border-bottom: solid 1px black;">Completer</th>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;">if coroutine has not yet completed {</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;"> </td>
+<td>Mark coroutine as completed</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;"> </td>
+<td>Resume anyone who is waiting</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px black;">Sign up to be resumed }</td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>If this race condition is realized, then you have a coroutine that has signed up to be resumed, but the completion of the coroutine failed to resume it. The awaiter never wakes up.</p>
+<p>But we can solve this race condition without a lock: We just need to have two special sentinel values: One for the initial state where the coroutine has not yet completed, nor has an awaiter registered for resumption. Another to mean that the coroutine has completed, but no awaiter has registered yet. The third case is where the awaiter has registered, but the coroutine hasn’t completed: For that, we will use the awaiter’s coroutine handle.</p>
+<p>The completer exchanges the value with the “completed” sentinel value to indicate that the coroutine has completed, and if the old value was not the initial value, then it means that there is a continuation, and the completer resumes the awaiter.</p>
+<p>The awaiter exchanges the value with the continuation, and if the old value was “completed”, then it resumes itself immediately.</p>
+<p>So now we have to find two values to use as sentinel values.</p>
+<p>We’ve already been using one sentinel value: <code>nullptr</code> is a sentinel value that means that the coroutine has started but no awaiter has registered. We just need to find another one. And it turns out it was right under our noses: We can use the running coroutine itself! The running coroutine will never await itself, so we can use its own handle as our second sentinel.</p>
+<p>Okay, now that we have our plan, let’s go implement it.</p>
+<pre>    template&lt;typename T&gt;
+    struct simple_promise_base
+    {
+        ...
+        <span style="color: red;">// <span style="text-decoration: line-through;">std::mutex m_mutex;</span></span>
+        <span style="color: red;">// <span style="text-decoration: line-through;">std::experimental::coroutine_handle&lt;&gt; m_waiting{ nullptr };</span></span>
+        <span style="color: blue;">std::atomic&lt;std::experimental::coroutine_handle&lt;&gt;&gt;
+            m_waiting{ nullptr };</span>
+        simple_promise_result_holder&lt;T&gt; m_holder;
+
+        ...
+        auto final_suspend() noexcept
+        {
+            struct awaiter : std::experimental::suspend_always
+            {
+                simple_promise_base&amp; self;
+                void await_suspend(
+                    std::experimental::coroutine_handle&lt;&gt; <span style="color: blue;">handle</span>)
+                    const noexcept
+                {
+                    <span style="color: blue;">auto waiter = self.m_waiting.exchange(handle,
+                        std::memory_order_acq_rel);</span>
+                    self.decrement_ref();
+                    if (waiter) waiter.resume();
+                }
+            };
+            return awaiter{ {}, *this };
+        }
+
+        ...
+
+        auto client_await_suspend(
+            std::experimental::coroutine_handle&lt;&gt; handle)
+        {
+            <span style="color: blue;">return m_waiting.exchange(handle,
+                std::memory_order_acq_rel) == nullptr;</span>
+        }
+
+        ...
+    };
+</pre>
+<p>For the <code>client_<wbr/>await_<wbr/>suspend</code>, we return <code>true</code> (meaning that we should suspend) if the coroutine hasn’t completed yet, which we detect by noticing that the previous value of <code>m_waiting</code> is null, representing the fact that the coroutine is still running.</p>
+<p>The exchange when the coroutine completes uses releases semantics because we need to ensure that the results are published before we announce that the results are ready. This covers the case where the coroutine completes before the client gotten around to calling <code>co_await</code>: In that case, the client will observe that the coroutine is complete and immediately try to read the results. We need to make sure the results are published for the client to read.</p>
+<p>The exchange when the coroutine completes also uses acquire semantics because we need to ensure that we don’t try to load any state from the handle we’re about to resume until we’ve atomically obtained it.¹</p>
+<p>The exchange when suspending the awaiting coroutine uses release semantics for a similar reason: We want to make sure the suspension of the awaiting coroutine has been published before we publish the awaiting coroutine handle for the promise coroutine to use.</p>
+<p>And the exchange when suspending the awaiting coroutine also uses acquire semantics to match the release semantics when the coroutine completes: If the coroutine has just completed, we need to make sure we read the freshly-published result.</p>
+<p>But we finally did it. We got our simple promise and simple task to be lock-free.</p>
+<p>It turns out <a href="https://devblogs.microsoft.com/oldnewthing/20210414-00/?p=105095" title="C++ coroutines: Making it impossible to co_await a task twice"> our simplification of <code>promise_ptr</code></a> had other consequences. We’ll explore them next time.</p>
+<p>¹ This seems like an odd thing to have to protect against. How can we possibly load any state from the handle we’re about to resume before we obtain the handle? Can the CPU predict the future and load a value dependent upon an address it hasn’t obtained yet?</p>
+<p>Maybe,² but even in the absence of time travel (or really good speculation), it’s possible that the memory is cached locally on the CPU from some previous usage, and we need to make sure that the cached value is not used and new values are loaded afresh.</p>
+<p>² The answer is “Yes”. This behavior is <a href="https://www.cs.umd.edu/~pugh/java/memoryModel/AlphaReordering.html"> permitted by the Alpha AXP memory model</a>. And it happens for basically the reason I gave above: The value at the dependent address is locally cached.</p>
+
+
+</body>

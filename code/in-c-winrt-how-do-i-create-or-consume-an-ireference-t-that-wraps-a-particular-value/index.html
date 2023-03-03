@@ -1,0 +1,264 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">In C++/WinRT, how do I create or consume an <code>IReference&lt;T&gt;</code> that wraps a particular value?</h1>  <!-- .entry-meta -->
+
+<p>Let’s look at a variety of Windows Runtime methods that accept and receive <code>IReference&lt;T&gt;</code> for various types <code>T</code>.</p>
+<pre>namespace Contoso
+{
+    enum CustomEnum
+    {
+        Circle,
+        Square,
+    };
+
+    struct CustomStruct
+    {
+        Int32 Value1;
+        Double Value2;
+    };
+
+    runtimeclass References
+    {
+        // Producers
+        Windows.Foundation.IReference&lt;Double&gt; M1();
+        Windows.Foundation.IReference&lt;CustomEnum&gt; M2();
+        Windows.Foundation.IReference&lt;CustomStruct&gt; M3();
+
+        // Consumers
+        void M4(Windows.Foundation.IReference&lt;Double&gt; value);
+        void M5(Windows.Foundation.IReference&lt;CustomEnum&gt; value);
+        void M6(Windows.Foundation.IReference&lt;CustomStruct&gt; value);
+    }
+}
+</pre>
+<p>Okay, let’s look at the first set of methods, the producers.</p>
+<pre>namespace winrt::Contoso::implementation
+{
+    using Windows::Foundation::IReference;
+    using Windows::Foundation::PropertyValue;
+
+    struct References : ReferencesT&lt;References&gt;
+    {
+        IReference&lt;double&gt; M1()
+        {
+            // Group 1
+            return PropertyValue::CreateDouble(42.0)
+                .as&lt;IReference&lt;double&gt;&gt;()
+
+            // Group 2
+            return IReference&lt;double&gt;(42.0);
+            return IReference(42.0);
+            return 42.0;
+
+            // Group 3
+            return IReference&lt;double&gt;(nullptr);
+            return nullptr;
+        }
+    };
+}
+</pre>
+<p>One way to produce an <code>IReference&lt;T&gt;</code> is to ask another object to do it for you, in this case, the <code>Windows.<wbr/>Foundation.<wbr/>PropertyValue</code>. This works for the basic arithmetic types, strings, and a few foundational structures, and arrays of those things.</p>
+<p>Group 2 shows a simpler alternative: Construct the <code>IReference&lt;T&gt;</code> from the desired value. The first version spells everything out explicitly. The second version uses <a href="https://en.cppreference.com/w/cpp/language/class_template_argument_deduction"> class template argument deduction</a> (commonly abbreviated as CTAD) to avoid having to specify the <code>&lt;T&gt;</code>, and the third version uses the fact that the <code>IReference&lt;T&gt;</code> is implicitly convertible from the value, so you don’t need to say anything at all!</p>
+<p>Dirty little secret: Group 2 is not doing anything different Group 1. It’s just a very convenient shorthand.</p>
+<p>The third group shows how to return the null reference, indicating that there is no value at all. If you like to type, you can spell out the null reference constructor the long way, but you are more likely to use the implicit conversion from <code>nullptr</code>.</p>
+<p>Usually, you aren’t hard-coding a value or non-value, but instead are checking if a value exists, and either returning a reference to that value, or a null reference.</p>
+<pre>struct References : ReferencesT&lt;References&gt;
+{
+    <span style="color: #08f;">std::optional&lt;double&gt; m_value;</span>
+
+    IReference&lt;double&gt; M1()
+    {
+        <span style="color: #08f;">if (m_value) {</span>
+            // Group 1
+            return PropertyValue::CreateDouble(m_value.value())
+                .as&lt;IReference&lt;double&gt;&gt;()
+
+            // Group 2
+            return IReference&lt;double&gt;(m_value.value());
+            return IReference(m_value.value());
+            return m_value.value();
+        <span style="color: #08f;">} else {</span>
+            // Group 3
+            return IReference&lt;double&gt;(nullptr);
+            return nullptr;
+        }
+    }
+};
+</pre>
+<p>For enumerations and structures, you can’t use the <code>PropertyValue</code> trick because the <code>PropertyValue</code> does not have a factory method for enumerations and structures. You have to use Group 2, which detects that you’re using a custom enumeration or structure and provides a corresponding custom implementation of <code>IPropertyValue</code>.</p>
+<pre>struct References : ReferencesT&lt;References&gt;
+{
+    std::optional&lt;CustomEnum&gt; m_enumValue;
+    std::optional&lt;CustomStruct&gt; m_structValue;
+
+    IReference&lt;CustomEnum&gt; M2()
+    {
+        if (m_value) {
+            <span style="color: red;">// <span style="text-decoration: line-through;">Group 1</span>
+            // <span style="text-decoration: line-through;">return PropertyValue::CreateEnum(m_value.value())</span>
+            // <span style="text-decoration: line-through;">    .as&lt;IReference&lt;CustomEnum&gt;&gt;()</span></span>
+
+            // Group 2
+            return IReference&lt;CustomEnum&gt;(m_value.value());
+            return IReference(m_value.value());
+            return m_value.value();
+        } else {
+            // Group 3
+            return IReference&lt;CustomEnum&gt;(nullptr);
+            return nullptr;
+        }
+    }
+
+    IReference&lt;CustomEnum&gt; M3()
+    {
+        if (m_value) {
+            <span style="color: red;">// <span style="text-decoration: line-through;">Group 1</span>
+            // <span style="text-decoration: line-through;">return PropertyValue::CreateStruct(m_value.value())</span>
+            // <span style="text-decoration: line-through;">    .as&lt;IReference&lt;CustomStruct&gt;&gt;()</span></span>
+
+            // Group 2
+            return IReference&lt;CustomStruct&gt;(m_value.value());
+            return IReference(m_value.value());
+            return m_value.value();
+        } else {
+            // Group 3
+            return IReference&lt;CustomStruct&gt;(nullptr);
+            return nullptr;
+        }
+    }
+};
+</pre>
+<p>If your value is being kept in a <code>std::optional</code> already, then you can take advantage of the implicit conversions between <code>IReference&lt;T&gt;</code> and <code>std::optional&lt;T&gt;</code>, added in version 2.0.210930.8. An empty <code>std::optional</code> corresponds to a null <code>IReference</code>, and a <code>std::optional</code> with a value corresponds to a non-null <code>IReference</code>.</p>
+<pre>struct References : ReferencesT&lt;References&gt;
+{
+    std::optional&lt;double&gt; m_value;
+    std::optional&lt;CustomEnum&gt; m_enumValue;
+    std::optional&lt;CustomStruct&gt; m_structValue;
+
+    IReference&lt;CustomEnum&gt; M1()
+    {
+        return m_value;
+    }
+
+    IReference&lt;CustomEnum&gt; M2()
+    {
+        return m_enumValue;
+    }
+
+    IReference&lt;CustomEnum&gt; M3()
+    {
+        return m_structValue;
+    }
+};
+</pre>
+<p>Furthermore, thanks to the magic of the <a href="https://en.wikipedia.org/wiki/Curiously_recurring_template_pattern"> curiously recurring template pattern (CRTP)</a>, your methods can just return <code>std::optional</code> and let the projection do the work of converting it to an <code>IReference</code>. And since the return type now matches the variable type, you can use <code>auto</code> and save yourself a lot of typing.</p>
+<pre>struct References : ReferencesT&lt;References&gt;
+{
+    std::optional&lt;double&gt; m_value;
+    std::optional&lt;CustomEnum&gt; m_enumValue;
+    std::optional&lt;CustomStruct&gt; m_structValue;
+
+    auto M1() { return m_value; }
+    auto M2() { return m_enumValue; }
+    auto M3() { return m_structValue; }
+};
+</pre>
+<p>When receiving a value as a parameter, you check if the parameter is null to detect the null reference, and if it’s not, you use the <code>Value()</code> method to extract the value:</p>
+<pre>struct References : ReferencesT&lt;References&gt;
+{
+    void M4(IReference&lt;double&gt; const&amp; value)
+    {
+        if (value) {
+            ConsumeValue(value.Value());
+        } else {
+            NoValue();
+        }
+    }
+
+    void M5(IReference&lt;CustomEnum&gt; const&amp; value)
+    {
+        if (value) {
+            ConsumeValue(value.Value());
+        } else {
+            NoValue();
+        }
+    }
+
+    void M6(IReference&lt;CustomStruct&gt; const&amp; value)
+    {
+        if (value) {
+            ConsumeValue(value.Value());
+        } else {
+            NoValue();
+        }
+    }
+};
+</pre>
+<p>And again, you can take advantage of the implicit conversion and CRTP and just operate with <code>std::optional</code>.</p>
+<pre>struct References : ReferencesT&lt;References&gt;
+{
+    void M4(std::optional&lt;double&gt; const&amp; value)
+    {
+        ConsumeValue(value.value_or(42.0));
+    }
+
+    void M5(std::optional&lt;CustomEnum&gt; const&amp; value)
+    {
+        ConsumeValue(value.value_or(CustomEnum::Square));
+    }
+
+    void M6(std::optional&lt;CustomStruct&gt; const&amp; value)
+    {
+        ConsumeValue(value.value_or({});
+    }
+};
+</pre>
+<p><b>Bonus chatter</b>: If you’re going to retain the <code>IReference</code> that is passed to a method, you should re-wrap it inside your own <code>IReference</code> or <code>std::optional</code> because the passed-in <code>IReference</code> may come with strings attached. For example, it may have come from JavaScript, which is a single-threaded language, and that means that you can’t use the passed-in <code>IReference</code> from a background thread. The caller might also try pulling some sneaky tricks, like having the <code>Value()</code> method return a different value each time you call it!</p>
+<pre>struct References : ReferencesT&lt;References&gt;
+{
+    IReference&lt;double&gt; m_savedValue;
+
+    void M4(IReference&lt;double&gt; const&amp; value)
+    {
+        // Re-wrap the IReference to avoid shenanigans.
+        m_savedValue = value ? value.Value() : nullptr;
+    }
+};
+</pre>
+<p>Another way to wrap the value is inside a <code>std::optional</code>.</p>
+<pre>struct References : ReferencesT&lt;References&gt;
+{
+    std::optional&lt;double&gt; m_savedValue;
+
+    void M4(IReference&lt;double&gt; const&amp; value)
+    {
+        m_savedValue = value;
+    }
+};
+</pre>
+<p><b>Bonus bonus chatter</b>: A customer who wanted to produce an <code>IReference</code> didn’t realize that C++/WinRT came with pre-made implementations, so they tried to create their own:</p>
+<pre>// Don't do this.
+template&lt;typename Enum&gt;
+struct enum_reference :
+    implements&lt;enum_reference,
+        IReference&lt;Enum&gt;&gt;
+{
+    enum_reference(Enum value)
+        : m_value(value) {}
+    Enum Value() { return m_value; }
+private:
+    Enum const m_value;
+};
+
+IReference&lt;CustomEnum&gt; M1()
+{
+    return winrt::make&lt;enum_reference&gt;
+        (CustomEnum::Circle);
+}
+</pre>
+<p>This works according to the letter of the <code>IReference</code> interface, but it misses some finer points which are required in practice.</p>
+<p>For example, in practice, objects which implement <code>IReference&lt;Enum&gt;</code> also need to implement <code>IPropertyValue</code> so that weakly-typed languages can use <code>IPropertyValue::Type()</code> to peek inside and realize that they have a numeric type, even if that numeric type is a custom enumeration. They also need to implement <code>IReference&lt;T&gt;</code> where <code>T</code> is the underlying type of the enumeration (either <code>int32_t</code> for plain enumerations or (either <code>uint32_t</code> for flags enumerations) so that the receipient can represent it as a <code>Number</code> type.</p>
+<p>In general, you should use the C++/WinRT implementations, which have already been carefully written to address these subtleties.</p>
+<p>Next time, we’ll look at the C++/WinRT implementation of <code>IReference&lt;T&gt;</code> to see how it works. (In fact, that’s how I figured out the rules for <code>IReference&lt;T&gt;</code>: Read the implementation and then reverse-engineer the rules that allow the implementation to work.)</p>
+
+
+</body>

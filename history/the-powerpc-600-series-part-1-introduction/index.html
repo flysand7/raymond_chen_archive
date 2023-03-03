@@ -1,0 +1,175 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The PowerPC 600 series, part 1: Introduction</h1>  <!-- .entry-meta -->
+
+<p>The PowerPC is a RISC processor architecture which grew out of IBM’s <a href="https://en.wikipedia.org/wiki/IBM_POWER_Instruction_Set_Architecture">POWER</a> architecture. Windows NT support was introduced in Windows NT 3.51, and it didn’t last long; the last version to support it was Windows NT 4.0. Despite not being supported by the flagship operating system, it continued to be supported by Windows CE, and a later version of the PowerPC was chosen as the processor for the Xbox 360. </p>
+<p>As with all the processor retrospective series, I’m going to focus on how Windows NT used the PowerPC in user mode because the original audience for all of these discussions was user-mode developers trying to get up to speed debugging their programs on PowerPC. </p>
+<p>The PowerPC 600 series started out as a 32-bit processor, with 64-bit support arriving in the 620. The earliest record I can find (not that I looked very hard) shows Windows NT supporting the 603 and 604 processors. I guess this makes sense, because Wikipedia says that the 603 was <a href="https://en.wikipedia.org/wiki/PowerPC_600#PowerPC_603">the first processor to support the full PowerPC instruction set</a>. The 603 could complete a maximum of two instructions per cycle; the 604 could do up to four. The 603 did not have a dynamic branch predictor, but the 604 did. Both could forward arithmetic operations into the next arithmetic operation, so consecutive integer arithmetic operations did not stall, even if the second depended on the result of the first. </p>
+<p>The PowerPC 600 series processors are natively big-endian, with an option for little-endian operation. Windows NT uses the processor in 32-bit little-endian mode.¹ Even though the processor can be put into little-endian mode, this affects only how bytes are swapped when they are read from or written to memory; the instructions themselves still operate in a big-endian way, Among other things, the bits in a register are numbered from most-significant to least-significant: Bit 0 is the high-order bit, and bit 31 is the low-order bit. </p>
+<p>The PowerPC has 32 integer registers, each 32 bits wide. They are officially named <var>GPR0</var> through <var>GPR31</var>, but the assembler just calls them <var>0</var> through <var>31</var>. This is ridiculously confusing,² so nobody uses the purely numeric names. People call them <var>r0</var> through <var>r31</var>. (Some assemblers call them <var>r.0</var> through <var>r.31</var>.) </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Mnemonic</th>
+<th>Meaning</th>
+<th>Preserved?</th>
+<th>Notes</th>
+</tr>
+<tr>
+<td><var>gpr0</var></td>
+<td><var>r0</var></td>
+<td></td>
+<td>No</td>
+<td>Of limited use</td>
+</tr>
+<tr>
+<td><var>gpr1</var></td>
+<td><var>r1</var></td>
+<td>stack pointer</td>
+<td>Yes</td>
+<td>Includes 232-byte negative red zone</td>
+</tr>
+<tr>
+<td><var>gpr2</var></td>
+<td><var>r2</var></td>
+<td>table of contents</td>
+<td>Yes, mostly</td>
+<td>Access to global variables</td>
+</tr>
+<tr>
+<td><var>gpr3</var>…<var>gpr10</var></td>
+<td><var>r3</var>…<var>r10</var></td>
+<td>argument</td>
+<td>No</td>
+<td>On function entry, contains function parameters</td>
+</tr>
+<tr>
+<td><var>gpr11</var></td>
+<td><var>r11</var></td>
+<td>temporary</td>
+<td>No</td>
+<td>For function glue</td>
+</tr>
+<tr>
+<td><var>gpr12</var></td>
+<td><var>r12</var></td>
+<td>temporary</td>
+<td>No</td>
+<td>prologue and epilogue helper</td>
+</tr>
+<tr>
+<td><var>gpr13</var></td>
+<td>r13</td>
+<td>read-only</td>
+<td>Yes</td>
+<td>TEB</td>
+</tr>
+<tr>
+<td><var>gpr14</var>…<var>gpr31</var></td>
+<td><var>r14</var>…<var>r31</var></td>
+<td>saved</td>
+<td>Yes</td>
+<td></td>
+</tr>
+</table>
+<p>Note that this does not exactly line up with the PowerPC register conventions for other platforms. (Many other platforms assign special meanings to <var>gpr11</var> through <var>gpr13</var>.) </p>
+<p>The stack must be kept on an 8-byte boundary. There is a large red zone of 232 bytes at negative offsets from the stack pointer. We’ll see the importance of this when we look at function prologues. </p>
+<p>The function return value is placed in <var>r3</var>. </p>
+<p>The <var>r0</var> register is of limited use because many instructions cannot use a source of <var>r0</var>. We’ll see more about that later. </p>
+<p>We’ll learn about the table of contents, function glue, and epilogue/prologue helpers later when we cover Windows NT software conventions. </p>
+<p>In addition to the general-purpose integer registers, there are a number of special-purpose 32-bit integer registers. There are only nineteen of these special-purpose registers, but the numbers range from <var>spr1</var> to <var>spr1013</var>. (The number space is very sparsely populated, but I guess they reserved room for adding more registers in the future.) These are the ones you’re likely to see in user-mode code: </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Mnemonic</th>
+<th>Meaning</th>
+<th>Preserved?</th>
+<th>Notes</th>
+</tr>
+<tr>
+<td><var>spr1</var></td>
+<td><var>xer</var></td>
+<td>Status bits</td>
+<td>No</td>
+<td>Integer exception register</td>
+</tr>
+<tr>
+<td><var>spr8</var></td>
+<td><var>lr</var></td>
+<td>link register</td>
+<td>No</td>
+<td>On function entry, contains return address</td>
+</tr>
+<tr>
+<td><var>spr9</var></td>
+<td><var>ctr</var></td>
+<td>counter</td>
+<td>No</td>
+<td>Dedicated counter or jump target</td>
+</tr>
+<tr>
+<td><var>fpscr</var></td>
+<td><var>fpscr</var></td>
+<td>Status bits</td>
+<td>?</td>
+<td>Floating point status and control register</td>
+</tr>
+</table>
+<p>I’ve never had to deal with floating point on the PowerPC, so I don’t know what parts of <var>fpscr</var> need to be preserved and what parts don’t. </p>
+<p>We’ll learn more about the other special registers as the need arises. </p>
+<p>Remember how the Itanium, MIPS, and Alpha don’t have a flags register? Well, the PowerPC scoffs at them. “Flags register? You say you want a flags register? I’ve got your flags register right here. In fact, I’ve got <i>eight sets</i> of flags registers.” They are named <var>cr0</var> through <var>cr7</var>, each four bits wide. (The “cr” stands for <i>condition register</i>.) The pseudo-register <var>cr</var> can be used to treat them as one giant 32-bit register.³ Remember that the PowerPC is a big-endian processor, so <var>cr0</var> occupies the most significant bits of <var>cr</var>, and so <var>cr7</var> occupies the least significant bits. </p>
+<p>Condition register <var>cr0</var> is the implicit target of integer operations, and condition register <var>cr1</var> is the implicit target of floating point operations. I don’t know which condition registers must be preserved across calls, because I’ve never found any code that needed to. </p>
+<p>The PowerPC also has 32 floating-point double-precision registers, officially named <var>FPR0</var> through <var>FPR31</var>. </p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border: solid 1px black;border-collapse: collapse">
+<tr>
+<th>Register</th>
+<th>Mnemonic</th>
+<th>Preserved?</th>
+<th>Notes</th>
+</tr>
+<tr>
+<td><var>fpr0</var></td>
+<td><var>f0</var></td>
+<td>No</td>
+<td>temporary</td>
+</tr>
+<tr>
+<td><var>fpr1</var>…<var>fpr13</var></td>
+<td><var>f1</var>…<var>f13</var></td>
+<td>No</td>
+<td>Function parameters</td>
+</tr>
+<tr>
+<td><var>fpr14</var>…<var>fpr31</var></td>
+<td><var>f14</var>…<var>f31</var></td>
+<td>Yes</td>
+<td></td>
+</tr>
+</table>
+<p>As for instruction encoding, each instruction is 32 bits wide and must be aligned on a four-byte boundary. The instruction whose encoding is <code>0x00000000</code> is reserved as an invalid instruction, so trying to execute a page of zeros will instantly fault. </p>
+<p>The general syntax for multi-operand opcodes is </p>
+<pre>
+    opcode  destination, source1, source2, source3...
+</pre>
+<p>with the notable exception of store instructions, which put the source register on the left and the address destination on the right. </p>
+<p>The architectural terms for operand sizes are <i>byte</i>, <i>halfword</i> (2 bytes), <i>word</i> (4 bytes), <i>doubleword</i> (8 bytes), and <i>quadword</i> (16 bytes). In 32-bit operation, the largest unit that can be operated on directly is the word. </p>
+<p>In opcode names, the word <i>arithmetic</i> is used to emphasize that the operands are treated as signed (usually abbreviated <code>a</code>), and the words <i>logical</i> (<code>l</code>) and <i>unsigned</i> (<code>u</code>) or sometimes <i>zero-extended</i> (<code>z</code>) are used to emphasize that the operands are treated as unsigned. I guess they couldn’t make up their mind what to call it unsigned operations, so they chose one at random each time they needed one. Note further that these conventions are not uniformly applied, so stay alert. </p>
+<p>The processor maintains the fiction that every instruction is retired completely before the next one starts. Consequently, there are no architectural branch delay slots or load delay slots. It also means that when an exception is raised, all instructions preceding the exception have run to completion, and no instructions after the exception will appear to have started. </p>
+<p>Internally, the processor may perform operations out of order or in parallel or speculatively, and it may introduce stalls if your dependencies are too close together, but the processor does its best to hide this from the code being executed. </p>
+<p>There are two notable exceptions to the principle of sequential operation: </p>
+<ul>
+<li>Floating point exceptions in imprecise mode     can be delayed beyond the instruction that triggered the exception. </li>
+<li>Self-modifying code requires special instructions     to evict the old instructions out of the I-cache. </li>
+</ul>
+<p>Both reads and writes to memory <a href="https://msdn.microsoft.com/en-us/library/windows/desktop/ee418650(v=vs.85).aspx">can be reordered</a>, and reads can be speculated. Storing a value may partly succeed before raising an exception. (For example, an unaligned store that crosses into an invalid page may write to the valid page and then take an exception on the invalid page.) </p>
+<p>Okay, that’s enough background. We’ll pick up <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180807-00/?p=99435">next time</a> by taking a closer look at those condition registers. </p>
+<p>¹ When the processor is in 32-bit mode, you can still execute 64-bit instructions. However, since Windows NT did not require a 64-bit capable version of the PowerPC processor, PowerPC programs for Windows NT had to perform runtime detection of 64-bit support and run either a 32-bit friendly version of the code or a 64-bit version of the code. In practice, nobody did this. They just stuck to 32-bit code. (Even though you could use 64-bit instructions in 32-bit mode, the ABI preserves only the least-significant 32 bits of saved registers.) </p>
+<p>² The designers of the PowerPC assembly language appear to be dedicated to making their instruction set as confusing as possible by making the assembly language be just barely more readable than machine code. For example, to say “Decrement the counter, and branch if the result is zero and the <var>eq</var> flag is set in <var>cr3</var>“, they want you to write </p>
+<pre>
+    bc  2, 14, destination
+</pre>
+<p>Because obviously 2 means “decrement counter and branch if the result is zero and the specific flag is set”, and naturally 14 means “the <var>eq</var> flag in <var>cr3</var>.” </p>
+<p>The Windows disassembler substitutes names for some (but not all) of these magic numbers at disassembly so you don’t have to remember all the codes. </p>
+<p>³ You might think, “Who’s to say which is the real register and which is the pseudo-register? You could equivalently think of <var>cr</var> as the real register, and the <var>cr#</var> registers as pseudo-registers!” Perhaps so, but the processor can execute operations on different <var>cr#</var> registers in parallel. If <var>cr</var> were the real register, then you would expect multiple operations on different <var>cr#</var> registers to be dependent on each other since they are all operating on <var>cr</var>. </p>
+
+
+</body>

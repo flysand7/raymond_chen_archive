@@ -1,0 +1,66 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">WindowFromPoint, ChildWindowFromPoint, RealChildWindowFromPoint, when will it all end?</h1>  <!-- .entry-meta -->
+
+<p>Oh wait, there’s also <code>ChildWindowFromPointEx</code>.
+ There are many ways of identifying the window that appears beneath a point. The documentation for each one describes how they work, but I figured I’d do a little compare/contrast to help you decide which one you want for your particular programming problem.
+ The oldest functions are <code>WindowFromPoint</code> and <code>ChildWindowFromPoint</code>. The primary difference between them is that <code>WindowFromPoint</code> returns the deepest window beneath the point, whereas <code>ChildWindowFromPoint</code> returns the shallowest.
+ What do I mean by deep and shallow?
+ Suppose you have a top-level window P and a child window C. And suppose you ask one of the above functions, “What window is beneath this point?” when the point is squarely over window C. The <code>WindowFromPoint</code> function looks for the most heavily nested window that contains the point, which is window C. On the other hand <code>ChildWindowFromPoint</code> function looks for the least nested window that contains the point, which is window P, assuming you passed <code>GetDesktopWindow</code> as the starting point.
+ That’s the most important difference between the two functions, but there are others, primarily with how the functions treat hidden, disabled, and transparent windows. Some functions will pay attention to hidden, disabled, and/or transparent windows; others will skip them. Note that when a window is skipped, the entire window hierarchy starting from that window is skipped. For example, if you call a function that skips disabled windows, then all children of disabled windows will also be skipped (even if the children are enabled).
+ Here we go in tabular form.</p>
+<table border="1" cellpadding="3" style="border-collapse: collapse">
+<tbody>
+<tr>
+<th>Function</th>
+<th>Search</th>
+<th>Hidden?</th>
+<th>Disabled?</th>
+<th>Transparent?¹</th>
+</tr>
+<tr>
+<td><code>WindowFromPoint</code></td>
+<td>Deep</td>
+<td>Skip</td>
+<td>Skip</td>
+<td><a href="http://www.time.com/time/business/article/0,8599,1895694,00.html">It’s Complicated</a>²</td>
+</tr>
+<tr>
+<td><code>ChildWindowFromPoint</code></td>
+<td>Shallow</td>
+<td>Include</td>
+<td>Include</td>
+<td>Include</td>
+</tr>
+<tr>
+<td><code>ChildWindowFromPointEx</code></td>
+<td>Shallow</td>
+<td>Optional</td>
+<td>Optional</td>
+<td>Optional</td>
+</tr>
+<tr>
+<td><code>RealChildWindowFromPoint</code></td>
+<td>Shallow</td>
+<td>Skip</td>
+<td>Include</td>
+<td>Include³</td>
+</tr>
+</tbody>
+</table>
+<p> The return values for the various <code>...FromPoint...</code> functions are the same:</p>
+<ul>
+<li>Return the handle of the found window, if a window was found. </li>
+<li>Return the handle of the parent window     if the point is inside the parent window but not inside     any of the children.     (This rule obviously does not apply to <code>WindowFromPoint</code>     since there is no parent window passed into the function.) </li>
+<li>Otherwise, return <code>NULL</code>. </li>
+</ul>
+<p> The entries for <code>ChildWindowFromPointEx</code> are marked <i>Optional</i> because you, the caller, get to specify whether you want them to be skipped or included based on the <code>CWP_*</code> flags that you pass in.
+ ¹There is a lot hiding behind the word <i>Transparent</i> because there are multiple ways a window can be determined transparent. The <code>...ChildWindowFromPoint...</code> functions define transparent as <i>has the <code>WS_EX_TRANSPARENT</code> extended window style</i>.
+ ²On the other hand, <code>WindowFromPoint</code> defines transparent as <i>returns <code>HTTRANSPARENT</code> in response to <code>WM_NCHITTEST</code></i>. Actually, that’s still not true. If the window belongs to a <strike>process</strike> <a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/12/30/10110077.aspx#10110646">thread</a> different from the one calling <code>WindowFromPoint</code>, then <code>WindowFromPoint</code> will not send the message and will simply treat the window as opaque (<i>i.e.</i>, not transparent).
+ ³The <code>RealChildWindowFromPoint</code> includes transparent windows in the search, but <a href="http://blogs.msdn.com/b/oldnewthing/archive/2010/07/12/10036953.aspx#10037230"> has a special case for group boxes</a>: The <code>RealChildWindowFromPoint</code> function skips over group boxes, <i>unless</i> the return value would have been the parent window, in which case it returns the group box after all.
+ Why is <code>RealChildWindowFromPoint</code> so indecisive?
+ The <code>RealChildWindowFromPoint</code> function was added as part of the changes to Windows to support accessibility. The intended audience for <code>RealChildWindowFromPoint</code> is accessibility tools which want to return a “reasonable” window beneath a specific point. Since group boxes usually enclose other controls, <code>RealChildWindowFromPoint</code> prefers to return one of the enclosed controls, but if the point belongs to the group box frame, then it’ll return the group box.
+ One place I see confusion over the various <code>...WindowFromPoint...</code> functions is code which uses one of the functions, and then massages the result, unaware that there is already a function that returns the pre-massaged result for you. For example, I’ve seen code which calls <code>WindowFromPoint</code> followed by <code>GetAncestor(GA_ROOT)</code>. This does a pointless down-and-up traversal of the window tree, searching for the deepest window that lies beneath the specified point, then walking back up the tree to convert it to a shallow window. This is the Rube Goldberg way of calling <code>ChildWindowFromPointEx(GetDesktopWindow(), ...)</code>.</p>
+<p> Next time, a look at the mysterious <code>RealGetWindowClass</code> function. What makes this function more real? </p>
+
+
+</body>

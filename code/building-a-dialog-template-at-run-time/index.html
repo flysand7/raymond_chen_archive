@@ -1,0 +1,203 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Building a dialog template at run-time</h1>  <!-- .entry-meta -->
+
+<p>
+We’ve spent quite a bit of time over the past year
+learning about dialog templates and the dialog manager.
+Now we’re going to put the pieces together to do something interesting:
+Building a dialog template on the fly.
+</p>
+<p>
+What we’re going to write is an extremely lame version of
+<a href="http://msdn.microsoft.com/library/en-us/winui/winui/windowsuserinterface/windowing/dialogboxes/dialogboxreference/dialogboxfunctions/messagebox.asp">
+the <code>MessageBox</code> function</a>.
+Why bother writing a bad version of something that Windows already does?
+Because you can use it as a starting point for further enhancements.
+For example, once you learn how to generate a template dynamically,
+you can dynamically add buttons beyond the boring “OK” button,
+or you can add additional controls like a “Repeat this answer for all
+future occurrences of this dialog” checkbox or maybe insert
+an animation control.
+</p>
+<p>
+I’m going to start with a highly inefficient dialog template class.
+This is not production-quality, but it’s good enough for didactic
+purposes.
+</p>
+<pre>
+#include &lt;vector&gt;
+class DialogTemplate {
+public:
+ LPCDLGTEMPLATE Template() { return (LPCDLGTEMPLATE)&amp;v[0]; }
+ void AlignToDword()
+  { if (v.size() % 4) Write(NULL, 4 - (v.size() % 4)); }
+ void Write(LPCVOID pvWrite, DWORD cbWrite) {
+  v.insert(v.end(), cbWrite, 0);
+  if (pvWrite) CopyMemory(&amp;v[v.size() - cbWrite], pvWrite, cbWrite);
+ }
+ template&lt;typename T&gt; void Write(T t) { Write(&amp;t, sizeof(T)); }
+ void WriteString(LPCWSTR psz)
+  { Write(psz, (lstrlenW(psz) + 1) * sizeof(WCHAR)); }
+private:
+ vector&lt;BYTE&gt; v;
+};
+</pre>
+<p>
+I didn’t spend much time making this class look pretty because
+it’s not the focus of this article.  The <code>DialogTemplate</code>
+class babysits a <code>vector</code> of bytes
+to which you can <code>Write</code> data.
+There is also a little <code>AlignToDword</code> method that
+pads the buffer to the next <code>DWORD</code> boundary.
+This’ll come in handy, too.
+</p>
+<p>
+Our message box will need a dialog procedure
+which ends the dialog when the <code>IDCANCEL</code> button is pressed.
+If we had made any enhancements to the dialog template, we would handle
+them here as well.
+</p>
+<pre>
+INT_PTR CALLBACK DlgProc(HWND hwnd, UINT wm, WPARAM wParam, LPARAM lParam)
+{
+ switch (wm) {
+ case WM_INITDIALOG: return TRUE;
+ case WM_COMMAND:
+  if (GET_WM_COMMAND_ID(wParam, lParam) == IDCANCEL) EndDialog(hwnd, 0);
+  break;
+ }
+ return FALSE;
+}
+</pre>
+<p>
+Finally, we build the template.  This is not hard, just tedious.
+Out of sheer laziness, we make the message box a fixed size.
+If this were for a real program, we would have measured the text
+(using <code>ncm.lfCaptionFont</code>
+and <code>ncm.lfMessageFont</code>) to determine the
+best size for the message box.
+</p>
+<pre>
+BOOL FakeMessageBox(HWND hwnd, LPCWSTR pszMessage, LPCWSTR pszTitle)
+{
+ BOOL fSuccess = FALSE;
+ HDC hdc = GetDC(NULL);
+ if (hdc) {
+  NONCLIENTMETRICSW ncm = { sizeof(ncm) };
+  if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, 0, &amp;ncm, 0)) {
+   DialogTemplate tmp;
+   // Write out the extended dialog template header
+   tmp.Write&lt;WORD&gt;(1); // dialog version
+   tmp.Write&lt;WORD&gt;(0xFFFF); // extended dialog template
+   tmp.Write&lt;DWORD&gt;(0); // help ID
+   tmp.Write&lt;DWORD&gt;(0); // extended style
+   tmp.Write&lt;DWORD&gt;(WS_CAPTION | WS_SYSMENU | DS_SETFONT | DS_MODALFRAME);
+   tmp.Write&lt;WORD&gt;(2); // number of controls
+   tmp.Write&lt;WORD&gt;(32); // X
+   tmp.Write&lt;WORD&gt;(32); // Y
+   tmp.Write&lt;WORD&gt;(200); // width
+   tmp.Write&lt;WORD&gt;(80); // height
+   tmp.WriteString(L""); // no menu
+   tmp.WriteString(L""); // default dialog class
+   tmp.WriteString(pszTitle); // title
+   // Next comes the font description.
+   // See text for discussion of fancy formula.
+   if (ncm.lfMessageFont.lfHeight &lt; 0) {
+     ncm.lfMessageFont.lfHeight = -MulDiv(ncm.lfMessageFont.lfHeight,
+              72, GetDeviceCaps(hdc, LOGPIXELSY));
+   }
+   tmp.Write&lt;WORD&gt;((WORD)ncm.lfMessageFont.lfHeight); // point
+   tmp.Write&lt;WORD&gt;((WORD)ncm.lfMessageFont.lfWeight); // weight
+   tmp.Write&lt;BYTE&gt;(ncm.lfMessageFont.lfItalic); // Italic
+   tmp.Write&lt;BYTE&gt;(ncm.lfMessageFont.lfCharSet); // CharSet
+   tmp.WriteString(ncm.lfMessageFont.lfFaceName);
+   // Then come the two controls.  First is the static text.
+   tmp.AlignToDword();
+   tmp.Write&lt;DWORD&gt;(0); // help id
+   tmp.Write&lt;DWORD&gt;(0); // window extended style
+   tmp.Write&lt;DWORD&gt;(WS_CHILD | WS_VISIBLE); // style
+   tmp.Write&lt;WORD&gt;(7); // x
+   tmp.Write&lt;WORD&gt;(7); // y
+   tmp.Write&lt;WORD&gt;(200-14); // width
+   tmp.Write&lt;WORD&gt;(80-7-14-7); // height
+   tmp.Write&lt;DWORD&gt;(-1); // control ID
+   tmp.Write&lt;DWORD&gt;(0x0082FFFF); // static
+   tmp.WriteString(pszMessage); // text
+   tmp.Write&lt;WORD&gt;(0); // no extra data
+   // Second control is the OK button.
+   tmp.AlignToDword();
+   tmp.Write&lt;DWORD&gt;(0); // help id
+   tmp.Write&lt;DWORD&gt;(0); // window extended style
+   tmp.Write&lt;DWORD&gt;(WS_CHILD | WS_VISIBLE |
+                    WS_GROUP | WS_TABSTOP | BS_DEFPUSHBUTTON); // style
+   tmp.Write&lt;WORD&gt;(75); // x
+   tmp.Write&lt;WORD&gt;(80-7-14); // y
+   tmp.Write&lt;WORD&gt;(50); // width
+   tmp.Write&lt;WORD&gt;(14); // height
+   tmp.Write&lt;DWORD&gt;(IDCANCEL); // control ID
+   tmp.Write&lt;DWORD&gt;(0x0080FFFF); // static
+   tmp.WriteString(L"OK"); // text
+   tmp.Write&lt;WORD&gt;(0); // no extra data
+   // Template is ready - go display it.
+   fSuccess = DialogBoxIndirect(g_hinst, tmp.Template(),
+                                hwnd, DlgProc) &gt;= 0;
+  }
+  ReleaseDC(NULL, hdc); // fixed 11 May
+ }
+ return fSuccess;
+}
+</pre>
+<p>
+The fancy formula for determining the font point size is not that fancy
+after all.  The dialog manager converts the font height from point to
+pixels via
+<a href="http://msdn.microsoft.com/library/en-us/gdi/fontext_1wmq.asp">
+the standard formula</a>:
+</p>
+<blockquote class="m"><p>
+<code>fontHeight = -MulDiv(pointSize, GetDeviceCaps(hdc, LOGPIXELSY), 72);</code>
+</p></blockquote>
+<p>Therefore, to get the original pixel value back,
+we need to solve this formula for <code>pointSize</code>
+so that when it is sent through the formula again, we get the
+original value back.
+</p>
+<p>
+The template itself follows
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/06/23/163596.aspx">
+the format we discussed earlier</a>, no surprises.
+</p>
+<p>
+One subtlety is that the control identifier for our OK button
+is <code>IDCANCEL</code> instead of the <code>IDOK</code> you might
+have expected.  That’s because this message box has only one button,
+so we want to
+<a href="http://blogs.msdn.com/oldnewthing/archive/2004/12/14/300204.aspx">
+let the user hit the ESC key to dismiss it</a>.
+</p>
+<p>
+Now all that’s left to do is take this function for a little spin.
+</p>
+<pre>
+void OnChar(HWND hwnd, TCHAR ch, int cRepeat)
+{
+ if (ch == TEXT(' ')) {
+  FakeMessageBox(hwnd,
+   L"This is the text of a dynamically-generated dialog template. "
+   L"If Raymond had more time, this dialog would have looked prettier.",
+   L"Title of message box");
+ }
+}
+    // add to window procedure
+    HANDLE_MSG(hwnd, WM_CHAR, OnChar);
+</pre>
+<p>
+Fire it up, hit the space bar, and observe the faux message box.
+</p>
+<p>
+Okay, so it’s not very exciting visually, but that wasn’t the point.
+The point is that you now know how to build a dialog template at
+run-time.</p>
+
+
+</body>

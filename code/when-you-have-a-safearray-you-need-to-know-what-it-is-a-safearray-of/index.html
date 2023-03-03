@@ -1,0 +1,151 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">When you have a SAFEARRAY, you need to know what it is a SAFEARRAY *of*</h1>  <!-- .entry-meta -->
+
+<p><p>
+A customer had a problem with <code>SAFEARRAY</code>,
+or more specifically, with
+<code>CComSafeArray</code>.
+</p>
+<pre>
+CComSafeArray&lt;VARIANT&gt; sa;
+GetAwesomeArray(&amp;sa);</pre></p>
+<p>LONG lb = sa.GetLowerBound();
+LONG ub = sa.GetUpperBound();</p>
+<p>for (LONG i = lb; i &lt;= ub; i++) {
+ CComVariant item = sa.GetAt(i);
+ … use the item …
+}
+
+<p>
+The <code>GetAt</code> method returns a
+<code>VARIANT&amp;</code>,
+and when it is copy-constructed into
+<code>item</code>,
+the
+<code><a href="http://blogs.msdn.com/b/oldnewthing/archive/2009/08/28/9887637.aspx">DISP_E_</a>BAD­VAR­TYPE</code>
+exception is raised.
+</p>
+<p>
+On the other hand, if the offending line is changed to
+</p>
+<pre>
+CComQIPtr&lt;IAwesome&gt; pAwesome = sa.GetAt(i).punkVal;
+</pre>
+<p>
+then the problem goes away.
+</p>
+<p>
+Your initial reaction to this code would be that
+there is an off-by-one error in the loop control,
+but it turns out that there isn’t because
+<code>SAFEARRAY</code> uses inclusive upper bounds
+rather than exclusive.
+</p>
+<p>
+The first step in debugging this is seeing what is
+in the bad variant that makes the copy constructor
+think it’s not a valid variant type.
+</p>
+<p>
+Inspecting in the debugger shows that the variant
+returned by <code>GetAt</code> has a valid
+<code>punk</code>, but the <code>vt</code> is <code>0x1234</code>.
+Well, that’s not a valid variant type, so that’s the proximate
+cause of the problem.
+</p>
+<p>
+How did an invalid variant type get into your <code>SAFEARRAY</code>?
+</p>
+<p>
+At this point the customer realized that maybe their code to create
+the array was faulty,
+so they offered to share it.
+</p>
+<pre>
+void GetAwesomeArray(SAFEARRAY **ppsa)
+{
+ SAFEARRAY *psa = SafeArrayCreateVector(VT_UNKNOWN, 0, m_count);
+ for (LONG i = 0; i &lt; m_count; i++) {
+  CComPtr&lt;IAwesome&gt; spAwesome;
+  CreateAwesomeThing(i, &amp;spAwesome);
+  SafeArrayPutElement(psa, &amp;i, spAwesome);
+ }
+ *ppsa = psa;
+}
+</pre>
+<p>
+Okay, now all the pieces fell into place.
+</p>
+<p>
+The <code>Get­Awesome­Array</code>
+function is creating an array of <code>VT_UNKNOWN</code>,
+but the code fragment that calls
+<code>Get­Awesome­Array</code>
+treats it as an array of <code>VT_VARIANT</code>.
+</p>
+<p>
+Your array of <code>IUnknown*</code> is being misinterpreted
+as an array of <code>VARIANT</code>.
+That explains all the symptoms:
+The <code>vt</code> is wrong, because it’s really just the
+low-order word of the first <code>IUnknown*</code>.
+Ignoring the <code>vt</code> and going straight for the
+<code>punk</code> seems to work because that’s where
+the <i>second</i> <code>IUnknown*</code> happens to be.
+(Or third, if you are compiling as 32-bit.)
+</p>
+<p>
+In other words, it’s as if you did a
+<code>reinterpret_cast&lt;VARIANT&amp;&gt;(punkArray[0])</code>.
+</p>
+<p>
+If you had used regular C-style arrays
+or a C++ collection,
+then the compile-time type checking would have told you that
+you mismatched the producer and consumer.
+But since you went through a <code>SAFEARRAY</code>,
+that compile-time type information is lost,
+since a
+<code>SAFEARRAY</code> is a polymorphic array.
+It now becomes your job to keep track of what you have an array <i>of</i>,
+and its dimensions and bounds.
+</p>
+<p>
+You can keep track of this information via documentation,
+“This function returns a 1-dimensional
+<code>SAFEARRAY</code> of <code>VT_IUNKNOWN</code>,
+with lower bound 0 and variable upper bound.”
+Or you can check at runtime, by calling
+<code>Safe­Array­Get­Vartype</code>
+to see what the base type is,
+and
+<code>Safe­Get­Dim</code> to see how many
+dimensions the array has,
+and
+<code>Safe­Array­Get­LBound</code>
+and
+<code>Safe­Array­Get­UBound</code>
+to obtain the upper and lower bounds for those dimensions.
+</p>
+<p>
+The code above seemed not to be sure which model it wanted
+to use.
+It trusted the base type and the dimension,
+but checked the upper and lower bounds.
+</p>
+<p>
+Anyway,
+assuming we are going with the “keep track via documentation”
+approach,
+the solution for the original problem is to have
+the producer and consumer agree on exactly what kind of
+<code>SAFEARRAY</code> is being handed around.
+Either produce an array of <code>VT_UNKNOWN</code> and
+consume it as a <code>CComSafeArray&lt;IUnknown*&gt;</code>
+or produce an array of <code>VT_VARIANT</code> and consume
+it as a
+<code>CComSafeArray&lt;VARIANT&gt;</code>.
+</p></p>
+
+
+</body>

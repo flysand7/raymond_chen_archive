@@ -1,0 +1,58 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The macros for declaring COM interfaces, revisited: C++ version</h1>  <!-- .entry-meta -->
+
+<p>Last time, we looked at <a href="/code/the-macros-for-declaring-com-interfaces-revisited-c-version" title="The macros for declaring COM interfaces, revisited: C version"> the macros for declaring COM interfaces and how they expand when compiled for C</a>.</p>
+<p>When compiled as C++, the macros do something entirely different.</p>
+<pre>/* DECLARE_INTERFACE_IID_(ISample2, ISample, "...") */
+struct __declspec(uuid("5675B786-7BAC-4EA2-A020-F4E7A15E2073"))
+       __declspec(novtable)
+       ISample2 : public ISample
+{
+    /* BEGIN_INTERFACE */
+    virtual void a() {} // only on PowerPC
+
+    // *** IUnknown methods ***
+    /* STDMETHOD(QueryInterface)(THIS_ REFIID riid, void **ppv) PURE; */
+    virtual __declspec(nothrow) HRESULT __stdcall
+        QueryInterface(REFIID riid, void** ppv) = 0;
+
+    /* STDMETHOD_(ULONG,AddRef)(THIS) PURE; */
+    virtual __declspec(nothrow) ULONG __stdcall AddRef(void) = 0;
+
+    /* STDMETHOD_(ULONG,Release)(THIS) PURE; */
+    virtual __declspec(nothrow) ULONG __stdcall Release(void) = 0;
+
+    // ** ISample methods ***
+    /* STDMETHOD(Method1)(THIS) PURE; */
+    virtual __declspec(nothrow) HRESULT __stdcall Method1(void) = 0;
+
+    /* STDMETHOD_(int, Method2)(THIS) PURE; */
+    virtual __declspec(nothrow) HRESULT __stdcall Method2(void) = 0;
+
+    // *** ISample2 methods ***
+    /* STDMETHOD(Method3)(THIS_ int iParameter) PURE; */
+    virtual __declspec(nothrow) HRESULT __stdcall Method3(int iParameter) = 0;
+
+    /* STDMETHOD_(int, Method4)(THIS_ int iParameter) PURE; */
+    virtual __declspec(nothrow) int __stdcall Method4(int iParameter) = 0;
+
+    /* END_INTERFACE */
+};
+</pre>
+<p>The <code>DECLARE_</code><code>INTERFACE</code> macros declare a structure that consists solely of pure virtual methods. If you use the <code>DECLARE_</code><code>INTERFACE_</code> version, you can specify a base interface. You will pretty much always use this two-parameter version, since you need to derive from <code>IUnknown</code> if nothing else.</p>
+<p>The <code>__declspec(uuid(...))</code> specifier enables the use of <code>__uuidof</code> to auto-generate a GUID when you write <code>__uuidof(ISample2)</code>. This is very handy for macros like <code>IID_PPV_ARGS</code> which automatically pass the interface GUID that corresponds to the macro parameter, thereby avoiding errors due to mismatches.</p>
+<p>Normally, C++ objects change identity during construction and destruction, which means that constructing the interface object involves setting up a vtable filled with <a href="https://devblogs.microsoft.com/oldnewthing/20040428-00/?p=39613" title="What is __purecall?"> <code>__purecall</code></a> entries, only to have that vtable be immediately overwritten when the derived class is constructed. Similarly, at destruction, the vtable regresses from the derived class’s vtable to the <code>__purecall</code> vtable when destruction reaches the interface object.</p>
+<p>The <code>__declspec(novtable)</code> specifier tells the compiler not to bother setting up the vtable for this class during construction and destruction, because the class promises not to call any of its own virtual methods during constructor or destruction. (Vacuously true for interfaces because they have trivial constructors and destructors.) The <code>novtable</code> specifier avoids the code needed to set up the vtables as well as not needing to produce a vtable in the first place.</p>
+<p><b>Related</b>: <a href="https://devblogs.microsoft.com/oldnewthing/20190828-00/?p=102812" title="The sad history of Visual Studio's custom __if_exists keyword"> The sad history of Visual Studio’s custom <code>__if_exists</code> keyword</a>.</p>
+<p>As we learned last time, the <code>BEGIN_</code><code>INTERFACE</code> macro usually does nothing, but on PowerPC, it generates an extra dummy entry in the vtable for reasons lost to history.</p>
+<p>The <code>STDMETHOD</code> macro generates the method declaration. The method is <code>virtual</code>, as you would expect. It also is marked <code>__declspec(nothrow)</code>, which is a promise that calling the method will not throw an exception. There is no enforcement of this promise; if you break the rules and allow an exception to escape, then the behavior is undefined. COM methods are not allowed to throw exceptions, so this annotation is accurate, assuming everybody plays by the rules.</p>
+<p><b>Related</b>: <a href="https://devblogs.microsoft.com/oldnewthing/20180928-00/?p=99855" title="The sad history of the C++ throw(…) exception specifier"> The sad history of the C++ <code>throw(…)</code> exception specifier</a>.</p>
+<p>The <code>PURE</code> expands to <code>= 0</code> for C++, which makes it a pure virtual method.</p>
+<p><b>Related</b>: COM interfaces do not implement their own pure virtual methods, even though <a href="https://devblogs.microsoft.com/oldnewthing/20131011-00/?p=2953" title="C++ corner case: You can implement pure virtual functions in the base class"> the language permits it</a>.</p>
+<p>The rest is fairly straightforward. The <code>THIS</code> and <code>THIS_</code> macros expand to nothing; they exist to keep C happy.</p>
+<p>Every macro in this entire sequence does something, either in C or C++. Well, with the exception of <code>END_</code><code>INTERFACE</code>, which nobody has yet to find a use for. But it’s there just in case.¹</p>
+<p>Next time, we’ll look at the implementation macros.</p>
+<p>¹ For example, it might be used to declare an explicitly nonvirtual destructor, should the C++ language someday decide to make destructors virtual by default in polymorphic classes.</p>
+
+
+</body>

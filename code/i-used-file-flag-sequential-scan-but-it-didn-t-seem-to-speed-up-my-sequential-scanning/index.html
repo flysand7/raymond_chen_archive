@@ -1,0 +1,165 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">I used <code>FILE_FLAG_SEQUENTIAL_SCAN</code> but it didn’t seem to speed up my sequential scanning</h1>  <!-- .entry-meta -->
+
+<p>A customer explained that they intended to open a file and read the entire contents in either a single read request or more likely a small number of large reads. Would the <code>FILE_<wbr/>FLAG_<wbr/>SEQUENTIAL_<wbr/>SCAN</code> flag be helpful? Or to look at it another way, if the file is going to be read in its entirety, are there situations where <code>FILE_<wbr/>FLAG_<wbr/>SEQUENTIAL_<wbr/>SCAN</code> would make things worse?</p>
+<p>The customer ran an experiment with a test program that opened a file and read its entire contents, both in small chunks of 16KB and larger chunks of 100MB. They found that the <code>FILE_<wbr/>FLAG_<wbr/>SEQUENTIAL_<wbr/>SCAN</code> flag didn’t have any significant effect upon the time it took to read the file.</p>
+<p>So what’s going on?</p>
+<p>We saw some time ago that <a href="/code/how-do-file-flag-sequential-scan-and-file-flag-random-access-affect-how-the-operating-system-treats-my-file" title="How do FILE_FLAG_SEQUENTIAL_SCAN and FILE_FLAG_RANDOM_ACCESS affect how the operating system treats my file?"> the <code>FILE_<wbr/>FLAG_<wbr/>SEQUENTIAL_<wbr/>SCAN</code> flag causes the cache manager to alter its behavior in two ways</a>: First, the amount of prefetch increases, and second, the cache manager more aggressively evicts file data that sit behind the current file pointer.</p>
+<p>The test program is not seeing much benefit from the <code>FILE_<wbr/>FLAG_<wbr/>SEQUENTIAL_<wbr/>SCAN</code> flag because the test program isn’t spending any time processing the data it just read. As soon as the read completes, it just turns around and issues the next read. This means that the prefetch triggered by the <code>FILE_<wbr/>FLAG_<wbr/>SEQUENTIAL_<wbr/>SCAN</code> flag didn’t get much of a head start. The “prefetch” was not very “pre”.</p>
+<p>Let’s say that the I/O takes 20ms to complete. First, with no prefetching:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>T = 10ms</td>
+<td>Previous read completes</td>
+</tr>
+<tr>
+<td>T = 10ms + ϵ</td>
+<td>App issues normal read of 64KB (ETA 20ms)</td>
+</tr>
+<tr>
+<td>T = 30ms + ϵ</td>
+<td>I/O completes and app resumes execution</td>
+</tr>
+</tbody>
+</table>
+<p>Now with prefetching:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>T = 10ms</td>
+<td>Previous read completes</td>
+</tr>
+<tr>
+<td>T = 10ms</td>
+<td>Cache manager issues prefetch read of 64KB (ETA 20ms)</td>
+</tr>
+<tr>
+<td valign="top">T = 10ms + ϵ</td>
+<td>App issues normal read of 64KB<br/>
+(fits inside cache manager, so this is a nop)</td>
+</tr>
+<tr>
+<td>T = 30ms</td>
+<td>I/O completes and app resumes execution</td>
+</tr>
+<tr>
+<td colspan="2">Net time savings: ϵ</td>
+</tr>
+</tbody>
+</table>
+<p>On the other hand, if the program spends 10ms processing the data before issuing the next read, then that gives the prefetch read a 10ms head-start.</p>
+<p>No prefetching:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>T = 10ms</td>
+<td>Previous read completes</td>
+</tr>
+<tr>
+<td>T = 10ms to 20ms</td>
+<td>App processes data</td>
+</tr>
+<tr>
+<td>T = 20ms</td>
+<td>App issues normal read of 64KB (ETA 20ms)</td>
+</tr>
+<tr>
+<td>T = 40ms</td>
+<td>I/O completes and app resumes execution</td>
+</tr>
+</tbody>
+</table>
+<p>And with prefetching:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>T = 10ms</td>
+<td>Previous read completes</td>
+</tr>
+<tr>
+<td>T = 10ms</td>
+<td>Cache manager issues prefetch read of 64KB (ETA 20ms)</td>
+</tr>
+<tr>
+<td>T = 10ms to 20ms</td>
+<td>App processes data</td>
+</tr>
+<tr>
+<td valign="top">T = 20ms</td>
+<td>App issues normal read of 64KB<br/>
+(fits inside cache manager, so this is a nop)</td>
+</tr>
+<tr>
+<td>T = 30ms</td>
+<td>I/O completes and app resumes execution</td>
+</tr>
+<tr>
+<td colspan="2">Net time savings: 10ms</td>
+</tr>
+</tbody>
+</table>
+<p>In general, the amount of benefit from the <code>FILE_<wbr/>FLAG_<wbr/>SEQUENTIAL_<wbr/>SCAN</code> flag depends on the speed of the device, how much time elapses between the completion of one read request and the initiation of the next one, and whether the next read request fits entirely inside the system-chosen prefetch.</p>
+<p>The sequential scan flag didn’t hurt, but the test program was so fast that it didn’t have much opportunity to help.</p>
+<p>Let’s look at another case, where the app reads in 128KB chunks. First, with no prefetch:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>T = 10ms</td>
+<td>Previous read completes</td>
+</tr>
+<tr>
+<td>T = 10ms to 20ms</td>
+<td>App processes data</td>
+</tr>
+<tr>
+<td valign="top">T = 20ms</td>
+<td>App issues normal read of 128KB (ETA 35ms)</td>
+</tr>
+<tr>
+<td>T = 55ms</td>
+<td>I/O completes and app resumes execution</td>
+</tr>
+</tbody>
+</table>
+<p>The cost of a 128KB read is slightly less than the cost of two 64KB reads due to the nature of storage media: You don’t have the pay the latency of a second request. For rotational media, that latency is in the form of a seek and/or rotational penalty. For solid state media, the latency is in the form of issuing a new I/O request. For network resources, the latency is in the network.</p>
+<p>And here’s what we get with prefetch enabled:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td>T = 10ms</td>
+<td>Previous read completes</td>
+</tr>
+<tr>
+<td>T = 10ms</td>
+<td>Cache manager issues prefetch read of 64KB (ETA 20ms)</td>
+</tr>
+<tr>
+<td>T = 10ms to 20ms</td>
+<td>App processes data</td>
+</tr>
+<tr>
+<td valign="top">T = 20ms</td>
+<td>App issues normal read of 128KB<br/>
+(first 64KB fits inside cache manager)<br/>
+(I/O #2 issued for second 64KB)</td>
+</tr>
+<tr>
+<td>T = 30ms</td>
+<td>Prefetch I/O completes; I/O #2 starts (ETA 20ms)</td>
+</tr>
+<tr>
+<td>T = 50ms</td>
+<td>Second I/O completes and app resumes execution</td>
+</tr>
+<tr>
+<td colspan="2">Net time savings: 5ms</td>
+</tr>
+</tbody>
+</table>
+<p>In this case, the savings was only 5ms because the app’s read request did not fit entirely inside the prefetch, so a normal fetch had to occur as well.</p>
+<p>The <code>FILE_<wbr/>FLAG_<wbr/>SEQUENTIAL_<wbr/>SCAN</code> flag still helped, but it didn’t help as much as before.</p>
+<p>If you know ahead of time that you are going to process the data sequentially, and you are looking to squeeze out every last drop of performance, you can have your program explicitly issue an asynchronous overlapped read of the next block as soon as the previous block completes. It can then process the previous block, and then when it would normally have issued a read for the next block, it instead just waits for the asynchronous overlapped read to complete. In other words, the production program could manually do what the <code>FILE_<wbr/>FLAG_<wbr/>SEQUENTIAL_<wbr/>SCAN</code> flag tries to do automatically, but with the advantage of clairvoyance: It knows exactly how big the next read request will be, and it can issue a read of exactly that size as soon as the previous read completes, so that the I/O system can get a head start on fetching the data before the program needs it.</p>
+
+
+</body>

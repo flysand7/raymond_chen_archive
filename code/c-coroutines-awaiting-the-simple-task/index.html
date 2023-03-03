@@ -1,0 +1,88 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">C++ coroutines: Awaiting the simple_task</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/c-coroutines-accepting-types-via-return-void-and-return-value" title="C++ coroutines: Accepting types via return_void and return_value"> accepted the parameter passed to <code>co_return</code> and stored it into our promise</a>. This time, we’ll deal with the consumption side and wait for the answer to appear.</p>
+<pre>        // ⟦awaiter support methods⟧ ≔
+        bool client_await_ready()
+        {
+            assert(m_waiting == nullptr);
+            return !m_holder.is_empty();
+        }
+
+        auto client_await_suspend(
+            std::experimental::coroutine_handle&lt;&gt; handle)
+        {
+            auto guard = std::lock_guard{ m_mutex };
+            if (!m_holder.is_empty()) return false;
+            m_waiting = handle;
+            return true;
+        }
+
+        T client_await_resume()
+        {
+            return m_holder.get_value();
+        }
+
+        auto get_awaiter() noexcept
+        {
+            // ⟦return an awaiter that waits for the coroutine
+            // to complete⟧ ≔
+            struct awaiter
+            {
+                simple_promise_base&amp; self;
+
+                bool await_ready()
+                {
+                    return self.client_await_ready();
+                }
+
+                auto await_suspend(
+                    std::experimental::coroutine_handle&lt;&gt; handle)
+                {
+                    return self.client_await_suspend(handle);
+                }
+
+                T await_resume()
+                {
+                    return self.client_await_resume();
+                }
+            };
+            return awaiter{ *this };
+        }
+</pre>
+<p>The real work happens in the <code>client_</code> methods in the <code>simple_<wbr/>promise_<wbr/>base</code>, and the awaiter just forwards everything to those methods, so I’m going to talk about the awaiter and the <code>client_</code> methods as if they were the same thing.</p>
+<p>Our awaiter’s <code>await_<wbr/>ready</code> first asserts that nobody else is waiting for promise. We allow only one <code>co_await</code> because multiple <code>co_await</code> is not compatible with a move-only type: If the type is move-only, then you can’t return it more than once because returning it also gives it away. There’s nothing to return to the second <code>co_await</code>.</p>
+<p>Moving the value in response to <code>co_await</code> also avoids potentially-expensive copies.</p>
+<p>After the correctness check, we see if the awaited-for coroutine is still running by seeing if the result holder is still empty. If it’s not empty, then the coroutine has already produced a result; we return <code>true</code> to go straight to <code>await_<wbr/>resume</code>.</p>
+<p>If <code>await_<wbr/>ready</code> concludes that the awaited-for coroutine is still running, then the compiler will suspend the current coroutine and then call <code>await_<wbr/>suspend</code>. We use a mutex for this, because we need to avoid a race between signing up for resumption and the awaited-for coroutine reaching its <code>final_<wbr/>suspend</code> (which resumes the coroutine). We make one last check if the awaited-for coroutine is still running, to close the race window where the awaited-for coroutine finishes in between the <code>await_<wbr/>ready</code> and the acquisition of the lock in <code>await_<wbr/>suspend</code>.</p>
+<p>When the coroutine resumes, <code>await_<wbr/>resume</code> produces the value or rethrows the exception. Note that we specify the return type explicitly as <code>T</code> rather than using <code>auto</code>. This is important in the case where <code>T</code> is a reference.</p>
+<p>The resumption occurs when the awaited-for coroutine reaches its <code>final_<wbr/>suspend</code>.</p>
+<pre>        auto final_suspend() noexcept
+        {
+            // ⟦return an awaiter that decrements the reference count
+            //  and resumes any awaiting coroutine⟧ ≔
+            struct awaiter : std::experimental::suspend_always
+            {
+                simple_promise_base&amp; self;
+                void await_suspend(std::experimental::coroutine_handle&lt;&gt;) const noexcept
+                {
+                    std::experimental::coroutine_handle&lt;&gt; handle;
+                    {
+                        auto guard = std::lock_guard{ self.m_mutex };
+                        handle = self.m_waiting;
+                    }
+                    self.decrement_ref();
+                    if (handle) handle.resume();
+                }
+            };
+            return awaiter{ {}, *this };
+        }
+</pre>
+<p>At final suspension, we first check to see if a coroutine is actively awaiting our result. This requires the mutex to avoid racing against the <code>get_awaiter</code> we saw above.</p>
+<p>Once we capture the awaiting coroutine’s handle (if any), we decrement our own reference count, since the coroutine is no longer running. The only reference count remaining belongs to the <code>simple_<wbr/>task</code>. (If the caller threw away the <code>simple_<wbr/>task</code> without awaiting it, then that decrement will destruct the coroutine state immediately.)</p>
+<p>And then we resume the awaiting coroutine, if any. When that awaiting coroutine destructs the <code>simple_<wbr/>task</code>, that will drop the reference count to zero and destruct the coroutine state.</p>
+<p>The last missing piece is the reference count management. Sadly, this is the largest single piece of the entire coroutine infrastructure, and it’s almost entirely uninteresting! We’ll take up the boring details next time.</p>
+<p><b>Bonus chatter</b>: It’s important that we wait until <code>await_<wbr/>suspend</code> to decrement the reference on the promise, rather than doing it eagerly in <code>await_<wbr/>ready</code>. The <code>await_<wbr/>ready</code> method is called while the coroutine is still in the executing state, and you cannot destruct an executing coroutine. On the other hand, <code>await_<wbr/>suspend</code> is called after the coroutine has transitioned to the suspended state, at which point it is now safe to destroy.</p>
+
+
+</body>

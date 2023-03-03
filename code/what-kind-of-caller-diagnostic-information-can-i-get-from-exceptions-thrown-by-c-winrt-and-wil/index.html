@@ -1,0 +1,193 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What kind of caller diagnostic information can I get from exceptions thrown by C++/WinRT and wil?</h1>  <!-- .entry-meta -->
+
+<p>C++/WinRT throws <code>winrt::<wbr/>hresult_<wbr/>error</code> to represent COM exceptions. The <a href="https://github.com/microsoft/wil">wil</a> framework throws <code>Result­Exception</code> for this purpose. How do they interact, and what diagnostic information do they provide?</p>
+<p>C++/WinRT <code>hresult_<wbr/>error</code> uses <code>Ro­Originate­Error</code> to generate a <i>stowed exception</i> which records, among other things, a stack trace for the current thread. This stack trace is stored as part of the <code>hresult_<wbr/>error</code> in the form of a <code>IRestrictedErrorInfo</code>.</p>
+<p>The wil framework by default does not use <code>Ro­Originate­Error</code>, so there is no captured stack trace. However, it does capture the file name and line number in the <code>Failure­Info</code> that is stored in the <code>Result­Exception</code>. The <code>Failure­Info</code> also contains information to let you correlate multiple failures and see which ones are manifestations of the same underlying failure.</p>
+<p>Here’s a little table of what we have so far:</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th> </th>
+<th>C++/WinRT</th>
+<th>wil</th>
+</tr>
+<tr>
+<td>Thrown type</td>
+<td><code>hresult_<wbr/>error</code></td>
+<td><code>Result­Exception</code></td>
+</tr>
+<tr>
+<td>Stack trace in thrown object</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>File/line number in thrown object</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Recorded in wil error log</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<p>Things get more complicated if you include <code>wil/<wbr/>result_originate.h</code>: This tells wil to call <code>Ro­Originate­Error</code> before throwing the exception, thereby capturing a stack trace. The stack trace is not explicitly saved in the exception object, however. It is stored in a thread-local object that can be retrieved via <code>GetErrorInfo()</code>, and many parts of the system (including C++/WinRT) understand how to retrieve and preserve this extended information, though determining whether any specific scenario preserves the extended information requires investigation.</p>
+<p>So now we have this:</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th> </th>
+<th>C++/WinRT</th>
+<th>wil</th>
+</tr>
+<tr>
+<td>Thrown type</td>
+<td><code>hresult_<wbr/>error</code></td>
+<td><code>Result­Exception</code></td>
+</tr>
+<tr>
+<td>Stack trace in thrown object</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Stack trace in thread data</td>
+<td>Yes</td>
+<td>Requires <code>result_<wbr/>originate.h</code></td>
+</tr>
+<tr>
+<td>File/line number in thrown object</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Recorded in wil error log</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<p>But wait, we’re not done yet. There’s another header file that affects how wil throws exceptions, and that’s <code>wil/<wbr/>cppwinrt.h</code>. This header file enables various C++/WinRT+wil interop features, including exception handling. Exceptions propagated by the C++/WinRT library (for example, by <code>check_<wbr/>hresult()</code>) are filtered through wil, which logs them through its own error logging channel. However, since the file and line number were generated from the <code>__FILE__</code> and <code>__LINE__</code> preprocessor symbols captured by the <code>THROW_<wbr/>IF_<wbr/>FAILED</code> macro, C++/WinRT cannot capture file and line number information about the origination point, so you don’t get line number information in your wil trace log. But you still get a stack trace in the <code>hresult_<wbr/>error</code> object.</p>
+<p>Exceptions that are thrown explicitly via <code>throw hresult_error()</code> do not go through wil filtering.</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th rowspan="3"> </th>
+<th colspan="3">C++/WinRT</th>
+<th>wil</th>
+</tr>
+<tr>
+<th rowspan="2">no <code>wil/<wbr/>cppwinrt.h</code></th>
+<th colspan="2">with <code>wil/<wbr/>cppwinrt.h</code></th>
+<th> </th>
+</tr>
+<tr>
+<th><code>throw hresult_<wbr/>error</code></th>
+<th><code>check_<wbr/>hresult</code></th>
+<th><code>THROW_<wbr/>IF_<wbr/>FAILED</code></th>
+</tr>
+<tr>
+<td>Thrown type</td>
+<td><code>hresult_<wbr/>error</code></td>
+<td><code>hresult_<wbr/>error</code></td>
+<td><code>hresult_<wbr/>error</code></td>
+<td><code>Result­Exception</code></td>
+</tr>
+<tr>
+<td>Stack trace in thrown object</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Stack trace in thread data</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Requires <code>result_originate.h</code></td>
+</tr>
+<tr>
+<td>File/line number in thrown object</td>
+<td>No</td>
+<td>No</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Recorded in wil error log</td>
+<td>No</td>
+<td>No</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<p>But wait, we’re not finished yet. The wil framework alters its behavior if C++/CX is enabled. If so, then it throws a <code>Platform::<wbr/>Exception^</code> instead of a <code>wil::<wbr/>Result­Exception</code>. The <code>Platform::<wbr/>Exception^</code> captures a stack trace but not file/line number information.</p>
+<table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th rowspan="3"> </th>
+<th colspan="3">C++/WinRT</th>
+<th colspan="2">wil</th>
+</tr>
+<tr>
+<th rowspan="2">no <code>wil/<wbr/>cppwinrt.h</code></th>
+<th colspan="2">with <code>wil/<wbr/>cppwinrt.h</code></th>
+<th>no C++/CX</th>
+<th>with C++/CX</th>
+</tr>
+<tr>
+<th><code>throw hresult_<wbr/>error</code></th>
+<th><code>check_<wbr/>hresult</code></th>
+<th><code>THROW_<wbr/>IF_<wbr/>FAILED</code></th>
+<th><code>THROW_<wbr/>IF_<wbr/>FAILED</code></th>
+</tr>
+<tr>
+<td>Thrown type</td>
+<td><code>hresult_<wbr/>error</code></td>
+<td><code>hresult_<wbr/>error</code></td>
+<td><code>hresult_<wbr/>error</code></td>
+<td><code>Result­Exception</code></td>
+<td><code>Exception^</code></td>
+</tr>
+<tr>
+<td>Stack trace in thrown object</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Stack trace in thread data</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Requires <code>result_<wbr/>originate.h</code></td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>File/line number in thrown object</td>
+<td>No</td>
+<td>No</td>
+<td>No</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Recorded in wil error log</td>
+<td>No</td>
+<td>No</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+
+
+</body>

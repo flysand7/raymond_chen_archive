@@ -1,0 +1,136 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Adding a lookup control to the dictionary: Searching Pinyin</h1>  <!-- .entry-meta -->
+
+<p><p>
+Finally we start searching.
+For now, the search algorithm is going to be very simple:
+The string you type into the edit control will be treated as the
+start of a Pinyin word or phrase.
+We’ll make it fancier later.
+</p>
+<p>
+Here is where a lot of the groundwork
+(<a href="http://blogs.msdn.com/oldnewthing/archive/2005/05/19/420038.aspx">some of which I called out explicitly</a>
+and some of which I slipped in without calling attention to it)
+starts to pay off.
+</p>
+<p>
+Up until now, the items in the listview came directly from the
+dictionary.
+Of course, when a word is being looked up, we want to reduce the
+list to those that match the word or phrase being searched for.
+We will introduce a new member <code>m_vMatch</code> which is
+a vector of pointers to the items we actually want to display.
+</p>
+<pre>
+class RootWindow : public Window
+{
+ …
+ <font color="blue"><strike>// const DictionaryEntry&amp; Item(int i) { return m_dict.Item(i); }
+ // int Length() { return m_dict.Length(); }</strike>
+ const DictionaryEntry&amp; Item(int i) { return *m_vMatch[i]; }
+ int Length() { return m_vMatch.size(); }</font>
+ …
+ <font color="blue">void OnCommand(UINT id, UINT cmd);
+ void Refilter();</font>
+ …
+private:
+ …
+ <font color="blue">vector&lt;const DictionaryEntry*&gt; m_vMatch;</font>
+};
+</pre>
+<p>
+By tweaking our <code>Item</code> and <code>Length</code> member
+functions, we can now render out of the list of matches instead of
+out of the entire dictionary.
+</p>
+<pre>
+LRESULT RootWindow::OnCreate()
+{
+ …
+ <font color="blue"><strike>// ListView_SetItemCount(m_hwndLV, Length());</strike></font>
+ …
+ m_hwndLastFocus = m_hwndEdit;
+ <font color="blue">m_vMatch.reserve(m_dict.Length());
+ Refilter();</font></pre></p>
+<p> return 0;
+}
+
+<p>
+Since the list of matches is at most the number of words in the
+dictionary, we can reserve that size up front and avoid needless
+reallocations.
+Once we’ve done that, we call our new <code>Refilter</code> method
+to compute the matches (which populates the listview).
+It is <code>Refilter</code> that will do the
+<code>ListView_SetItemCount</code>, so there’s no point in us
+doing it here.
+</p>
+<pre>
+<font color="blue">void RootWindow::OnCommand(UINT id, UINT cmd)
+{
+ switch (id) {
+ case IDC_EDIT:
+  switch (cmd) {
+  case EN_CHANGE:
+   Refilter();
+  }
+  break;
+ }
+}</font></pre></p>
+<p>  // add to RootWindow::HandleMessage()
+  <font color="blue">case WM_COMMAND:
+   OnCommand(GET_WM_COMMAND_ID(wParam, lParam),
+             GET_WM_COMMAND_CMD(wParam, lParam));
+   break;</font>
+
+<p>
+We also rebuild the list of matches if the user makes a change
+to the edit control.
+This means that there is no need for a “Search” button.
+The listview auto-filters as you type.
+</p>
+<pre>
+<font color="blue">void RootWindow::Refilter()
+{
+ WCHAR szBuf[256];
+ DWORD cchBuf = GetWindowText(m_hwndEdit, szBuf, 256);
+ m_vMatch.clear();
+ for (int i = 0; i &lt; m_dict.Length(); i++) {
+  const DictionaryEntry&amp; de = m_dict.Item(i);
+  if (StrCmpNIW(de.m_pszPinyin, szBuf, cchBuf) == 0) {
+   m_vMatch.push_back(&amp;de);
+  }
+ }
+ ListView_SetItemCount(m_hwndLV, Length());
+ ListView_SetItemState(m_hwndLV, -1, 0, LVIS_SELECTED);
+ InvalidateRect(m_hwndLV, NULL, FALSE);
+}</font>
+</pre>
+<p>
+Building the list of matches is rather simple and anticlimactic.
+We get the string the user typed into the edit control and
+walk through all the words in the dictionary, seeing if the
+Pinyin begins with the user’s typing.
+If so, then we add it to the match vector.
+</p>
+<p>
+Once the match list is built up, we tell the listview
+how many we found, clear the selection (so that the selection
+doesn’t appear to move around from one word to another
+as items are filtered in or out), and invalidate the client
+rectangle to trigger a repaint.
+</p>
+<p>
+That’s all there is to it.
+If you run this program and start typing into the edit control,
+you’ll see the list of words in the listview grow and shrink as
+you type.
+</p>
+<p>
+That’s all for this month.
+Next month, we’ll work on expanding the scope of the search.
+</p></p>
+
+
+</body>

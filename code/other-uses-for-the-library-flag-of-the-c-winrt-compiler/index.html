@@ -1,0 +1,34 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Other uses for the -library flag of the C++/WinRT compiler</h1>  <!-- .entry-meta -->
+
+<p>Last time, we saw that you can add the <code>-library</code> flag to the <code>cppwinrt.exe</code> command line if you intend to <a href="/code/on-combining-static-libraries-that-implement-c-winrt-activatable-objects" title="On combining static libraries that implement C++/WinRT activatable objects"> combine static libraries into a single C++/WinRT module</a>.</p>
+<p>But the flag can be used even if there are no static libraries involved.</p>
+<p>Once you use the flag to become in charge of implementing <code>winrt_</code><code>get_</code><code>activation_</code><code>factory</code> and <code>winrt_</code><code>can_</code><code>unload_</code><code>now</code>, you can add other bonus code to the functions to add custom behavior.</p>
+<p>If we use the enigmatic name <code>-library I</code>, then the original version will be prefixed with <code>I</code>, which is a bit of an English grammar hack, like the Visual Basic language keywords <code>Me</code> and <code>My</code>.</p>
+<pre>bool __stdcall winrt_can_unload_now() noexcept
+{
+  bool unload = I_can_unload_now();
+  if (unload) {
+    FlushLoggingBuffers();
+  }
+  return unload;
+}
+</pre>
+<p>In this example, we flush the logging buffers when it looks like we’re about to be unloaded. This is code that we would have to do anyway in <code>DLL_</code><code>PROCESS_</code><code>DETACH</code>, but we can do it here, so that the work is done outside the loader lock.</p>
+<p>Note that returning <code>true</code> from <code>winrt_</code><code>can_</code><code>unload_</code><code>now</code> doesn’t guarantee that you will be unloaded, so any work you do is speculative and may be a false alarm. You can flush the logging buffers, and possibly even close the handles, but you need to be ready for the case that the unload doesn’t actually happen, and your logging code needs to be reopen the handles if they had been closed.</p>
+<p>Injecting code into the <code>winrt_</code><code>get_</code><code>activation_</code><code>factory</code> can also be handy if you need to do some filtering or rerouting.</p>
+<pre>void* __stdcall winrt_get_activation_factory(
+    std::wstring_view const&amp; name)
+{
+  if (use_old_media_player &amp;&amp;
+      name == L"Contoso.MediaPlayer") {
+    return v1_get_activation_factory(name);
+  } else {
+    return I_get_activation_factory(name);
+  }
+}
+</pre>
+<p>In the above example, the <code>Contoso.</code><code>MediaPlayer</code> was completely rewritten between versions 1 and 2, and the implementation wants to preserve the old version as a compatibility fallback. If the DLL has decided to use the old media player, then requests for the media player will produce an object from the old implementation. Otherwise, the DLL is using the new media player, or the request is not even for the media player at all, in which case we get the object from the current implementation.</p>
+
+
+</body>

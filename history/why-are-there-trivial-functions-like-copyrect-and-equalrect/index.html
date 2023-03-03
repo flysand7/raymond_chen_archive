@@ -1,0 +1,109 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why are there trivial functions like <code>Copy­Rect</code> and <code>Equal­Rect</code>?</h1>  <!-- .entry-meta -->
+
+<p>If you dig into the bag of tricks inside <code>user32</code>, you’ll see some seemingly-trivial functions like <code>Copy­Rect</code> and <code>Equal­Rect</code>. Why do we even need functions for things that could be done with the <code>=</code> and <code>==</code> operators?</p>
+<p>Because those operators generate a lot of code.</p>
+<p>Copying a rectangle would go like this:</p>
+<pre>c4 5e f0        les  bx, [bp-10]    ; es:bx -&gt; source rect
+26 8b 07        mov  ax, es:[bx]    ; ax = source.left
+c4 5e ec        les  bx, [bp-14]    ; es:bx -&gt; destination rect
+26 89 07        mov  es:[bx], ax    ; dest.left = ax
+
+c4 5e f0        les  bx, [bp-10]    ; es:bx -&gt; source rect
+26 8b 47 02     mov  ax, es:[bx+2]  ; ax = source.top
+c4 5e ec        les  bx, [bp-14]    ; es:bx -&gt; destination rect
+26 89 47 02     mov  es:[bx+2], ax  ; dest.top = ax
+
+c4 5e f0        les  bx, [bp-10]    ; es:bx -&gt; source rect
+26 8b 47 04     mov  ax, es:[bx+4]  ; ax = source.right
+c4 5e ec        les  bx, [bp-14]    ; es:bx -&gt; destination rect
+26 89 47 04     mov  es:[bx+4], ax  ; dest.right = ax
+
+c4 5e f0        les  bx, [bp-10]    ; es:bx -&gt; source rect
+26 8b 47 06     mov  ax, es:[bx+6]  ; ax = source.bottom
+c4 5e ec        les  bx, [bp-14]    ; es:bx -&gt; destination rect
+26 89 47 06     mov  es:[bx+6], ax  ; dest.bottom = ax
+</pre>
+<p>This takes 54 bytes of code. It’s rather inefficient because the 8086 processor could indirect only through the <code>bx</code>, <code>bp</code>, <code>si</code>, and <code>di</code> registers. The <code>bp</code> register was reserved for use as the frame pointer, so that was off the table. The <code>si</code> and <code>di</code> registers were used as register variables, so they are busy holding something important. That leaves <code>bx</code> as the only register that can be used to dereference pointers.</p>
+<p>Since this is a 16:16 pointer, we also need a segment register, and the 8086 has only four segment registers: <code>cs</code> (code segment), <code>ds</code> (data segment), <code>ss</code> (stack segment), <code>es</code> (extra segment). Three of them have dedicated purposes, so the only one left is <code>es</code>. Even if we could borrow <code>si</code> or <code>di</code> temporarily, we would still be bottlenecked on <code>es</code>.</p>
+<p>If we move <code>Copy­Rect</code> to a function, then we can save a bunch of code:</p>
+<pre>c4 5e f0        les  bx, [bp-10]    ; es:bx -&gt; source rect
+53              push bx
+06              push es
+c4 5e ec        les  bx, [bp-14]    ; es:bx -&gt; destination rect
+53              push bx
+06              push es
+9a xx xx xx xx  call CopyRect
+</pre>
+<p>Only 15 bytes. Less than a third the size.</p>
+<p>This was the era in which <a href="/history/one-byte-used-to-cost-a-dollar"> developers counted bytes</a>, and any trick to save a few bytes was worth considering, especially since you had “only” 256KB of memory.¹</p>
+<p>And since copying and comparing rectangles were common operations, factoring the code into a function saved a lot of bytes.</p>
+<p>Of course, nowadays, it’s not a lot of code to copy a rectangle manually: An entire rectangle fits into a single 128-bit register.</p>
+<pre>    mov    eax, [sourcerect]
+    movups xmm0, [eax]
+    mov    eax, [destrect]
+    movups [eax], xmm0
+</pre>
+<p><b>Bonus code golf</b>: We could have squeezed out a few instructions by moving two integers at a time. This requires that the two rectangles be non-overlapping in memory (to avoid data aliasing), but that’s probably a safe assumption because the original code didn’t work anyway in that case.</p>
+<pre>int v[5];
+*(RECT*)&amp;v[0] = *(RECT*)&amp;v[1]; // bad idea
+</pre>
+<p>Switching to moving two integers at a time doesn’t break anything that wasn’t already broken, so let’s do it:</p>
+<pre>c4 5e f0        les  bx, [bp-10]    ; es:bx -&gt; source rect
+26 8b 07        mov  ax, es:[bx]    ; ax = source.left
+26 8b 57 02     mov  dx, es:[bx+2]  ; dx = source.top
+c4 5e ec        les  bx, [bp-14]    ; es:bx -&gt; destination rect
+26 89 07        mov  es:[bx], ax    ; dest.left = ax
+26 89 57 02     mov  es:[bx+2], dx  ; dest.top = dx
+
+c4 5e f0        les  bx, [bp-10]    ; es:bx -&gt; source rect
+26 8b 47 04     mov  ax, es:[bx+4]  ; ax = source.right
+26 8b 57 06     mov  dx, es:[bx+6]  ; dx = source.bottom
+c4 5e ec        les  bx, [bp-14]    ; es:bx -&gt; destination rect
+26 89 47 04     mov  es:[bx+4], ax  ; dest.right = ax
+26 89 57 06     mov  es:[bx+6], dx  ; dest.bottom = dx
+</pre>
+<p>That dropped us down to 42 bytes. It helps, but it’s still a lot of code.</p>
+<p>If we’re willing to spill one of our other register variables, say, <code>si</code>, then we can squeeze it even further.</p>
+<pre>c4 5e f0        les  bx, [bp-10]    ; es:bx -&gt; source rect
+26 8b 07        mov  ax, es:[bx]    ; ax = source.left
+26 8b 57 02     mov  dx, es:[bx+2]  ; dx = source.top
+26 8b 4f 04     mov  cx, es:[bx+4]  ; cx = source.right
+26 8b 77 06     mov  si, es:[bx+6]  ; si = source.bottom
+c4 5e ec        les  bx, [bp-14]    ; es:bx -&gt; destination rect
+26 89 07        mov  es:[bx], ax    ; dest.left = ax
+26 89 57 02     mov  es:[bx+2], dx  ; dest.top = dx
+26 89 4f 04     mov  es:[bx+4], cx  ; dest.right = cx
+26 89 77 06     mov  es:[bx+6], si  ; dest.bottom = si
+</pre>
+<p>Only 36 bytes. Getting better. But still twice as big as calling <code>CopyRect</code>, and it cost us a register.</p>
+<p>Another trick: Copy the rectangle through the stack.</p>
+<pre>c4 5e f0        les  bx, [bp-10]    ; es:bx -&gt; source rect
+26 ff 37        push es:[bx]        ; push source.left
+26 ff 77 02     push es:[bx+2]      ; push source.top
+26 ff 77 04     push es:[bx+4]      ; push source.right
+26 8b 77 06     push es:[bx+6]      ; push source.bottom
+c4 5e ec        les  bx, [bp-14]    ; es:bx -&gt; destination rect
+26 8f 47 06     pop  es:[bx+6]      ; pop dest.bottom
+26 8f 47 04     pop  es:[bx+4]      ; pop dest.right
+26 8f 47 02     pop  es:[bx+2]      ; pop dest.top
+26 8f 47        pop  es:[bx]        ; pop dest.left
+</pre>
+<p>Hm, same code size as using registers.</p>
+<p>Okay, how about borrowing the <code>ds</code> register as well the <code>si</code> and <code>di</code> registers?</p>
+<pre>1e              push ds
+c5 7e ec        lds  di, [bp-14]
+c4 76 f0        les  si, [bp-10]
+fc              cld
+a5              movsw
+a5              movsw
+a5              movsw
+a5              movsw
+1f              pop  ds
+</pre>
+<p>Thirteen bytes, yay, though it did cost us register spills that are not immediately visible.</p>
+<p>This version is a tightrope walk because any operation that yields the processor risks discarding the former <code>ds</code> segment, which will cause problems because we will restore it to an invalid value and corrupt memory!</p>
+<p>¹ The word “only” in in quotation marks because 256KB seems like a tiny amount of memory today, but at the time, that was the maximum amount of memory you could get for an IBM PC XT! At least not without resorting to expansion cards.</p>
+
+
+</body>

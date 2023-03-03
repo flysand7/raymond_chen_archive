@@ -1,0 +1,51 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The Alpha AXP, part 3: Integer constants</h1>  <!-- .entry-meta -->
+
+<p>The Alpha AXP does not have a “load immediate 32-bit integer” instruction. If you need to load an immediate 32-bit integer, you need to use some tricks. </p>
+<p>We saw last time that <a href="https://blogs.msdn.microsoft.com/oldnewthing/20170808-00/?p=96775">loading 8-bit constants can be done by using the <code>ADD</code> and <code>SUB</code> instructions</a>. But there are also instructions that can be repurposed to generate signed 16-bit constants. </p>
+<p>Effective address instructions are basically arithmetic operations disguised as memory operations. (Yes, I know we haven’t learned about memory operations yet.) </p>
+<pre>
+    LDA     Ra, disp16(Rb)  ; Ra = Rb + (int16_t)disp16
+    LDAH    Ra, disp16(Rb)  ; Ra = Rb + (int16_t)disp16 * 65536
+</pre>
+<p>The first instruction applies a signed 16-bit displacement to a value in a register and puts the result in the <var>Ra</var> register. </p>
+<p>The second one is a little trickier. It takes the signed 16-bit displacement and shifts it left 16 positions before adding it to the <var>Rb</var> register. </p>
+<p>Both of these operations operate on the full 64-bit register, so they can produce non-canonical results. </p>
+<p>The basic idea behind loading a 32-bit constant (in canonical form) is as follows: </p>
+<ol>
+<li>Use the <code>LDAH</code>      relative to the <var>zero</var> register     to load the high-order 48 bits of the     32-bit constant. 
+<li>Use the <code>LDA</code> instruction     relative to the destination register     of the previous instruction     to load the low-order 16 bits.</li>
+</li>
+</ol>
+<p>However, the fact that the 16-bit values are sign-extended makes things a bit more complicated. </p>
+<p>Let’s say that the 32-bit constant we want to load into the <var>t0</var> register is <code>0xXXXXYYYY</code>. </p>
+<p>Let <code>xxxx</code> be the result you get when you treat <code>XXXX</code> as a signed 16-bit value. Similarly, <code>yyyy</code> and <code>YYYY</code>. </p>
+<p>Let <code>S</code> be the sign bit of <code>XXXX</code>. The canonical form of the constant we want to load is <code>0xSSSSSSSS`XXXXYYYY</code>. </p>
+<p>If <code>yyyy</code> is nonnegative, then we can just load up the two halves of our constant and they won’t interact with each other. </p>
+<pre>
+    LDAH    t0, XXXX(zero)      ; t0 = 0xSSSSSSSS`XXXX0000
+    LDA     t0, YYYY(t0)        ; t0 = 0xSSSSSSSS`XXXXYYYY
+</pre>
+<p>(Throughout, I will leave out the obvious simplifications if <code>XXXX</code> or <code>YYYY</code> is zero.) </p>
+<p>If <code>yyyy</code> is negative, then the <code>LDA</code> is going to undershoot by <code>0x10000</code>, so we compensate by adding one more to <code>xxxx</code>. </p>
+<p><pre>
+    LDAH    t0, xxxx+1(zero)    ; t0 = 0xSSSSSSSS`XXXX0000 + 0x10000
+    LDA     t0, yyyy(t0)        ; t0 = 0xSSSSSSSS`XXXXYYYY
+</pre>
+<p>Aha, but this trick doesn’t work if <code>xxxx</code> is exactly <code>0x7FFF</code>, because <code>0x7FFF</code> + 1 = <code>0x8000</code>, which has the wrong sign bit. In that case, we need a final adjustment step to put the result into canonical form. </p>
+<pre>
+    LDAH    t0, -32768(zero)    ; t0 = 0xFFFFFFFF`80000000
+    LDA     t0, yyyy(t0)        ; t0 = 0xFFFFFFFF`7FFFYYYY
+    ADDL    zero, t0, t0        ; t0 = 0x00000000`7FFFYYYY
+</pre>
+<p>Constants that are in the range <code>0x7FFF8000</code> to <code>0x7FFFFFFF</code> suffer from this problem.¹ </p>
+<p>All of this hassle about creating 32-bit constants <a href="https://blogs.msdn.microsoft.com/oldnewthing/20031008-00/?p=42223">has consequences for the Windows NT memory manager</a>, as I discussed a few years ago. </p>
+<p>Okay, so that’s it for loading constants. Next time, we’ll start looking at memory access. </p>
+<p><p>¹ There is a special shortcut for the value <code>0x7FFFFFFF</code>: </p>
+<pre>
+    LDA    t0, -1(zero)         ; t0 = 0xFFFFFFFF`FFFFFFFF
+    SRL    t0, #33, t0          ; t0 = 0x00000000`7FFFFFFF
+</pre>
+
+
+</p></p></body>

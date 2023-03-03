@@ -1,0 +1,228 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How did we end up parsing Savvyday 29 Oatmeal 94 as Saturday 29 October 1994?</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, we learned that <a href="/code/meet-me-here-on-savvyday-29-oatmeal-94"> the <code>Internet­Time­To­System­Time</code> function manages to parse “Savvyday 29 Oatmeal 94” as “Saturday 29 October 1994”</a>. How did that happen? Is it <a href="https://devblogs.microsoft.com/oldnewthing/20200304-00/?p=103527#comment-136342"> finding the date with the shortest English Levenshtein distance</a>?</p>
+<p>Nothing that fancy.</p>
+<p><b>Warning</b>: This article discusses implementation details, which are not contractual. The algorithm is subject to change in the future. The only thing that <code>Internet­Time­To­System­Time</code> formally guarantees is that it can parse properly-formatted HTTP timestamps.</p>
+<p>The parsing is very simple. The official format for HTTP date strings is</p>
+<ol>
+<li>DayOfWeek, Day Month Year Hour Minute Second GMT</li>
+</ol>
+<p>In practice, not everybody follows the rules, so the parser accepts these three formats:</p>
+<ol>
+<li>DayOfWeek Day Month Year Hour Minute Second TZ</li>
+<li>DayOfWeek Month Day Hour Minute Second TZ Year</li>
+<li>DayOfWeek Month Day Hour Minute Second Year TZ</li>
+</ol>
+<p>After discarding non-alphanumerics, the parser takes each word in the input string and converts it to a number somehow. If it consists of digits, then it’s parsed to a number in the usual way. If it consists of alphabetics, then it’s parsed to a number by trying to match it against the list of valid tokens:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>DayOfWeek</th>
+<th colspan="2">Month</th>
+<th>TZ</th>
+</tr>
+<tr>
+<td>Sun = 0</td>
+<td>Jan = 1</td>
+<td>Jul = 7</td>
+<td>GMT</td>
+</tr>
+<tr>
+<td>Mon = 1</td>
+<td>Feb = 2</td>
+<td>Aug = 8</td>
+<td>UTC</td>
+</tr>
+<tr>
+<td>Tue = 2</td>
+<td>Mar = 3</td>
+<td>Sep = 9</td>
+<td> </td>
+</tr>
+<tr>
+<td>Wed = 3</td>
+<td>Apr = 4</td>
+<td>Oct = 10</td>
+<td> </td>
+</tr>
+<tr>
+<td>Thu = 4</td>
+<td>May = 5</td>
+<td>Nov = 11</td>
+<td> </td>
+</tr>
+<tr>
+<td>Fri = 5</td>
+<td>Jun = 6</td>
+<td>Dec = 12</td>
+<td> </td>
+</tr>
+<tr>
+<td>Sat = 7</td>
+<td> </td>
+<td> </td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>If no match is found, then we look for an entry which shares the most initial characters with the word being parsed. If there is a unique such entry, then the parsed value is as given in the table. If there is no such entry, or the longest match is not unique, then parsing fails.¹</p>
+<p>Since there only one time zone permitted in HTTP time/date strings, all we have to remember is “Yup, it’s a time zone. There’s a time zone marker here.”</p>
+<p>For example, the string “Savvyday” is not in the above table, but it does share the following prefixes:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Length 1</th>
+<th>Length 2</th>
+</tr>
+<tr>
+<td>S(un)</td>
+<td>Sa(t)</td>
+</tr>
+<tr>
+<td>S(ep)</td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>The longest match is length 2, and there’s only one such match, so the word “Savvyday” is parsed as if it were “Sat”.</p>
+<p>Similarly, “Oatmeal” has only one match: Oct (length 1).</p>
+<p>After everything is parsed into a number, we decide which of the three formats we are looking at.</p>
+<p>If the second word was parsed from digits, then we are in case 1. If the seventh word was parsed from letters, then we are in case 2. Otherwise, we are in case 3.</p>
+<p>Once we’ve decided what case we’re in, we know where the year is. If the caller provided a two-digit year, upgrade it to a four-digit year.</p>
+<p>Finally, we copy the fields into the output structure. If a field is missing, it is taken from the current date and time.</p>
+<p>That’s it. Nothing fancy. The algorithm is optimized for the case where the string follows the correct format. If you pass something that’s not in the correct format, it does what it can. Sometimes it even comes up with something vaguely sensible!</p>
+<p>Usually not.²</p>
+<p>¹ If you think about it, this can be done very quickly by a simple decision tree:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<th colspan="3">Character</th>
+<th rowspan="2">Result</th>
+</tr>
+<tr>
+<th>1</th>
+<th>2</th>
+<th>3</th>
+</tr>
+<tr>
+<td rowspan="2">A</td>
+<td>P</td>
+<td> </td>
+<td>Apr</td>
+</tr>
+<tr>
+<td>U</td>
+<td> </td>
+<td>Aug</td>
+</tr>
+<tr>
+<td>D</td>
+<td> </td>
+<td> </td>
+<td>Dec</td>
+</tr>
+<tr>
+<td rowspan="2">F</td>
+<td>E</td>
+<td> </td>
+<td>Feb</td>
+</tr>
+<tr>
+<td>R</td>
+<td> </td>
+<td>Fri</td>
+</tr>
+<tr>
+<td>G</td>
+<td> </td>
+<td> </td>
+<td>GMT</td>
+</tr>
+<tr>
+<td rowspan="3">J</td>
+<td>A</td>
+<td> </td>
+<td>Jan</td>
+</tr>
+<tr>
+<td rowspan="2">U</td>
+<td>L</td>
+<td>Jul</td>
+</tr>
+<tr>
+<td>N</td>
+<td>Jun</td>
+</tr>
+<tr>
+<td rowspan="3">M</td>
+<td rowspan="2">A</td>
+<td>R</td>
+<td>Mar</td>
+</tr>
+<tr>
+<td>Y</td>
+<td>May</td>
+</tr>
+<tr>
+<td>O</td>
+<td> </td>
+<td>Mon</td>
+</tr>
+<tr>
+<td>N</td>
+<td> </td>
+<td> </td>
+<td>Nov</td>
+</tr>
+<tr>
+<td>O</td>
+<td> </td>
+<td> </td>
+<td>Oct</td>
+</tr>
+<tr>
+<td rowspan="3">S</td>
+<td>A</td>
+<td> </td>
+<td>Sat</td>
+</tr>
+<tr>
+<td>E</td>
+<td> </td>
+<td>Sep</td>
+</tr>
+<tr>
+<td>U</td>
+<td> </td>
+<td>Sun</td>
+</tr>
+<tr>
+<td rowspan="2">T</td>
+<td>H</td>
+<td> </td>
+<td>Thu</td>
+</tr>
+<tr>
+<td>U</td>
+<td> </td>
+<td>Tue</td>
+</tr>
+<tr>
+<td>U</td>
+<td> </td>
+<td> </td>
+<td>UTC</td>
+</tr>
+<tr>
+<td>W</td>
+<td> </td>
+<td> </td>
+<td>Wed</td>
+</tr>
+</tbody>
+</table>
+<p>² For example, <tt><a href="https://www.youtube.com/watch?v=kfVsfOSbJY0">Friday Friday</a> Friday Friday Friday Friday Friday Friday</tt> parses to “day 5 of month 5 year 5, hour 5 minute 5, and 5 seconds” or “May 5, 2005 at 05:05:05 GMT”.</p>
+
+
+</body>

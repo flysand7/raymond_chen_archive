@@ -1,0 +1,116 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">A practical use for <code>GetHGlobal­FromStream</code> when sharing was never your intention</h1>  <!-- .entry-meta -->
+
+<p>A little while ago, I noted that <a href="/code/the-subtleties-of-createstreamonhglobal-part-1-introduction-and-basic-usage"> managing shared access to the <code>HGLOBAL</code> inside a stream can get tricky</a>, and opined that <a href="https://devblogs.microsoft.com/oldnewthing/20211001-00/?p=105748"> the <code>GetHGlobal­FromStream</code> should have been something like <code>IStream­On­HGlobal::<wbr/>Detach­HGlobal</code></a>. But in fact there’s a straightforward use case for <code>GetHGlobal­FromStream</code> even when there is no sharing going on.</p>
+<p>The <code>STGMEDIUM</code> structure is a currency for passing data into and out of an <code>IData­Object</code>. it is basically a discriminated union:</p>
+<pre>struct STGMEDIUM
+{
+    DWORD tymed;
+    union
+    {
+        HBITMAP hBitmap;
+        HMETAFILEPICT hMetaFilePict;
+        HENHMETAFILE hEnhMetaFile;
+        HGLOBAL hGlobal;
+        LPOLESTR lpszFileName;
+        IStream* pstm;
+        IStorage* pstg;
+    };
+    IUnknown* pUnkForRelease;
+};
+</pre>
+<p>The <code>tymed</code> member specifies which of the members of the union is active. Let’s focus on the case where the value is <code>TYMED_MWBR&gt;HGLOBAL</code>, in which case the structure simplifies to</p>
+<pre>struct STGMEDIUM
+{
+    DWORD tymed = TYMED_HGLOBAL;
+    HGLOBAL hGlobal;
+    IUnknown* pUnkForRelease;
+};
+</pre>
+<p>When you are finished with the <code>STGMEDIUM</code>, you call <code>Release­Stg­Medium</code>, and in the case of a <code>TYMED_<wbr/>HGLOBAL</code> the rule for <code>Release­Stg­Medium</code> is</p>
+<ul>
+<li>If <code>pUnkForRelease</code> is not null, then call <code>pUnkForRelease-&gt;Release();</code>.</li>
+<li>If <code>pUnkForRelease</code> is null, then call <code>GlobalFree(hGlobal);</code>.</li>
+</ul>
+<p>In words, if there is a <code>pUnkForRelease</code>, then it is the “owner” which controls the lifetime of the <code>HGLOBAL</code>, and you tell it that you are done by releasing the reference count on the owner. When the owner’s reference count goes to zero, it destroys itself (and the <code>HGLOBAL</code>).</p>
+<p>On the other hand, if there is no <code>pUnkForRelease</code>, then the <code>HGLOBAL</code> is “ownerless”, and you just free it when you’re done.</p>
+<p>The idea here is that if the <code>HGLOBAL</code> was expensive to produce, your data object may decide to cache the result rather than having to produce it from scratch every time. In that case, when you give out the data, you can do this:</p>
+<pre>if (m_cachedHglobal == nullptr)
+{
+    RETURN_IF_FAILED(Calculate(&amp;m_cachedHglobal));
+}
+
+pstgm-&gt;tymed = TYMED_HGLOBAL;
+pstgm-&gt;hGlobal = m_cachedHglobal;
+pstgm-&gt;pUnkForRelease = this;
+this-&gt;AddRef(); // because we put it in pUnkForRelease
+</pre>
+<p>When the recipient of the data is finished, they will call <code>Release­Stg­Medium</code>, and <code>Release­Stg­Medium</code> will see that there is a non-null <code>pUnkForRelease</code> and instead of freeing the <code>HGLOBAL</code>, it’ll release the <code>pUnkForRelease</code>.</p>
+<p>This means that the <code>m_cachedHglobal</code> is not destroyed when the recipient of the data is finished. It lives on, so it can be returned to another client.</p>
+<p>Finally, when the data object is destroyed, it also destroys the <code>m_cachedHglobal</code>.</p>
+<p>This pattern means that as long as anybody still has a <code>STGMEDIUM</code> referring to your cached <code>HGLOBAL</code>, your entire data object will remain alive. But maybe your data object has a lot of stuff in it, like an entire HTML DOM, and the <code>HGLOBAL</code> is a cache of the <code>textContent</code>. Somebody who asks for the <code>textContent</code> and hangs onto it for a long time will keep your data object alive, even if they aren’t using the data object any more:</p>
+<pre>HRESULT GetTheText(STGMEDIUM* pstgm)
+{
+    wil::com_ptr&lt;IDataObject&gt; pdto;
+    RETURN_IF_FAILED(GetTheDataObject(&amp;pdto));
+
+    FORMATETC fe;
+    fe.cfFormat = CF_UNICODETEXT;
+    fe.ptd = nullptr;
+    fe.dwAspect = DVASPECT_CONTENT;
+    fe.lindex = -1;
+    fe.tymed = TYMED_HGLOBAL;
+    
+    RETURN_IF_FAILED(pdto-&gt;GetData(&amp;&amp;fe, pstgm));
+
+    return S_OK;
+}
+</pre>
+<p>This function gets the data object and extracts the Unicode text. The data object is thrown away when the <code>com_ptr</code> destructs, and all that remains is the text in the <code>STGMEDIUM</code>‘s <code>HGLOBAL</code>.</p>
+<p>The catch here is that the caller of this function might decide to keep the text for a long time, and that’s going to keep your big data object around for a long time. Even though all that really needs to be kept alive is the text.</p>
+<p>This is where you can use one of the lesser powers of <code>GetHGlobal­FromStream</code>.</p>
+<p>Instead of making the data object be the cache for the <code>HGLOBAL</code>, you can make an <code>HGLOBAL</code>-backed stream with <code>Create­Stream­On­HGlobal</code>, and let the stream be the one in charge of the <code>HGLOBAL</code>‘s lifetime.</p>
+<pre>if (m_cachedStream.get() == nullptr)
+{
+    wil::unique_hglobal text;
+    RETURN_IF_FAILED(Calculate(&amp;text));
+    RETURN_IF_FAILED(CreateStreamOnHGlobal(
+        text.get(), TRUE /* fDeleteOnRelease */,
+        &amp;m_cachedStream));
+    text.release(); // m_cachedStream owns it now
+}
+
+pstgm-&gt;tymed = TYMED_HGLOBAL;
+<span style="color: blue;">RETURN_IF_FAILED(GetHGlobalFromStream(
+        m_cachedStream.get(), &amp;pstgm-&gt;hGlobal));</span>
+// The stream is the owner of the HGLOBAL
+pstgm-&gt;pUnkForRelease = <span style="color: blue;">m_cachedStream.copy().detach();</span>
+</pre>
+<p>This time, the owner of the <code>HGLOBAL</code> is the <code>m_cached­Stream</code>, and therefore if the storage medium is retained beyond the life of the data object, the data object can destruct, and the <code>m_cachedStream</code> will deal with freeing the <code>HGLOBAL</code> on final release.</p>
+<p>I’m guessing this might even have been the scenario for which <code>GetHGlobal­FromStream</code> was originally invented.</p>
+<p>Mind you, we’re using an entire stream just to babysit an <code>HGLOBAL</code>. We could have written a custom babysitter:</p>
+<pre>struct IUnknownOnHGLOBAL : winrt::implements&lt;IUnknownOnHGLOBAL, ::IUnknown&gt;
+{
+    IUnknownOnHGLOBAL(HGLOBAL glob) : m_glob(glob) {}
+    wil::unique_hglobal glob;
+};
+</pre>
+<p>On the other hand, using <code>Create­Stream­On­HGlobal</code> may end up being the easier route if the <code>HGLOBAL</code> was originally generated from a stream in the first place:</p>
+<pre>if (m_cachedStream.get() == nullptr)
+{
+    <span style="color: blue;">wil::com_ptr&lt;IStream&gt; stm;
+    RETURN_IF_FAILED(CreateStreamOnHGlobal(
+        nullptr, TRUE /* fDeleteOnRelease */,
+        &amp;stm));
+    RETURN_IF_FAILED(SaveToStream(stm.get()));
+    m_cachedStream = std::move(stm);</span>
+}
+
+pstgm-&gt;tymed = TYMED_HGLOBAL;
+RETURN_IF_FAILED(GetHGlobalFromStream(
+        m_cachedStream.get(), &amp;pstgm-&gt;hGlobal));
+pstgm-&gt;pUnkForRelease = m_cachedStream.copy().detach();
+</pre>
+
+
+</body>

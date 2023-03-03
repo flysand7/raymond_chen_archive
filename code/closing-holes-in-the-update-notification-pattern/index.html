@@ -1,0 +1,200 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Closing holes in the update notification pattern</h1>  <!-- .entry-meta -->
+
+<p><p>
+Suppose you have a function that is registered to be called
+the next time something gets updated,
+and suppose that the notification is a one-shot
+notification and
+needs to be re-armed each time you want to
+wait for the next notification.
+(For example, the
+<a href="http://msdn.microsoft.com/library/ms724892.aspx">
+<code>Reg­Notify­Change­Key­Value</code></a>
+function behaves this way.)
+Consider the following code fragment:
+</p>
+<pre>
+<i>void onUpdateThing()
+{
+ // get the updated properties of the thing
+ getThingProperties();</i></pre></p>
+<p> // ask to be called back the next time it updates
+ registerUpdateCallback(onUpdateThing);
+}</p>
+<p>mainProgram()
+{
+ // get the thing’s initial properties
+ // and register for updates
+ onUpdateThing();
+}
+
+<p>
+There is a race condition here if the thing updates
+twice in rapid succession.
+On the first update, your <code>onUpdateThing</code>
+function is called.
+If the second update occurs
+<i>while <code>get­Thing­Properties</code> is running</i>,
+then your call to
+<code>register­Update­Callback</code> will be too late,
+and you will miss the second update.
+</p>
+<p>
+The solution is to register for the next update <i>before</i>
+studying the previous one.
+</p>
+<pre>
+void onUpdateThing()
+{
+ // ask to be called back the next time it updates
+ registerUpdateCallback(onUpdateThing);</pre></p>
+<p> // get the updated properties of the thing
+ getThingProperties();
+}
+
+<p>
+That way, if a second update comes in while you’re studying
+the first one,
+your update callback will be called because you already
+registered it.
+(I’m assuming you’re only interested in the last update.)
+</p>
+<p>
+Of course, this assumes that update requests are queued
+if the receiving thread is busy.
+If updates can be received during the execution of
+<code>get­Thing­Properties</code>,
+then you will end up in a bad re-entrant situation:
+During the processing of one update,
+you start processing a new update.
+Then when the nested update finishes,
+you return to the original update,
+which is now actually performing the second half
+of the second update.
+</p>
+<p>
+Suppose your update code wants to keep the colors
+of two additional objects in sync with the color
+of the thing:
+</p>
+<pre>
+void getThingProperties()
+{
+ Color currentThingColor = getThingColor();
+ object1.setColor(currentThingColor);
+ object2.setColor(currentThingColor);
+}
+</pre>
+<p>
+If the <code>set­Color</code> method
+creates a re-entrancy window, you can have this problem:
+</p>
+<ul>
+<li>Thing changes color to red.
+<li><code>on­Update­Thing</code> begins.
+<li>Register update callback.
+<li><code>get­Thing­Properties</code> reads
+    current color as red.
+<li><code>get­Thing­Properties</code>
+    sets object 1’s color to red.
+    The <code>set­Color</code> method
+    creates an opportunity for re-entrancy
+    by some means.
+    (For example, it may send a message to another thread,
+    causing inbound sent messages to be processed.)
+<ul>
+<li>Thing changes color to blue.
+    <li><code>on­Update­Thing</code> begins.
+    <li>Register update callback.
+    <li><code>get­Thing­Properties</code> reads
+        current color as blue.
+    <li><code>get­Thing­Properties</code>
+        sets object 1’s color to blue.
+    <li><code>get­Thing­Properties</code>
+        sets object 2’s color to blue.
+    <li><code>get­Thing­Properties</code> returns.
+    <li><code>on­Update­Thing</code> returns.
+</li></li></li></li></li></li></li></li></ul>
+<li><code>get­Thing­Properties</code>
+    sets object 2’s color to <i>red</i>. (Oops.)
+<li><code>get­Thing­Properties</code> returns.
+<li><code>on­Update­Thing</code> returns.
+</li></li></li></li></li></li></li></li></ul>
+<p>
+One solution is to use a
+<a href="http://msdn.microsoft.com/library/ms649042.aspx">
+sequence number</a> (also known as a
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/04/12/10152296.aspx">
+change counter</a>)
+that gets incremented each time the thing changes.
+If there is only one thread which updates the thing,
+you can try to update it atomically.
+For example, if the information is in the registry,
+you can
+put all the information into a single registry value
+or use registry transactions.
+</p>
+<p>
+If you can associate a change counter with the data,
+then you can use the following algorithm:
+</p>
+<pre>
+// start with a known invalid value
+// (If you have multiple listeners, then this naturally
+// needs to be instance data rather than global.)
+LONG lLastChange = 0;</pre></p>
+<p>void onUpdateThing()
+{
+ bool finished = false;
+ do {
+  // record the most recent change we’ve processed
+  lLastChange = getThingChangeCount();</p>
+<p>  getThingProperties();</p>
+<p>  // ask to be called back the next time it updates
+  registerUpdateCallback(onUpdateThing);</p>
+<p>  // did it change while we were busy?
+  LONG lNewChange = getThingChangeCount();</p>
+<p>  finished = lLastChange == lNewChange;
+  if (!finished) {
+   // cancel the update callback because we don’t
+   // want to be re-entered
+   unregisterUpdateCallback(onUpdateThing);
+  }
+ } while (!finished);
+}
+
+<p>
+Another solution would be to detect the re-entrancy and just
+remember that there is more work to be done after
+the previous update finishes.
+</p>
+<pre>
+// 0 = not busy
+// 1 = busy
+// 2 = busy, and a change occurred while we were busy
+// (If you have multiple listeners, then this naturally
+// needs to be instance data rather than global.)
+int iBusy = 0;</pre></p>
+<p>void onUpdateThing()
+{
+ // ask to be called back the next time it updates
+ registerUpdateCallback(onUpdateThing);</p>
+<p> if (iBusy) {
+   iBusy = 2;
+ } else {
+  iBusy = 1;
+  do {
+   getThingProperties();
+  } while (–iBusy);
+ }
+}
+
+<p>
+Note that all of the above examples assume that the
+<code>on­Update­Thing</code> function
+has thread affinity.
+</p></p>
+
+
+</body>

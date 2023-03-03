@@ -1,0 +1,83 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I define a UWP XAML dependency property that is a collection type?</h1>  <!-- .entry-meta -->
+
+<p>In XAML, there are at least three ways to specify the contents of a collection-typed dependency property. For concreteness, I’m going to discuss UWP XAML, but the same principle apply to WPF XAML.</p>
+<p>Let’s say that we have a Doodad object with a Widgets property. The Widgets property is a collection of Widget objects.</p>
+<p>First, we have the implicit collection:</p>
+<pre>&lt;Doodad&gt;
+    &lt;Doodad.Widgets&gt;
+        &lt;Widget .../&gt;
+        &lt;Widget .../&gt;
+        &lt;Widget .../&gt;
+    &lt;/Doodad.Widgets&gt;
+&lt;/Doodad&gt;
+</pre>
+<p>Second, we have the explicit collection:</p>
+<pre>&lt;Doodad&gt;
+    &lt;Doodad.Widgets&gt;
+        &lt;MyWidgetCollection&gt;
+            &lt;Widget .../&gt;
+            &lt;Widget .../&gt;
+            &lt;Widget .../&gt;
+        &lt;/MyWidgetCollection&gt;
+    &lt;/Doodad.Widgets&gt;
+&lt;/Doodad&gt;
+</pre>
+<p>Third, we have binding:</p>
+<pre>&lt;Doodad Widgets="{Binding MyWidgets}" .../&gt;
+&lt;Doodad Widgets="{x:Bind MyWidgets}" .../&gt;
+</pre>
+<p>Okay, let’s tackle these in order.</p>
+<p>The XAML compiler converts the implicit collection into C# code that is roughly equivalent to the below:</p>
+<pre>var e1 = new Doodad();
+var widgets = e1.Widgets;
+widgets.Add(new Widget(...));
+widgets.Add(new Widget(...));
+widgets.Add(new Widget(...));
+</pre>
+<p>(You can ask the XAML compiler to generate C++, but I’ll use C# for notational convenience.)</p>
+<p>In order for the implicit collection to work, the property must have an initial value that is an empty collection.</p>
+<p>The explicit collection compiles to something like this:</p>
+<pre>var e1 = new Doodad();
+var widgets = new MyWidgetCollection();
+widgets.Add(new Widget(...));
+widgets.Add(new Widget(...));
+widgets.Add(new Widget(...));
+e1.Widgets = widgets;
+</pre>
+<p>In order for explicit collections to work, the property must be settable.</p>
+<p>Binding operates like this:</p>
+<pre>var e1 = FindTheDoodad();
+e1.Widgets = this.MyWidgets;
+</pre>
+<p>This is equivalent to the explicit collection, so that same solution for explicit collections works for binding, too.</p>
+<p>Okay, so how do we set up the dependency property so it satisfies all these requirements?</p>
+<p>Turns out this is a special case of what we looked at last time: The dependency property whose initial value is a mutable object. In this case, the mutable object is itself a collection.</p>
+<pre>public class Doodad
+{
+  public static readonly DependencyProperty WidgetsProperty =
+    DependencyProperty.Register(
+      "Widgets",
+      typeof(IList&lt;Widget&gt;),
+      typeof(Doodad),
+      new PropertyMetadata(null));
+
+    public IList&lt;Widget&gt; Widgets
+    {
+      get =&gt; (IList&lt;Widget&gt;)GetValue(WidgetsProperty);
+      set =&gt; SetValue(WidgetsProperty, value);
+    }
+
+    public Doodad()
+    {
+        this.InitializeComponent();
+        Widgets = new List&lt;Widgets&gt;();
+    }
+  ..
+}
+</pre>
+<p>Note that the type of the property is <code>IList&lt;Widget&gt;</code> instead of <code>List&lt;Widget&gt;</code>. That way, clients can assign or bind a custom collection.</p>
+<p><b>Bonus chatter</b>: There is documentation on <a href="https://docs.microsoft.com/en-us/dotnet/framework/wpf/advanced/collection-type-dependency-properties"> how to create a WPF XAML dependency property that is a collection type</a>, but it makes the mistake of presenting <i>incorrect</i> code first, without any immediate indication that the code is incorrect. I copied the initial code block, since it looked complete, but the result didn’t work. (This is why, in my code samples, I’m careful to note that code in italics is wrong.)</p>
+
+
+</body>

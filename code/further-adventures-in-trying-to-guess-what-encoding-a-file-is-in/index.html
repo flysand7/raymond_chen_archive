@@ -1,0 +1,77 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Further adventures in trying to guess what encoding a file is in</h1>  <!-- .entry-meta -->
+
+<p>The <code>Is­Text­Unicode</code> function tries to guess the encoding of a block of memory purporting to contain text, but it can only say “Looks like Unicode” or “Doesn’t look like Unicode”, and there <a>some notorious examples</a> of <a href="http://blogs.msdn.com/b/oldnewthing/archive/2007/04/17/2158334.aspx">where it guesses wrong</a>. </p>
+<p>A more flexible alternative is <a href="http://msdn.microsoft.com/en-us/library/ie/aa740985%28v=vs.85%29.aspx"><code>IMulti­Language2::Detect­Code­page­In­IStream</code></a> and its buffer-based equivalent <a href="http://msdn.microsoft.com/en-us/library/ie/aa740986%28v=vs.85%29.aspx"><code>IMulti­Language2::Detect­Input­Code­page</code></a>. Not only can these methods detect a much larger range of code pages, they also can report multiple code pages, each with a corresponding confidence level. </p>
+<p>Here’s a Little Program that takes the function out for a spin. (Remember, Little Programs do little to no error checking.) </p>
+<pre>
+#define UNICODE
+#define _UNICODE
+#include &lt;windows.h&gt;
+#include &lt;shlwapi.h&gt;
+#include &lt;ole2.h&gt;
+#include &lt;mlang.h&gt;
+#include &lt;shlwapi.h&gt;
+#include &lt;atlbase.h&gt;
+#include &lt;stdio.h&gt;
+
+bool IsHtmlFile(PCWSTR pszFile)
+{
+ PCWSTR pszExtension = PathFindExtensionW(pszFile);
+ return
+  CompareStringOrdinal(pszExtension, -1,
+                       L".htm", -1, TRUE) == CSTR_EQUAL ||
+  CompareStringOrdinal(pszExtension, -1,
+                        L".html", -1, TRUE) == CSTR_EQUAL;
+}
+
+int __cdecl wmain(int argc, wchar_t **argv)
+{
+ if (argc &lt; 2) return 0;
+ <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/05/20/135841.aspx">CCoInitialize</a> init;
+ CComPtr&lt;IStream&gt; spstm;
+ SHCreateStreamOnFileEx(argv[1], STGM_READ, 0, FALSE, nullptr, &amp;spstm);
+
+ CComPtr&lt;IMultiLanguage2&gt; spml;
+ CoCreateInstance(CLSID_CMultiLanguage, NULL,
+     CLSCTX_ALL, IID_PPV_ARGS(&amp;spml));
+
+ DetectEncodingInfo info[10];
+ INT cInfo = ARRAYSIZE(info);
+
+ DWORD dwFlag = IsHtmlFile(argv[1]) ? MLDETECTCP_HTML
+                                    : MLDETECTCP_NONE;
+ HRESULT hr = spml-&gt;DetectCodepageInIStream(
+     dwFlag, 0, spstm, info, &amp;cInfo);
+ if (hr == S_OK) {
+  for (int i = 0; i &lt; cInfo; i++) {
+   wprintf(L"info[%d].nLangID = %d\n", i, info[i].nLangID);
+   wprintf(L"info[%d].nCodePage = %d\n", i, info[i].nCodePage);
+   wprintf(L"info[%d].nDocPercent = %d\n", i, info[i].nDocPercent);
+   wprintf(L"info[%d].nConfidence = %d\n", i, info[i].nConfidence);
+  }
+ } else {
+  wprintf(L"Cannot determine the encoding (error: 0x%08x)\n", hr);
+ }
+ return 0;
+}
+</pre>
+<p>Run the program with a file name as the command line argument, and the program will report all the detected code pages. </p>
+<p>One thing that may not be obvious is that the program passes the <code>MLDETECTCP_HTML</code> flag if the file extension is <code>.htm</code> or <code>.html</code>. That is a hint to the detector that it shouldn’t get faked out by text like <code>&lt;body&gt;</code> and think it found an English word. </p>
+<p>Here’s the output of the program when run on its own source code: </p>
+<pre>
+info[0].nLangID = 9
+info[0].nCodePage = 20127
+info[0].nDocPercent = 100
+info[0].nConfidence = 83
+info[1].nLangID = -1
+info[1].nCodePage = 65001
+info[1].nDocPercent = -1
+info[1].nConfidence = -1
+</pre>
+<p>This says that its first guess is that the text is in language 9, which is <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/dd318693(v=vs.85).aspx"><code>LANG_ENGLISH</code></a>, code page 20127, which is <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/dd317756(v=vs.85).aspx">US-ASCII</a>, That text occupies 100% of the file, and the confidence level is 83. </p>
+<p>The second guess is that the text is in code page 65001, which is UTF-8, but the confidence level for that is low. </p>
+<p>The language-guessing part of the function is not very sophisticated. For a higher-quality algorithm for guessing what language some text is in, use <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/dd319066%28v=vs.85%29.aspx">Extended Linguistic Services</a>. I won’t bother writing a sample application <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/dd319110%28v=vs.85%29.aspx">because MSDN already contains one</a>. </p>
+
+
+</body>

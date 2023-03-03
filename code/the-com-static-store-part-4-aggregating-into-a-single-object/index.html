@@ -1,0 +1,38 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The COM static store, part 4: Aggregating into a single object</h1>  <!-- .entry-meta -->
+
+<p>So far, we’ve been looking at how you can <a href="/code/the-com-static-store-part-1-introduction" title="The COM static store, part 1: Introduction"> use the COM static store to hold a singleton which will be run down when COM uninitializes</a>. But what if you have a lot of things you want to save? I mean, you could put each one individually in the COM static store, but that gets quite cumbersome. And some of the things might not even be COM objects, or they may be COM objects that do not support <code>IInspectable</code>. What can you do about those?</p>
+<p>You can wrap all of your global state into a single object that supports <code>IInspectable</code>, and put that single object into the COM static store. That way, you can just grab one thing out of the COM static store instead of having to go back to the COM static store for each one.</p>
+<pre>// C++/WinRT
+struct SharedState :
+    winrt::implements&lt;SharedState,
+                      winrt::Windows::Foundation::IInspectable&gt;
+{
+    int some_value = 0;
+    winrt::com_ptr&lt;IStream&gt; stream;
+    std::vector&lt;winrt::com_ptr&lt;IStorage&gt;&gt; storages;
+};
+
+winrt::com_ptr&lt;SharedState&gt;
+GetSingletonSharedState()
+{
+    auto props = CoreApplication::Properties();
+    if (auto found = props.TryLookup(L"SharedState")) {
+        return <a href="https://devblogs.microsoft.com/oldnewthing/20200827-00/?p=104133" title="How do I convert from the C++/WinRT projection type to the C++/WinRT implementation type?">as_self</a>&lt;SharedState&gt;(found);
+    }
+    auto value = winrt::make_self&lt;SharedState&gt;();
+    static winrt::slim_mutex lock;
+    winrt::slim_lock_guard const guard{ lock };
+    if (auto found = props.TryLookup(L"SharedState")) {
+        return as_self&lt;SharedState&gt;(found);
+    }
+    props.Insert(name, *value);
+    return value;
+}
+</pre>
+<p>Now, when you need stuff, you can ask for the singleton <code>SharedState</code> and access everything, rather than having to get each one individually.</p>
+<p>But wait, we can do even better still.</p>
+<p>Next time.</p>
+
+
+</body>

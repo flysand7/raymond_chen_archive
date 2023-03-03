@@ -1,0 +1,175 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating other types of synchronization objects that can be used with co_await, part 3: Parallel resumption</h1>  <!-- .entry-meta -->
+
+<p>Last time, we developed <a href="/code/creating-other-types-of-synchronization-objects-that-can-be-used-with-co-await-part-2-the-basic-library" title="Creating other types of synchronization objects that can be used with co_await, part 2: The basic library"> a library for building awaitable synchronization objects</a>. I noted that when the coroutines are released, they are resumed in sequence, which means that one coroutine can prevent others from progressing. Let’s resume them in parallel.</p>
+<p>One option is to use <code>Try­Submit­Threadpool­Callback</code> to put the resumption on the thread pool. In the <code>awaitable_<wbr/>state</code> class, replace the <code>resume_<wbr/>node</code> method with this version:</p>
+<pre>        static void CALLBACK resume_node_callback(
+            PTP_CALLBACK_INSTANCE, void* context) noexcept
+        {
+            std::experimental::coroutine_handle&lt;&gt;::
+                from_address(context).resume();
+        }
+
+        void resume_node(impl::node_base* node) noexecpt
+        {
+            if (!TrySubmitThreadpoolCallback(
+                resume_node_callback,
+                extra_node(*node).handle.address(),
+                nullptr))
+            {
+                std::terminate(); // fatal
+            }
+        }
+</pre>
+<p>Instead of resuming the handle immediately and synchronously, we submit a callback to the thread pool, and have the callback resume the coroutine.</p>
+<p>This works, but there is a problem if <code>Try­Submit­Threadpool­Callback</code> fails, since we have no way to report an error to the caller. All we can do is terminate the process.</p>
+<p>An alternative is to use the <code>Create­Threadpool­Work</code> / <code>Submit­Threadpool­Work</code> pattern which has the advantage of front-loading all of the error conditions. That way, we can throw a low memory exception at the point of the <code>await</code> rather than finding ourselves stuck when it comes time to resume.</p>
+<p>Our <code>node_<wbr/>handle</code> now babysits a threadpool work item:</p>
+<pre>    struct node_handle : node_base
+    {
+        PTP_WORK work{};
+    };
+</pre>
+<p>This member records the work item that we will use to resume the coroutine. It is non-null if the coroutine is on the synchronization object’s wait list. We set this up as part of the suspension:</p>
+<pre>        bool await_suspend(
+            std::experimental::coroutine_handle&lt;&gt; handle,
+            impl::node&lt;extra_await_data&gt;&amp; node)
+        {
+            auto guard = std::lock_guard(mutex);
+            if (parent().claim(node.extra)) return false;
+            <span style="color: blue;">node.work = check_pointer(
+                CreateThreadpoolWork(resume_node_callback,
+                    handle.address(), nullptr));</span>
+            sentinel.append_node(node);
+            return true;
+        }
+</pre>
+<p>When we realize that we need to suspend, we create a work item that will perform the resumption. We can raise a low memory exception at this point, and it will be captured into the caller.</p>
+<p>Resuming the coroutine node consists of submitting the work:</p>
+<pre>        void resume_node(impl::node_base* node) noexcept
+        {
+            <span style="color: blue;">SubmitThreadpoolWork(extra_node(*node).work);</span>
+        }
+</pre>
+<p>And we move the work item cleanup into the callback function:</p>
+<pre>        static void CALLBACK resume_node_callback(
+            PTP_CALLBACK_INSTANCE, void* context<span style="color: blue;">, PTP_WORK work</span>)
+            noexcept
+        {
+            <span style="color: blue;">CloseThreadpoolWork(work);</span>
+            std::experimental::coroutine_handle&lt;&gt;::
+                from_address(context).resume();
+        }
+
+</pre>
+<p>The work can be closed at any time after it is submitted: Closing a submitted work item does not cancel the outstanding work. We don’t want to slow down the <code>resume_<wbr/>list</code> method, so we make the work item responsible for its own bookkeeping: That way, the cost is paid by the resuming coroutine rather than the signaling one.</p>
+<p>The other bit of bookkeeping is nulling out the <code>work</code> now that it’s been closed.</p>
+<pre>        void await_resume(
+            impl::node&lt;extra_await_data&gt;&amp; node) noexcept
+        {
+            <span style="color: blue;">node.work = nullptr;</span>
+        }
+</pre>
+<p>And finally, we tweak our abandonment detection:</p>
+<pre>        void unlink_node(impl::node_base&amp; node) noexcept
+        {
+            <span style="color: blue;">auto work = extra_node(*node).work;
+            if (node.work) {
+                CloseThreadpoolWork(work);</span>
+                auto guard = std::lock_guard(mutex);
+                node.next = node.prev-&gt;next;
+                node.prev = node.next-&gt;prev;
+            }
+        }
+</pre>
+<p>There is an additional optimization decision to be made here, which is finding the best place to close the work item. Here’s the diagram again:</p>
+
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse; text-align: center;">
+<tbody>
+<tr>
+<td colspan="5" style="border: solid 1px black;">Awaiter constructed<br/>
+<code>work = nullptr;</code></td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td rowspan="7" style="border: solid 1px black;">No suspension</td>
+<td> </td>
+<td style="border: solid 1px black;">Suspended<br/>
+<code>await_suspend</code><br/>
+<code>work = work item;</code></td>
+<td> </td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td>↓</td>
+<td>↘︎</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px black;">Resume<br/>
+<code>resume_node</code></td>
+<td> </td>
+<td rowspan="5" style="border: solid 1px black;">Abandoned</td>
+</tr>
+<tr>
+<td> </td>
+<td>↓</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px black;">Resuming<br/>
+<code>resume_node_callback</code><br/>
+work closed</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td>↓</td>
+<td> </td>
+</tr>
+<tr>
+<td> </td>
+<td style="border: solid 1px black;">Resumed<br/>
+<code>await_ready</code><br/>
+<code>work = nullptr;</code></td>
+<td> </td>
+</tr>
+<tr>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+<td> </td>
+<td>↓</td>
+</tr>
+<tr>
+<td colspan="5" style="border: solid 1px black;">Awaiter destructed</td>
+</tr>
+</tbody>
+</table>
+<p>The analyses for the no-suspend path and the abandonment path are the same as last time. The extra decision in the center path is deciding when to close the work item. I decided to do it in <code>resume_<wbr/>node_<wbr/>callback</code>: I definitely want the work item to be responsible for closing its own work. That avoids adding extra responsibilities to the signaling coroutine, which is only fair because you don’t want to bog down the signaling code with work that wasn’t even its idea! And to reduce code size, I want closing the work item to be done in shared code, which in this case is the thread pool work item callback itself. That same callback is going to be used for all resumptions of all nodes used by any client of this library. If closing the work item had been moved to <code>await_<wbr/>resume</code>, then that would get inlined into every coroutine’s resumption code.</p>
+<p>Okay, that was perhaps a deeper dive than you wanted into the subject of creating an awaitable synchronization object. But now that I have this whole thing created, I want to drive it around a bit. We’ll start that <a href="https://devblogs.microsoft.com/oldnewthing/20210312-00/?p=104955" title="Creating other types of synchronization objects that can be used with co_await, part 4: The manual-reset event"> next time</a>.</p>
+<p>
+<script>
+window.addEventListener("load", function() {
+  var fullFF = getComputedStyle(document.querySelector("body")).fontFamily;
+  var simpleFF = fullFF.replace(/ Emoji/g, "");
+  // break up "style" to prevent wordpress from injecting random junk
+  document.getElementById("p20210311_head").innerHTML =
+`<s` + `tyle>
+body { font-family: ${simpleFF}; }
+.emoji { font-family: ${fullFF}; }
+</s` + `tyle>`;
+});
+</script></p>
+
+
+</body>

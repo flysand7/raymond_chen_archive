@@ -1,0 +1,89 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I invoke a verb on an IShellItemArray?</h1>  <!-- .entry-meta -->
+
+<p>
+A customer wanted to invoke a command on multiple items at once.
+</p>
+<blockquote class="q">
+<p>
+I have an <code>IShellItemArray</code>,
+and I want to invoke a verb with that array as the parameter.
+I know that I can invoke a verb on a single <code>IShellItem</code>
+by the code below, but how do I pass an entire array?
+</p>
+<pre>
+void InvokeVerbOnItem(__in IShellItem *psi,
+                      __in_opt PCWSTR pszVerb)
+{
+ PIDLIST_ABSOLUTE pidl;
+ HRESULT hr = SHGetIDListFromObject(psi, &amp;pidl);
+ if (SUCCEEDED(hr)) {
+  SHELLEXECUTEINFO sei = { sizeof(sei) };
+  sei.fMask = SEE_MASK_UNICODE |
+              SEE_MASK_INVOKEIDLIST |
+              SEE_MASK_IDLIST;
+  sei.lpIDList = pidl;
+  sei.lpVerb = pszVerb;
+  sei.nShow = SW_SHOWNORMAL;
+  ShellExecuteEx(&amp;sei);
+  CoTaskMemFree(pidl);
+ }
+}
+</pre>
+</blockquote>
+<p>
+The function <code>Invoke­Verb­On­Item</code>
+invokes the command by extracting the pidl,
+then asking <code>Shell­Execute­Ex</code> to invoke
+the command on the pidl.
+A limitation of <code>Shell­Execute*</code> is that
+it can invoke on only one pidl.
+What if you want to invoke it on a bunch of pidls at once?
+(Doing it all at once gives the target program the opportunity
+to optimize the multi-target invoke.)
+</p>
+<p>
+<a href="http://msdn.microsoft.com/en-us/library/bb759784(VS.85).aspx">
+As noted in the documentation</a>,
+passing
+<code>SEE_MASK_INVOKE­ID­LIST</code> flag
+tells the
+<code>Shell­Execute­Ex</code>
+to
+“use the <b>IContextMenu</b> interface of the selected item’s
+shortcut menu handler.”
+</p>
+<p>
+So if you are frustrated by the limitations of the middle man,
+then cut out the middle man!
+</p>
+<pre>
+void InvokeVerbOnItemArray(__in IShellItemArray *psia,
+                           __in_opt PCWSTR pszVerb)
+{
+ IContextMenu *pcm;
+ HRESULT hr = psia-&gt;BindToHandler(BHID_SFUIObject,
+                                  IID_PPV_ARGS(&amp;pcm));
+ if (SUCCEEDED(hr)) {
+  ... <a href="http://blogs.msdn.com/b/oldnewthing/archive/2004/09/20/231739.aspx">context menu invoke incorporated by reference</a> ...
+  pcm-&gt;Release();
+ }
+}
+</pre>
+<p>
+If you think about it, the original
+<code>Invoke­Verb­On­Item</code>
+function could’ve avoid the middle man too.
+It converted an <code>IShellItem</code>
+(a live object which encapsulates an
+<code>IShell­Folder</code> and a child pidl)
+into an absolute pidl (a dead object),
+which then passed it to
+<code>Shell­Execute­Ex</code>,
+which had to reanimate the object back into an
+<code>IShell­Folder</code> and child pidl
+so it could call
+<code>Get­UI­Object­Of</code>.</p>
+
+
+</body>

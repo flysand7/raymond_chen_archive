@@ -1,0 +1,72 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">What happens to lost timer messages if I don’t process them fast enough?</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, I noted that <a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/12/04/10577881.aspx">if your <code>WM_TIMER</code> handler takes longer than the timer period, your queue will not fill up with <code>WM_TIMER</code> messages</a>. The <code>WM_TIMER</code> message is generated on demand, and if your handler doesn’t check for messages, then there is no demand for timer messages. But what happens when your thread finally starts processing messages again? What happens to the timers that elapsed while you were busy? Do they accumulate? </p>
+<p>Here’s a sketch of how timers work. (Note that the timers under discussion here are the timers set by the <code>Set­Timer</code> function.) </p>
+<p>When a timer is created, it is initially <i>not ready</i>. </p>
+<p>Every <var>n</var> milliseconds (where <var>n</var> is the period of the timer), the timer is marked <i>ready</i>. This is done regardless of the state of the UI thread. Note that <i>ready</i> is a flag, not a counter. If the timer is already ready, then it stays ready; there is no such thing as “double ready”. The <code>QS_TIMER</code> flag is set on the queue state, indicating that there is now a pending timer for the thread. This in turn may cause a function like <code>Get­Message</code> or <code>Msg­Wait­For­Multiple­Objects</code> to wake up. </p>
+<p>When the appropriate conditions are met (<a href="http://blogs.msdn.com/b/oldnewthing/archive/2011/12/19/10249000.aspx">as discussed earlier</a>), the window manager checks whether there are any timers for the thread that are marked <i>ready</i>. If so, then the corresponding <code>WM_TIMER</code> message is generated and the <i>ready</i> flag is cleared. </p>
+<p>Let’s illustrate this with our <a href="http://blogs.msdn.com/b/oldnewthing/archive/2003/07/23/54576.aspx">scratch program</a>. Make the following changes: </p>
+<pre>
+#include &lt;strsafe.h&gt;
+
+DWORD g_tmStart;
+
+void SquirtTime()
+{
+ TCHAR sz[256];
+ StringCchPrintf(sz, 256, "%d\r\n", GetTickCount() - g_tmStart);
+ OutputDebugString(sz);
+}
+</pre>
+<p>This adds a function that prints the number of milliseconds which have elapsed since <code>g_tmStart</code>. Note that we use simple subtraction and rely on unsigned arithmetic to handle timer rollover issues. </p>
+<pre>
+void CALLBACK OnTimer(HWND hwnd, UINT, UINT_PTR, DWORD)
+{
+ SquirtTime();
+}
+</pre>
+<p>Our timer tick handler merely prints the elapsed time to the debugger. </p>
+<pre>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ <font color="blue">g_tmStart = GetTickCount();
+ SetTimer(hwnd, 1, 500, OnTimer);
+ Sleep(1750);</font>
+ return TRUE;
+}
+</pre>
+<p>Finally, we create a 500ms timer on our window, but we also intentionally stall the thread for 1750ms. </p>
+<p>Can you predict the output of this program? </p>
+<p>Here’s what I got when I ran the program:</p>
+<pre>
+1797
+2000
+2500
+3000
+3500
+4000
+4500
+...
+</pre>
+<p>Let’s see if we can explain it. </p>
+<p>Since the timer is set to fire at 500ms intervals, every 500ms, the timer gets marked ready. </p>
+<ul>
+<li>At <var>T</var> = 500ms, the timer is marked ready. 
+<li>At <var>T</var> = 1000ms, the timer is marked ready.     This is redundant, since the timer is already ready. 
+<li>At <var>T</var> = 1500ms, the timer is marked ready.     Again, this is redundant. 
+<li>At <var>T</var> = 1750ms, the program finally wakes up     from its <code>Sleep</code> and eventually gets around     to processing messages. 
+<li>Hey look, there is a ready timer, so we generate a     <code>WM_TIMER</code> message and clear the <i>ready</i>     flag. 
+<li>At <var>T</var> = 1797ms, the timer message is processed. 
+<li>The program returns to its message loop, where there are no     further messages to process, so it sits and waits. 
+<li>At <var>T</var> = 2000ms, the timer is marked ready.     This causes the <code>Get­Message</code> to wake up     generate a     <code>WM_TIMER</code> message and clear the <i>ready</i>     flag. 
+<li>At <var>T</var> = 2000ms, the timer message is processed. 
+<li>At <var>T</var> = 2500ms, the timer is marked ready.     This causes the <code>Get­Message</code> to wake up     generate a     <code>WM_TIMER</code> message and clear the <i>ready</i>     flag. 
+<li>At <var>T</var> = 2500ms, the timer message is processed. 
+<li>And so on, with a new timer message every 500ms     that is processed immediately. </li></li></li></li></li></li></li></li></li></li></li></li></ul>
+<p>Observe that when the program begins processing messages at <var>T</var> = 1750ms, it receives only one timer message right away, even though three timer periods have elapsed. </p>
+<p>I guess another way of looking at this is to think of your timer as setting a frame rate. If your thread is busy when it’s time to render the next frame, then the next frame is late. And if your thread is really busy, it may drop frames entirely. </p>
+
+
+</body>

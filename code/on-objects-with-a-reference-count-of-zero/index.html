@@ -1,0 +1,205 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">On objects with a reference count of zero</h1>  <!-- .entry-meta -->
+
+<p><p>
+<a href="http://blogs.msdn.com/oldnewthing/archive/2005/09/27/474384.aspx#474405">
+One commenter claimed</a> that
+</p>
+<blockquote class="q">
+When the object is first constructed,
+the reference count should be 0 and
+AddRef should be called at some point
+(probably via QueryInterface) to increment the reference count.
+</blockquote>
+<p>
+If you construct your object with a reference count of zero,
+you are playing with matches.
+For starters, when the object is created, there reference
+count is not zero – the person who created the object has a reference!
+Remember the COM rule for references:
+If a function produces a reference (typically an interface pointer),
+the reference count is incremented
+to account for the produced reference.
+If you consider the constructor to be a function, then it needs
+to return with an incremented reference
+count to account for the produced object.
+</p>
+<p>
+If you prefer to play with matches, you can end up burning yourself
+with code like the following:
+</p>
+<pre>
+// A static creator method
+HRESULT MyObject::Create(REFIID riid, void **ppvObj)
+{
+ *ppvObj = NULL;
+ MyObject *pobj = new MyObject();
+ HRESULT hr = pobj ? S_OK : E_OUTOFMEMORY;
+ if (SUCCEEDED(hr)) {
+  hr = pobj-&gt;Initialize(); // dangerous!
+  if (SUCCEEDED(hr)) {
+   hr = pobj-&gt;QueryInterface(riid, ppvObj);
+  }
+  if (FAILED(hr)) {
+   delete pobj;
+  }
+ }
+ return hr;
+}
+</pre>
+<p>
+Notice that you’re initializing the object while its reference
+count is zero.
+This puts you in the same “limbo zone” as cleaning up an object
+while its reference count is zero,
+and therefore exposes you to the same problems:
+</p>
+<pre>
+HRESULT MyObject::Load()
+{
+ CComPtr&lt;IStream&gt; spstm;
+ HRESULT hr = GetLoadStream(&amp;spstm);
+ if (SUCCEEDED(hr)) {
+  CComQIPtr&lt;IObjectWithSite, &amp;IID_IObjectWithSite&gt; spows(spstm);
+  if (spows) spows-&gt;SetSite(this);
+  hr = LoadFromStream(spstm);
+  if (spows) spows-&gt;SetSite(NULL);
+ }
+ return hr;
+}</pre></p>
+<p>HRESULT MyObject::Initialize()
+{
+ return Load();
+}
+
+<p>
+An object that saves itself during destruction
+is very likely to load itself during creation.
+And you run into exactly the same problem.
+The call to <code>IObjectWithSite::SetSite(this)</code>
+increments the reference count of the object from zero to one,
+and the call to
+The call to <code>IObjectWithSite::SetSite(NULL)</code>
+decrements it back to zero.
+When the reference count decrements to zero, this destroys
+the object,
+resulting in the object being inadvertently destroyed
+by the
+<code>MyObject::Load()</code> method.
+</p>
+<p>
+The <code>MyObject::Create</code> static method
+doesn’t realize that this has happened and proceeds to
+call the <code>QueryInterface</code> method to return a
+pointer back to the caller,
+expecting it to increment the reference count from zero to one.
+Unfortunately, it’s doing this to an object that has already
+been destroyed.
+</p>
+<p>
+That’s what happens when you play with an object whose reference
+count is zero:
+It can disappear the moment you relinquish control.
+Objects should be created with a reference count of one,
+not zero.
+</p>
+<p>
+ATL prefers to play with matches, using the moral equivalent of
+the above <code>MyObject::Create</code> function in its
+object construction:
+</p>
+<pre>
+void InternalFinalConstructAddRef() {}
+void InternalFinalConstructRelease()
+{
+    ATLASSERT(m_dwRef == 0);
+}</pre></p>
+<p>static HRESULT WINAPI CreateInstance(void* pv, REFIID riid, LPVOID* ppv)
+{
+    ATLASSERT(*ppv == NULL);
+    HRESULT hRes = E_OUTOFMEMORY;
+    T1* p = NULL;
+    ATLTRY(p = new T1(pv))
+    if (p != NULL)
+    {
+	p-&gt;SetVoid(pv);
+	p-&gt;InternalFinalConstructAddRef();
+	hRes = p-&gt;FinalConstruct();
+	p-&gt;InternalFinalConstructRelease();
+	if (hRes == S_OK)
+	    hRes = p-&gt;QueryInterface(riid, ppv);
+	if (hRes != S_OK)
+	    delete p;
+    }
+    return hRes;
+}
+
+<p>
+ATL hands you a set of matches by calling your
+<code>FinalConstruct</code> method with a reference count of zero.
+If you know that you’re going to get burned, you can use the
+<code>DECLARE_PROTECT_FINAL_CONSTRUCT</code> macro to change
+the <code>InternalFinalConstructAddRef</code> and
+<code>InternalFinalConstructRelease</code> methods to versions
+that actually increment the reference count temporarily
+during the call to <code>FinalConstruct</code>,
+then drop the reference count back to zero (without destructing
+the object)
+prior to the <code>QueryInterface</code> call.
+</p>
+<p>
+It works, but in my opinion it relies too much on programmer vigilance.
+The default for ATL is to hand programmers matches
+and relying on programmers “knowing” that
+something dangerous might happen inside the
+<code>FinalConstruct</code>
+and having the presence of mind to ask for
+<code>DECLARE_PROTECT_FINAL_CONSTRUCT</code>.
+In other words, it chooses the dangerous default, and
+programmers must explicitly ask for the safe version.
+But programmers have a lot of things on their mind,
+and forcing them to consider the consequences of the transitive
+closure of every operation performed in the
+<code>FinalConstruct</code> method is an unresonable requirement.
+</p>
+<p>
+Consider our example above.
+When the code was originally written, the <code>Load</code> method
+may have been the much simpler
+</p>
+<pre>
+HRESULT MyObject::Load()
+{
+ CComPtr&lt;IStream&gt; spstm;
+ HRESULT hr = GetLoadStream(&amp;spstm);
+ if (SUCCEEDED(hr)) {
+  hr = LoadFromStream(spstm);
+ }
+ return hr;
+}
+</pre>
+<p>
+It wasn’t until a month or two later that somebody added
+site support to the <code>Load</code> and <code>Save</code> methods.
+This seemingly simple and isolated change, adhering perfectly to
+the COM rules for reference counting, had ripple effects
+back through the object creation and destruction code paths.
+If you put four levels of function calls between the
+<code>FinalConstruct</code> and the <code>Load</code>,
+this fourth-level-caller effect can very easily be overlooked.
+I suspect that these nonlocal effects are
+one of the most significant sources of code defects.
+ATL was being clever and optimized out an increment and a decrement
+(something which the compiler most likely could optimize out on its own),
+but in return, you got handed a book of matches.
+</p>
+<p>
+(I don’t mean to be picking on ATL here,
+so don’t go linking to this article with the title
+“Raymond rails into ATL as a poorly-designed pile of dung”.
+ATL is trying to be small and fast,
+but the cost is added complexity, often subtle.)
+</p></p>
+
+
+</body>

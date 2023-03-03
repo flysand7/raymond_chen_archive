@@ -1,0 +1,96 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">I’d like an IUnknown, I know you have many, I’ll take any of them</h1>  <!-- .entry-meta -->
+
+<p>A concrete implementation of a COM object may implement multiple interfaces. If you have a pointer to the concrete implementation, and you pass to a function that expects an <code>IUnknown</code>, you will probably get an error complaining that <code>IUnknown</code> is an ambiguous base, or that there is an ambiguous conversion to <code>IUnknown</code>.</p>
+<pre>void DoSomething(IUnknown* unk);
+
+class MyClass : public IFred, public IBarney
+{
+    ...
+
+    void SomeMethod()
+    {
+        DoSomething(this); // fails to compile
+    }
+};
+
+using namespace Microsoft::WRL;
+
+class MyWrlClass :
+    RuntimeClass&lt;RuntimeClassFlags&lt;ClassicCom&gt;,
+                 IFred, IBarney&gt;
+{
+    ...
+    void SomeMethod()
+    {
+        DoSomething(this); // fails to compile
+    }
+};
+
+</pre>
+<p>The problem is that when you call <code>DoSomething(this)</code>, the compiler doesn’t know whether you want to pass the <code>IUnknown</code> that is a base class of <code>IFred</code>, or the <code>IUnknown</code> that is a base class of <code>IBarney</code>.</p>
+<p>What we know and the compiler doesn’t know is that it doesn’t matter which one you pass. They are functionally equivalent. (The only time you are particular about which one you get is if you are trying to get the canonical unknown, but that is typically only something needed by the <code>Query­Interface</code> method.)</p>
+<p>The usual solution is to cast the implementation pointer to one of the interfaces that it unambiguously implements, and then let the compiler convert that interface pointer to <code>IUnknown</code>. This does require you to know which interfaces the object implements, which could be a source of fragility if the object gains or loses interfaces over time.</p>
+<p>From a code size point of view, you want to choose the interface that is the first base class, assuming that the first base class is an interface. That way, the conversion is a nop.</p>
+<pre>        DoSomething(static_cast&lt;IFred&gt;(this));
+</pre>
+<p>If you use the WRL template library to create your COM objects, then there’s a handy helper function: <code>CastToUnknown</code>. This takes the implementation pointer and casts it to <code>IUnknown</code>, saving you the trouble of having to decide which of the many possible paths to <code>IUnknown</code> to use. This is a protected method, so you can use it from within the class, but not from the outside.</p>
+<pre>class MyWrlClass :
+    RuntimeClass&lt;RuntimeClassFlags&lt;ClassicCom&gt;,
+                 IFred, IBarney&gt;
+{
+    ...
+    void SomeMethod()
+    {
+        DoSomething(this<span style="color: blue;">-&gt;CastToUnknown()</span>);
+    }
+};
+
+void SomeFunction(MyWrlClass* p)
+{
+  // this doesn't compile
+  DoSomething(p-&gt;CastToUnknown());
+}
+</pre>
+<p>The call to <code>Cast­To­Unknown</code> from the <code>Some­Function</code> is disallowed because the <code>Cast­To­Unknown</code> method is protected.</p>
+<p>But you could choose to unprotected it.</p>
+<pre>class MyWrlClass :
+    RuntimeClass&lt;RuntimeClassFlags&lt;ClassicCom&gt;,
+                 IFred, IBarney&gt;
+{
+public:
+    <span style="color: blue;">using RuntimeClass::CastToUnknown;</span>
+    ...
+};
+</pre>
+<p>The <code>using</code> statement imports the base class’s <code>Cast­To­Unknown</code> method, and since the <code>using</code> statement is in the <code>public</code> section, the imported function is now <code>public</code>.</p>
+<p>But really, the point of this article is to call out the existence of the <code>Cast­To­Unknown</code> method. It’s really handy when you need it, such as when you want to extend your object’s lifetime:</p>
+<pre>Callback&lt;ISomething&gt;(
+    [<span style="color: blue;">lifetime = ComPtr&lt;IUnknown&gt;(this-&gt;CastToUnknown())</span>]()
+    {
+      ...
+    });
+</pre>
+<p>Unfortunately, it’s still quite a bit of a mouthful. You can factor it out to avoid having to type the whole thing out all the time.</p>
+<pre>template&lt;typename T&gt; ComPtr&lt;T&gt; AsComPtr(T* p) { return p; }
+
+Callback&lt;ISomething&gt;(
+    [<span style="color: blue;">lifetime = AsComPtr(this)</span>]()
+    {
+      ...
+    });
+</pre>
+<p>Note that this isn’t quite the same as the previous version because the resulting <code>ComPtr</code> is a <code>ComPtr&lt;MyWrlClass&gt;</code> rather than a <code>ComPtr&lt;IUnknown&gt;</code>, but that works just as well for the purpose of extending the object’s lifetime.</p>
+<p>WRL was written when the latest version of the C++ language was C++11, so it doesn’t doesn’t have access to <a href="https://en.cppreference.com/w/cpp/language/class_template_argument_deduction"> CTAD</a>. If CTAD were around, it could have had a deduction guide:</p>
+<pre>template&lt;typename T&gt; ComPtr(T*) -&gt; ComPtr&lt;T&gt;;
+</pre>
+<p>That would avoid the need for the <code>AsComPtr</code> helper function.</p>
+<pre>Callback&lt;ISomething&gt;(
+    [<span style="color: blue;">lifetime = ComPtr(this)</span>]()
+    {
+      ...
+    });
+</pre>
+
+
+</body>

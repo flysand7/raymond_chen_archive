@@ -1,0 +1,39 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Zero-cost exceptions aren’t actually zero cost</h1>  <!-- .entry-meta -->
+
+<p>There are two common models for exception handling in C++. One is by updating some program state whenever there is a change to the list of things that need to be done when an exception occurs, say, because a new exception handler is in scope or has exited scope, or to add or remove a destructor from the list of things to execute during unwinding. Another model is to use metadata to describe what to do if an exception occurs. There is no explicit management of the state changes at runtime; instead, the exception machinery infers the state by looking at the program counter and consulting the metadata.</p>
+<p>Metadata-based exception handling is often <a href="https://mortoray.com/2013/09/12/the-true-cost-of-zero-cost-exceptions/"> misleadingly called <i>zero-cost exceptions</i></a>, which makes it sound like exceptions cost nothing. In fact, it’s the complete opposite: Metadata-based exception handling should really be called <i>super-expensive exceptions</i>.</p>
+<p>The point of metadata-based exception handling is that there is no code in the mainline (non-exceptional) code path for exception support. The hope is that exceptions are rare, so you end up with a net win:</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Mode</th>
+<th>Runtime-managed</th>
+<th>Metadata-based</th>
+</tr>
+<tr>
+<td>Mainline code</td>
+<td>Update state at runtime</td>
+<td> </td>
+</tr>
+<tr>
+<td>Exception occurs</td>
+<td valign="bottom">Consult the state to<br/>
+find the correct handler</td>
+<td>Take the program counter,<br/>
+find the metadata that applies to it,<br/>
+consult the metadata to<br/>
+find the correct handler</td>
+</tr>
+</tbody>
+</table>
+<p>Notice that using metadata-based so-called “zero-cost” exceptions actually results in a significantly <i>higher</i> cost for throwing an exception, because the exception-throwing machinery has to go find the metadata so it can look up which handler to run. This metadata is typically stored in <a href="https://devblogs.microsoft.com/cppblog/making-cpp-exception-handling-smaller-x64/"> a format optimized for size, not speed</a>, so extra work has to happen at exception-throwing time to decode the data in order to find the correct handler.</p>
+<p>The name “zero-cost exceptions” refers to the empty box in the upper right corner. There is no code generated to maintain state just in case an exception occurs.</p>
+<p>But even though the box is empty, that doesn’t mean that things are still the same as if there were no exceptions.</p>
+<p>The presence of exceptions means that the code generation is subject to constraints that don’t show up explicitly in the code generation: Before performing any operation that could potentially throw an exception, the compiler must spill any object state back into memory if the object is observable from an exception handler. (Any object with a destructor is observable, since the exception handler may have to run the destructor.)</p>
+<p>Similarly, potentially-throwing operations limit the compiler’s ability to reorder or eliminate loads from or stores to observable objects because the exception removes the guarantee of mainline execution.</p>
+<p>These costs are not visible to the naked eye. They take the form of lost optimization opportunities.</p>
+<p>Zero-cost exceptions are great (despite the blatant misnomer), but be aware that the cost is not actually zero.</p>
+
+
+</body>

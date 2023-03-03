@@ -1,0 +1,64 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">COM asynchronous interfaces, part 8: Asynchronous release, the problems</h1>  <!-- .entry-meta -->
+
+<p>It is usually the case that when you release a COM object, you don’t particularly care what happens to the object afterward. There are some cases where you do care, usually when there is some cleanup activity associated with the final release that you are relying upon. But usually, you are declaring lack of interest in the future activities of the object when you release.</p>
+<p>By default, the <code>Release</code> method is synchronous. If the object is remote, then the final¹ release request goes out to the server, and you sit and wait until the server replies that yes, it has definitely released your object. I’ve run into cases where my code has hung because I’m cleaning up some object that has a reference to a remote object, and the release of the remote object is hung because the server has stopped responding. I really don’t care about knowing when the release is completed and would be happy to let the release occur asynchronously. Can you release asynchronously?</p>
+<p>Yes, you can release asynchronously. It roughly follows the same pattern we’ve been using so far, with <code>IUnknown</code> as the interface being run asynchronously. However, <code>AsyncIUnknown</code> requires extra care because you’re messing with the underlying object lifetimes. I’ll guide you through the treacherous waters.</p>
+<p>Let’s make our <code>Slow­Pipe</code> even slower by adding a delay to its destructor.</p>
+<pre>struct SlowPipe :
+    winrt::implements&lt;SlowPipe, ::IPipeByte, winrt::non_agile&gt;
+{
+  // exit the STA thread when we destruct
+  ~SlowPipe() {
+    <span style="color: blue;">Sleep(2000);
+    printf("Finally destroyed\n");</span>
+    PostQuitMessage(0);
+  }
+
+  ...
+};
+</pre>
+<p>We can avoid this slow <code>Release</code> by making the release asynchronous. Our initial impulse is to follow the general pattern for asynchronous calls:</p>
+<pre>// Don't use this code. See text.
+int main(int, char**)
+{
+  winrt::init_apartment(winrt::apartment_type::multi_threaded);
+
+  {
+    auto pipe = CreateSlowPipeOnOtherThread();
+
+    winrt::com_ptr&lt;::<span style="color: blue;">AsyncIUnknown</span>&gt; call;
+    auto factory = pipe.as&lt;ICallFactory&gt;();
+    winrt::check_hresult(factory-&gt;CreateCall(
+      __uuidof(::<span style="color: blue;">AsyncIUnknown</span>), nullptr,
+      __uuidof(::<span style="color: blue;">AsyncIUnknown</span>),
+      reinterpret_cast&lt;::IUnknown**&gt;(call.put())));
+
+    winrt::check_hresult(call-&gt;Begin_Release());
+
+    // force all objects to destruct, to prove we're done
+  }
+  printf("Getting on with our life.\n");
+
+  Sleep(5000); // just so we can see the release complete
+
+  return 0;
+}
+</pre>
+<p>We are following the general asynchronous pattern: Get the call factory, create an asynchronous call for <code>IUnknown</code>, begin the <code>Release</code>, and then throw it all away, to indicate that you are not interested in the result.</p>
+<p>Unfortunately, this doesn’t work.</p>
+<p>The first mistake is failing to keep track of all the outstanding references. At the time we call <code>Begin_<wbr/>Release</code>, there are three outstanding references to the object: One in <code>pipe</code>, another in <code>factory</code>, and a third in <code>call</code>. That <code>Begin_<wbr/>Release</code> is not going to be the final release, so it’s just going to decrement the local reference count in the proxy, and nothing will go out over the wire to the remote object. And then when we get around to cleaning up and releasing <code>pipe</code>, that’s the one that releases the final reference in the proxy, and that’s the one that triggers a call to the remote object.</p>
+<p>That call is a synchronous call.</p>
+<p>So we need to make sure that the only remaining reference to the remote object is in the call object. We can do that by releasing the <code>pipe</code> and <code>factory</code> references early, prior to their natural destruction.</p>
+<p>The next problem is that we performed a <code>Begin_<wbr/>Release</code> to initiate an asynchronous <code>Release</code> operation, and then the <code>call</code> object destructs, which performs its own <code>Release</code>. We’re performing a double-release of that last reference: One release is asynchronous (explicit call to <code>Begin_<wbr/>Release</code>) and the other is synchronous (implicit <code>Release</code> at destruction).</p>
+<p>Okay, so instead of allowing <code>call</code> to destruct naturally, we need to perform a <code>detach</code> operation to remove control of the call from the <code>call</code> variable. In this case, we’re telling the <code>call</code> variable, “Don’t worry, I’ll take care of it.” And we took care of it by asking for the release to happen asynchronously.</p>
+<p>But things are still not quite right.</p>
+<p>You see, the usual pattern of throwing away a call doesn’t work for <code>IUnknown::<wbr/>Release</code>: Under the usual pattern, the call object normally discovers whether you plan on calling <code>Finish_</code> by observing that you released the object. But when we use the async pattern for <code>IUnknown::<wbr/>Release</code>, we just throw away the call object <i>without even calling <code>Release</code></i>. This leaves the call object in a pickle: “Should I remain valid so the caller can call <code>Finish_<wbr/>Release</code>? Or should I just clean up right away?”</p>
+<p>The call object for <code>AsyncIUnknown</code> plays it safe and assumes you want to call <code>Finish_<wbr/>Release</code>. But that means you now <i>must</i> call <code>Finish_<wbr/>Release</code>.</p>
+<p>But wait, calling <code>Finish_<wbr/>Release</code> means that we block until the <code>Release</code> completes. That brings us back full circle: Our attempt at an asynchronous <code>Release</code> resulted in a synchronous wait!</p>
+<p>The solution here is to aggregate the call so we can be notified via <code>ISynchronize::<wbr/>Signal</code> that the call has completed. At that point, we call <code>Finish_<wbr/>Release</code> to complete the call.</p>
+<p>Putting this all together will require us to apply a lot of what we’ve learned about COM aggregation. We’ll set to work next time.</p>
+<p>¹ Only the final release request goes over the wire. Non-final releases merely decrement the reference count of the local proxy.</p>
+
+
+</body>

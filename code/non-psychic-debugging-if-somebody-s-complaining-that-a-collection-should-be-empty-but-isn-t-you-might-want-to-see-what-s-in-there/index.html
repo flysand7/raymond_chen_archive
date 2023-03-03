@@ -1,0 +1,60 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Non-psychic debugging: If somebody's complaining that a collection should be empty but isn't, you might want to see what's in there</h1>  <!-- .entry-meta -->
+
+<p>
+A programmer on the GHI team
+(yes,
+<a href="http://blogs.msdn.com/b/oldnewthing/archive/2014/01/24/10492287.aspx">
+the same GHI team</a>)
+reported that they were hitting an assertion failure
+using an internal library and asked for help debugging it.
+</p>
+<pre>
+// All factories should be unregistered by now
+assert(m_pFactoryList-&gt;IsEmpty());
+</pre>
+<p>
+“Can somebody help me figure out which factory it is that
+did not get unregistered?”
+</p>
+<p>
+I didn’t work on this internal library, but on the other hand
+I’m not afraid to look inside.
+</p>
+<p>
+Let’s see what a <code>m_pFactory­List</code> looks like.
+</p>
+<pre>
+0:000&gt; ?? this-&gt;m_pFactoryList
+class LookupTable&lt;CFactory*&gt;
+   +0x000 <span style="background-color: yellow">m_uListSize      : 1</span> <font color="blue">// this probably means that the list has one element</font>
+   +0x004 <span style="background-color: yellow">m_pList          : 0x00212e60</span> LookupTable&lt;CFactory*&gt;::ENTRY <font color="blue">// this is probably the list</font>
+   +0x008 m_uCapacity      : 0x7f
+0:000&gt; ?? this-&gt;m_pFactoryList-&gt;m_pList
+struct LookupTable&lt;CFactory*&gt;::ENTRY * 0x00212e60
+   +0x000 <span style="background-color: yellow">pszName          : 0x02cf4048</span>  "GHI_factory"
+   +0x004 <span style="background-color: yellow">data             : 0x02cf4ce0</span> CFactory* <font color="blue">// I bet this is the item that got leaked</font>
+0:000&gt; dps 0x02cf4ce0 l1
+02cf4ce0  6b626d58 GHI!CGhiFactory::`vftable`
+</pre>
+<p>
+No psychic powers needed here.
+I just followed my nose.
+</p>
+<p>
+The assertion says that a list is not empty.
+Therefore, we should look to see what is on the list.
+</p>
+<p>
+As a general rule, code is not intentionally written to be
+impossible to understand.
+The person who wrote it meant well,
+so if you see a member called
+<code>m_uList­Size</code>, it’s a pretty safe bet that it
+represents the list size.
+And if you see a member called
+<code>m_pList</code>,
+it probably points to the start of the list.</p>
+
+
+</body>

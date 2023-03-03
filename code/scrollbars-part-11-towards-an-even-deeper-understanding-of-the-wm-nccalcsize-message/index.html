@@ -1,0 +1,162 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Scrollbars part 11: Towards an even deeper understanding of the WM_NCCALCSIZE message</h1>  <!-- .entry-meta -->
+
+<p>
+        The other form of the <code>WM_NCCALCSIZE</code> message is the complicated one, when
+        the <code>WPARAM</code> is <code>TRUE</code>. In this case, the <code>LPARAM</code> is
+        a pointer to a <code>NCCALCSIZE_PARAMS</code> structure. When Windows sends the <code>WM_NCCALCSIZE</code> message,
+        the <code>NCCALCSIZE_PARAMS</code> structure is filled out like this:
+    </p>
+<ul>
+<li>
+            rgrc[0] = new window rectangle (in parent coordinates)
+        </li>
+<li>
+            rgrc[1] = old window rectangle (in parent coordinates)
+        </li>
+<li>
+            rgrc[2] = old client rectangle (<b>in parent coordinates</b>)
+        </li>
+</ul>
+<p>
+        Notice that the client rectangle is given in parent coordinates, not in client coordinates.
+    </p>
+<p>
+        When your window procedure returns, Windows expects the <code>NCCALCSIZE_PARAMS</code> structure
+        to be filled out like this:
+    </p>
+<ul>
+<li>
+            rgrc[0] = new client rectangle (<b>in parent coordinates</b>)
+        </li>
+</ul>
+<p>
+        The new client rectangle specifies where the client area of the window should be located,
+        given the new window rectangle.
+    </p>
+<p>
+        Furthermore, if you return anything other than 0, Windows expects the remaining two
+        rectangles to be filled out like this:
+    </p>
+<ul>
+<li>
+            rgrc[1] = destination rectangle (in parent coordinates)
+        </li>
+<li>
+            rgrc[2] = source rectangle (in parent coordinates)
+        </li>
+</ul>
+<p>
+        (If you return 0, then Windows assumes that the destination rectangle equals the new
+        client rectangle and the source rectangle equals the old client rectangle.)
+    </p>
+<p>
+        The source and destination rectangles specify which part of the old window corresponds
+        to which part of the new window. Windows will copy the pixels from the source rectangle
+        to the destination rectangle and preserve their validity. The return value of the <code>WM_NCCALCSIZE</code> message
+        specifies how the bits should be matched up if the two rectangles are not the same
+        size. The default behavior is to align them at the top and left edges.
+    </p>
+<p>
+        Let’s demonstrate custom valid rectangles <u>with a fresh scratch program</u>. (We’ll
+        come back to the scrollbar program.) First, a helper function that computers the “center”
+        of a rectangle.
+    </p>
+<pre>void GetRectCenter(LPCRECT prc, POINT *ppt)
+{
+    ppt-&gt;x = prc-&gt;left + (prc-&gt;right - prc-&gt;left)/2;
+    ppt-&gt;y = prc-&gt;top + (prc-&gt;bottom - prc-&gt;top)/2;
+}
+</pre>
+<p>
+<b>Exercise</b>: Why do we use the formula <code>c = a + (b-a)/2</code> instead of
+        the simpler <code>c = (a+b)/2</code>?
+    </p>
+<p>
+        Here’s our new <i>PaintContent</i> function:
+    </p>
+<pre>void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+    //  For debugging flicker - fill with an annoying color for 1 second
+    DWORD dwLimit = GdiSetBatchLimit(1);
+    FillRect(pps-&gt;hdc, &amp;pps-&gt;rcPaint,
+             GetSysColorBrush(COLOR_HIGHLIGHT));
+    Sleep(1000);
+    FillRect(pps-&gt;hdc, &amp;pps-&gt;rcPaint,
+             GetSysColorBrush(COLOR_WINDOW));
+    GdiSetBatchLimit(dwLimit);
+    //  Draw "concentric" rectangles
+    RECT rc;
+    GetClientRect(hwnd, &amp;rc);
+    POINT ptCenter;
+    GetRectCenter(&amp;rc, &amp;ptCenter);
+    int limit = max(rc.bottom, rc.right) / 2;
+    rc.left = rc.right = ptCenter.x;
+    rc.top = rc.bottom = ptCenter.y;
+    for (int i = 0; i &lt; limit; i += 10) {
+        InflateRect(&amp;rc, 10, 10);
+        FrameRect(pps-&gt;hdc, &amp;rc, GetSysColorBrush(COLOR_WINDOWTEXT));
+    }
+}
+</pre>
+<p>
+        When debugging flicker problems, it helps to insert intentionally ugly background
+        painting and annoying pauses so you can see what you are painting. Note, though, that
+        when you do this, you also need to call <i>GdiSetBatchLimit</i> to disable batching.
+        Otherwise, GDI will optimize out the redundant fill and you won’t see anything special.
+    </p>
+<p>
+        The real work happens inside our <code>WM_NCCALCSIZE</code> handler.
+    </p>
+<pre>UINT OnNcCalcSize(HWND hwnd, BOOL fCalcValidRects,
+                           NCCALCSIZE_PARAMS *pcsp)
+{
+    UINT uRc = (UINT)FORWARD_WM_NCCALCSIZE(hwnd, fCalcValidRects,
+                                           pcsp, DefWindowProc);
+    if (fCalcValidRects) {
+        //  Give names to these things
+        RECT *prcClientNew = &amp;pcsp-&gt;rgrc[0];
+        RECT *prcValidDst  = &amp;pcsp-&gt;rgrc[1];
+        RECT *prcValidSrc  = &amp;pcsp-&gt;rgrc[2];
+        // Compute the old and new center points
+        POINT ptOldCenter, ptNewCenter;
+        GetRectCenter(prcValidSrc, &amp;ptOldCenter);
+        GetRectCenter(prcClientNew, &amp;ptNewCenter);
+        //  Tell USER how the old and new client rectangles match up
+        *prcValidDst = *prcClientNew; // use entire client area
+        prcValidDst-&gt;left += ptNewCenter.x - ptOldCenter.x;
+        prcValidDst-&gt;top += ptNewCenter.y - ptOldCenter.y;
+        uRc = WVR_VALIDRECTS;
+    }
+    return uRc;
+}
+    /* Add to WndProc */
+    HANDLE_MSG(hwnd, WM_NCCALCSIZE, OnNcCalcSize);
+</pre>
+<p>
+        How does this work?
+    </p>
+<p>
+        If <code>fCalcValidRects</code>, then we do extra work to compute our valid rectangles
+        by seeing how much the window content needs to be shifted and shifting the valid destination
+        rectangle by the same amount. USER copies the upper left corner of the valid source
+        rectangle to the upper left corner of the destination rectangle, so shfiting the upper
+        left corner of the destination rectangle lets us adjust where USER will copy the pixels.
+    </p>
+<p>
+        Play with this program: Grab the window and resize it. Observe that the central portion
+        of the window client area is copied from the original window and is not redrawn. This
+        has two benefits: First, there is no flicker. Second, this improves redraw performance
+        since you aren’t drawing pixels unnecessarily. This second remark is particularly
+        important when using the Remote Desktop feature, since Remote Desktop has to transfer
+        all drawn pixels over the network to the client. The fewer pixels you have to transfer,
+        the more responsive your program will be.
+    </p>
+<p>
+        Now that we have a better understanding of the <code>WM_NCCALCSIZE</code> message,
+        we can use this knowledge to improve our scrollbars.
+    </p>
+
+
+</body>

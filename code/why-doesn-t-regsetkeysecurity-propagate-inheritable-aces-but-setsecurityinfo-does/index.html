@@ -1,0 +1,21 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why doesn’t <code>RegSetKeySecurity</code> propagate inheritable ACEs, but <code>SetSecurityInfo</code> does?</h1>  <!-- .entry-meta -->
+
+<p>A customer was updating some code that manipulated registry key security. The old code used the <code>Set­Security­Info</code> function to update the security, and they observed that the function propagates inheritable ACEs to child keys. Their revised version used <code>Reg­Set­Key­Security</code>, and they observed that that function does <i>not</i> propagate inheritable ACEs to child keys.</p>
+<p>What’s going on?</p>
+<p>Inheritable ACEs are a somewhat artificial concept. The access check occurs on the object, so all that matters is the security descriptor on the object, not on any of its parents. (For objects like files, there may not even be a unique parent, thanks to hard links.)</p>
+<p>An inheritable ACE is an ACE in a parent object which says, “If a child object is created, copy this ACE to the child object’s security descriptor.” Setting an inheritable ACE lets you influence the algorithm the system uses to generate the default ACL for the new object. The inherited ACEs in the new object are marked with a flag that says “Oh, and in case anybody wants to know, this ACEs was created due to inheritance.”¹</p>
+<p>Of course, the creator of the object may choose to override the default, but at least you got to make your wishes known, and if they chose to ignore those wishes, that’s their decision.</p>
+<p>In Windows 2000, <a href="https://www.itprotoday.com/identity-management-access-control/ntfs-access-control-security-enhancements"> the inheritance model for security attributes changed</a>. <a href="https://www.itprotoday.com/strategy/basics-acl-inheritance"> This article has a comparison table</a>.</p>
+<p>Under the old model, the ACL for an object was calculated from the parent at the time the object was created, and that was it. Changes to the parent’s inheritable attributes had no effect on the children. Programs which updated the parent’s ACL typically offered a checkbox called something like “Replace permissions on child objects.” If you did this, then the program recalculates the ACLs for child objects as if they had been newly-created. This recalculated ACL would pick up the new inheritable ACEs. Then the program goes through and sets that replacement ACL on all child objects.</p>
+<p>The “Replace permissions on child objects” option was a rather crude solution which obliterated any customizations that had been applied to the children.</p>
+<p>Under the new model, when you change the parent ACL, the security attributes of all child objects are automatically recalculated, and it is done in a more precise manner: Only the inherited ACEs are replaced. The custom attributes on child objects are preserved. This takes advantage of the “In case anybody wants to know” flag that is set when an ACE is created due to inheritance.</p>
+<p>The <code>Reg­Set­Key­Security</code> function is an old function that follows the old model. It replaces the ACLs on the object and does nothing about inheritance.</p>
+<p>The <code>Set­Security­Info</code> function is a new function that follows the new model. It replaces the ACLs on the object and updates the inheritable ACEs for all child objects.</p>
+<p>So the reason the two functions behave differently is that they were written at different times, when the rules for inheritable ACEs were different, and each one follows the rules in effect at the time they were written.</p>
+<p><b>Bonus chatter</b>: The same explanation applies to pairs of functions like <code>Set­File­Security</code> (old and busted) and <code>Set­Named­Security­Info</code> (new hotness).</p>
+<p>¹ It is this flag that triggers the ACL editor to go <a href="https://devblogs.microsoft.com/oldnewthing/20150505-00/?p=44934"> look for the thing that the ACE was inherited from</a>.</p>
+<p> </p>
+
+
+</body>

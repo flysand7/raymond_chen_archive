@@ -1,0 +1,102 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The PowerPC 600 series, part 13: Common patterns</h1>  <!-- .entry-meta -->
+
+<p>Now that we understand function calls and the table of contents, we can demonstrate some common calling sequences. If you are debugging through PowerPC code, you’ll need to be able to recognize these different types of calling sequences in order to keep your bearings. </p>
+<p>Non-virtual calls generally look like this:</p>
+<pre>
+    ; Put the parameters in r3 through r10,
+    ; and additional parameters go on the stack
+    ; after the home space (not shown here).
+    mr      r3, r30     ; parameter 1 copied from another register
+    li      r4, 1       ; parameter 2 is calculated in place
+    add     r5, r1, 32  ; parameter 3 is address of local variable
+    bl      destination ; call the function
+    nop                 ; no need to restore table of contents
+</pre>
+<p>The final <code>nop</code> may be omitted if the compiler can prove that <code>destination</code> is a function in the same module. If it turns out that the destination is a glue function, then the <code>nop</code> becomes</p>
+<pre>
+    lwz      r2, 4(r1)  ; restore table of contents
+</pre>
+<p>Virtual calls load the destination from the target’s vtable, and it’s a function pointer, so we need to prepare the destination’s table of contents as well. </p>
+<pre>
+    ; "this" passed in r3. Other parameters go
+    ; into r4 through r10, with additional parameters
+    ; on the stack after the home space (not shown here).
+    mr      r3, r30     ; parameter 1 copied from another register
+    li      r4, 1       ; parameter 2 is calculated in place
+    add     r5, r1, 32  ; parameter 3 is address of local variable
+    <font color="blue">lwz     r11, (r3)   ; r11 = vtable of target
+    lwz     r11, n(r11) ; r11 = function pointer from vtable
+    lwz     r12, 0(r11) ; r12 = address of code
+    lwz     r2, 4(r11)  ; load table of contents for destination
+    mtctr   r12         ; put code address into ctr
+    bctrl               ; and call it
+    lwz      r2, n(r1)  ; restore our table of contents</font>
+</pre>
+<p>I put all of the virtual dispatch code in one block of contiguous instructions, but in practice the compiler may choose to interleave it with the preparation of the function arguments to avoid data load stalls. The above example uses <var>r11</var> and <var>r12</var> as temporary registers for preparing the call, but in practice, the compiler will use any volatile register that is not being used to pass parameters.¹ </p>
+<p>A call to an imported function indirects through the import address table entry. This is made double-complicated because we have to ask the current table of contents where the import address table entry is, and then we need to set up the table of contents for the destination. </p>
+<pre>
+    ; Put the parameters in r3 through r10,
+    ; and additional parameters go on the stack
+    ; after the home space (not shown here).
+    mr      r3, r30     ; parameter 1 copied from another register
+    li      r4, 1       ; parameter 2 is calculated in place
+    add     r5, r1, 32  ; parameter 3 is address of local variable
+    <font color="blue">lwz     r11, n(r2)  ; r11 points to import address table entry
+    lwz     r11, (r11)  ; r11 = point address table entry</font>
+    lwz     r12, 0(r11) ; r12 = address of code
+    lwz     r2, 4(r11)  ; load table of contents for destination
+    mtctr   r12         ; put code address into ctr
+    bctrl               ; and call it
+    lwz      r2, n(r1)  ; restore our table of contents
+</pre>
+<p>A call to an imported function incurs several memory accesses: </p>
+<ol>
+<li>Loading the address of the import address table entry     from the table of contents.</li>
+<li>Loading the function pointer from the import address table.</li>
+<li>Loading the destination function’s     code pointer and table of contents from the descriptor.</li>
+</ol>
+<p>I put the last two together since they almost always come from the same cache line. The theory is that the load from the table of contents is probably also in cache, so it should be relatively cheap. (I don’t know how well this holds up in practice.) </p>
+<p>If the compiler sees multiple calls to the same imported function, it will often put the address of the import address table entry into a non-volatile register so it can avoid the load from the table of contents for the second and subsequent times it calls the function. </p>
+<p>The last interesting calling pattern for today is the jump table, commonly used for dense <code>switch</code> statements. Suppose we have this: </p>
+<pre>
+    switch (n) {
+    case 1: ...; break;
+    case 2: ...; break;
+    case 3: ...; break;
+    case 4: ...; break;
+    }
+</pre>
+<p>The resulting code would look like this:² </p>
+<pre>
+    ; jump to address based on value in r3
+    addi    r3, r3, -1          ; subtract 1
+    cmplwi  r3, 4               ; in range of the jump table?
+    bnl     default             ; nope, go to the "case default"
+    lwz     r12, n(r2)          ; get address of jump table
+    rlwinm  r3, r3, 2, 0, 29    ; convert to byte offset
+    lwzx    r12, r12, r3        ; load entry from jump table
+    mtctr   r12                 ; put code address into ctr
+    bctr                        ; and jump there
+</pre>
+<p>The jump table pattern first performs a single-comparison range check by the standard trick of offseting the control value by the lowest value in the range and using an unsigned comparison against the length of the range. Asssuming the range check passes, we have to load the address of the jump table from the table of contents, then use the adjusted value (shifted left by 2) to index into the jump table to fetch the jump destination. We then move the jump destination into <code>ctr</code> and jump to it. </p>
+<p>The compiler always codes the jump as a <code>bctr</code> because the processor assumes that <code>bctr</code> is used for computed jumps. </p>
+<p><a href="https://blogs.msdn.microsoft.com/oldnewthing/20180823-00/?p=99555">Next time</a>, we wrap up our whirlwind tour of the PowerPC 600 series by putting what we’ve learned to the test. </p>
+<p>¹ You’d think that <var>r0</var> would be a great choice for this purpose, but it’s not, thanks to the special rule that <var>r0</var> cannot be used as the base register for effective address computations. </p>
+<p>² At least, that’s what the result should be like. In practice, I’ve seen the compiler generate code like this:</p>
+<pre>
+    ; jump to address based on value in r3
+    addi    r11, r3, -1         ; r11 = value - 1
+    cmplwi  r11, 4              ; in range of the jump table?
+    bnl     default             ; nope, go to the "case default"
+    lwz     r12, n(r2)          ; get address of jump table
+    rlwinm  r3, r3, 2, 0, 29    ; convert original value to byte offset
+    addi    r3, r3, -4          ; apply the offset again
+    lwzx    r12, r12, r3        ; load entry from jump table
+    mtctr   r12                 ; put code address into ctr
+    bctr                        ; and jump there
+</pre>
+<p>The compiler goes to the work of calculating <var>r3</var> − 1 into <var>r11</var>, but when it comes time to look up the jump table entry, it goes back to the original value in <var>r3</var>, scales it up to a byte offset, and then has to perform an extra subtraction to cover for the fact that it shifted the wrong value. </p>
+
+
+</body>

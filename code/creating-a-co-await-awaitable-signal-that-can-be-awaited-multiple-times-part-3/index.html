@@ -1,0 +1,72 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Creating a co_await awaitable signal that can be awaited multiple times, part 3</h1>  <!-- .entry-meta -->
+
+<p>Last time, we <a href="/code/creating-a-co-await-awaitable-signal-that-can-be-awaited-multiple-times-part-2" title="Creating a co_await awaitable signal that can be awaited multiple times, part 2"> created an awaitable signal that can be awaited multiple times</a>, but noted that it took kernel transitions a lot. Let’s implement the entire thing in user mode.</p>
+<pre>struct awaitable_event
+{
+  void set() const { shared-&gt;set(); }
+
+  auto await_ready() const noexcept
+  {
+    return shared-&gt;await_ready();
+  }
+
+  auto await_suspend(
+    std::experimental::coroutine_handle&lt;&gt; handle) const
+  {
+    return shared-&gt;await_suspend(handle);
+  }
+
+  auto await_resume() const noexcept
+  {
+    return shared-&gt;await_resume();
+  }
+
+private:
+  struct state
+  {
+    std::atomic&lt;bool&gt; signaled = false;
+    winrt::slim_mutex mutex;
+    std::vector&lt;std::experimental::coroutine_handle&lt;&gt;&gt; waiting;
+
+    void set()
+    {
+      std::vector&lt;std::experimental::coroutine_handle&lt;&gt;&gt; ready;
+      {
+        auto guard = winrt::slim_lock_guard(mutex);
+        signaled.store(true, std::memory_order_relaxed);
+        std::swap(waiting, ready);
+      }
+      for (auto&amp;&amp; handle : ready) handle();
+    }
+
+    bool await_ready() const noexcept
+    { return signaled.load(std::memory_order_relaxed); }
+
+    bool await_suspend(
+      std::experimental::coroutine_handle&lt;&gt; handle)
+    {
+      auto guard = winrt::slim_lock_guard(mutex);
+      if (signaled.load(std::memory_order_relaxed)) return false;
+      waiting.push_back(handle);
+      return true;
+    }
+
+    void await_resume() const noexcept { }
+  };
+
+  std::shared_ptr&lt;state&gt; shared = std::make_shared&lt;state&gt;();
+};
+</pre>
+<p>The <code>awaitable_<wbr/>event</code> contains a <code>shared_<wbr/>ptr</code> to an internal <code>state</code> object, which is where all the work really happens. Operations on the <code>awaitable_<wbr/>event</code> are all forwarded to the <code>state</code> object, so all of the public methods are relatively uninteresting. The excitement happens in the <code>state</code> object, so let’s focus on that.</p>
+<p>To wait for the <code>awaitable_<wbr/>event</code>, we begin with <code>await_<wbr/>ready</code>, which returns whether the event is already signaled. If it is already signaled, then <code>await_<wbr/>ready</code> returns <code>true</code>, which bypasses the suspension entirely. An event that represents “initialization complete” will spend nearly all of its time in the signaled state, and this short-circuit gives an optimized path for the compiler so it doesn’t have to spill register variables in the case that the event is already signaled.</p>
+<p>If the event is not signaled, then we get to <code>await_<wbr/>suspend</code>. We take the lock and check a second time whether the event has been signaled. If so, then we return <code>false</code> meaning “I reject the suspension. Keep running.”¹</p>
+<p>On the other hand, if the event is truly not signaled, then we push the coroutine handle onto our list of waiting coroutine handles, and we’re done.</p>
+<p>To signal the event, we take the lock, mark the event as signaled, and swap out the vector of waiting coroutine handles for an empty list. These coroutine handles are now ready: We iterate over the vector and resume each one.</p>
+<p>This works relatively well, except that once you have a large number of waiting coroutines (say, because initialization is taking a really long time), the <code>push_back</code> on the vector might take a long time if the vector needs to be reallocated. The operation is still amortized <var>O</var>(1), but the per-instance cost can be as high as <var>O</var>(<var>n</var>).</p>
+<p>Furthermore, the <code>push_back</code> can throw an exception due to low memory (note that <code>await_suspend</code> is not marked <code>noexcept</code>).</p>
+<p>We’ll address both of these issues next time.</p>
+<p>¹ I always have to pause to think whenever I get to the <code>return</code> statements in the <code>await_<wbr/>ready</code> and <code>await_<wbr/>suspend</code> methods, because the return values have opposite sense. I have to remember that you want to “suspend if not ready”.</p>
+
+
+</body>

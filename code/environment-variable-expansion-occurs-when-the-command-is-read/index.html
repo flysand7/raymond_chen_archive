@@ -1,0 +1,150 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Environment variable expansion occurs when the command is read</h1>  <!-- .entry-meta -->
+
+<p>
+On the command line (and in batch files),
+environment variable expansion occurs when the command is read.
+This sounds obvious at first, but it has its own consequences.
+</p>
+<p>
+In the online documentation for <code>SET</code>, one such
+consequence is spelled out:
+</p>
+<pre>
+    set VAR=before
+    if "%VAR%" == "before" (
+        set VAR=after
+        if "%VAR%" == "after" @echo If you see this, it worked
+    )
+</pre>
+<p>
+would never display the message, since the <code>%VAR%</code>
+in <i>both</i> “<code>if</code>” statements
+is substituted when the first “<code>if</code>” statement is read,
+since it logically includes the body of the “<code>if</code>“,
+which is a compound statement.
+</p>
+<p>
+In other words, the “<code>if</code>” command is not complete
+until the closing parenthesis is read.
+You can see this if you type the commands interactively:
+</p>
+<pre>
+C:\&gt;set VAR=before
+C:\&gt;if "%VAR%" == "before" (
+More? set VAR=after
+More? if "%VAR%" == "after" @echo If you see this, it worked
+More? )
+C:\&gt;
+</pre>
+<p>
+Notice that the “<code>if</code>” command didn’t execute
+until you closed the parenthesis;
+the command interpreter kept prompting “More?” to collect
+the body of the “<code>if</code>“.
+This means that everything you type as the body of the “<code>if</code>”
+is evaluated <strong>before the “<code>if</code>” condition or
+any of the lines in the body are evaluated</strong>.
+It’s as if you had typed
+</p>
+<pre>
+C:\&gt;if "before" == "before" (
+More? set VAR=after
+More? if "before" == "after" @echo If you see this, it worked
+More? )
+</pre>
+<p>
+Note that this is different from most UNIX shells,
+which do not expand environment variables until the enclosing command
+is executed.
+For example,
+</p>
+<pre>
+$ var=before
+$ var=after; echo $var
+after
+</pre>
+<p>
+Notice that the <code>$x</code> is not expanded until the <code>echo</code>
+command’s arguments are being computed.
+The analogous commands in the Windows command interpreter
+result in something quite different:
+</p>
+<pre>
+C:\&gt;set VAR=before
+C:\&gt;set VAR=after &amp; echo %VAR%
+before
+</pre>
+<p>
+That’s because the command interpreter expanded the environment
+variables at the time the line was read (not at the time the line
+is executed), yielding
+</p>
+<pre>
+set VAR=after &amp; echo before
+</pre>
+<p>
+As a result, the old value of <code>VAR</code> is echoed.
+Some people treat this as a feature, allowing them to “restore”
+a variable without having to save it anywhere:
+</p>
+<pre>
+set VAR=newvalue &amp; call helper.cmd &amp; set VAR=%VAR%
+</pre>
+<p>
+This command sets the <code>VAR</code> variable to a new value,
+calls <code>helper.cmd</code> (which presumably uses the value
+of the <code>%VAR%</code> variable to control its behavior),
+then magically restores the variable to its original value
+since the <code>%VAR%</code> is expanded early, producing the
+old value.
+</p>
+<p>
+But what if you want the variable to be expanded at execution
+time rather than at parse time?
+For that, you use “delayed expansion”, which is enabled by
+the <code>/V</code> command line option or by using the
+<code>SETLOCAL ENABLEDELAYEDEXPANSION</code> command in
+a batch file.
+</p>
+<pre>
+C:\&gt; copy con "%TEMP%\helper.cmd"
+SETLOCAL ENABLEDELAYEDEXPANSION
+set VAR=before
+set VAR=after &amp; echo immediate:%VAR%, delayed:!VAR!
+ENDLOCAL
+^Z
+        1 file(s) copied.
+C:\&gt; "%TEMP%\helper.cmd"
+C:\&gt;SETLOCAL ENABLEDELAYEDEXPANSION
+C:\&gt;set VAR=before
+C:\&gt;set VAR=after   &amp; echo immediate:before, delayed:!VAR!
+immediate:before, delayed:after
+C:\&gt;ENDLOCAL
+</pre>
+<p>
+Immediate expansion is performed with percent signs, whereas
+delayed expansion is performed with exclamation points.
+</p>
+<p>
+Why is immediate expansion the default?
+Because prior to Windows NT, that was the only type of
+expansion supported by the command interpreter.
+Retaining immediate expansion as the default preserved backwards
+compatibility with existing batch files.
+(The original command interpreter was written in assembly language.
+You really didn’t want to be too clever or it would make your
+brain hurt trying to maintain the code.
+An interpreter loop of the form
+“Read a line, expand environment variables, evaluate”
+was therefore simple and effective.)
+</p>
+<p>
+Armed with this understanding of immediate versus delayed
+expansion, perhaps you can explain
+<a href="http://blogs.technet.com/threekings/archive/2006/02/26/420570.aspx">
+what is really going on here</a>.
+(Hint: It has nothing to do with <code>ERRORLEVEL</code>.)</p>
+
+
+</body>

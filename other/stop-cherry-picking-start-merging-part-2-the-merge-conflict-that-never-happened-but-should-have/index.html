@@ -1,0 +1,538 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Stop cherry-picking, start merging, Part 2: The merge conflict that never happened (but should have)</h1>  <!-- .entry-meta -->
+
+<p><a href="/other/stop-cherry-picking-start-merging-part-1-the-merge-conflict"> Last time</a>, we saw how editing the code affected by a cherry-pick creates a potential merge conflict that doesn’t become realized until the original commit and its cherry-picked doppelgänger meet in a merge somewhere, which could be far away from the branches that contained the original commit and its cherry-pick.</p>
+<p>But you know what’s worse than a merge conflict?</p>
+<p>No merge conflict.</p>
+<p>Let’s set up the same situation as last time:</p>
+
+
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td>apple</td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td colspan="3" id="p20180313_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20180313_nwarr">↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180313_swarrd">⋰</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>feature</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td>berry</td>
+</tr>
+</tbody>
+</table>
+<p>Suppose this feature branch has been around for a while, merging its changes back into the master branch when it reaches a stability milestone, Our diagram begins with the point just after the most recent merge back to the master branch, where the feature branch has started its work on the next milestone’s worth of features.</p>
+<p>Let’s suppose that the line that contains the word <code>apple</code> is in a configuration file that controls the feature. Both the master branch and feature branch make commits (M1 and F1, respectively) which are unrelated to the configuration file.</p>
+<p>Suppose you now discover a serious problem in the feature that is causing it to go haywire. To stop the immediate problem, you make a commit F2 to the feature branch which sets the configuration file to <code>berry</code>, which has the effect of shutting off the feature.</p>
+<p>(In real life, the change would be more like changing</p>
+<pre>#define IS_FEATURE_ENABLED 1
+</pre>
+<p>to</p>
+<pre>#define IS_FEATURE_ENABLED 0
+</pre>
+<p>but I’m sticking with <code>apple</code> and <code>berry</code> so that it lines up better with yesterday’s examples.)</p>
+<p>Okay, you disable the feature in the feature branch, verify that it doesn’t have any unexpected side effects, and cherry-pick the fix into the master branch. Phew, this stops the bleeding and buys you time to figure out what went wrong and come up with a fix.</p>
+<p>(If your workflow is to apply the fix to the master branch and then cherry-pick it into the feature branch, then great, do it that way. The story is the same.)</p>
+<p>Work continues in the master branch while you investigate the problem. Later, you come up with the real fix in the feature branch, which involves re-enabling the feature (by setting the line to <code>apple</code>) and fixing the root cause in some other place. The commit graph now looks like this:</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td>apple</td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>berry</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td colspan="3" id="p20180313_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M3</td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20180313_nwarr">↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180313_swarrd">⋰</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td colspan="3" id="p20180313_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F3</td>
+<td> </td>
+<td>feature</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>apple</td>
+</tr>
+</tbody>
+</table>
+<p>In the master branch, an additional unrelated commit M3 was made on top of M2. In the feature branch, an additional commit F3 was made on top of F2, and F3 changes <code>berry</code> back to <code>apple</code>, as well as fixing the root cause of the issue.</p>
+<p>Okay, now you want to merge the feature branch into the master branch so that the temporary fix can be replaced by the real fix. But when you do the merge, this happens:</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td>apple</td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>berry</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td colspan="3" id="p20180313_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M3</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M4</td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20180313_nwarr">↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180313_swarrd">⋰</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180313_swarr">↙︎</td>
+<td>⚠</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td colspan="3" id="p20180313_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F3</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>feature</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>apple</td>
+</tr>
+</tbody>
+</table>
+<p>The master branch merged from the feature branch, producing commit M4, but in commit M4, the line still says <code>berry</code>! The temporary fix is still in place in the master branch. Actually, it’s worse than that. The <code>berry</code> part of the temporary fix is in place in the master branch, but so too is the permanent fix in the other part of commit F3! It’s possible that these two partial fixes don’t interact well with each other, in which case you’re in the even worse position that the feature is broken in the master branch but works in your feature branch.</p>
+<p>Today, we’ll investigate what happened. Next time, we’ll investigate how to prevent this from happening in the future.</p>
+<p>Let’s go back to the state of the repo before we tried to merge the feature branch into the master branch:</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Repeat of second diagram.">
+<tbody>
+<tr>
+<td>apple</td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>berry</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td colspan="3" id="p20180313_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M3</td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20180313_nwarr">↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180313_swarrd">⋰</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td colspan="3" id="p20180313_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F3</td>
+<td> </td>
+<td>feature</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>apple</td>
+</tr>
+</tbody>
+</table>
+<p>Now we perform the merge. Git looks for a merge base, which is commit A, the most recent common ancestor between the two branches. Git then performs a three-way merge using A as the base, M3 as HEAD, and F3 as the inbound change. All that matters now is the delta between the base and the two terminal commits, so let’s remove the irrelevant commits from the diagram.</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Description in text.">
+<tbody>
+<tr>
+<td>apple</td>
+<td> </td>
+<td>berry</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20180313_svg01">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M3</td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20180313_svg02">↖︎</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F3</td>
+<td> </td>
+<td>feature</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>apple</td>
+</tr>
+</tbody>
+</table>
+<p>In the simplified diagram, we still have our common merge base at commit A (where we started with <code>apple</code>) but all we see is commit M3 in the master branch (where we have <code>berry</code>) and commit F3 in the feature branch (where we have <code>apple</code>).</p>
+<p>Comparing the base to the head of the master branch, we see that <code>apple</code> changed to <code>berry</code>. Comparing the base to the head of the feature branch, we see that <code>apple</code> didn’t change at all. Since the line did not change in the feature branch, it means that the merge from the feature branch will not change the line either. The result is that the line remains unchanged by the merge, so it remains at its current value in the master branch of <code>berry</code>.</p>
+<p>It gets worse: If you subsequently merge from the master branch into the feature branch, the incorrect line propagates into the feature branch.</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td>apple</td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>berry</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td colspan="3" id="p20180313_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M3</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M4</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20180313_nwarr">↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180313_swarrd">⋰</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180313_swarr">↙︎</td>
+<td> </td>
+<td id="p20180313_nwarr">↖︎</td>
+<td>⚠⚠</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td colspan="3" id="p20180313_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F3</td>
+<td colspan="3" id="p20180313_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F4</td>
+<td> </td>
+<td>feature</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+</tr>
+</tbody>
+</table>
+<p>For the merge from the master branch to the feature branch, the common merge base is commit F3, which is also the head of the feature branch. In commit F3, the line is <code>apple</code>. In the head of the master branch, it is <code>berry</code>, and that change propagates to the feature branch. As a result, in the new commit F4 in the feature branch, the line is now <code>berry</code>. (I chose to use a non-fast-forward merge, but you would see the same thing if it were a fast-forward merge.)</p>
+<p>Most people think of cherry-picks as “anticipatory partial merges”, where you want to merge part of a source branch into your destination branch. The expectation is that if you later decide to merge the rest of the source branch into the destination branch, it will merge in only the new parts.</p>
+<p>And if you are careful not to touch the lines affected by the cherry-pick until the two sides of the cherry-pick finally merge, that’s what happens, because the merge will see that both sides modified the file in the same way, and the two commits are coalesced.</p>
+<p>But if you make additional changes to the affected line in either of the branches, then instead of coalescing, the two changes are added together. And if your additional changes to the affected line have the effect of canceling out the cherry-picked change, then you don’t even get a merge conflict to inform you that something weird happened. (Internally on our team, we call this the ABA problem because the line started with A, changed to B, the B got cherry-picked away, and then the line changed back to A prior to the merge back to the master branch.)</p>
+<p>The master branch applied a change, and the feature branch applied the change, and the feature branch reverted the change. Mathematically, you performed two changes and one revert, so the net effect is still a +1 in favor of the change.</p>
+<p>Okay, so the problem is that we wanted to do a partial merge from the feature branch back into the master branch. Too bad there’s no such thing as a partial merge.</p>
+<p>Or is there?</p>
+<p><a href="https://devblogs.microsoft.com/oldnewthing/20180314-00/?p=98235"> Next time</a>, we’ll show how to perform a partial merge.</p>
+<p><b>Bonus chatter</b>: Normally, merging twice produces the same result as merging once, just with more merge conflicts (because you have to resolve the conflict twice, once at each merge). But in this scenario, we get different results, neither of which raise merge conflicts. If we had performed <i>two</i> merges from the feature branch into the master branch, first by merging commit F2, then again by merging commit F3, then we would have had two clean merges, but the result would have been different:</p>
+<table border="0" cellspacing="1" style="text-align: center;" title="Described in text.">
+<tbody>
+<tr>
+<td>apple</td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td>apple</td>
+</tr>
+<tr>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">A</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M1</td>
+<td colspan="3" id="p20180313_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M2</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M3</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M4.1</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">M4.2</td>
+<td> </td>
+<td>master</td>
+</tr>
+<tr>
+<td> </td>
+<td id="p20180313_nwarr">↖︎</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td id="p20180313_swarrd">⋰</td>
+<td id="p20180313_svg03">←</td>
+<td id="p20180313_blank">←</td>
+<td id="p20180313_blank">←</td>
+<td id="p20180313_svg04">↲︎</td>
+<td> </td>
+<td id="p20180313_blank">↙︎</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F1</td>
+<td id="p20180313_larr">←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F2</td>
+<td colspan="3" id="p20180313_larr3">← ← ←</td>
+<td style="border: solid 1px black; width: 50px; font-size: 120%;">F3</td>
+<td id="p20180313_blank">←</td>
+<td id="p20180313_blank">←</td>
+<td> </td>
+<td>feature</td>
+</tr>
+<tr>
+<td> </td>
+<td> </td>
+<td>apple</td>
+<td> </td>
+<td>berry</td>
+<td> </td>
+<td> </td>
+<td> </td>
+<td>apple</td>
+</tr>
+</tbody>
+</table>
+<p>This is troubling because it means that changing your policy on how often you merge can result in different final results, without any warnings from git.</p>
+<p><b>More bonus chatter</b>: Note that the “revert” need not be an actual revert. It might merely happen to resemble a revert. For example, suppose you start with</p>
+<pre>char* predefined_items[4] = {
+ "armoire",
+ "bed",
+ "credenza",
+ "desk",
+};
+</pre>
+<p>You decide that you need a fifth item, so you add the fifth item and bump the array size:</p>
+<pre>char* predefined_items[5] = {
+ "armoire",
+ "bed",
+ "credenza",
+ "desk",
+ "end table",
+};
+</pre>
+<p>Another branch cherry-picks this because it needs the end table. Meanwhile, you realize that you don’t need the bed any more, so you remove it and drop the array size to four.</p>
+<pre>char* predefined_items[4] = {
+ "armoire",
+ "credenza",
+ "desk",
+ "end table",
+};
+</pre>
+<p>When these two changes merge, the result will be</p>
+<pre>char* predefined_items[5] = {
+ "armoire",
+ "credenza",
+ "desk",
+ "end table",
+};
+</pre>
+<p>Notice that the length of the <code>predefined_items</code> array is five, even though there are only four entries in it.</p>
+<p>
+<script>
+window.addEventListener("load", function() {
+  var fullFF = getComputedStyle(document.body).fontFamily;
+  var simpleFF = fullFF.replace(/ Emoji/g, "");
+  // break up "style" to prevent wordpress from injecting random junk
+  document.getElementById("p20180313_head").innerHTML =
+`<s` + `tyle>
+body { font-family: ${simpleFF}; }
+.emoji { font-family: ${fullFF}; }
+.entry-content th { padding: 1px; } /* stylesheet workaround */
+.entry-content td { padding: 1px; } /* stylesheet workaround */
+</s` + `tyle>`;
+}); // wacky comment to prevent wordpress from injecting random junk
+(function() {
+  var svg = {
+    defs: `<svg width="0" height="0">
+ <defs>
+  <marker id="arrowhead" markerWidth="5" markerHeight="5" refX="-2" refY="0"
+    viewBox="-6 -6 12 12" orient="auto">
+    <polygon points="-2,0 -5,5 5,0 -5,-5" fill="black" stroke="black"
+      stroke-dasharray="1 0" />
+  </marker>
+  <path id="larr" d="M20,10 L3,10" stroke="black"
+   marker-end="url(#arrowhead)" />
+  <path id="larr3" d="M98,10 L3,10" stroke="black"
+   marker-end="url(#arrowhead)" />
+  <path id="nwarr" d="M20,20 L3,3" stroke="black"
+   marker-end="url(#arrowhead)" />
+  <path id="swarr" d="M20,2 L3,17" stroke="black"
+   marker-end="url(#arrowhead)" />
+  <path id="swarrd" d="M20,0 L3,17" stroke="black" stroke-dasharray="4 2"
+   marker-end="url(#arrowhead)" />
+ </defs>
+</svg>`,
+    larr: `<svg width="20" height="20"><use href="#larr"/></svg>`,
+    larr3: `<svg width="98" height="20"><use href="#larr3"/></svg>`,
+    nwarr: `<svg width="20" height="20"><use href="#nwarr"/></svg>`,
+    swarrd: `<svg width="20" height="20"><use href="#swarrd"/></svg>`,
+    swarr: `<svg width="20" height="20"><use href="#swarr"/></svg>`,
+    blank: `<svg width="20" height="20"></svg>`,
+    svg01: `<svg width="250" height="20"><path d="M250,10 L3,10" stroke="black" marker-end="url(#arrowhead)" /></svg>`,
+    svg02: `<svg width="250" height="20" style="overflow: visible"><path d="M250,35 L50,35 C30,35 20,20 3,3" fill="transparent" stroke="black" marker-end="url(#arrowhead)" /></svg>`,
+    svg03: `<svg width="20" height="20" style="overflow: visible"><path d="M128,-3 L-34,27" fill="transparent" stroke="black" marker-end="url(#arrowhead)" /></svg>`,
+    svg04: `<svg width="20" height="20" style="overflow: visible"><path d="M92,-3 L5,27" fill="transparent" stroke="black" marker-end="url(#arrowhead)" /></svg>`
+  };
+  Object.keys(svg).forEach(function (key) {
+    Array.prototype.forEach.call(document.querySelectorAll("#p20180313_" + key),
+      function (e) {
+        e.innerHTML = svg[key];
+      });
+  });
+})();
+</script></p>
+
+
+</body>

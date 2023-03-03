@@ -1,0 +1,269 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Processing a ValueSet or PropertySet even in the face of possible mutation, part 1</h1>  <!-- .entry-meta -->
+
+<p>We’ve been looking at how you can non-intrusively monitor changes to a ValueSet or PropertySet. Typically this is so that you can take any changes made by the client and propagate them somewhere.</p>
+<p>Let’s say that you want to take the modified collection and save the whole thing to disk. How can you do this?</p>
+<p>Well, your first attempt might be to do this:</p>
+<pre>void MyPropertySet::Save()
+{
+    SomeKindOfDataBuffer buffer;
+    for (auto [key, value] : m_propertySet) {
+        buffer.AddKeyAndValue(key, value);
+    }
+    SaveToFile(buffer);
+}
+</pre>
+<p>Iterating over the wrapped collection and saving the results is a good start, but the iterator will throw <code>hresult_<wbr/>changed_<wbr/>state</code> if the collection changes during the iteration.</p>
+<p>What we need to do is capture the collection, and when we succeed in capturing it all, we can save it. The copy can’t mutate since we haven’t given anybody else access to it, so iterating over it is safe from an <code>hresult_<wbr/>changed_<wbr/>state</code> exception.</p>
+<pre>void MyPropertySet::Save()
+{
+    <span style="color: #08f;">auto copy = CapturePropertySet(m_propertySet);</span>
+
+    SomeKindOfDataBuffer buffer;
+    for (auto [key, value] : <span style="color: #08f;">copy</span>) {
+        buffer.AddKeyAndValue(key, value);
+    }
+    SaveToFile(buffer);
+}
+</pre>
+<p>I’m assuming here that converting the property set to some kind of data buffer is a slow operation, which is why it’s done as a separate pass over the captured data.</p>
+<p>One way to capture the property set would be to transfer it into another property set:</p>
+<pre>auto CapturePropertySet(winrt::PropertySet const&amp; propertySet)
+{
+    winrt::PropertySet copy;
+    for (auto [key, value] : m_propertySet) {
+        copy.Insert(key, value);
+    }
+    return copy;
+}
+</pre>
+<p>Alternatively, since we really just want to capture the key/value pairs, we could just save the key/value pairs:</p>
+<pre>auto CapturePropertySet(winrt::PropertySet const&amp; propertySet)
+{
+    return std::vector(begin(propertySet), end(propertySet));
+}
+</pre>
+<p>Okay, so we ensured that the collection doesn’t change while we’re saving it, but what if it mutates while we’re copying it? In that case, the <code>hresult_<wbr/>changed_<wbr/>state</code> exception occurs, and the <code>Save()</code> fails with an exception.</p>
+<p>You probably don’t want to propagate this exception back to the caller, because they have no idea that this is even happening. They added a property to the property set, and on another thread, they added another property to the same property set, and somehow the first thread gets a <code>hresult_<wbr/>changed_<wbr/>state</code> exception. What state changed? What did they do wrong?</p>
+<p>They didn’t do anything wrong. The problem is in your <code>Save</code> code.</p>
+<p>Let’s catch the exception and quietly abandon the <code>Save</code> operation. The idea here is that the <code>hresult_<wbr/>changed_<wbr/>state</code> exception occurs if another thread updated the property set after we started saving it. In that case, we should abandon our attempt to save the property set and let that other thread save it.</p>
+<pre>void MyPropertySet::Save()
+{
+    winrt::PropertySet copy{ nullptr };
+    try {
+        copy = CapturePropertySet(m_propertySet);
+    } catch (winrt::hresult_changed_state const&amp;) {
+        // Abandon the operation.
+        // The mutating thread will do its own Save.
+        return;
+    }
+
+    SomeKindOfDataBuffer buffer;
+    for (auto [key, value] : copy) {
+        buffer.AddKeyAndValue(key, value);
+    }
+    SaveToFile(buffer);
+}
+</pre>
+<p>As I mentioned earlier, I’m assuming here that we are converting the property set to a data buffer as a separate pass because it is slow. If the conversion is fast, you may as well do it while iterating:</p>
+<pre>void MyPropertySet::Save()
+{
+    SomeKindOfDataBuffer buffer;
+    try {
+        for (auto [key, value] : m_propertySet) {
+            buffer.AddKeyAndValue(key, value);
+        }
+    } catch (winrt::hresult_changed_state const&amp;) {
+        // Abandon the operation.
+        // The mutating thread will do its own Save.
+        return;
+    }
+    SaveToFile(buffer);
+}
+</pre>
+<p>There is still a problem here, though. Consider this sequence of events:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: 1px gray; border-style: none solid solid none;">Thread 1</td>
+<td style="border-bottom: solid 1px gray;">Thread 2</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Insert</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Save</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Build the buffer</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Insert</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Save</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Build the buffer</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>SaveToFile</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Save returns</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">SaveToFile</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Save returns</td>
+<td> </td>
+</tr>
+</tbody>
+</table>
+<p>Both attempts to capture the data in the property set succeed because the property set did not change during the capture of the property set into the buffer. However, the second capture was able to race ahead of the first one, which means that the latest saved copy from Thread 2 gets overwritten by the stale copy in Thread 1.</p>
+<p>One idea here is have the <code>Save</code> function make one last check before saving that what it saved is still the latest copy. To avoid the race between the final check and the <code>SaveToFile</code>, we will need a lock.</p>
+<pre>void MyPropertySet::Save()
+{
+    SomeKindOfDataBuffer buffer;
+    try {
+        auto it = m_propertySet.First();
+        if (it.HasCurrent()) {
+            do {
+                auto current = it.Current();
+                buffer.AddKeyAndValue(current.Key(), current.Value());
+            } while (it.MoveNext());
+        }
+
+        auto guard = m_lock.lock();
+
+        // verify that the collection is still unchanged before saving
+        std::ignore = it.HasCurrent();
+        SaveToFile(buffer);
+    } catch (winrt::hresult_changed_state const&amp;) {
+        // Abandon the operation.
+        // The mutating thread will do its own Save.
+        return;
+    }
+
+}
+</pre>
+<p>After we build the results in the data buffer, we enter the lock and make one final check that the collection hasn’t changed. The return value is not what we are interested in, since we know that it will return <code>false</code> if it returns at all, seeing as we iterated to the end of the collection in the preceding loop. What we are interested in is checking whether it will throw an exception due to the collection having been mutated. Assigning to <code>std::ignore</code> is the same as throwing the value away, except it avoids a <code>[[nodiscard]]</code> warning and is arguably clearer that discarding the value is intentional.</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: 1px gray; border-style: none solid solid none;">Thread 1</td>
+<td style="border-bottom: solid 1px gray;">Thread 2</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Insert</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Save</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Build the buffer</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Insert</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Save</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Build the buffer</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">enter lock</td>
+<td>enter lock</td>
+</tr>
+</tbody>
+</table>
+<p>If Thread 1 wins the race to enter the lock, then the final <code>HasCurrent()</code> check will throw <code>hresult_<wbr/>changed_<wbr/>state</code>, and the <code>SaveToFile</code> will not happen. Thread 2 then gets a chance to save, and its test of <code>HasCurrent()</code> will not throw, so it is the one that gets to perform the <code>SaveToFile</code>.</p>
+<p>On the other hand, if Thread 2 wins the race to enter the lock, then Thread 2’s <code>HasCurrent()</code> will not throw, so it will perform <code>SaveToFile</code>. And then Thread 1 gets the lock and checks <code>HasCurrent()</code>, which throws, so Thread 1 does not save its now-outdated data.</p>
+<p>There is also a race condition where there is a redundant save:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<td style="border: 1px gray; border-style: none solid solid none;">Thread 1</td>
+<td style="border-bottom: solid 1px gray;">Thread 2</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Insert</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Insert</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Save</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Save</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">Build the buffer</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>Build the buffer</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">enter lock</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">HasCurrent does not throw</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">SaveToFile</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;">exit lock</td>
+<td> </td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>enter lock</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>HasCurrent does not throw</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>SaveToFile</td>
+</tr>
+<tr>
+<td style="border-right: solid 1px gray;"> </td>
+<td>exit lock</td>
+</tr>
+</tbody>
+</table>
+<p>Since Thread 1 got off to a late start, it started building the data buffer after Thread 2 already snuck in and changed the property set, so it unwittingly created an up-to-date copy. At least here the race condition is harmless, albeit perhaps inefficient.</p>
+<p>The model here is that each <code>Save</code> operation tries to save as fast as it can, but bails out if it discovers that it is not the winner. This means that the Save method’s running time is basically the time it takes to serialize and save the property set once.</p>
+<p>Next time, we’ll look at another solution to the concurrency problem which has its own separate advantages and disadvantages.</p>
+
+
+</body>

@@ -1,0 +1,181 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Speculation on the design decisions that led to the common ABI for C++ coroutines</h1>  <!-- .entry-meta -->
+
+<p>A little while ago, I discussed <a href="/code/debugging-coroutine-handles-the-microsoft-visual-c-compiler-clang-and-gcc"> the common ABI for C++20 coroutine handles</a>. Recall that the common ABI is</p>
+<pre>struct coroutine_frame_abi
+{
+    void (*resume)(coroutine_frame_abi*);
+    void (*destroy)(coroutine_frame_abi*);
+};
+</pre>
+<p>and that in practice, the implementations set themselves up like this:</p>
+<pre>struct coroutine_frame
+{
+    void (*resume)(coroutine_frame*);
+    void (*destroy)(coroutine_frame*);
+    uint16_t index;
+    /* other stuff */
+};
+</pre>
+<p>The <code>index</code> represents the point inside the coroutine at which execution was suspended. Each time the coroutine suspends, the <code>index</code> is updated, and when the coroutine resumes, the <code>resume</code> function switches on the <code>index</code> to decode where to resume execution.</p>
+<p>What other designs could have been used?</p>
+<p>One counter-proposal was that instead of updating the index, the code could update the <code>resume</code> and <code>destroy</code> pointers to point to where to resume next (or what to do if the coroutine is destroyed).</p>
+<p>Updating the function pointers would speed up resumption, since it could just jump directly to the resumption point instead of having to execute a <code>switch</code> statement.</p>
+<p>However, it also comes with a cost.</p>
+<p>For one thing, <a href="https://docs.microsoft.com/en-us/windows/win32/secbp/control-flow-guard"> Control Flow Guard</a> is most effective when function pointers are multiples of 16, and the Microsoft compiler will arrange for all function pointer jump targets to be placed on 16-byte boundaries. <a href="https://msrc-blog.microsoft.com/2020/08/17/control-flow-guard-for-clang-llvm-and-rust/"> The clang compiler also supports Control Flow Guard</a>, but I don’t know whether it puts jump targets on 16-byte boundaries.</p>
+<p>Putting all resumption and destruction points on 16-byte boundaries would on average insert eight bytes for each potential entry point. The destruction entry points can often be quite small, destructing one object and then falling through to another case where the remainder of the objects are destructed.</p>
+<p>For example:</p>
+<pre>winrt::IAsyncAction MyCoroutine()
+{
+    auto p1 = std::make_unique(1);
+    co_await Something1();
+    {
+        auto p2 = std::make_unique(2);
+        co_await Something2();
+    }
+    auto p3 = std::make_unique(3);
+    co_return;
+}
+</pre>
+<p>There are four suspension points in this coroutine, once we add the two extra suspension points provided by the promise.</p>
+<pre>winrt::IAsyncAction MyCoroutine()
+{
+    promise p;
+    <span style="color: blue;">co_await p.initial_suspend();
+    // 1</span>
+
+    auto p1 = std::make_unique(1);
+    <span style="color: blue;">co_await Something1();
+    // 2</span>
+
+    {
+        auto p2 = std::make_unique(2);
+        <span style="color: blue;">co_await Something2();
+        // 3</span>
+    }
+
+    auto p3 = std::make_unique(3);
+    p.return_void();
+
+    <span style="color: blue;">co_await p.final_suspend();
+    // 4</span>
+}
+</pre>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Resume</th>
+<th>Destroy</th>
+</tr>
+<tr>
+<td>goto 1</td>
+<td>destruct p</td>
+</tr>
+<tr>
+<td>goto 2</td>
+<td>destruct p1 and p</td>
+</tr>
+<tr>
+<td>goto 3</td>
+<td>destruct p2, p1, and p</td>
+</tr>
+<tr>
+<td>goto 4</td>
+<td>destruct p3, p1, and p</td>
+</tr>
+</tbody>
+</table>
+<p>In practice, the four <code>destroy</code> functions are going to fall through to each other or at least jump to each other.</p>
+<pre>destroy4:
+    lea     rcx, [p3]
+    call    std::unique_ptr&lt;int&gt;::~unique_ptr&lt;int&gt;
+    jmp     destroy2
+destroy3:
+    lea     rcx, [p2]
+    call    std::unique_ptr&lt;int&gt;::~unique_ptr&lt;int&gt;
+destroy2:
+    lea     rcx, [p1]
+    call    std::unique_ptr&lt;int&gt;::~unique_ptr&lt;int&gt;
+destroy1:
+    lea     rcx, [p]
+    call    promise::~promise
+</pre>
+<p>If each of these destruction entry points were a runtime function pointer, there would have to be a lot of padding between them to get the start-addresses to align on 16-byte boundaries.</p>
+<p>On the other hand, if it’s a switch statement or jump table, no such padding is required because the jump targets are kept in the code segment or the read-only data segment, so they are safe from corruption via buffer overflow, use-after-free, or type confusion.</p>
+<p>In addition to the instruction padding requirements, replacing the function pointers on suspension is significantly more code:</p>
+<pre>    ; index-based
+    mov word ptr [rbx].index, 42 ; update the index
+
+    ; function-pointer-based
+    mov rcx, offset resume2
+    mov qword ptr [rbx].resume, rcx
+    mov rcx, offset destroy2
+    mov qword ptr [rbx].destroy, rcx
+</pre>
+<p>Instead of writing a 16-bit constant, we are writing two 64-bit constants. But the x86-64 cannot write a 64-bit constant directly to memory. You have to pass the value through a register first.</p>
+<p>And that constant isn’t a constant. It’s a relocatable address, which means that you also have to add a relocation record for each of those addresses.¹</p>
+<p>Furthermore, other 64-bit processors cannot load 64-bit immediate constants. If the function isn’t too large, you can use instruction-pointer-relative instructions:</p>
+<pre>    ; index-based
+    movz    r0, #42
+    str     r0, [r1, #index]
+
+    ; function-pointer-based for small functions
+    adr     x0, resume2
+    str     x0, [r1, #resume]
+    adr     x0, destroy2
+    str     x0, [r1, #destroy]
+
+    ; function-pointer-based for large functions
+    adrp    x0, resume2
+    add     x0, x0, #PageOffset(resume2)
+    str     x0, [r1, #resume]
+    adrp    x0, destroy2
+    add     x0, x0, #PageOffset(destroy2)
+    str     x0, [r1, #destroy]
+
+    ; alternate version with constants in memory
+    ; (two pointers = size of four instructions)
+    ldr     x0, [pc, #...]  ; load constant from memory
+    str     x0, [r1, #resume]
+    ldr     x0, [pc, #...]  ; load constant from memory
+    str     x0, [r1, #destroy]
+</pre>
+<p>You don’t need a switch statement in the <code>resume</code> function, but you pay more at each suspension point to set up the function pointers. This is trading a fixed cost for a variable cost. The size of the coroutine switch statement is 34 bytes:</p>
+<pre>0f b7 43 xx             movzx eax, word ptr [rbx+xx]
+ff c0                   inc   eax
+83 f8 08                cmp   eax, 8
+0f 87 xx xx xx xx       ja    fatal_error
+48 8d 15 xx xx xx xx    lea   rdx, [__ImageBase]
+8b 8c 82 xx xx xx xx    mov   ecx, dword ptr [rdx+rax*4+xxxxxxxx]
+48 03 ca                add   rcx, edx
+ff e1                   jmp   rcx
+</pre>
+<p>The index update is six bytes:</p>
+<pre>66 c7 43 xx yy yy       mov  word ptr [rbx+xx], yyyy
+</pre>
+<p>The double-address update is 27 bytes:</p>
+<pre>48 b9 xx xx xx xx       mov  rcx, xxxxxxxxxxxxxxxx
+      xx xx xx xx
+48 89 0b                mov  [rbx], rcx
+48 b9 xx xx xx xx       mov  rcx, xxxxxxxxxxxxxxxx
+      xx xx xx xx
+48 89 4b 08             mov  [rbx+8], rcx
+</pre>
+<p>You save a 34-byte fixed overhead, but each suspension point costs 21 bytes more. This means that once you have a second suspension point, you’re at net loss in code size.</p>
+<p>A similar calculation plays out for AArch64: The standard resumption dispatcher is eight instructions:</p>
+<pre>        ldrh    x0, [x1, #index]
+        add     w0, w0, #1
+        cmp     w0, #8
+        bhi     fatal_error
+        adr     x9, switch_table
+        ldrsw   x8, [x9, w0 uxtw #2]
+        add     x9, x9, x8, lsl #2
+        br      x9
+</pre>
+<p>Updating the index is two instructions, but updating the two pointers is four instructions for small functions, and six instructions for large functions.² Even if you take the smallest extra cost of two instructions, it means that once your coroutine has four suspension points, updating function pointers is going to have a larger net code size.</p>
+<p>For all but the simplest coroutines, the index-based version ends up a net win in terms of code size.</p>
+<p>¹ I guess you could be sneaky and if you know that only one suspension point precedes the one you are about to reach, you could add the delta to the two addresses. But that works only for straight-line code, and if anything goes slightly wrong, the results can get quite wild.</p>
+<p>² If you store the addresses as in-memory constants, then it will cost you eight instructions plus two relocations.</p>
+
+
+</body>

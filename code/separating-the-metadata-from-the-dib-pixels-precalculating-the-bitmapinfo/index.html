@@ -1,0 +1,110 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Separating the metadata from the DIB pixels: Precalculating the BITMAPINFO</h1>  <!-- .entry-meta -->
+
+<p>
+Last time, we saw
+<a href="http://blogs.msdn.com/oldnewthing/archive/2009/07/14/9832544.aspx">
+that you can use the <code>SetDIBitsToDevice</code> function
+to draw a DIB with an alternate color table without having
+to modify the <code>HBITMAP</code></a>.
+In that version of the function, we selected the <code>HBITMAP</code>
+into a device context in preparation for drawing from it,
+but in fact that step isn’t necessary for drawing.
+It was merely necessary to get the original color table
+so we could build our grayscale color table.
+If you don’t care what the original colors are,
+then you can skip that step.
+And even if you care what the old colors are,
+and if you assume that the colors don’t change,
+then you only need to ask once.
+</p>
+<p>
+To demonstrate, that
+all the work of building the <code>BITMAPINFO</code>
+structure could have been done ahead of time,
+let’s use this alternate version of our program:
+</p>
+<pre>
+HBITMAP g_hbm;
+<font color="blue">struct BITMAPINFO256 {
+ BITMAPINFOHEADER bmiHeader;
+   RGBQUAD bmiColors[256];
+} g_bmiGray;
+void *g_pvBits;</font>
+BOOL
+OnCreate(HWND hwnd, LPCREATESTRUCT lpcs)
+{
+ // change path as appropriate
+ g_hbm = (HBITMAP)LoadImage(g_hinst,
+                      TEXT("C:\\Windows\\Gone Fishing.bmp"),
+                      IMAGE_BITMAP, 0, 0,
+                      LR_CREATEDIBSECTION | LR_LOADFROMFILE);
+ <font color="blue">if (g_hbm) {
+  BITMAP bm;
+  if (GetObject(g_hbm, sizeof(bm), &amp;bm) == sizeof(bm) &amp;&amp;
+                bm.bmBits != NULL &amp;&amp;
+                bm.bmPlanes * bm.bmBitsPixel &lt;= 8) {
+   ZeroMemory(&amp;g_bmiGray, sizeof(g_bmiGray));
+   HDC hdc = CreateCompatibleDC(NULL);
+   if (hdc) {
+    HBITMAP hbmPrev = SelectBitmap(hdc, g_hbm);
+    UINT cColors = GetDIBColorTable(hdc, 0, 256, g_bmiGray.bmiColors);
+    for (UINT iColor = 0; iColor &lt; cColors; iColor++) {
+     BYTE b = (BYTE)((30 * g_bmiGray.bmiColors[iColor].rgbRed +
+                      59 * g_bmiGray.bmiColors[iColor].rgbGreen +
+                      11 * g_bmiGray.bmiColors[iColor].rgbBlue) / 100);
+     g_bmiGray.bmiColors[iColor].rgbRed   = b;
+     g_bmiGray.bmiColors[iColor].rgbGreen = b;
+     g_bmiGray.bmiColors[iColor].rgbBlue  = b;
+    }
+    g_bmiGray.bmiHeader.biSize        = sizeof(g_bmiGray.bmiHeader);
+    g_bmiGray.bmiHeader.biWidth       = bm.bmWidth;
+    g_bmiGray.bmiHeader.biHeight      = bm.bmHeight;
+    g_bmiGray.bmiHeader.biPlanes      = bm.bmPlanes;
+    g_bmiGray.bmiHeader.biBitCount    = bm.bmBitsPixel;
+    g_bmiGray.bmiHeader.biCompression = BI_RGB;
+    g_bmiGray.bmiHeader.biClrUsed     = cColors;
+    <font color="red">g_pvBits                          = bm.bmBits;</font>
+    DeleteDC(hdc);
+   }
+ }</font>
+ return TRUE;
+}
+void
+PaintContent(HWND hwnd, PAINTSTRUCT *pps)
+{
+ <font color="red">if (g_pvBits) {</font>
+    <font color="blue">SetDIBitsToDevice(pps-&gt;hdc, 0, 0,
+                  g_bmiGray.bmiHeader.biWidth,
+                  g_bmiGray.bmiHeader.biHeight, 0, 0,
+                  0, g_bmiGray.bmiHeader.biHeight,
+                  <font color="red">g_pvBits</font>,
+                  (BITMAPINFO*)&amp;g_bmiGray, DIB_RGB_COLORS);
+ }</font>
+}
+</pre>
+<p>
+I moved the blue code from <code>PaintContent</code>
+to <code>OnCreate</code> to demonstrate that pretty much all
+of the work we used to do in <code>PaintContent</code>
+could have been done ahead of time.
+The only other thing we had to do was save the pointer to the bits
+so we could pass them to <code>SetDIBitsToDevice</code>.
+(Of course, that pointer becomes invalid once the controlling
+<code>HBITMAP</code> is destroyed, so be careful!
+In practice, you probably would be better off calling
+<code>GetObject</code> immediately before drawing
+to protect against the case that somebody deleted the bitmap
+out from under you.)
+</p>
+<p>
+Next time,
+we’ll look at another operation we can perform
+when we have a <code>BITMAPINFO</code> and a collection of pixels.
+</p>
+<p>
+(Note that there are issues with this technique
+which will be taken up on Friday.)</p>
+
+
+</body>

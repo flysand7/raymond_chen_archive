@@ -1,0 +1,65 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How can I emulate the REG_NOTIFY_THREAD_AGNOSTIC flag on systems that don’t support it? part 2</h1>  <!-- .entry-meta -->
+
+<p>We continue our exercise of <a href="/code/how-can-i-emulate-the-reg-notify-thread-agnostic-flag-on-systems-that-don-t-support-it-part-1"> emulating the <code>REG_<wbr/>NOTIFY_<wbr/>THREAD_<wbr/>AGNOSTIC</code> flag</a>, this time for the case where we don’t have a readily-available persistent thread. In that case, we can use one from the thread pool, but it’ll be a bit trickier because we’ll have to wait for the thread pool work item to run in order to get the result.</p>
+<pre>struct RegNotifyChangeKeyValueAsyncArgs
+{
+  HKEY hkey;
+  BOOL bWatchSubtree;
+  DWORD dwNotifyFilter;
+  HANDLE hEvent;
+  LONG result;
+  HANDLE hComplete;
+
+  ~RegNotifyChangeKeyValueAsyncArgs()
+  {
+    if (hComplete) CloseHandle(hComplete);
+  }
+};
+
+DWORD CALLBACK RegNotifyChangeKeyValueOnPersistentThread(
+    void* param)
+{
+  auto args = reinterpret_cast&lt;
+               RegNotifyChangeKeyValueAsyncArgs*&gt;(param);
+  args-&gt;result = RegNotifyChangeKeyValue(
+    args-&gt;hkey,
+    args-&gt;bWatchSubtree,
+    args-&gt;dwNotifyFilter,
+    args-&gt;hEvent,
+    TRUE);
+  SetEvent(args-&gt;hComplete);
+  return 0;
+}
+
+// See discussion before using this function.
+LONG RegNotifyChangeKeyValueAsync(
+  HKEY hkey,
+  BOOL bWatchSubtree,
+  DWORD dwNotifyFilter,
+  HANDLE hEvent)
+{
+  RegNotifyChangeKeyValueAsyncArgs args = 
+    { hkey, bWatchSubtree, dwNotifyFilter, hEvent,
+      ERROR_INVALID_PARAMETER,
+      CreateEvent(nullptr, TRUE, FALSE, nullptr) };
+  if (!args.hComplete) {
+    return static_cast&lt;LONG&gt;(GetLastError());
+  }
+  if (!QueueUserWorkItem(
+          RegNotifyChangeKeyValueOnPersistentThread,
+          &amp;args,
+          WT_EXECUTEINPERSISTENTTHREAD)) {
+    return static_cast&lt;LONG&gt;(GetLastError());
+  }
+  WaitForSingleObject(args-&gt;hComplete, INFINITE);
+  return args.result;
+}
+</pre>
+<p>One of the tricks of this exercise is limiting the solution to the features that were available in Windows XP.</p>
+<p>Since we need to do the registration from a thread that will remain running indefinitely, we ask the thread pool for help by calling <code>Queue<wbr/>User<wbr/>Work<wbr/>Item</code> with the <code>WT_<wbr/>EXECUTE­IN­PERSISTENT­THREAD</code> flag. The callback runs on a persistent thread, and it is there that we call <code>Reg­Notify­Change­Key­Value</code> and pass the result back. Meanwhile, the main thread waits for the work item to finish so it can propagate the results to the caller.</p>
+<p>This design seems to work, but it has a trap: If the caller of <code>Reg­Notify­Change­Key­Value­Async</code> is itself on the thread pool, then you end up with the risk of <a href="https://devblogs.microsoft.com/oldnewthing/20200501-00/?p=103720"> starving the thread pool and preventing it from doing the thing that would relieve the starvation</a>.</p>
+<p>We’ll look at ways of fixing this next time.</p>
+
+
+</body>

@@ -1,0 +1,313 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The PowerPC 600 series, part 5: Rotates and shifts</h1>  <!-- .entry-meta -->
+
+<p>The Swiss army knife instruction of the PowerPC 600 series instruction set is <code>rlwinm</code>, which stands for “rotate left word immediate and mask.” </p>
+<pre>
+    rlwinm  rd, ra, imm5a, imm5b, imm5c
+    rlwinm. rd, ra, imm5a, imm5b, imm5c ; also updates cr0
+</pre>
+<p>This instruction does everything except wash your floor. </p>
+<p>First it takes the current value of the <var>ra</var> register and rotates it left by <var>imm5a</var> bits. Then it keeps all the bits <var>imm5b</var> to <var>imm5c</var>, inclusive, and clears all the other bits. If <var>imm5b</var> is greater than <var>imm5c</var>, the bits to keep wrap around! (Don’t forget that bit zero is the most significant bit.) The result of all this is placed in the <var>rd</var> register. </p>
+<p>Let’s take a few examples. </p>
+<pre>
+    rlwinm  rd, ra, 5, 6, 20
+</pre>
+<p>Here, we take <var>ra</var>, rotate it left by 5 bits, and then keep bits 6 through 20. Since bit 0 is the most significant bit, then that means that the mask is </p>
+<table border="0" cellpadding="3" class="cp3" style="border-collapse: collapse;text-align: center">
+<tr>
+<td style="width: 1pc">0</td>
+<td style="width: 1pc">1</td>
+<td style="width: 1pc">2</td>
+<td style="width: 1pc">3</td>
+<td style="width: 1pc">4</td>
+<td style="width: 1pc">5</td>
+<td style="width: 1pc">6</td>
+<td style="width: 1pc">7</td>
+<td style="width: 1pc">8</td>
+<td style="width: 1pc">9</td>
+<td style="width: 1pc">10</td>
+<td style="width: 1pc">11</td>
+<td style="width: 1pc">12</td>
+<td style="width: 1pc">13</td>
+<td style="width: 1pc">14</td>
+<td style="width: 1pc">15</td>
+<td style="width: 1pc">16</td>
+<td style="width: 1pc">17</td>
+<td style="width: 1pc">18</td>
+<td style="width: 1pc">19</td>
+<td style="width: 1pc">20</td>
+<td style="width: 1pc">21</td>
+<td style="width: 1pc">22</td>
+<td style="width: 1pc">23</td>
+<td style="width: 1pc">24</td>
+<td style="width: 1pc">25</td>
+<td style="width: 1pc">26</td>
+<td style="width: 1pc">27</td>
+<td style="width: 1pc">28</td>
+<td style="width: 1pc">29</td>
+<td style="width: 1pc">30</td>
+<td style="width: 1pc">31</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+</tr>
+<tr>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>0</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>3</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>F</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>F</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>F</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>8</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>0</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>0</code></td>
+</tr>
+</table>
+<p>This comes out to <code>0x03FFF800</code>. Therefore, the result of the operation is </p>
+<pre>
+     rd = rotl(ra, 5) &amp; 0x03FFF800
+</pre>
+<p>The other case is where the bit count wraps around: </p>
+<pre>
+    rlwinm  rd, ra, 5, 20, 6
+</pre>
+<p>This time, we start by setting bit 20, and continue to the end of the word, and then wrap around and start setting bits starting at bit 0, and then finally stop when we get to bit 6. </p>
+<table border="0" cellpadding="3" class="cp3" style="border-collapse: collapse;text-align: center">
+<tr>
+<td style="width: 1pc">0</td>
+<td style="width: 1pc">1</td>
+<td style="width: 1pc">2</td>
+<td style="width: 1pc">3</td>
+<td style="width: 1pc">4</td>
+<td style="width: 1pc">5</td>
+<td style="width: 1pc">6</td>
+<td style="width: 1pc">7</td>
+<td style="width: 1pc">8</td>
+<td style="width: 1pc">9</td>
+<td style="width: 1pc">10</td>
+<td style="width: 1pc">11</td>
+<td style="width: 1pc">12</td>
+<td style="width: 1pc">13</td>
+<td style="width: 1pc">14</td>
+<td style="width: 1pc">15</td>
+<td style="width: 1pc">16</td>
+<td style="width: 1pc">17</td>
+<td style="width: 1pc">18</td>
+<td style="width: 1pc">19</td>
+<td style="width: 1pc">20</td>
+<td style="width: 1pc">21</td>
+<td style="width: 1pc">22</td>
+<td style="width: 1pc">23</td>
+<td style="width: 1pc">24</td>
+<td style="width: 1pc">25</td>
+<td style="width: 1pc">26</td>
+<td style="width: 1pc">27</td>
+<td style="width: 1pc">28</td>
+<td style="width: 1pc">29</td>
+<td style="width: 1pc">30</td>
+<td style="width: 1pc">31</td>
+</tr>
+<tr>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">0</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+<td style="border: solid 1px black">1</td>
+</tr>
+<tr>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>F</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>E</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>0</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>0</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>0</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>F</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>F</code></td>
+<td colspan="4" style="border: 1px black;border-style: none solid"><code>F</code></td>
+</tr>
+</table>
+<p>The net result is therefore </p>
+<pre>
+     rd = rotl(ra, 5) &amp; 0xFE000FFF
+</pre>
+<p>The Windows debugger for PowerPC was not in use for very long, and consequently its disassembler isn’t particularly advanced. But one thing it does do for you is unpack the last two parameters and tell you what the final mask is. </p>
+<pre>
+10ae222c 54642d0c rlwinm  r4, r3,5,20,6            MASK=0xfe000fff
+</pre>
+<p>(Yes, the disassembler can’t make up its mind whether it puts a space after a comma or not. Like I said, the debugger didn’t last long enough to go through multiple iterations of polish.) </p>
+<p>With the <code>rlwinmi</code> instruction, we can build many things. (In all examples, bit index arithmetic wraps around at 32.) </p>
+<ul>
+<li>
+<p>    Rotate left by <var>n</var> bits: </p>
+<pre>
+    rlwinm  rd, ra, n, 0, 31
+</pre>
+<p>    Rotate left by <var>n</var> bits,     and specify a mask that starts at bit 0      and ends at bit 31.     This mask is <code>0xFFFFFFFF</code>,     which means that no bits get cleared. </p>
+</li>
+<li>
+<p>    Rotate right by <var>n</var> bits: </p>
+<pre>
+    rlwinm  rd, ra, 32 - n, 0, 31
+</pre>
+<p>    Rotate left by     32 − <var>n</var> bits,     and specify a mask that starts at bit 0      and ends at bit 31.     This mask is <code>0xFFFFFFFF</code>,     which means that no bits get cleared. </p>
+</li>
+<li>
+<p>    Shift left by <var>n</var> bits: </p>
+<pre>
+    rlwinm  rd, ra, n, 0, 31 - n
+</pre>
+<p>    Rotate left by <var>n</var>     and clear the rightmost <var>n</var> bits.     In Windows NT, the most common version of this is </p>
+<pre>
+    rlwinm  rd, ra, 2, 0, 29
+</pre>
+<p>    which shifts a value left two places.     This multiplies it by four, which is a common     operation when indexing an array of pointers. </p>
+</li>
+<li>
+<p>    Shift right by <var>n</var> bits: </p>
+<pre>
+    rlwinm  rd, ra, 32 - n, n, 31
+</pre>
+<p>    Rotating left by 32 − <var>n</var>     is the same as rotating right by <var>n</var>.     We then clear the leftmost <var>n</var> bits     by saying we want to keep the bits starting from     position <var>n</var> to the end of the register. </p>
+</li>
+<li>
+<p>    Pluck bit <var>n</var> out of a 32-bit value: </p>
+<pre>
+    rlwinm  rd, ra, n + 1, 31, 31
+</pre>
+<p>    Rotate left by <var>n</var> + 1     to position the desired bit in position 31,     then clear all the other bits. </p>
+</li>
+<li>
+<p>    Extract a bitfield of length <var>m</var> at position <var>n</var>: </p>
+<pre>
+    rlwinm  rd, ra, n + m, 32 - m, 31
+</pre>
+<p>    Rotate left by <var>n</var> + <var>m</var>,     which right-aligns the field,     then clear all but the rightmost <var>m</var> bits. </p>
+</li>
+<li>
+<p>    Take the least significant <var>m</var> bits of a value     and position it so it can be inserted into a bitfield     starting at position <var>n</var>: </p>
+<pre>
+    rlwinm  rd, ra, 32 - n - m, n, n + m - 1
+</pre>
+<p>    Rotate right by     <var>n</var> + <var>m</var>,     which positions the field into its final location,     then clear all the bits that aren’t used to represent the field. </p>
+</li>
+<li>
+<p>    Set a bitfield     of length <var>m</var> at     position <var>n</var> to zero: </p>
+<pre>
+    rlwinm  rd, ra, 0, n + m, n - 1
+</pre>
+<p>    A rotation of zero does nothing,     but here’s where we exploit the wraparound behavior     of the mask:     We keep the bits starting at     <var>n</var> + <var>m</var>, which is the last     bit past the end of the field,     and continue keeping bits through the end of the register,     and then wrap around and keep bits starting at bit zero,     and stop at bit <var>n</var> − 1,     which is the last bit before the start of the field. </p>
+</li>
+<li>
+<p>    Zero-extend a byte to a word and do not update <var>cr0</var>: </p>
+<pre>
+    rlwinm  rd, ra, 0, 24, 31
+</pre>
+<p>    We perform no rotation and zero out the most significant 24 bits.     We can also do zero extension with <code>andi.</code>,     but the <code>rlwinm</code> instruction lets us do it     without updating <var>cr0</var>. </p>
+<li>
+<p>    Zero-extend a halfword to a word and do not update <var>cr0</var>: </p>
+<pre>
+    rlwinm  rd, ra, 0, 16, 31
+</pre>
+<p>    This time, after doing no rotation, we zero out     the most significant 16 bits.     Again, we could have done this with <code>andi.</code>,     but this way lets us do it without updating <var>cr0</var>. </p>
+</li></li></ul>
+<p>There is also a version of the instruction where the rotation amount comes from a register. </p>
+<pre>
+    rlwnm   rd, ra, rb, imm5a, imm5b
+    rlwnm.  rd, ra, rb, imm5a, imm5b ; also updates cr0
+</pre>
+<p>“Rotate left word and mask” is like “rotate left word immediate and mask”, except that the rotation amount is specified by the value of a register. (Since rotation by a multiple of 32 bits is a nop, it doesn’t matter whether bits 0 through 26 in <var>rb</var> are respected or ignored.) </p>
+<pre>
+    rlwimi  rd, ra, imm5a, imm5b, imm5c
+    rlwimi. rd, ra, imm5a, imm5b, imm5c ; also updates cr0
+</pre>
+<p>“Rotate left word immediate and mask insert” rotates the value in the <var>ra</var> register left by <var>imm5a</var> bits, and then copies bits <var>imm5b</var> through <var>imm5c</var> of the rotated value (wrapping around if necessary) to <var>rd</var>, leaving the other bits of <var>rd</var> alone. This instruction is most useful for storing a value into a bitfield: </p>
+<pre>
+    rlwimi  rd, ra, 32 - n - m, n, n + m - 1
+</pre>
+<p>The above instruction takes the least significant <var>m</var> bits of <var>ra</var> and sets them into a bitfield of size <var>m</var> starting at position <var>n</var> in <var>rd</var>. We did the math for this before, when we tried out <code>rlwinm</code> to position a bitfield. By using <code>rlwimi</code>, we get to store it. </p>
+<p>Okay, now we can get to the true shift instructions. </p>
+<pre>
+    slw     rd, ra, rb      ; rd = ra &lt;&lt; (rb % 64)
+    slw.    rd, ra, rb      ; rd = ra &lt;&lt; (rb % 64), update cr0
+
+    srw     rd, ra, rb      ; rd = ra &gt;&gt; (rb % 64)
+    srw.    rd, ra, rb      ; rd = ra &gt;&gt; (rb % 64), update cr0
+</pre>
+<p>The <code>slw</code> and <code>srw</code> instructions shift a register left or right by an amount specified by the value of another register. Notice that the shift amount is taken mod 64, rather than mod 32. This means that a shift by 63 will set the result to zero, but a shift by 64 will do nothing. </p>
+<pre>
+    sraw    rd, ra, rb      ; rd = (int32_t)ra &gt;&gt; (rb % 64), update carry
+    sraw.   rd, ra, rb      ; rd = (int32_t)ra &gt;&gt; (rb % 64), update carry and cr0
+
+    srawi   rd, ra, imm5    ; rd = (int32_t)ra &gt;&gt; imm5, update carry
+    srawi.  rd, ra, imm5    ; rd = (int32_t)ra &gt;&gt; imm5, update carry and cr0
+</pre>
+<p>The <code>sraw</code> instruction performs an arithmetic right shift by an amount specified by the <var>rb</var> register, and the <code>srawi</code> instruction does the same, but with an immediate shift amount. </p>
+<p>These four shift instructions are special because they always update carry: The carry bit is set if and only if the original value was negative and any bits shifted out were nonzero. This rule for the carry bit allows you to follow the right-shift instruction with an <code>addze</code> to perform a division by a power of two that rounds toward zero. (If you omit the <code>addze</code>, then the right shift performs a division by a power of two that rounds toward minus infinity.) </p>
+<p><b>Exercise</b>: How would you do a division by a power of two that rounds toward positive infinity? </p>
+<p>Here’s a sample code sequence to perform a C-style logical not operation: </p>
+<pre>
+    cmpwi   r3,0                ; set EQ if value was zero
+    mfcr    r3                  ; r3 = cr
+    rlwinm  r3,r3,eq+1,31,31    ; save the EQ bit
+</pre>
+<p>Similarly, you can calculate the C logical <code>&lt;</code> and <code>&gt;</code> operations by performing the comparison and extracting the <var>lt</var> or <var>gt</var> bit. To get the other three comparisons <code>!=</code>, <code>&lt;=</code> and <code>&gt;=</code>, you follow up with <code>xori r3, r3, 1</code>. </p>
+<p>Okay, those are the logical and shifting instructions. <a href="https://blogs.msdn.microsoft.com/oldnewthing/20180813-00/?p=99475">Next time</a>, we’ll look at memory access. </p>
+
+
+</body>

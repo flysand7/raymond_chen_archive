@@ -1,0 +1,108 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">How do I split a file into two while preserving git line history?</h1>  <!-- .entry-meta -->
+
+<p>Some time ago, I showed how to <a href="/other/mundane-git-tricks-combining-two-files-into-one-while-preserving-line-history"> combine two files into one while preserving line history</a>. Today, we’re going to do the opposite: Split a file into two smaller files, while preserving line history.</p>
+<p>Let’s set up a scratch repo to demonstrate. I’ve omitted the command prompts so you can copy-paste this into your shell of choice and play along at home. (The timestamps and commit hashes will naturally be different.)</p>
+<pre style="white-space: pre-wrap;">git init
+
+&gt;foods echo apple
+&gt;&gt;foods echo celery
+&gt;&gt;foods echo cheese
+git add foods
+git commit --author="Alice &lt;alice&gt;" -m created
+
+&gt;&gt;foods echo eggs
+&gt;&gt;foods echo grape
+&gt;&gt;foods echo lettuce
+git commit --author="Bob &lt;bob&gt;"   -am middle
+
+&gt;&gt;foods echo milk
+&gt;&gt;foods echo orange
+&gt;&gt;foods echo peas
+git commit --author="Carol &lt;carol&gt;" -am last
+
+git tag ready
+</pre>
+<p>With this starting point, the <code>git blame</code> output says</p>
+<pre style="white-space: pre-wrap;">^e7a114d (Alice 2019-09-16 07:00:00 -0700 1) apple
+^e7a114d (Alice 2019-09-16 07:00:00 -0700 2) celery
+^e7a114d (Alice 2019-09-16 07:00:00 -0700 3) cheese
+86348be4 (Bob   2019-09-16 07:00:01 -0700 4) eggs
+86348be4 (Bob   2019-09-16 07:00:01 -0700 5) grape
+86348be4 (Bob   2019-09-16 07:00:01 -0700 6) lettuce
+34eb5bd1 (Carol 2019-09-16 07:00:02 -0700 7) milk
+34eb5bd1 (Carol 2019-09-16 07:00:02 -0700 8) orange
+34eb5bd1 (Carol 2019-09-16 07:00:02 -0700 9) peas
+</pre>
+<p>As we noted when we learned how to combine two files, the naïve way of splitting the file will treat the larger file as a continuation of the original (assuming you haven’t hit the rename limit), and the smaller file will be treated as a brand new file. The blame of the smaller file will blame you, the person who split them, instead of blaming the person who introduced each line.</p>
+<p>To get git to follow the line attributes, we have to make each of the result files look like a rename of the original. We can do this by creating each piece in a different branch, then merging them all together.</p>
+<p>In a new <code>fruits</code> branch, the first step is to do a pure rename, so that git will recognize that the <code>fruits</code> file is a continuation of the <code>foods</code> file.</p>
+<pre style="white-space: pre-wrap;">git checkout -b fruits
+git mv foods fruits
+git commit --author="Greg &lt;greg&gt;" -m "split foods to fruits"
+</pre>
+<p>Now you can edit the <code>fruits</code> file to contain just the part you want to split out. In this case, we want the fruits (duh).</p>
+<pre style="white-space: pre-wrap;">&gt;fruits echo apple
+&gt;&gt;fruits echo grape
+&gt;&gt;fruits echo orange
+git commit --author="Greg &lt;greg&gt;" -am "split foods to fruits"
+
+git checkout -
+</pre>
+<p>Repeat for the veggies.</p>
+<pre style="white-space: pre-wrap;">git checkout -b veggies
+git mv foods veggies
+git commit --author="Greg &lt;greg&gt;" -m "split foods to veggies"
+
+&gt;veggies echo celery
+&gt;&gt;veggies echo lettuce
+&gt;&gt;veggies echo peas
+git commit --author="Greg &lt;greg&gt;" -am "split foods to veggies"
+
+git checkout -
+</pre>
+<p>The last file (dairy) can be done directly in the original branch.</p>
+<pre style="white-space: pre-wrap;">git mv foods dairy
+git commit --author="Greg &lt;greg&gt;" -m "split foods to dairy"
+
+&gt;dairy echo cheese
+&gt;&gt;dairy echo eggs
+&gt;&gt;dairy echo milk
+git commit --author="Greg &lt;greg&gt;" -am "split foods to dairy"
+</pre>
+<p>And now we octopus merge all the branches together.</p>
+<pre style="white-space: pre-wrap;">git merge fruits veggies
+</pre>
+<p>This time, the octopus merge succeeds. All branches agree that the <code>foods</code> file be deleted, so there are no merge conflicts.</p>
+<pre style="white-space: pre-wrap;">Trying simple merge with fruits
+Trying simple merge with veggies
+Merge made by the 'octopus' strategy.
+ fruits  | 3 +++
+ veggies | 3 +++
+ 2 files changed, 6 insertions(+)
+ create mode 100644 fruits
+ create mode 100644 veggies
+</pre>
+<p>And lo and behold, all three resulting files preserved the original line histories. Greg doesn’t show up anywhere.</p>
+<pre style="white-space: pre-wrap;">git blame fruits
+
+^e7a114d foods (Alice 2019-09-16 07:00:00 -0700 1) apple
+86348be4 foods (Bob   2019-09-16 07:00:01 -0700 2) grape
+34eb5bd1 foods (Carol 2019-09-16 07:00:02 -0700 3) orange
+
+git blame veggies
+
+^e7a114d foods (Alice 2019-09-16 07:00:00 -0700 1) celery
+86348be4 foods (Bob   2019-09-16 07:00:01 -0700 2) lettuce
+34eb5bd1 foods (Carol 2019-09-16 07:00:02 -0700 3) peas
+
+git blame dairy
+
+^e7a114d foods (Alice 2019-09-16 07:00:00 -0700 1) cheese
+86348be4 foods (Bob   2019-09-16 07:00:01 -0700 2) eggs
+34eb5bd1 foods (Carol 2019-09-16 07:00:02 -0700 3) milk
+</pre>
+<p> </p>
+
+
+</body>

@@ -1,0 +1,180 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The case of the recursively hung <code>WM_DRAW­CLIPBOARD</code> message</h1>  <!-- .entry-meta -->
+
+<p>An application hang report showed that the application was stuck in this stack:</p>
+<pre>win32u!ZwUserMessageCall+0x14
+user32!SendMessageWorker+0x823
+user32!SendMessageW+0xda
+contoso!CContosoWindow::WndProc+0xa5d
+user32!UserCallWinProcCheckWow+0x2f8
+user32!DispatchClientMessage+0x9c
+user32!__fnDWORD+0x33
+ntdll!KiUserCallbackDispatcherContinue
+win32u!ZwUserMessageCall+0x14
+user32!SendMessageWorker+0x823
+user32!SendMessageW+0xda
+contoso!CContosoWindow::WndProc+0xa5d
+user32!UserCallWinProcCheckWow+0x2f8
+user32!DispatchClientMessage+0x9c
+user32!__fnDWORD+0x33
+ntdll!KiUserCallbackDispatcherContinue
+win32u!ZwUserMessageCall+0x14
+user32!SendMessageWorker+0x823
+user32!SendMessageW+0xda
+contoso!CContosoWindow::WndProc+0xa5d
+user32!UserCallWinProcCheckWow+0x2f8
+user32!DispatchClientMessage+0x9c
+user32!__fnDWORD+0x33
+ntdll!KiUserCallbackDispatcherContinue
+win32u!ZwUserMessageCall+0x14
+user32!SendMessageWorker+0x823
+user32!SendMessageW+0xda
+contoso!CContosoWindow::WndProc+0xa5d
+user32!UserCallWinProcCheckWow+0x2f8
+user32!DispatchClientMessage+0x9c
+user32!__fnDWORD+0x33
+ntdll!KiUserCallbackDispatcherContinue
+win32u!ZwUserMessageCall+0x14
+user32!SendMessageWorker+0x823
+user32!SendMessageW+0xda
+contoso!CContosoWindow::WndProc+0xa5d
+user32!UserCallWinProcCheckWow+0x2f8
+user32!DispatchClientMessage+0x9c
+user32!__fnDWORD+0x33
+ntdll!KiUserCallbackDispatcherContinue
+win32u!ZwUserMessageCall+0x14
+user32!SendMessageWorker+0x823
+user32!SendMessageW+0xda
+contoso!CContosoWindow::WndProc+0xa5d
+user32!UserCallWinProcCheckWow+0x2f8
+user32!DispatchClientMessage+0x9c
+user32!__fnDWORD+0x33
+ntdll!KiUserCallbackDispatcherContinue
+win32u!ZwUserMessageCall+0x14
+user32!SendMessageWorker+0x823
+user32!SendMessageW+0xda
+contoso!CContosoWindow::WndProc+0xa5d
+user32!UserCallWinProcCheckWow+0x2f8
+user32!DispatchClientMessage+0x9c
+user32!__fnDWORD+0x33
+ntdll!KiUserCallbackDispatcherContinue
+win32u!ZwUserMessageCall+0x14
+user32!SendMessageWorker+0x823
+user32!SendMessageW+0xda
+contoso!CContosoWindow::WndProc+0xa5d
+user32!UserCallWinProcCheckWow+0x2f8
+user32!DispatchClientMessage+0x9c
+user32!__fnDWORD+0x33
+ntdll!KiUserCallbackDispatcherContinue
+win32u!ZwUserMessageCall+0x14
+user32!SendMessageWorker+0x823
+user32!SendMessageW+0xda
+contoso!CContosoWindow::WndProc+0xa5d
+user32!UserCallWinProcCheckWow+0x2f8
+user32!DispatchClientMessage+0x9c
+user32!__fnDWORD+0x33
+ntdll!KiUserCallbackDispatcherContinue
+win32u!ZwUserMessageCall+0x14
+user32!SendMessageWorker+0x823
+user32!SendMessageW+0xda
+contoso!CContosoWindow::WndProc+0xa5d
+user32!UserCallWinProcCheckWow+0x2f8
+user32!DispatchClientMessage+0x9c
+user32!__fnDWORD+0x33
+ntdll!KiUserCallbackDispatcherContinue
+user32!_InternalCallWinProc+0x2a
+user32!InternalCallWinProc+0x1b
+user32!DispatchClientMessage+0xea
+user32!__fnDWORD+0x3f
+ntdll!KiUserCallbackDispatcher+0x4c
+win32u!NtUserGetMessage+0xc
+user32!GetMessageW+0x30
+contoso!WindowThreadProc+0x9b
+kernel32!BaseThreadInitThunk+0x14
+ntdll!RtlUserThreadStart+0x21
+</pre>
+<p>Inspecting the local variables at each recursive call shows that the message is always <code>WM_<wbr/>DRAW­CLIPBOARD</code>. The Contoso window receives the <code>WM_<wbr/>DRAW­CLIPBOARD</code> message, does its work, and then forwards the message to the next clipboard viewer window, just like the book says. While waiting for that window to respond, another <code>WM_<wbr/>DRAW­CLIPBOARD</code> message arrives, and the cycle repeats.</p>
+<p>The clipboard viewer chain is a linked list of windows that have all subscribed to clipboard notifications. This linked list is managed cooperatively: When you add yourself to the chain, you are given the handle of the previous head of the chain. And when you finish dealing with a clipboard notification, you forward the notification to the next window in the chain. That way, all the windows in the chain eventually learn about the clipboard.</p>
+<p>The clipboard viewer chain was developed back in the days of 16-bit Windows, when all programs were cooperatively multi-tasked and generally were trusted to behave properly. The clipboard viewer chain used the same trick that <a href="/history/how-were-window-hooks-implemented-in-16-bit-windows"> window hooks used</a> to save space: It externalized the cost.</p>
+<p>Here’s a sketch of how the clipboard viewer chain worked in 16-bit Windows:</p>
+<pre>HWND hwndClipboardViewer;
+
+HWND SetClipboardViewer(HWND hwndNewViewer)
+{
+  HWND hwndOldViewer = hwndClipboardViewer;
+  hwndClipboardViewer = hwndNewViewer;
+  return hwndOldViewer;
+}
+
+HWND GetClipboardViewer()
+{
+  return hwndClipboardViewer;
+}
+
+HWND ChangeClipboardChain(HWND hwndRemove, HWND hwndNewNext)
+{
+  if (hwndClipboardViewer == hwndRemove) {
+    hwndClipboardViewer = hwndNewNext;
+  } else {
+    SendMessage(hwndClipboardViewer, WM_CHANGECBCHAIN,
+        (WPARAM)hwndRemove, (LPARAM)hwndNewNext);
+  }
+}
+
+void NotifyClipboardViewers()
+{
+  if (hwndClipboardViewer) {
+    SendMessage(hwndClipboardViewer, WM_DRAWCLIPBOARD, 0, 0);
+  }
+}
+</pre>
+<p>And that’s it! The entire clipboard viewer feature in 30 lines of code.</p>
+<p>Okay, so back to our customer’s problem.</p>
+<p>The window registered itself as a clipboard viewer, and the clipboard contents changed, causing it to receive a <code>WM_<wbr/>DRAW­CLIPBOARD</code> message. The window dealt with the clipboard change, and then dutifully called <code>Send­Message</code> to forward the <code>WM_<wbr/>DRAW­CLIPBOARD</code> message down the chain. Every window in the chain deals with the message, and then calls <code>Send­Message</code>.</p>
+<p>What happened here is that some window in the chain is hung, and that causes all the other windows in the chain to hang, since they are all blocked on each other via <code>Send­Message</code>:</p>
+<table border="0" cellpadding="3" cellspacing="0" class="cp3" style="text-align: center;">
+<tbody>
+<tr>
+<td style="border: solid 1px gray;">Window 1</td>
+</tr>
+<tr>
+<td>↓</td>
+<td>SendMessage</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray;">Window 2</td>
+</tr>
+<tr>
+<td>↓</td>
+<td>SendMessage</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray;">Window 3</td>
+</tr>
+<tr>
+<td>↓</td>
+<td>SendMessage</td>
+</tr>
+<tr>
+<td style="border: solid 1px gray;">Window 4</td>
+<td>hung</td>
+</tr>
+</tbody>
+</table>
+<p>In order for Window 1’s <code>Send­Message</code> to complete, Window 2 needs to return. But Window 2 is stuck in a <code>Send­Message</code> to Window 3, which is in turn stock in a <code>Send­Message</code> to Window 4, which is hung. That one hung window has caused a chain of windows to stop responding.</p>
+<p>The Contoso window got caught in the chain of windows that are all waiting for that other hung window to process the <code>WM_<wbr/>DRAW­CLIPBOARD</code> message.</p>
+<p>So what can Contoso do about this?</p>
+<p>The best solution is to leave the game. Instead of using the old and busted clipboard viewer chain, use the new hotness <code>Add­Clipboard­Format­Listener</code> function to <a href="/code/the-clipboard-viewer-linked-list-is-no-longer-the-responsibility-of-applications-to-maintain-unless-they-want-to" title="The clipboard viewer linked list is no longer the responsibility of applications to maintain, unless they want to"> register to be notified when the clipboard contents change</a> and escape the clipboard viewer chain.</p>
+<p>Fortunately, converting from a clipboard viewer to a clipboard format listener is fairly simple and even involves deleting some code, so that’s a nice bonus.</p>
+<ul>
+<li>Change <code>Set­ClipboardViewer</code> to <code>Add­Clipboard­Format­Listener</code>.</li>
+<li>Delete the variable that held the previous clipboard viewer.</li>
+<li>Delete the code that handled the <code>WM_<wbr/>CHANGE­CB­CHAIN</code> message.</li>
+<li>Change <code>case WM_DRAWCLIPBOARD</code> to <code>case WM_CLIPBOARDUPDATE</code>.</li>
+<li>Delete the <code>Send­Message(hwndNextViewer, WM_DRAWCLIPBOARD, wParam, lParam)</code>.</li>
+<li>Change <code>Change­Clipboard­Chain</code> to <code>Remove­Clipboard­Format­Listener</code>.</li>
+</ul>
+<p>If for some reason you really want to be a clipboard viewer, you can at least switch to using <code>Send­Notify­Message</code> to forward the <code>WM_<wbr/>DRAW­CLIPBOARD</code> message to the next window in the chain. The <code>Send­Notify­Message</code> function is like <code>Send­Message</code> except that it doesn’t want for the recipient to return. It’s a fire-and-forget <code>Send­Message</code>.</p>
+
+
+</body>

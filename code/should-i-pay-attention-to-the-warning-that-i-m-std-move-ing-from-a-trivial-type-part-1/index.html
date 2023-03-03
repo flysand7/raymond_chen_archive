@@ -1,0 +1,85 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Should I pay attention to the warning that I’m <code>std::move</code>‘ing from a trivial type? Part 1</h1>  <!-- .entry-meta -->
+
+<p>Say you have a class that is trivial.</p>
+<pre>struct widget_id
+{
+    int value;
+};
+</pre>
+<p>and you decide that you want to <code>std::move</code> it around.</p>
+<pre>widget_id id = get_widget_id();
+
+widget widget = find_widget_by_id(std::move(id));
+</pre>
+<p>You are using <code>std::move</code> because you want to be prepared for the possibility that the <code>widget_id</code> might later be changed to something like</p>
+<pre>struct widget_id
+{
+    std::string value;
+}
+</pre>
+<p>In that case, you want to use a <code>std::move</code> to avoid a copy.</p>
+<p>But using <code>std::move</code> on the original integer-based <code>widget_id</code> <a href="https://clang.llvm.org/extra/clang-tidy/checks/performance-move-const-arg.html"> generates a warning</a>:</p>
+<blockquote class="q"><p><code>std::move</code> of the variable <code>id</code> of the trivially-copyable type <code>widget_id</code> has no effect.</p></blockquote>
+<p>What is this warning trying to tell you, and should you care?</p>
+<p>The language requires merely that a moved-from object be in a legal (albeit unspecified) state. However, many classes go beyond the bare minimum and define their moved-from state. For example, <code>std::unique_ptr</code> specifies that if you move out of a unique pointer, the source is left empty. More generally, all RAII types fall into this category, because moving out of an RAII type transfers the responsibility for the resource to the moved-to object. And most of these RAII types provide a way to inspect whether the RAII wrapper has been absolved of any responsibility.</p>
+<p>And that’s where the warning comes in.</p>
+<p>Consider this helper function:</p>
+<pre>bool is_empty(widget_id const&amp; id)
+{
+    return id.value == 0;
+    // -or-
+    return id.value.size() == 0;
+}
+</pre>
+<p>This tells you that the <code>widget_id</code> doesn’t actually contain an id after all. Somebody who expects the <code>widget_id</code> to be an RAII-style type might do this:</p>
+<pre>// Remember to add power to this widget, if possible
+widget_id id = get_widget_id();
+
+if (wants_power_early()) {
+    add_widget_power(std::move(id));
+}
+
+...
+
+if (is_empty(id)) {
+    // Nobody added power yet, let's do it now.
+    add_widget_power(std::move(id));
+}
+</pre>
+<p>This type of mistake is much more likely if the emptiness check is a member of the <code>widget_id</code> itself, either as a named member function or as a boolean conversion operator.</p>
+<pre>struct widget_id
+{
+    int value;
+    bool is_empty() const { return value == 0; }
+    operator bool() const { return value != 0; }
+};
+</pre>
+<p>Then that last check would be</p>
+<pre>if (!id.is_empty()) {
+</pre>
+<p>or the even more natural-looking</p>
+<pre>if (id) {
+</pre>
+<p>Okay, so maybe you know that you’re not operating on an RAII type, and that you know that the <code>std::move</code> may not actually move anything. Is there some way to avoid having to disable the warning at every single place you do the <code>std::move</code>?</p>
+<p>One way is to make your type no longer trivial. Probably the simplest way is to give it a user-defined destructor that is equivalent to the trivial destructor.</p>
+<pre>struct widget_id
+{
+    int value;
+
+    ~widget_id() { } // no longer a trivial type
+};
+</pre>
+<p>On the other hand, making the type no longer trivial is likely to have unintended cascade effects seeing as triviality affects many other things: If you make a type non-trivial, then you lose the ability to do things like use <code>memcpy</code> to copy instances of the type, or use it as a buffer for I/O operations.</p>
+<p>Another option is to route the call through a helper, and then annotate the helper.</p>
+<pre>template&lt;typename T&gt;
+constexpr decltype(auto) move_allow_trivial(T&amp;&amp; t) noexcept
+{
+    return std::move(t); // NOLINT
+}
+</pre>
+<p>If you don’t mind that you’re moving a trivial type, you can call this helper instead of calling <code>std::move</code> directly.</p>
+<p>There’s another case for moving from a trivial type. We’ll look at it next time.</p>
+
+
+</body>

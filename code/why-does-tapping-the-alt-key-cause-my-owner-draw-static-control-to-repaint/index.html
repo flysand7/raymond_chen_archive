@@ -1,0 +1,76 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">Why does tapping the Alt key cause my owner-draw static control to repaint?</h1>  <!-- .entry-meta -->
+
+<p>A customer had an owner-drawn static control, and they found that when the user pressed the <kbd>Alt</kbd> key, their static control redrew. This extra redraw was unwanted, presumably because the control takes a long time to draw, and they didn’t want to waste the time redrawing something that hadn’t changed. </p>
+<p>So why does tapping the <kbd>Alt</kbd> key cause the owner-draw static control to repaint? </p>
+<p>Because the state of the keyboard accelerators has changed. </p>
+<p>The customer noticed that on the initial draw, the <code>itemState</code> had the numeric value of 260, whereas the <code>itemState</code> is 4 on the unwanted redraw. The customer noted that 4 is documented as <code>ODS_DISABLED</code>, but 260 is not documented. </p>
+<p>Okay, well, let’s note that the value 260 is documented. It breaks down as <code>4 | 256</code> which is <code>ODS_DISABLED | ODS_NO­ACCEL</code>. </p>
+<p>Let’s walk through what’s going on here. </p>
+<p>When the static control first paints, the window that contains it is in the “hidden accelerators” state, so the draw flags are <code>ODS_DISABLED | ODS_NO­ACCEL</code>. The <code>ODS_DISABLED</code> is a bug, <a href="https://blogs.msdn.microsoft.com/oldnewthing/20141211-00/?p=43423">as we saw some time ago</a>. The <code>ODS_NO­ACCEL</code> is telling you to do your owner-draw thing, but don’t draw any accelerators. </p>
+<p>When the user presses the <kbd>Alt</kbd> key, the window changes state to “visible accelerators”, so the static control asks you to draw <a href="http://www.imdb.com/title/tt0054141/">once more, with accelerators</a>, as <a href="https://blogs.msdn.microsoft.com/oldnewthing/20050503-00/?p=35723">I discussed some time ago</a>. </p>
+<p>Okay, now that we know what’s going on, what can we do to stop it? </p>
+<p>Once you understand <a href="https://devblogs.microsoft.com/oldnewthing/?p=4343">the way the <code>WM_UPDATE­UI­STATE</code> and <code>WM_CHANGE­UI­STATE</code> messages interact</a>, you can see two ways out. </p>
+<p>One is to ignore the request to draw the control if it is happening in response to a <code>WM_UPDATE­UI­STATE</code> message. </p>
+<pre>
+LRESULT CALLBACK StaticSubclassProc(
+    HWND hwnd, UINT wm, WPARAM wParam, LPARAM lParam,
+    UINT_PTR id, DWORD_PTR refData)
+{
+    LRESULT lres;
+    ParentClass *parentClass = (ParentClass*)refData;
+    switch (wm)
+    {
+    case WM_UPDATEUISTATE:
+        parentClass-&gt;ignoreOwnerDraw = true;
+        lres = DefSubclassProc(hwnd, wm, wParam, lParam);
+        parentClass-&gt;ignoreOwnerDraw = false;
+        return lres;
+    }
+    return DefSubclassProc(hwnd, wm, wParam, lParam);
+}
+
+class ParentClass
+{
+ ...
+ void OnDrawItem(const DRAWITEMSTRUCT* pdis)
+ {
+  if (pdis-&gt;CtlID == IDC_MYSTATIC <font color="blue">&amp;&amp; !ignoreOwnerDraw)</font> {
+   DoSlowOwnerDraw(...);
+  }
+ }
+
+ bool ignoreOwnerDraw = false;
+}
+</pre>
+<p>The idea here is to set a flag if a <code>WM_UPDATE­UI­STATE</code> is in progress, and if the handling of the <code>WM_UPDATE­UI­STATE</code> message results in a request to redraw the control, then ignore it. </p>
+<p>I leave as an exercise the code to install <a href="https://blogs.msdn.microsoft.com/oldnewthing/20031111-00/?p=41883">and remove</a> the subclass procedure. I do this partly as an actual exercise, and partly to avoid me having to write two versions of the answer, depending on whether the parent is a regular window or a dialog box. </p>
+
+<p> <b>Update</b>: <a href="https://devblogs.microsoft.com/oldnewthing/#comment-1276675">As Adrian notes below</a>, this algorithm fails if the static control chooses merely to invalidate in response to <code>WM_UPDATE­STATE</code> rather than repaint. By the time the <code>WM_PAINT</code> arrives, the flag would already be reset. Fortunately… read on. </p>
+<p>Another solution is to prevent the static control from seeing the <code>WM_UPDATE­UI­STATE</code> message at all. </p>
+<pre>
+LRESULT CALLBACK IgnoreUIStateChangeSubclassProc(
+    HWND hwnd, UINT wm, WPARAM wParam, LPARAM lParam,
+    UINT_PTR id, DWORD_PTR /* refData */)
+{
+    switch (wm) {
+    case WM_UPDATEUISTATE:
+        return DefWindowProc(hwnd, wm, wParam, lParam);
+    case WM_NCDESTROY:
+        RemoveWindowSubclass(hwnd, IgnoreUIStateChangeSubclassProc, 0);
+        break;
+    }
+    return DefSubclassProc(hwnd, wm, wParam, lParam);
+}
+
+BOOL IgnoreUIStateChange(HWND hwnd)
+{
+ return SetWindowSubclass(hwnd, IgnoreUIStateChangeSubclassProc,
+                          1, 0);
+}
+</pre>
+<p>I made this subclass procedure self-unregistering because it has no reference to any other objects, so there are no lifetime issues with letting the subclass procedure outlive the parent class. This makes the function self-contained and consequently generally useful. The <code>Ignore­UI­State­Change</code> function registers the subclass procedure on any control, at which point the control will ignore any changes to show or hide accelerators or focus rectangles. </p>
+<p>The subclass procedure works by intercepting the <code>WM_UPDATE­UI­STATE</code> message and sending it directly to <code>Def­Window­Proc</code> for default processing, bypassing any custom processing in the control itself. Passing the message to <code>Def­Window­Proc</code> allows the normal message propagation to continue, but bypassing the control’s window procedure means that the control is never told that the UI state has changed, which means that it never tries to redraw itself to hide or show accelerators or focus rectangles. </p>
+
+
+</body>

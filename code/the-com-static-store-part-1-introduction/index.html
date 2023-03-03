@@ -1,0 +1,111 @@
+﻿<body style=max-width:80ch;margin:auto>
+<h1 class="entry-title" style="margin-bottom:15px;">The COM static store, part 1: Introduction</h1>  <!-- .entry-meta -->
+
+<p>Storing COM pointers in global variables has been a consistent source of problems, because the globals are destructed when the DLL receives it <code>DLL_<wbr/>PROCESS_<wbr/>DETACH</code>, which happens after COM has already shut down. The destructor then calls into an object that no longer exists, and that makes people sad.</p>
+<p>But what if I told you there’s a place to put your global COM pointers, and that place has the property that the global COM pointers will be released as part of COM teardown? In other words, the global COM pointers are released <i>just in time</i>: The global COM pointer has its lifetime tied to the lifetime of COM, rather than the lifetime of the process.</p>
+<p>That place is informally known as the COM static store. Formally, it’s the property set on the <code>Core­Application</code> object. Even though the <code>Core­Application</code> is a Windows Runtime object, it is available in any process that uses COM, not just UWP apps.</p>
+<p>The idea is that you move the storage of your global variable out of your data segment and into the COM static store. When you want to update the value, you write it to the COM static store, and when you want to read the value, you read it from the COM static store.</p>
+<p>For concreteness, I’ll write the code in C++/WinRT, but the same algorithm applies to other projections.</p>
+<pre>Thing GetTheThing()
+{
+    auto props = CoreApplication::Properties();
+    if (auto found = props.TryLookup(L"Thing")) {
+        return found.as&lt;Thing&gt;();
+    }
+    return nullptr;
+}
+
+void SetTheThing(Thing const&amp; thing)
+{
+    auto props = CoreApplication::Properties();
+    props.Insert(L"Thing", thing);
+}
+</pre>
+<p>Here, we used the incredibly uncreative key name <code>"Thing"</code>. In practice, you should pick a name that is not going to collide with others who are sharing the COM static store. Since the <code>Core­Application</code> is a Windows Runtime object, its initial clients were mostly other Windows Runtime objects, and the convention developed that the key is the fully-qualified Windows Runtime name of the object being added, like <code>Contoso.Deluxe.Widget</code>. Of course, if your object is not a Windows Runtime object, then that pattern doesn’t apply to you, so come up with some other unique name, like maybe a stringified GUID. For demonstration purposes, I’m just going to use the string <code>"Thing"</code>.</p>
+<p>Since the COM static store is a per-process store, it is available to any thread, so you would be best served if the objects you put in it are free-threaded,¹ because any thread can retrieve an object from it.²</p>
+<p>The most common use for the COM static store is providing a place to keep a singleton which is created on demand and remains alive until COM is torn down. The basic idea goes something like this:</p>
+<pre>// Don't use this code yet
+Thing GetSingletonThing()
+{
+    auto props = CoreApplication::Properties();
+    if (auto found = props.TryLookup(L"Thing")) {
+        return found.as&lt;Thing&gt;();
+    }
+    auto thing = MakeAThing();
+    props.Insert(L"Thing", thing);
+    return thing;
+}
+</pre>
+<p>First we look to see if there is a <code>Thing</code> already. If so, then we return it. Otherwise, we make a new <code>Thing</code>, insert the newly-created <code>Thing</code> into the property set, and return it.</p>
+<p>That’s the basic idea. The rest is filling in the holes. We’ll start doing that next time.</p>
+<p><b>Bonus chatter</b>: Just for example, here’s the translation of <code>Get­The­Thing</code> into C++/CX:</p>
+<pre>Thing^ GetTheThing()
+{
+    auto props = CoreApplication::Properties;
+    if (auto found = props-&gt;TryLookup(L"Thing")) {
+        return safe_cast&lt;Thing^&gt;(found);
+    }
+    return nullptr;
+}
+</pre>
+<p>It’s a fair direct line-for-line translation. Translating into C++/WRL is much more work because WRL works at the ABI layer.</p>
+<pre>HRESULT GetTheThing(Thing** result)
+{
+  *result = nullptr;
+
+  // auto props = CoreApplication::Properties;
+  WRL::ComPtr&lt;ICoreApplication&gt; app;
+  RETURN_IF_FAILED(RoGetActivationFactory(
+    WRL::Wrappers::HStringReference(
+      RuntimeClass_Windows_ApplicationModel_Core_CoreApplication).Get(),
+      IID_PPV_ARGS(&amp;app)));
+
+  WRL::ComPtr&lt;IPropertySet&gt; props;
+  RETURN_IF_FAILED(app-&gt;get_Properties(&amp;props));
+
+  // auto found = props-&gt;TryLookup(L"Thing");
+  WRL::ComPtr&lt;IMap&lt;HSTRING, IInspectable*&gt;&gt; map;
+  RETURN_IF_FAILED(props.As(&amp;map));
+
+  WRL::ComPtr&lt;IInspectable&gt; found;
+  HRESULT hr = map-&gt;Lookup(
+    WRL::Wrappers::HStringReference(L"Thing").Get(),
+    &amp;found);
+  RETURN_HR_IF(hr, FAILED(hr) &amp;&amp; hr != E_BOUNDS);
+
+  // if (found) return safe_cast&lt;Thing^&gt;(found);
+  // return nullptr;
+  if (hr == S_OK) {
+    RETURN_IF_FAILED(found.CopyTo(result));
+  }
+  return S_OK;
+}
+</pre>
+<p>I don’t anticipate giving many examples in WRL in this series of articles. It’s far too verbose.</p>
+<p>That’s the basic idea behind the COM static store, but of course you have to be careful how you use it. We’ll dig in <a href="/code/the-com-static-store-part-2-race-conditions-in-setting-a-singleton" title="The COM static store, part 2: Race conditions in setting a singleton"> next time</a>.</p>
+<p>¹ You can create a free-threaded wrapper for any COM object with <code>Ro­Get­Agile­Reference</code>. WRL, C++/CX, and C++/WinRT all provide helpers for managing agile references.</p>
+<table border="1" cellpadding="3" cellspacing="0" class="cp3" style="border-collapse: collapse;">
+<tbody>
+<tr>
+<th>Projection</th>
+<th>Wrapper</th>
+</tr>
+<tr>
+<td>WRL</td>
+<td><code>Microsoft::WRL::AgileRef</code></td>
+</tr>
+<tr>
+<td>C++/CX</td>
+<td><code>Platform::Agile&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td>C++/WinRT</td>
+<td><code>winrt::agile_ref</code></td>
+</tr>
+</tbody>
+</table>
+<p>² If your program is single-threaded,³ then I guess you don’t have to worry about the “wrong” thread retrieving the value, since you have only one thread anyway.</p>
+<p>³ Looking at you, JavaScript.</p>
+
+
+</body>
